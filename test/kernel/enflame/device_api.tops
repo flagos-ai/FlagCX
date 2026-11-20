@@ -873,7 +873,11 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 }
 
 flagcxResult_t launchKernelNetWaitSignalFlush(flagcxDevComm_t devComm,
-                                              flagcxStream_t stream) {
+                                              flagcxStream_t stream,
+                                              uint64_t *results,
+                                              unsigned skew) {
+  (void)results;
+  (void)skew;
   if (!devComm) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
   return launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(

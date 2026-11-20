@@ -20,6 +20,7 @@
 #include "flagcx_device_wrapper_impl.h" // also pulls in scalar_ir_impl.h
 
 #include "device_ir.h"
+#include "device_signal_test_layout.h"
 
 // Resolve the backend's completion width without inspecting its storage.
 static constexpr int kCompletionBits =
@@ -423,6 +424,7 @@ __global__ void kernelNetGetFromCommS(const void FLAGCX_IR_GLOBAL_PTR *devCommPt
     const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
     results[0] = (net != nullptr) ? 1 : 0;
     results[1] = flagcxDevCommGetIntraSize(devCommPtr);
+    results[2] = ((const flagcxDevComm *)devCommPtr)->getContextCount();
   }
 }
 
@@ -436,39 +438,36 @@ void launchKernelNetGetFromCommS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, in
 // ---------------------------------------------------------------------------
 
 __global__ void kernelNetResetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *results) {
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
-    if (net == nullptr) {
-      results[0] = 0;
-      return;
-    }
-
-    const flagcxDevNet *netObj = (const flagcxDevNet *)net;
-    if (!netObj->isValid()) {
-      results[0] = 0;
-      return;
-    }
-
-    // Reset signal slot 0
-    flagcxDevNetResetSignal(net, (flagcxDevSignal_t)0);
-    // Read it — should be 0
-    uint64_t sig0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
-                                            flagcxDeviceMemoryOrderRelaxed);
-    results[0] = (sig0 == 0) ? 1 : 0;
-
-    // Increase shadow by 5, read signal (still 0, shadow is separate)
-    flagcxDevNetIncreaseSignalShadow(net, (flagcxDevSignal_t)0, 5);
-    uint64_t sig1 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
-                                            flagcxDeviceMemoryOrderRelaxed);
-    results[1] = (sig1 == 0) ? 1 : 0;
-
-    // Reset counter slot 0
-    flagcxDevNetResetCounter(net, (flagcxDevCounter_t)0);
-    // Read counter — should be 0
-    uint64_t ctr0 = flagcxDevNetReadCounterS(net, (flagcxDevCounter_t)0, kCompletionBits,
-                                             flagcxDeviceMemoryOrderRelaxed);
-    results[2] = (ctr0 == 0) ? 1 : 0;
+  if (FLAGCX_THREAD_IDX_X != 0)
+    return;
+  const void FLAGCX_IR_GLOBAL_PTR *net =
+      flagcxDevNetGetFromCommS(devCommPtr, 0);
+  int *r = results + FLAGCX_BLOCK_IDX_X * 3;
+  r[0] = r[1] = r[2] = 0;
+  if (!net || !((const flagcxDevNet *)net)->isValid())
+    return;
+  bool ok = true;
+  for (int kind = 0; kind < FlagcxTestSignalKinds; ++kind) {
+    int sig = legacySignalId((FlagcxTestSignalKind)kind, FLAGCX_BLOCK_IDX_X,
+                             FLAGCX_GRID_DIM_X);
+    flagcxDevNetResetSignal(net, sig);
+    ok &= flagcxDevNetReadSignalS(net, sig, kCompletionBits,
+                                  flagcxDeviceMemoryOrderAcquire) == 0;
   }
+  r[0] = ok ? 1 : 0;
+  int sig =
+      legacySignalId(FlagcxTestPipeline, FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
+  flagcxDevNetIncreaseSignalShadow(net, sig, 5);
+  r[1] = flagcxDevNetReadSignalS(net, sig, kCompletionBits,
+                                 flagcxDeviceMemoryOrderAcquire) == 0
+             ? 1
+             : 0;
+  flagcxDevNetResetSignal(net, sig);
+  flagcxDevNetResetCounter(net, FLAGCX_BLOCK_IDX_X);
+  r[2] = flagcxDevNetReadCounterS(net, FLAGCX_BLOCK_IDX_X, kCompletionBits,
+                                  flagcxDeviceMemoryOrderAcquire) == 0
+             ? 1
+             : 0;
 }
 
 void launchKernelNetResetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
@@ -490,7 +489,9 @@ void launchKernelNetResetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *dev
 // Reset signal, signal all inter peers, wait for signals, then flush.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetWaitSignalFlushS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
+__global__ void
+kernelNetWaitSignalFlushS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                          uint64_t *results, unsigned skew) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
@@ -505,54 +506,76 @@ __global__ void kernelNetWaitSignalFlushS(const void FLAGCX_IR_GLOBAL_PTR *devCo
 
 
   int nInterRanks = nRanks - intraSize;
-  int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
-  int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+  int tid = FLAGCX_THREAD_IDX_X;
+  int nthreads = FLAGCX_BLOCK_DIM_X;
 
-  // Reset signal slot 0 (aligned with K11:1410) — no guard, matches K11
-  flagcxDevNetResetSignal(net, (flagcxDevSignal_t)0);
-
-
-  // Read baseline signal (aligned with K11:1411)
-  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
-                                        flagcxDeviceMemoryOrderRelaxed);
-
+  const int sig = legacySignalId(FlagcxTestWaitFlush, FLAGCX_BLOCK_IDX_X,
+                                 FLAGCX_GRID_DIM_X);
+  flagcxTestSignalDelay(myRank, FLAGCX_BLOCK_IDX_X, skew);
+  if (FLAGCX_THREAD_IDX_X == 0) {
+    unsigned observed = 0;
+    for (int b = 0; b < FLAGCX_GRID_DIM_X; ++b)
+      if (b != FLAGCX_BLOCK_IDX_X)
+        observed +=
+            atomicAdd(
+                (unsigned int *)(results + b * kFlagcxTestWaitResultWords + 2),
+                0u) != 0;
+    results[FLAGCX_BLOCK_IDX_X * kFlagcxTestWaitResultWords + 3] = observed;
+  }
+  if (FLAGCX_THREAD_IDX_X == 0)
+    flagcxDevNetResetSignal(net, sig);
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    results[FLAGCX_BLOCK_IDX_X * kFlagcxTestWaitResultWords] =
+        flagcxDevNetReadSignalS(net, sig, kCompletionBits,
+                                flagcxDeviceMemoryOrderAcquire);
 
   // World barrier sync (aligned with K11:1412)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
-                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDeviceMemoryOrderAcqRel,
                           flagcxDevNetFenceLevel::Relaxed);
-
 
   // Signal all inter peers (aligned with K11:1417-1420)
   for (int peer = tid; peer < nRanks; peer += nthreads) {
     if (peer < intraBase || peer >= intraBase + intraSize) {
       flagcxDevNetSignalSigIncS(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
-                                FLAGCX_COOP_THREAD, (flagcxDevSignal_t)0);
+                                FLAGCX_COOP_THREAD, (flagcxDevSignal_t)sig);
     }
   }
 
 
   // Wait for signals from all inter peers (aligned with K11:1423-1424)
   if (nInterRanks > 0) {
-    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
-                            s0 + (uint64_t)nInterRanks, kCompletionBits,
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)sig,
+                            (uint64_t)nInterRanks, kCompletionBits,
                             flagcxDeviceMemoryOrderAcquire);
   }
 
-
+  if (FLAGCX_THREAD_IDX_X == 0) {
+    results[FLAGCX_BLOCK_IDX_X * kFlagcxTestWaitResultWords + 1] =
+        flagcxDevNetReadSignalS(net, sig, kCompletionBits,
+                                flagcxDeviceMemoryOrderAcquire);
+  }
   // Flush (aligned with K11:1427)
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
 
 
   // Final world barrier (aligned with K11:1429)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
-                          flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
-
+                          flagcxDeviceMemoryOrderAcqRel,
+                          flagcxDevNetFenceLevel::Relaxed);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    atomicAdd((unsigned int *)(results +
+                               FLAGCX_BLOCK_IDX_X * kFlagcxTestWaitResultWords +
+                               2),
+              1u);
 }
 
-void launchKernelNetWaitSignalFlushS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                     flagcxStream_t stream) {
-  kernelNetWaitSignalFlushS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr);
+void launchKernelNetWaitSignalFlushS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flagcxStream_t stream,
+    uint64_t *results, unsigned skew) {
+  kernelNetWaitSignalFlushS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+      devCommPtr, results, skew);
 }
 
 // ---------------------------------------------------------------------------
@@ -682,11 +705,17 @@ void launchKernelInterBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int 
 // AlltoAll: put with no signal, flush, then signal separately, wait, flush.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                        const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
-                                        const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
-                                        size_t countPerPeer) {
+__global__ void
+kernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                        size_t countPerPeer, unsigned skew) {
+  const int sig =
+      legacySignalId(FlagcxTestFlush, FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
   int myRank = flagcxDevCommGetRank(devCommPtr);
+  const bool receives =
+      FLAGCX_BLOCK_IDX_X ==
+      signalOwnerCta(myRank, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -703,9 +732,10 @@ __global__ void kernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devComm
   int nInterRanks = nRanks - intraSize;
 
   // Read baseline signal (aligned with K6:692)
-  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
-                                        flagcxDeviceMemoryOrderRelaxed);
-
+  flagcxTestSignalDelay(myRank, FLAGCX_BLOCK_IDX_X, skew);
+  uint64_t s0 =
+      flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)sig, kCompletionBits,
+                              flagcxDeviceMemoryOrderRelaxed);
 
   // Pre-barrier (aligned with K6:693)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
@@ -734,15 +764,15 @@ __global__ void kernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devComm
   for (int peer = tid; peer < nRanks; peer += nthreads) {
     if (peer >= intraBase && peer < intraBase + intraSize) continue;
     flagcxDevNetSignalSigIncS(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
-                              FLAGCX_COOP_THREAD, (flagcxDevSignal_t)0);
+                              FLAGCX_COOP_THREAD, (flagcxDevSignal_t)sig);
   }
 
 
   // WaitSignal (aligned with K6:717)
-  flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
-                          s0 + (uint64_t)nInterRanks, kCompletionBits,
-                          flagcxDeviceMemoryOrderAcquire);
-
+  if (receives)
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)sig,
+                            s0 + (uint64_t)nInterRanks, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
 
   // Flush after wait (aligned with K6:718)
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
@@ -751,15 +781,15 @@ __global__ void kernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devComm
   // Final barrier (aligned with K6:719)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
-
 }
 
 void launchKernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                    const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                                    const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
                                    flagcxStream_t stream) {
-  kernelNetFlushDecoupleS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
-                                                        recvMemPtr, countPerPeer);
+  kernelNetFlushDecoupleS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+      devCommPtr, sendMemPtr, recvMemPtr, countPerPeer,
+      flagcxTestHostSignalSkew());
 }
 
 // ---------------------------------------------------------------------------
@@ -767,11 +797,17 @@ void launchKernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 // AlltoAll with fused remote signal increment.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                       const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
-                                       const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
-                                       size_t countPerPeer) {
+__global__ void
+kernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                       const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                       const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                       size_t countPerPeer, unsigned skew) {
+  const int sig =
+      legacySignalId(FlagcxTestPutInc, FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
   int myRank = flagcxDevCommGetRank(devCommPtr);
+  const bool receives =
+      FLAGCX_BLOCK_IDX_X ==
+      signalOwnerCta(myRank, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -790,8 +826,10 @@ __global__ void kernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommP
                           flagcxDevNetFenceLevel::Relaxed);
 
   // Read baseline signal (aligned with K3:388)
-  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
-                                        flagcxDeviceMemoryOrderRelaxed);
+  flagcxTestSignalDelay(myRank, FLAGCX_BLOCK_IDX_X, skew);
+  uint64_t s0 =
+      flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)sig, kCompletionBits,
+                              flagcxDeviceMemoryOrderRelaxed);
 
   // World barrier sync (aligned with K3:395)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
@@ -806,16 +844,16 @@ __global__ void kernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommP
     if (peer >= intraBase && peer < intraBase + intraSize) continue;
     flagcxDevNetPutS_RSigInc(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
                              recvMemPtr, (size_t)myRank * chunkBytes,
-                             sendMemPtr, (size_t)peer * chunkBytes,
-                             chunkBytes, FLAGCX_COOP_THREAD,
-                             (flagcxDevSignal_t)0);
+                             sendMemPtr, (size_t)peer * chunkBytes, chunkBytes,
+                             FLAGCX_COOP_THREAD, (flagcxDevSignal_t)sig);
   }
 
   // WaitSignal + Flush (aligned with K3:429-430)
   int nInterRanks = nRanks - intraSize;
-  flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
-                          s0 + (uint64_t)nInterRanks, kCompletionBits,
-                          flagcxDeviceMemoryOrderAcquire);
+  if (receives)
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)sig,
+                            s0 + (uint64_t)nInterRanks, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
 
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
 
@@ -829,7 +867,8 @@ void launchKernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                   size_t countPerPeer, flagcxStream_t stream) {
   kernelNetPutSignalIncS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
-      devCommPtr, sendMemPtr, recvMemPtr, countPerPeer);
+      devCommPtr, sendMemPtr, recvMemPtr, countPerPeer,
+      flagcxTestHostSignalSkew());
 }
 
 // ---------------------------------------------------------------------------
@@ -873,11 +912,12 @@ kernelNetMultiContextPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   }
 
   if (FLAGCX_THREAD_IDX_X == 0)
-    flagcxDevNetResetSignal(net, (flagcxDevSignal_t)0);
+    flagcxDevNetResetSignal(
+        net, (flagcxDevSignal_t)dedicatedSignalId(FLAGCX_GRID_DIM_X));
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
-  uint64_t baseline =
-      flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
-                              flagcxDeviceMemoryOrderRelaxed);
+  uint64_t baseline = flagcxDevNetReadSignalS(
+      net, (flagcxDevSignal_t)dedicatedSignalId(FLAGCX_GRID_DIM_X),
+      kCompletionBits, flagcxDeviceMemoryOrderRelaxed);
 
   // All ranks reset this context's signal before any rank sends on it.
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, (uint32_t)contextId, false,
@@ -892,16 +932,17 @@ kernelNetMultiContextPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     size_t dstOffset = dataBase + ((size_t)myRank * FLAGCX_DEVICE_CTA_COUNT +
                                    (size_t)contextId) *
                                       sizeof(float);
-    flagcxDevNetPutS_RSigInc(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
-                             recvMemPtr, dstOffset, sendMemPtr, srcOffset,
-                             sizeof(float), FLAGCX_COOP_THREAD,
-                             (flagcxDevSignal_t)0);
+    flagcxDevNetPutS_RSigInc(
+        net, devCommPtr, FLAGCX_TEAM_WORLD, peer, recvMemPtr, dstOffset,
+        sendMemPtr, srcOffset, sizeof(float), FLAGCX_COOP_THREAD,
+        (flagcxDevSignal_t)dedicatedSignalId(FLAGCX_GRID_DIM_X));
   }
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
-  flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
-                          baseline + 1, kCompletionBits,
-                          flagcxDeviceMemoryOrderAcquire);
+  flagcxDevNetWaitSignalS(
+      net, FLAGCX_COOP_BLOCK,
+      (flagcxDevSignal_t)dedicatedSignalId(FLAGCX_GRID_DIM_X), baseline + 1,
+      kCompletionBits, flagcxDeviceMemoryOrderAcquire);
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
   // Keep the context alive until every rank has observed its release.
@@ -927,11 +968,17 @@ void launchKernelNetMultiContextPutSignalIncS(
 // AlltoAll with remote signal add (value = 1 per peer).
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                       const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
-                                       const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
-                                       size_t countPerPeer) {
+__global__ void
+kernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                       const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                       const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                       size_t countPerPeer, unsigned skew) {
+  const int sig =
+      legacySignalId(FlagcxTestPutAdd, FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
   int myRank = flagcxDevCommGetRank(devCommPtr);
+  const bool receives =
+      FLAGCX_BLOCK_IDX_X ==
+      signalOwnerCta(myRank, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -953,9 +1000,10 @@ __global__ void kernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommP
 
 
   // Read baseline signal (aligned with K4:472)
-  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
-                                        flagcxDeviceMemoryOrderRelaxed);
-
+  flagcxTestSignalDelay(myRank, FLAGCX_BLOCK_IDX_X, skew);
+  uint64_t s0 =
+      flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)sig, kCompletionBits,
+                              flagcxDeviceMemoryOrderRelaxed);
 
   // World barrier sync (aligned with K4:473)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
@@ -977,15 +1025,15 @@ __global__ void kernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommP
                      chunkBytes, FLAGCX_COOP_THREAD);
     // Separate SignalAdd with value=2 (aligned with K4:484-485)
     flagcxDevNetSignalSigAddS(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
-                              FLAGCX_COOP_THREAD, (flagcxDevSignal_t)0, 2);
+                              FLAGCX_COOP_THREAD, (flagcxDevSignal_t)sig, 2);
   }
 
 
   // WaitSignal for s0 + nInterRanks * 2 (aligned with K4:487)
-  flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
-                          s0 + (uint64_t)nInterRanks * 2, kCompletionBits,
-                          flagcxDeviceMemoryOrderAcquire);
-
+  if (receives)
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)sig,
+                            s0 + (uint64_t)nInterRanks * 2, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
 
   // Flush (aligned with K4:488)
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
@@ -994,15 +1042,15 @@ __global__ void kernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommP
   // Final world barrier (aligned with K4:489)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
-
 }
 
 void launchKernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
                                   flagcxStream_t stream) {
-  kernelNetPutSignalAddS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
-                                                       recvMemPtr, countPerPeer);
+  kernelNetPutSignalAddS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+      devCommPtr, sendMemPtr, recvMemPtr, countPerPeer,
+      flagcxTestHostSignalSkew());
 }
 
 // ---------------------------------------------------------------------------
@@ -1010,11 +1058,18 @@ void launchKernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 // AlltoAll with both remote signal inc and local counter inc.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                          const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
-                                          const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
-                                          size_t countPerPeer) {
+__global__ void
+kernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                          const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                          const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                          size_t countPerPeer, uint64_t *results,
+                          unsigned skew) {
+  const int sig =
+      legacySignalId(FlagcxTestPipeline, FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
   int myRank = flagcxDevCommGetRank(devCommPtr);
+  const bool receives =
+      FLAGCX_BLOCK_IDX_X ==
+      signalOwnerCta(myRank, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -1032,6 +1087,9 @@ __global__ void kernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCo
   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
   int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
 
+  const uint64_t sent = countInterPeersAssignedTo(
+      FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X, nRanks,
+      intraBase, intraSize);
   // World barrier before reading baselines (aligned with K5:521-522)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
                           flagcxDeviceMemoryOrderRelaxed,
@@ -1039,11 +1097,13 @@ __global__ void kernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCo
 
 
   // Read baseline signal and counter (aligned with K5:523-524)
-  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
-                                        flagcxDeviceMemoryOrderRelaxed);
-  uint64_t c0 = flagcxDevNetReadCounterS(net, (flagcxDevCounter_t)0, kCompletionBits,
-                                          flagcxDeviceMemoryOrderRelaxed);
-
+  flagcxTestSignalDelay(myRank, FLAGCX_BLOCK_IDX_X, skew);
+  uint64_t s0 =
+      flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)sig, kCompletionBits,
+                              flagcxDeviceMemoryOrderRelaxed);
+  uint64_t c0 =
+      flagcxDevNetReadCounterS(net, (flagcxDevCounter_t)FLAGCX_BLOCK_IDX_X,
+                               kCompletionBits, flagcxDeviceMemoryOrderRelaxed);
 
   // World barrier sync (aligned with K5:525)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
@@ -1054,21 +1114,24 @@ __global__ void kernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCo
   // Round 1: Put with SignalInc + CounterInc (aligned with K5:529-536)
   for (int peer = tid; peer < nRanks; peer += nthreads) {
     if (peer >= intraBase && peer < intraBase + intraSize) continue;
-    flagcxDevNetPutS_RSigInc_LCtrInc(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
-                                     recvMemPtr, (size_t)myRank * chunkBytes,
-                                     sendMemPtr, (size_t)peer * chunkBytes,
-                                     chunkBytes, FLAGCX_COOP_THREAD,
-                                     (flagcxDevSignal_t)0,
-                                     (flagcxDevCounter_t)0);
+    flagcxDevNetPutS_RSigInc_LCtrInc(
+        net, devCommPtr, FLAGCX_TEAM_WORLD, peer, recvMemPtr,
+        (size_t)myRank * chunkBytes, sendMemPtr, (size_t)peer * chunkBytes,
+        chunkBytes, FLAGCX_COOP_THREAD, (flagcxDevSignal_t)sig,
+        (flagcxDevCounter_t)FLAGCX_BLOCK_IDX_X);
   }
 
 
   // WaitCounter (aligned with K5:537)
-  flagcxDevNetWaitCounterS(net, FLAGCX_COOP_BLOCK, (flagcxDevCounter_t)0,
-                           c0 + (uint64_t)nInterRanks, kCompletionBits,
-                           flagcxDeviceMemoryOrderAcquire);
+  flagcxDevNetWaitCounterS(net, FLAGCX_COOP_BLOCK,
+                           (flagcxDevCounter_t)FLAGCX_BLOCK_IDX_X, c0 + sent,
+                           kCompletionBits, flagcxDeviceMemoryOrderAcquire);
 
-
+  if (receives)
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)sig,
+                            s0 + (uint64_t)nInterRanks, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
   // Stamp sentinel (aligned with K5:540-541)
   for (int peer = tid; peer < nRanks; peer += nthreads) {
     float *slot = (float *)flagcxGetLocalPointerS(sendMemPtr, (size_t)peer * chunkBytes);
@@ -1084,44 +1147,52 @@ __global__ void kernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCo
   // Round 2: Put with SignalInc + CounterInc again (aligned with K5:546-553)
   for (int peer = tid; peer < nRanks; peer += nthreads) {
     if (peer >= intraBase && peer < intraBase + intraSize) continue;
-    flagcxDevNetPutS_RSigInc_LCtrInc(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
-                                     recvMemPtr, (size_t)myRank * chunkBytes,
-                                     sendMemPtr, (size_t)peer * chunkBytes,
-                                     chunkBytes, FLAGCX_COOP_THREAD,
-                                     (flagcxDevSignal_t)0,
-                                     (flagcxDevCounter_t)0);
+    flagcxDevNetPutS_RSigInc_LCtrInc(
+        net, devCommPtr, FLAGCX_TEAM_WORLD, peer, recvMemPtr,
+        (size_t)myRank * chunkBytes, sendMemPtr, (size_t)peer * chunkBytes,
+        chunkBytes, FLAGCX_COOP_THREAD, (flagcxDevSignal_t)sig,
+        (flagcxDevCounter_t)FLAGCX_BLOCK_IDX_X);
   }
 
 
   // WaitCounter for c0 + 2*nInterRanks (aligned with K5:554)
-  flagcxDevNetWaitCounterS(net, FLAGCX_COOP_BLOCK, (flagcxDevCounter_t)0,
-                           c0 + 2 * (uint64_t)nInterRanks, kCompletionBits,
-                           flagcxDeviceMemoryOrderAcquire);
-
+  flagcxDevNetWaitCounterS(
+      net, FLAGCX_COOP_BLOCK, (flagcxDevCounter_t)FLAGCX_BLOCK_IDX_X,
+      c0 + 2 * sent, kCompletionBits, flagcxDeviceMemoryOrderAcquire);
 
   // WaitSignal for s0 + 2*nInterRanks (aligned with K5:555)
-  flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
-                          s0 + 2 * (uint64_t)nInterRanks, kCompletionBits,
-                          flagcxDeviceMemoryOrderAcquire);
-
+  if (receives)
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)sig,
+                            s0 + 2 * (uint64_t)nInterRanks, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
 
   // Flush (aligned with K5:556)
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
 
-
+  if (FLAGCX_THREAD_IDX_X == 0) {
+    uint64_t *r = results + FLAGCX_BLOCK_IDX_X * kFlagcxTestPipelineResultWords;
+    r[0] = flagcxDevNetReadCounterS(net, FLAGCX_BLOCK_IDX_X, kCompletionBits,
+                                    flagcxDeviceMemoryOrderAcquire) -
+           c0;
+    r[1] = sent + 1; // Nonzero also proves an idle CTA executed.
+    r[2] = flagcxDevNetReadSignalS(net, sig, kCompletionBits,
+                                   flagcxDeviceMemoryOrderAcquire) -
+           s0;
+    r[3] = receives ? 2 * (uint64_t)nInterRanks : 0;
+  }
   // Final world barrier (aligned with K5:562)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
-
 }
 
-void launchKernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                     const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
-                                     const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
-                                     size_t countPerPeer,
-                                     flagcxStream_t stream) {
+void launchKernelNetCounterPipelineS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
+    flagcxStream_t stream, uint64_t *results) {
   kernelNetCounterPipelineS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
-      devCommPtr, sendMemPtr, recvMemPtr, countPerPeer);
+      devCommPtr, sendMemPtr, recvMemPtr, countPerPeer, results,
+      flagcxTestHostSignalSkew());
 }
 
 // ---------------------------------------------------------------------------
@@ -1129,8 +1200,14 @@ void launchKernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr
 // Tests both SignalSigIncS and SignalSigAddS + WaitSignalS in sequence.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
+__global__ void kernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                 unsigned skew) {
+  const int sig =
+      legacySignalId(FlagcxTestSignal, FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
   int myRank = flagcxDevCommGetRank(devCommPtr);
+  const bool receives =
+      FLAGCX_BLOCK_IDX_X ==
+      signalOwnerCta(myRank, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -1154,9 +1231,10 @@ __global__ void kernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
 
 
   // Read baseline signal on slot 1 (aligned with K9:655)
-  uint64_t s1 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)1, kCompletionBits,
-                                        flagcxDeviceMemoryOrderRelaxed);
-
+  flagcxTestSignalDelay(myRank, FLAGCX_BLOCK_IDX_X, skew);
+  uint64_t s1 =
+      flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)sig, kCompletionBits,
+                              flagcxDeviceMemoryOrderRelaxed);
 
   // World barrier sync (aligned with K9:656)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
@@ -1168,27 +1246,28 @@ __global__ void kernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
   for (int peer = tid; peer < nRanks; peer += nthreads) {
     if (peer != myRank && (peer < intraBase || peer >= intraBase + intraSize)) {
       flagcxDevNetSignalSigIncS(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
-                                FLAGCX_COOP_THREAD, (flagcxDevSignal_t)1);
+                                FLAGCX_COOP_THREAD, (flagcxDevSignal_t)sig);
     }
   }
 
 
   // WaitSignal (aligned with K9:663-664)
   if (nInterRanks > 0) {
-    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)1,
-                            s1 + (uint64_t)nInterRanks, kCompletionBits,
-                            flagcxDeviceMemoryOrderAcquire);
+    if (receives)
+      flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)sig,
+                              s1 + (uint64_t)nInterRanks, kCompletionBits,
+                              flagcxDeviceMemoryOrderAcquire);
   }
 
 
   // Final world barrier (aligned with K9:665)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
-
 }
 
 void launchKernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flagcxStream_t stream) {
-  kernelNetSignalS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr);
+  kernelNetSignalS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+      devCommPtr, flagcxTestHostSignalSkew());
 }
 
 // ---------------------------------------------------------------------------
@@ -1200,8 +1279,13 @@ void launchKernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flagcxS
 
 __global__ void kernelNetPutValueS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                    const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
-                                   size_t putValBase) {
+                                   size_t putValBase, unsigned skew) {
+  const int sig =
+      legacySignalId(FlagcxTestPutValue, FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
   int myRank = flagcxDevCommGetRank(devCommPtr);
+  const bool receives =
+      FLAGCX_BLOCK_IDX_X ==
+      signalOwnerCta(myRank, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -1225,9 +1309,10 @@ __global__ void kernelNetPutValueS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 
   // Read baseline signal on slot 1 (aligned with K7:606)
-  uint64_t s1 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)1, kCompletionBits,
-                                        flagcxDeviceMemoryOrderRelaxed);
-
+  flagcxTestSignalDelay(myRank, FLAGCX_BLOCK_IDX_X, skew);
+  uint64_t s1 =
+      flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)sig, kCompletionBits,
+                              flagcxDeviceMemoryOrderRelaxed);
 
   // World barrier sync (aligned with K7:607)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
@@ -1239,30 +1324,31 @@ __global__ void kernelNetPutValueS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   for (int peer = tid; peer < nRanks; peer += nthreads) {
     if (peer >= intraBase && peer < intraBase + intraSize) continue;
     uint64_t val = (uint64_t)myRank * 1000u + (uint64_t)peer;
-    flagcxDevNetPutValueS_RSigInc(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
-                                  recvMemPtr, putValBase + (size_t)myRank * sizeof(uint64_t),
-                                  val, FLAGCX_COOP_THREAD, (flagcxDevSignal_t)1);
+    flagcxDevNetPutValueS_RSigInc(
+        net, devCommPtr, FLAGCX_TEAM_WORLD, peer, recvMemPtr,
+        putValBase + (size_t)myRank * sizeof(uint64_t), val, FLAGCX_COOP_THREAD,
+        (flagcxDevSignal_t)sig);
   }
 
 
   // WaitSignal (aligned with K7:622-623)
   if (nInterRanks > 0) {
-    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)1,
-                            s1 + (uint64_t)nInterRanks, kCompletionBits,
-                            flagcxDeviceMemoryOrderAcquire);
+    if (receives)
+      flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)sig,
+                              s1 + (uint64_t)nInterRanks, kCompletionBits,
+                              flagcxDeviceMemoryOrderAcquire);
   }
 
 
   // Final world barrier (aligned with K7:624)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
-
 }
 
 void launchKernelNetPutValueS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                               size_t putValBase, flagcxStream_t stream) {
-  kernelNetPutValueS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, recvMemPtr,
-                                                  putValBase);
+  kernelNetPutValueS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+      devCommPtr, recvMemPtr, putValBase, flagcxTestHostSignalSkew());
 }
 
 // ---------------------------------------------------------------------------
@@ -1411,11 +1497,17 @@ void launchKernelWorldBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flag
 // One-sided alltoall pattern using put with signal increment.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                           const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
-                                           const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
-                                           size_t countPerPeer) {
+__global__ void
+kernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                           const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                           const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                           size_t countPerPeer, unsigned skew) {
+  const int sig =
+      legacySignalId(FlagcxTestAlltoAll, FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
   int myRank = flagcxDevCommGetRank(devCommPtr);
+  const bool receives =
+      FLAGCX_BLOCK_IDX_X ==
+      signalOwnerCta(myRank, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
 
 
@@ -1428,9 +1520,10 @@ __global__ void kernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devC
   size_t chunkBytes = countPerPeer * sizeof(float);
 
   // Read signal baseline (aligned with K14:210)
-  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
-                                        flagcxDeviceMemoryOrderRelaxed);
-
+  flagcxTestSignalDelay(myRank, FLAGCX_BLOCK_IDX_X, skew);
+  uint64_t s0 =
+      flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)sig, kCompletionBits,
+                              flagcxDeviceMemoryOrderRelaxed);
 
   // Pre-communication barrier (aligned with K14:213)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
@@ -1445,17 +1538,16 @@ __global__ void kernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devC
   for (int peer = tid; peer < nRanks; peer += nthreads) {
     flagcxDevNetPutS_RSigInc(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
                              recvMemPtr, (size_t)myRank * chunkBytes,
-                             sendMemPtr, (size_t)peer * chunkBytes,
-                             chunkBytes, FLAGCX_COOP_THREAD,
-                             (flagcxDevSignal_t)0);
+                             sendMemPtr, (size_t)peer * chunkBytes, chunkBytes,
+                             FLAGCX_COOP_THREAD, (flagcxDevSignal_t)sig);
   }
 
 
   // Wait for all incoming signals (aligned with K14:223)
-  flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
-                          s0 + (uint64_t)nRanks, kCompletionBits,
-                          flagcxDeviceMemoryOrderAcquire);
-
+  if (receives)
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)sig,
+                            s0 + (uint64_t)nRanks, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
 
   // Flush to ensure data visibility (aligned with K14:224)
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
@@ -1465,7 +1557,6 @@ __global__ void kernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devC
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
-
 }
 
 void launchKernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
@@ -1474,7 +1565,8 @@ void launchKernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devCommPt
                                       size_t countPerPeer,
                                       flagcxStream_t stream) {
   kernelNetOneSidedAlltoAllS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
-      devCommPtr, sendMemPtr, recvMemPtr, countPerPeer);
+      devCommPtr, sendMemPtr, recvMemPtr, countPerPeer,
+      flagcxTestHostSignalSkew());
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR bool
@@ -1592,12 +1684,9 @@ __global__ void kernelDevPutIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devComm
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
   // Flush to ensure all operations complete
-  if (myBlockIdx < nContexts) {
-    flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+  // Every producer flushes after its own submissions, even on a shared context.
+  flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
                    flagcxDeviceMemoryOrderRelaxed);
-  } else {
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
-  }
 
   // Write result
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
@@ -1692,12 +1781,9 @@ __global__ void kernelDevPutValueIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *de
   }
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
-  if (myBlockIdx < nContexts) {
-    flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+  // Every producer flushes after its own submissions, even on a shared context.
+  flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
                    flagcxDeviceMemoryOrderRelaxed);
-  } else {
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
-  }
 
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) result[0] = 1;
 }
@@ -1804,12 +1890,9 @@ __global__ void kernelDevGetIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devComm
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
   // Flush to ensure all operations complete
-  if (myBlockIdx < nContexts) {
-    flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+  // Every producer flushes after its own submissions, even on a shared context.
+  flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
                    flagcxDeviceMemoryOrderRelaxed);
-  } else {
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
-  }
 
   if (FLAGCX_THREAD_IDX_X == 0 && myBlockIdx == 0) result[0] = 1;
 }
@@ -1904,8 +1987,8 @@ void launchKernelDevBarrierArriveWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR
 //   SignalInc or SignalAdd(peer=next) → WaitSignal → assert ReadSignal
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevSignalStandaloneIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                                      int *result) {
+__global__ void kernelDevSignalStandaloneIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result, unsigned skew) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -1919,47 +2002,56 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void FLAGCX_IR_GLOBAL
   uint64_t expectedInc = 1;  // leg A: 4 blocks, 4 contexts, 1 block per context
   uint64_t expectedAdd = 5;  // leg B: 1 block per context does +5
 
+  flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
   bool ok = true;
 
 #define S20_INTRA_COMBO(slot, teamKind, peer, coopKind, signalVariant,         \
                         waitOrder)                                             \
   do {                                                                         \
-    const int signalMode = (int)(signalVariant);                              \
-    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
+    const int signalMode = (int)(signalVariant);                               \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC             \
                             ? expectedInc                                      \
                             : expectedAdd;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
-      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
+      flagcxDevResetSignal(                                                    \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));         \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != 0)                                                              \
         ok = false;                                                            \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-    flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_INTRA, myBlockIdx, contextId, \
+    flagcxDevBarrierSync(devCommPtr, teamKind, myBlockIdx, contextId,          \
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
-        flagcxDevSignalInc(devCommPtr, teamKind, peer,                         \
-                           (flagcxDevSignal_t)(slot), contextId, coopKind,     \
-                           flagcxDeviceScopeSystem);                           \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                          \
+        flagcxDevSignalInc(                                                    \
+            devCommPtr, teamKind, peer,                                        \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            contextId, coopKind, flagcxDeviceScopeSystem);                     \
       else                                                                     \
-        flagcxDevSignalAdd(devCommPtr, teamKind, peer,                         \
-                           (flagcxDevSignal_t)(slot), expected, contextId,     \
-                           coopKind, flagcxDeviceScopeSystem);                 \
+        flagcxDevSignalAdd(                                                    \
+            devCommPtr, teamKind, peer,                                        \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            expected, contextId, coopKind, flagcxDeviceScopeSystem);           \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
-                          contextId, coopKind, waitOrder);                     \
+      flagcxDevWaitSignal(                                                     \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          expected, kCompletionBits, contextId, coopKind, waitOrder);          \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != expected)                                                       \
         ok = false;                                                            \
     }                                                                          \
@@ -2006,13 +2098,14 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void FLAGCX_IR_GLOBAL
 #undef S20_INTRA_COMBO
 
   if (FLAGCX_THREAD_IDX_X == 0)
-    atomicAnd(result, ok ? 1 : 0);
+    result[myBlockIdx] = ok ? 1 : 0;
 }
 
-void launchKernelDevSignalStandaloneIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
-                                                 flagcxStream_t stream) {
+void launchKernelDevSignalStandaloneIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+    flagcxStream_t stream, unsigned skew) {
   kernelDevSignalStandaloneIntraWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, devResult);
+      devCommPtr, devResult, skew);
 }
 
 // ---------------------------------------------------------------------------
@@ -2146,10 +2239,11 @@ void launchKernelDevTeamResolutionIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *d
 //   Then verify payload.
 // result[0] = 1 iff all signal reads and payload checks pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                                   const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                                   const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
-                                                   int *result, size_t bytes) {
+__global__ void
+kernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                                  int *result, size_t bytes, unsigned skew) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -2160,44 +2254,52 @@ __global__ void kernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PT
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
+  flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
   bool ok = true;
 
 #define S21_INTRA_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    const int signalMode = (int)(signalVariant);                              \
-    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
+    const int signalMode = (int)(signalVariant);                               \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC             \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
-      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
+      flagcxDevResetSignal(                                                    \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));         \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     flagcxDevBarrierSync(devCommPtr, teamKind, myBlockIdx, contextId,          \
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (slot)*bytes;                                               \
+      size_t off = (myBlockIdx * 12 + (slot)) * bytes;                         \
       flagcxDevPut(devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes,          \
                    teamKind, peer, contextId, coopKind,                        \
                    flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);   \
-      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC) {                       \
-        flagcxDevSignalInc(devCommPtr, teamKind, peer,                         \
-                           (flagcxDevSignal_t)(slot), contextId, coopKind,     \
-                           flagcxDeviceScopeSystem);                           \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC) {                        \
+        flagcxDevSignalInc(                                                    \
+            devCommPtr, teamKind, peer,                                        \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            contextId, coopKind, flagcxDeviceScopeSystem);                     \
       } else {                                                                 \
-        flagcxDevSignalAdd(devCommPtr, teamKind, peer,                         \
-                           (flagcxDevSignal_t)(slot), (uint64_t)3, contextId,  \
-                           coopKind, flagcxDeviceScopeSystem);                 \
+        flagcxDevSignalAdd(                                                    \
+            devCommPtr, teamKind, peer,                                        \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            (uint64_t)3, contextId, coopKind, flagcxDeviceScopeSystem);        \
       }                                                                        \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
-                          contextId, coopKind,                                 \
-                          flagcxDeviceMemoryOrderAcquire);                     \
+      flagcxDevWaitSignal(                                                     \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          expected, kCompletionBits, contextId, coopKind,                      \
+          flagcxDeviceMemoryOrderAcquire);                                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != expected)                                                       \
         ok = false;                                                            \
     }                                                                          \
@@ -2236,15 +2338,17 @@ __global__ void kernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PT
 
 #undef S21_INTRA_COMBO
 
-  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    result[myBlockIdx] = ok ? 1 : 0;
 }
 
-void launchKernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                              const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                              const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
-                                              size_t bytes, flagcxStream_t stream) {
+void launchKernelDevPutSignalWaitIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream, unsigned skew) {
   kernelDevPutSignalWaitIntraWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew);
 }
 
 // ---------------------------------------------------------------------------
@@ -2258,10 +2362,11 @@ void launchKernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *de
 //   WaitSignal(slot, expected) → assert ReadSignal==expected
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                            const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                            const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
-                                            int *result, size_t bytes) {
+__global__ void
+kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                            const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                            const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                            int *result, size_t bytes, unsigned skew) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -2272,21 +2377,25 @@ __global__ void kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
+  flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
   bool ok = true;
 
 #define S22_INTRA_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    const int signalMode = (int)(signalVariant);                              \
-    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
+    const int signalMode = (int)(signalVariant);                               \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC             \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
-      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
+      flagcxDevResetSignal(                                                    \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));         \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != 0)                                                              \
         ok = false;                                                            \
     }                                                                          \
@@ -2295,28 +2404,33 @@ __global__ void kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (slot)*bytes;                                               \
-      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
+      size_t off = (myBlockIdx * 12 + (slot)) * bytes;                         \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                          \
         flagcxDevPut_RSigInc(                                                  \
             devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
             contextId, coopKind, flagcxDeviceScopeSystem,                      \
-            flagcxDeviceMemoryOrderRelease, (flagcxDevSignal_t)(slot));        \
+            flagcxDeviceMemoryOrderRelease,                                    \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));       \
       else                                                                     \
-        flagcxDevPut_RSigAdd(devCommPtr, dstMemPtr, off, srcMemPtr, off,       \
-                             bytes, teamKind, peer, contextId, coopKind,       \
-                             flagcxDeviceScopeSystem,                          \
-                             flagcxDeviceMemoryOrderRelease,                   \
-                             (flagcxDevSignal_t)(slot), (uint64_t)3);          \
+        flagcxDevPut_RSigAdd(                                                  \
+            devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
+            contextId, coopKind, flagcxDeviceScopeSystem,                      \
+            flagcxDeviceMemoryOrderRelease,                                    \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            (uint64_t)3);                                                      \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
-                          contextId, coopKind,                                 \
-                          flagcxDeviceMemoryOrderAcquire);                     \
+      flagcxDevWaitSignal(                                                     \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          expected, kCompletionBits, contextId, coopKind,                      \
+          flagcxDeviceMemoryOrderAcquire);                                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != expected)                                                       \
         ok = false;                                                            \
     }                                                                          \
@@ -2355,15 +2469,17 @@ __global__ void kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
 
 #undef S22_INTRA_COMBO
 
-  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    result[myBlockIdx] = ok ? 1 : 0;
 }
 
-void launchKernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                        const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                        const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
-                                        size_t bytes, flagcxStream_t stream) {
+void launchKernelDevPutRSigIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream, unsigned skew) {
   kernelDevPutRSigIntraWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew);
 }
 
 // ---------------------------------------------------------------------------
@@ -2387,10 +2503,11 @@ enum {
   FLAGCX_UNIFIED_IR_PUT_RSIG_ADD_LCTR_INC = 2,
 };
 
-__global__ void kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                                const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                                const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
-                                                int *result, size_t bytes) {
+__global__ void
+kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                               const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                               const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                               int *result, size_t bytes, unsigned skew) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -2401,12 +2518,15 @@ __global__ void kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
+  flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
   bool ok = true;
 
 #define S23_INTRA_COMBO(slot, teamKind, peer, coopKind, variant)               \
   do {                                                                         \
-    flagcxDevCounter_t ctr = (flagcxDevCounter_t)(slot);                       \
-    flagcxDevSignal_t sig = (flagcxDevSignal_t)(slot);                         \
+    flagcxDevCounter_t ctr =                                                   \
+        (flagcxDevCounter_t)unifiedCompletionId(myBlockIdx, (slot));           \
+    flagcxDevSignal_t sig =                                                    \
+        (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot));            \
     /* Reset counter and signal */                                             \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       flagcxDevResetCounter(devCommPtr, contextId, ctr);                       \
@@ -2415,10 +2535,12 @@ __global__ void kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     /* Assert both are zero */                                                 \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, kCompletionBits, contextId,       \
-                                         flagcxDeviceMemoryOrderAcquire);      \
-      uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, kCompletionBits, contextId,        \
-                                        flagcxDeviceMemoryOrderAcquire);       \
+      uint64_t cv =                                                            \
+          flagcxDevReadCounter(devCommPtr, ctr, kCompletionBits, contextId,    \
+                               flagcxDeviceMemoryOrderAcquire);                \
+      uint64_t sv =                                                            \
+          flagcxDevReadSignal(devCommPtr, sig, kCompletionBits, contextId,     \
+                              flagcxDeviceMemoryOrderAcquire);                 \
       if (cv != 0 || sv != 0)                                                  \
         ok = false;                                                            \
     }                                                                          \
@@ -2428,7 +2550,7 @@ __global__ void kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *
                          flagcxDeviceScopeSystem);                             \
     /* Put operation with counter (and optionally signal) */                   \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (slot)*bytes;                                               \
+      size_t off = (myBlockIdx * 18 + (slot)) * bytes;                         \
       if (variant == 0)                                                        \
         flagcxDevPut_LCtrInc(devCommPtr, dstMemPtr, off, srcMemPtr, off,       \
                              bytes, teamKind, peer, contextId, coopKind,       \
@@ -2448,11 +2570,12 @@ __global__ void kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     /* Wait and verify counter */                                              \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitCounter(devCommPtr, ctr, 1, kCompletionBits, contextId, coopKind,        \
-                           flagcxDeviceMemoryOrderAcquire);                    \
+      flagcxDevWaitCounter(devCommPtr, ctr, 1, kCompletionBits, contextId,     \
+                           coopKind, flagcxDeviceMemoryOrderAcquire);          \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, kCompletionBits, contextId,       \
-                                         flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t cv =                                                            \
+          flagcxDevReadCounter(devCommPtr, ctr, kCompletionBits, contextId,    \
+                               flagcxDeviceMemoryOrderAcquire);                \
       if (cv != 1)                                                             \
         ok = false;                                                            \
     }                                                                          \
@@ -2461,11 +2584,13 @@ __global__ void kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *
     if (variant != 0) {                                                        \
       uint64_t expectedSig = (variant == 1) ? 1 : 3;                           \
       if (flagcxUnifiedIrTestCoopActive(coopKind))                             \
-        flagcxDevWaitSignal(devCommPtr, sig, expectedSig, kCompletionBits, contextId,       \
-                            coopKind, flagcxDeviceMemoryOrderAcquire);         \
+        flagcxDevWaitSignal(devCommPtr, sig, expectedSig, kCompletionBits,     \
+                            contextId, coopKind,                               \
+                            flagcxDeviceMemoryOrderAcquire);                   \
       if (FLAGCX_THREAD_IDX_X == 0) {                                          \
-        uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, kCompletionBits, contextId,      \
-                                          flagcxDeviceMemoryOrderAcquire);     \
+        uint64_t sv =                                                          \
+            flagcxDevReadSignal(devCommPtr, sig, kCompletionBits, contextId,   \
+                                flagcxDeviceMemoryOrderAcquire);               \
         if (sv != expectedSig)                                                 \
           ok = false;                                                          \
       }                                                                        \
@@ -2529,15 +2654,17 @@ __global__ void kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *
 
 #undef S23_INTRA_COMBO
 
-  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    result[myBlockIdx] = ok ? 1 : 0;
 }
 
-void launchKernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                           const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                           const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
-                                           size_t bytes, flagcxStream_t stream) {
+void launchKernelDevPutCounterIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream, unsigned skew) {
   kernelDevPutCounterIntraWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew);
 }
 
 // ---------------------------------------------------------------------------
@@ -2552,9 +2679,10 @@ void launchKernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCo
 // result[0] = 1 iff all assertions pass.
 // Buffer layout: each combo writes 1 uint64_t at slot offset.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                                  const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                                  int *result, size_t /*bytes*/) {
+__global__ void
+kernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                 const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                 int *result, size_t /*bytes*/, unsigned skew) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -2565,21 +2693,25 @@ __global__ void kernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
+  flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
   bool ok = true;
 
 #define S24_INTRA_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    const int signalMode = (int)(signalVariant);                              \
-    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
+    const int signalMode = (int)(signalVariant);                               \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC             \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
-      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
+      flagcxDevResetSignal(                                                    \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));         \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != 0)                                                              \
         ok = false;                                                            \
     }                                                                          \
@@ -2588,28 +2720,32 @@ __global__ void kernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (slot) * sizeof(uint64_t);                                  \
-      uint64_t val = (uint64_t)(worldRank * 100 + (slot));                     \
-      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
+      size_t off = (myBlockIdx * 12 + (slot)) * sizeof(uint64_t);              \
+      uint64_t val = (uint64_t)(worldRank * 100 + myBlockIdx * 12 + (slot));   \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                          \
         flagcxDevPutValue_RSigInc(                                             \
             devCommPtr, dstMemPtr, off, val, teamKind, peer, contextId,        \
             coopKind, flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease, \
-            (flagcxDevSignal_t)(slot));                                        \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));       \
       else                                                                     \
         flagcxDevPutValue_RSigAdd(                                             \
             devCommPtr, dstMemPtr, off, val, teamKind, peer, contextId,        \
             coopKind, flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease, \
-            (flagcxDevSignal_t)(slot), (uint64_t)3);                           \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            (uint64_t)3);                                                      \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
-                          contextId, coopKind,                                 \
-                          flagcxDeviceMemoryOrderAcquire);                     \
+      flagcxDevWaitSignal(                                                     \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          expected, kCompletionBits, contextId, coopKind,                      \
+          flagcxDeviceMemoryOrderAcquire);                                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != expected)                                                       \
         ok = false;                                                            \
     }                                                                          \
@@ -2648,15 +2784,16 @@ __global__ void kernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR
 
 #undef S24_INTRA_COMBO
 
-  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    result[myBlockIdx] = ok ? 1 : 0;
 }
 
-void launchKernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                             const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                             int *devResult, size_t bytes,
-                                             flagcxStream_t stream) {
+void launchKernelDevPutValueRSigIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream, unsigned skew) {
   kernelDevPutValueRSigIntraWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, devResult, bytes);
+      devCommPtr, dstMemPtr, devResult, bytes, skew);
 }
 
 // ---------------------------------------------------------------------------
@@ -2671,8 +2808,8 @@ void launchKernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
 //   Flush(contextId)
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevSignalShadowFlushIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                                       int *result) {
+__global__ void kernelDevSignalShadowFlushIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result, unsigned skew) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -2683,17 +2820,21 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void FLAGCX_IR_GLOBA
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
+  flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
   bool ok = true;
 
 #define S25_INTRA_COMBO(slot, teamKind, peer, coopKind)                        \
   do {                                                                         \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
-      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
+      flagcxDevResetSignal(                                                    \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));         \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != 0)                                                              \
         ok = false;                                                            \
     }                                                                          \
@@ -2703,27 +2844,32 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void FLAGCX_IR_GLOBA
                          flagcxDeviceScopeSystem);                             \
     /* Increase shadow by 5 */                                                 \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
-      flagcxDevIncreaseSignalShadow(devCommPtr, contextId,                     \
-                                    (flagcxDevSignal_t)(slot), (uint64_t)5);   \
+      flagcxDevIncreaseSignalShadow(                                           \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          (uint64_t)5);                                                        \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     /* Signal 5 times to meet shadow */                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       for (int i = 0; i < 5; i++)                                              \
-        flagcxDevSignalInc(devCommPtr, teamKind, peer,                         \
-                           (flagcxDevSignal_t)(slot), contextId,               \
-                           FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);       \
+        flagcxDevSignalInc(                                                    \
+            devCommPtr, teamKind, peer,                                        \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            contextId, FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);           \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     /* Wait for shadow to be met */                                            \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      flagcxDevWaitSignalMeetShadow(devCommPtr, contextId,                     \
-                                    (flagcxDevSignal_t)(slot), kCompletionBits, coopKind,   \
-                                    flagcxDeviceMemoryOrderAcquire);           \
+      flagcxDevWaitSignalMeetShadow(                                           \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, coopKind, flagcxDeviceMemoryOrderAcquire);          \
     }                                                                          \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != 5)                                                              \
         ok = false;                                                            \
     }                                                                          \
@@ -2756,14 +2902,15 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void FLAGCX_IR_GLOBA
 
 #undef S25_INTRA_COMBO
 
-  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    result[myBlockIdx] = ok ? 1 : 0;
 }
 
-void launchKernelDevSignalShadowFlushIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                                  int *devResult,
-                                                  flagcxStream_t stream) {
+void launchKernelDevSignalShadowFlushIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+    flagcxStream_t stream, unsigned skew) {
   kernelDevSignalShadowFlushIntraWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, devResult);
+      devCommPtr, devResult, skew);
 }
 
 // ===========================================================================
@@ -2874,12 +3021,9 @@ __global__ void kernelDevPutInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devComm
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
   // Flush to ensure all operations complete
-  if (myBlockIdx < nContexts) {
-    flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+  // Every producer flushes after its own submissions, even on a shared context.
+  flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
                    flagcxDeviceMemoryOrderRelaxed);
-  } else {
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
-  }
 
   // Write result
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
@@ -2974,12 +3118,9 @@ __global__ void kernelDevPutValueInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *de
   }
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
-  if (myBlockIdx < nContexts) {
-    flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+  // Every producer flushes after its own submissions, even on a shared context.
+  flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
                    flagcxDeviceMemoryOrderRelaxed);
-  } else {
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
-  }
 
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) result[0] = 1;
 }
@@ -3087,12 +3228,9 @@ __global__ void kernelDevGetInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devComm
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
   // Flush to ensure all operations complete
-  if (myBlockIdx < nContexts) {
-    flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+  // Every producer flushes after its own submissions, even on a shared context.
+  flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
                    flagcxDeviceMemoryOrderRelaxed);
-  } else {
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
-  }
 
   if (FLAGCX_THREAD_IDX_X == 0 && myBlockIdx == 0) result[0] = 1;
 }
@@ -3187,8 +3325,8 @@ void launchKernelDevBarrierArriveWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR
 //   SignalInc or SignalAdd(peer=next) → WaitSignal → assert ReadSignal
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevSignalStandaloneInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                                      int *result) {
+__global__ void kernelDevSignalStandaloneInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result, unsigned skew) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -3203,21 +3341,25 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void FLAGCX_IR_GLOBAL
   uint64_t expectedInc = 1;  // leg A: 1 block per context does +1
   uint64_t expectedAdd = 5;  // leg B: 1 block per context does +5
 
+  flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
   bool ok = true;
 
 #define S20_INTER_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    const int signalMode = (int)(signalVariant);                              \
-    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
+    const int signalMode = (int)(signalVariant);                               \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC             \
                             ? expectedInc                                      \
                             : expectedAdd;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
-      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
+      flagcxDevResetSignal(                                                    \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));         \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != 0)                                                              \
         ok = false;                                                            \
     }                                                                          \
@@ -3226,24 +3368,29 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void FLAGCX_IR_GLOBAL
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
-        flagcxDevSignalInc(devCommPtr, teamKind, peer,                         \
-                           (flagcxDevSignal_t)(slot), contextId, coopKind,     \
-                           flagcxDeviceScopeSystem);                           \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                          \
+        flagcxDevSignalInc(                                                    \
+            devCommPtr, teamKind, peer,                                        \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            contextId, coopKind, flagcxDeviceScopeSystem);                     \
       else                                                                     \
-        flagcxDevSignalAdd(devCommPtr, teamKind, peer,                         \
-                           (flagcxDevSignal_t)(slot), expected, contextId,     \
-                           coopKind, flagcxDeviceScopeSystem);                 \
+        flagcxDevSignalAdd(                                                    \
+            devCommPtr, teamKind, peer,                                        \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            expected, contextId, coopKind, flagcxDeviceScopeSystem);           \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
-                          contextId, coopKind,                                 \
-                          flagcxDeviceMemoryOrderAcquire);                     \
+      flagcxDevWaitSignal(                                                     \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          expected, kCompletionBits, contextId, coopKind,                      \
+          flagcxDeviceMemoryOrderAcquire);                                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != expected)                                                       \
         ok = false;                                                            \
     }                                                                          \
@@ -3277,13 +3424,15 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void FLAGCX_IR_GLOBAL
 
 #undef S20_INTER_COMBO
 
-  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    result[myBlockIdx] = ok ? 1 : 0;
 }
 
-void launchKernelDevSignalStandaloneInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
-                                                 flagcxStream_t stream) {
+void launchKernelDevSignalStandaloneInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+    flagcxStream_t stream, unsigned skew) {
   kernelDevSignalStandaloneInterWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, devResult);
+      devCommPtr, devResult, skew);
 }
 
 // ---------------------------------------------------------------------------
@@ -3453,10 +3602,11 @@ void launchKernelDevTeamResolutionInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *d
 //   Then verify payload.
 // result[0] = 1 iff all signal reads and payload checks pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                                   const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                                   const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
-                                                   int *result, size_t bytes) {
+__global__ void
+kernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                                  int *result, size_t bytes, unsigned skew) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -3468,43 +3618,51 @@ __global__ void kernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PT
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
+  flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
   bool ok = true;
 
 #define S21_INTER_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    const int signalMode = (int)(signalVariant);                              \
-    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
+    const int signalMode = (int)(signalVariant);                               \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC             \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
-      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
+      flagcxDevResetSignal(                                                    \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));         \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     flagcxDevBarrierSync(devCommPtr, teamKind, myBlockIdx, contextId,          \
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (slot)*bytes;                                               \
+      size_t off = (myBlockIdx * 12 + (slot)) * bytes;                         \
       flagcxDevPut(devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes,          \
                    teamKind, peer, contextId, coopKind,                        \
                    flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);   \
-      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
-        flagcxDevSignalInc(devCommPtr, teamKind, peer,                         \
-                           (flagcxDevSignal_t)(slot), contextId, coopKind,     \
-                           flagcxDeviceScopeSystem);                           \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                          \
+        flagcxDevSignalInc(                                                    \
+            devCommPtr, teamKind, peer,                                        \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            contextId, coopKind, flagcxDeviceScopeSystem);                     \
       else                                                                     \
-        flagcxDevSignalAdd(devCommPtr, teamKind, peer,                         \
-                           (flagcxDevSignal_t)(slot), (uint64_t)3, contextId,  \
-                           coopKind, flagcxDeviceScopeSystem);                 \
+        flagcxDevSignalAdd(                                                    \
+            devCommPtr, teamKind, peer,                                        \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            (uint64_t)3, contextId, coopKind, flagcxDeviceScopeSystem);        \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
-                          contextId, coopKind,                                 \
-                          flagcxDeviceMemoryOrderAcquire);                     \
+      flagcxDevWaitSignal(                                                     \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          expected, kCompletionBits, contextId, coopKind,                      \
+          flagcxDeviceMemoryOrderAcquire);                                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != expected)                                                       \
         ok = false;                                                            \
     }                                                                          \
@@ -3543,15 +3701,17 @@ __global__ void kernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PT
 
 #undef S21_INTER_COMBO
 
-  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    result[myBlockIdx] = ok ? 1 : 0;
 }
 
-void launchKernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                              const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                              const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
-                                              size_t bytes, flagcxStream_t stream) {
+void launchKernelDevPutSignalWaitInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream, unsigned skew) {
   kernelDevPutSignalWaitInterWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew);
 }
 
 // ---------------------------------------------------------------------------
@@ -3565,10 +3725,11 @@ void launchKernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *de
 //   WaitSignal(slot, expected) → assert ReadSignal==expected
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                            const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                            const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
-                                            int *result, size_t bytes) {
+__global__ void
+kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                            const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                            const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                            int *result, size_t bytes, unsigned skew) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -3580,21 +3741,25 @@ __global__ void kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
+  flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
   bool ok = true;
 
 #define S22_INTER_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    const int signalMode = (int)(signalVariant);                              \
-    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
+    const int signalMode = (int)(signalVariant);                               \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC             \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
-      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
+      flagcxDevResetSignal(                                                    \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));         \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != 0)                                                              \
         ok = false;                                                            \
     }                                                                          \
@@ -3603,28 +3768,33 @@ __global__ void kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (slot)*bytes;                                               \
-      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
+      size_t off = (myBlockIdx * 12 + (slot)) * bytes;                         \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                          \
         flagcxDevPut_RSigInc(                                                  \
             devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
             contextId, coopKind, flagcxDeviceScopeSystem,                      \
-            flagcxDeviceMemoryOrderRelease, (flagcxDevSignal_t)(slot));        \
+            flagcxDeviceMemoryOrderRelease,                                    \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));       \
       else                                                                     \
-        flagcxDevPut_RSigAdd(devCommPtr, dstMemPtr, off, srcMemPtr, off,       \
-                             bytes, teamKind, peer, contextId, coopKind,       \
-                             flagcxDeviceScopeSystem,                          \
-                             flagcxDeviceMemoryOrderRelease,                   \
-                             (flagcxDevSignal_t)(slot), (uint64_t)3);          \
+        flagcxDevPut_RSigAdd(                                                  \
+            devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
+            contextId, coopKind, flagcxDeviceScopeSystem,                      \
+            flagcxDeviceMemoryOrderRelease,                                    \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            (uint64_t)3);                                                      \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
-                          contextId, coopKind,                                 \
-                          flagcxDeviceMemoryOrderAcquire);                     \
+      flagcxDevWaitSignal(                                                     \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          expected, kCompletionBits, contextId, coopKind,                      \
+          flagcxDeviceMemoryOrderAcquire);                                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != expected)                                                       \
         ok = false;                                                            \
     }                                                                          \
@@ -3663,15 +3833,17 @@ __global__ void kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
 
 #undef S22_INTER_COMBO
 
-  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    result[myBlockIdx] = ok ? 1 : 0;
 }
 
-void launchKernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                        const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                        const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
-                                        size_t bytes, flagcxStream_t stream) {
+void launchKernelDevPutRSigInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream, unsigned skew) {
   kernelDevPutRSigInterWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew);
 }
 
 // ---------------------------------------------------------------------------
@@ -3689,10 +3861,11 @@ void launchKernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommP
 //   If variant!=0: WaitSignal(sig=combo, expected) → assert ReadSignal==expected
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                                const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                                const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
-                                                int *result, size_t bytes) {
+__global__ void
+kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                               const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                               const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                               int *result, size_t bytes, unsigned skew) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -3704,12 +3877,15 @@ __global__ void kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
+  flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
   bool ok = true;
 
 #define S23_INTER_COMBO(slot, teamKind, peer, coopKind, variant)               \
   do {                                                                         \
-    flagcxDevCounter_t ctr = (flagcxDevCounter_t)(slot);                       \
-    flagcxDevSignal_t sig = (flagcxDevSignal_t)(slot);                         \
+    flagcxDevCounter_t ctr =                                                   \
+        (flagcxDevCounter_t)unifiedCompletionId(myBlockIdx, (slot));           \
+    flagcxDevSignal_t sig =                                                    \
+        (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot));            \
     /* Reset counter and signal */                                             \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       flagcxDevResetCounter(devCommPtr, contextId, ctr);                       \
@@ -3718,10 +3894,12 @@ __global__ void kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     /* Assert both are zero */                                                 \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, kCompletionBits, contextId,       \
-                                         flagcxDeviceMemoryOrderAcquire);      \
-      uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, kCompletionBits, contextId,        \
-                                        flagcxDeviceMemoryOrderAcquire);       \
+      uint64_t cv =                                                            \
+          flagcxDevReadCounter(devCommPtr, ctr, kCompletionBits, contextId,    \
+                               flagcxDeviceMemoryOrderAcquire);                \
+      uint64_t sv =                                                            \
+          flagcxDevReadSignal(devCommPtr, sig, kCompletionBits, contextId,     \
+                              flagcxDeviceMemoryOrderAcquire);                 \
       if (cv != 0 || sv != 0)                                                  \
         ok = false;                                                            \
     }                                                                          \
@@ -3731,7 +3909,7 @@ __global__ void kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *
                          flagcxDeviceScopeSystem);                             \
     /* Put operation with counter (and optionally signal) */                   \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (slot)*bytes;                                               \
+      size_t off = (myBlockIdx * 18 + (slot)) * bytes;                         \
       if (variant == 0)                                                        \
         flagcxDevPut_LCtrInc(devCommPtr, dstMemPtr, off, srcMemPtr, off,       \
                              bytes, teamKind, peer, contextId, coopKind,       \
@@ -3751,11 +3929,12 @@ __global__ void kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     /* Wait and verify counter */                                              \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitCounter(devCommPtr, ctr, 1, kCompletionBits, contextId, coopKind,        \
-                           flagcxDeviceMemoryOrderAcquire);                    \
+      flagcxDevWaitCounter(devCommPtr, ctr, 1, kCompletionBits, contextId,     \
+                           coopKind, flagcxDeviceMemoryOrderAcquire);          \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, kCompletionBits, contextId,       \
-                                         flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t cv =                                                            \
+          flagcxDevReadCounter(devCommPtr, ctr, kCompletionBits, contextId,    \
+                               flagcxDeviceMemoryOrderAcquire);                \
       if (cv != 1)                                                             \
         ok = false;                                                            \
     }                                                                          \
@@ -3764,11 +3943,13 @@ __global__ void kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *
     if (variant != 0) {                                                        \
       uint64_t expectedSig = (variant == 1) ? 1 : 3;                           \
       if (flagcxUnifiedIrTestCoopActive(coopKind))                             \
-        flagcxDevWaitSignal(devCommPtr, sig, expectedSig, kCompletionBits, contextId,       \
-                            coopKind, flagcxDeviceMemoryOrderAcquire);         \
+        flagcxDevWaitSignal(devCommPtr, sig, expectedSig, kCompletionBits,     \
+                            contextId, coopKind,                               \
+                            flagcxDeviceMemoryOrderAcquire);                   \
       if (FLAGCX_THREAD_IDX_X == 0) {                                          \
-        uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, kCompletionBits, contextId,      \
-                                          flagcxDeviceMemoryOrderAcquire);     \
+        uint64_t sv =                                                          \
+            flagcxDevReadSignal(devCommPtr, sig, kCompletionBits, contextId,   \
+                                flagcxDeviceMemoryOrderAcquire);               \
         if (sv != expectedSig)                                                 \
           ok = false;                                                          \
       }                                                                        \
@@ -3832,15 +4013,17 @@ __global__ void kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *
 
 #undef S23_INTER_COMBO
 
-  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    result[myBlockIdx] = ok ? 1 : 0;
 }
 
-void launchKernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                           const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                           const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
-                                           size_t bytes, flagcxStream_t stream) {
+void launchKernelDevPutCounterInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream, unsigned skew) {
   kernelDevPutCounterInterWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew);
 }
 
 // ---------------------------------------------------------------------------
@@ -3855,9 +4038,10 @@ void launchKernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCo
 // result[0] = 1 iff all assertions pass.
 // Buffer layout: each combo writes 1 uint64_t at slot offset.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                                  const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                                  int *result, size_t /*bytes*/) {
+__global__ void
+kernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                 const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                 int *result, size_t /*bytes*/, unsigned skew) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -3869,21 +4053,25 @@ __global__ void kernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
+  flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
   bool ok = true;
 
 #define S24_INTER_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    const int signalMode = (int)(signalVariant);                              \
-    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
+    const int signalMode = (int)(signalVariant);                               \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC             \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
-      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
+      flagcxDevResetSignal(                                                    \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));         \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != 0)                                                              \
         ok = false;                                                            \
     }                                                                          \
@@ -3892,28 +4080,32 @@ __global__ void kernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (slot) * sizeof(uint64_t);                                  \
-      uint64_t val = (uint64_t)(worldRank * 100 + (slot));                     \
-      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
+      size_t off = (myBlockIdx * 12 + (slot)) * sizeof(uint64_t);              \
+      uint64_t val = (uint64_t)(worldRank * 100 + myBlockIdx * 12 + (slot));   \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                          \
         flagcxDevPutValue_RSigInc(                                             \
             devCommPtr, dstMemPtr, off, val, teamKind, peer, contextId,        \
             coopKind, flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease, \
-            (flagcxDevSignal_t)(slot));                                        \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));       \
       else                                                                     \
         flagcxDevPutValue_RSigAdd(                                             \
             devCommPtr, dstMemPtr, off, val, teamKind, peer, contextId,        \
             coopKind, flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease, \
-            (flagcxDevSignal_t)(slot), (uint64_t)3);                           \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            (uint64_t)3);                                                      \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
-                          contextId, coopKind,                                 \
-                          flagcxDeviceMemoryOrderAcquire);                     \
+      flagcxDevWaitSignal(                                                     \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          expected, kCompletionBits, contextId, coopKind,                      \
+          flagcxDeviceMemoryOrderAcquire);                                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != expected)                                                       \
         ok = false;                                                            \
     }                                                                          \
@@ -3952,15 +4144,16 @@ __global__ void kernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR
 
 #undef S24_INTER_COMBO
 
-  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    result[myBlockIdx] = ok ? 1 : 0;
 }
 
-void launchKernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                             const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
-                                             int *devResult, size_t bytes,
-                                             flagcxStream_t stream) {
+void launchKernelDevPutValueRSigInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream, unsigned skew) {
   kernelDevPutValueRSigInterWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, devResult, bytes);
+      devCommPtr, dstMemPtr, devResult, bytes, skew);
 }
 
 // ---------------------------------------------------------------------------
@@ -3975,8 +4168,8 @@ void launchKernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
 //   Flush(contextId)
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevSignalShadowFlushInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                                       int *result) {
+__global__ void kernelDevSignalShadowFlushInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result, unsigned skew) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -3988,17 +4181,21 @@ __global__ void kernelDevSignalShadowFlushInterWorldS(const void FLAGCX_IR_GLOBA
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
+  flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
   bool ok = true;
 
 #define S25_INTER_COMBO(slot, teamKind, peer, coopKind)                        \
   do {                                                                         \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
-      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
+      flagcxDevResetSignal(                                                    \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));         \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != 0)                                                              \
         ok = false;                                                            \
     }                                                                          \
@@ -4008,26 +4205,31 @@ __global__ void kernelDevSignalShadowFlushInterWorldS(const void FLAGCX_IR_GLOBA
                          flagcxDeviceScopeSystem);                             \
     /* Increase shadow by 5 */                                                 \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
-      flagcxDevIncreaseSignalShadow(devCommPtr, contextId,                     \
-                                    (flagcxDevSignal_t)(slot), (uint64_t)5);   \
+      flagcxDevIncreaseSignalShadow(                                           \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          (uint64_t)5);                                                        \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     /* Signal 5 times to meet shadow */                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       for (int i = 0; i < 5; i++)                                              \
-        flagcxDevSignalInc(devCommPtr, teamKind, peer,                         \
-                           (flagcxDevSignal_t)(slot), contextId,               \
-                           FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);       \
+        flagcxDevSignalInc(                                                    \
+            devCommPtr, teamKind, peer,                                        \
+            (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
+            contextId, FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);           \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     /* Wait for shadow to be met */                                            \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignalMeetShadow(devCommPtr, contextId,                     \
-                                    (flagcxDevSignal_t)(slot), kCompletionBits, coopKind,   \
-                                    flagcxDeviceMemoryOrderAcquire);           \
+      flagcxDevWaitSignalMeetShadow(                                           \
+          devCommPtr, contextId,                                               \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, coopKind, flagcxDeviceMemoryOrderAcquire);          \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
-                              contextId, flagcxDeviceMemoryOrderAcquire);      \
+      uint64_t v = flagcxDevReadSignal(                                        \
+          devCommPtr,                                                          \
+          (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),          \
+          kCompletionBits, contextId, flagcxDeviceMemoryOrderAcquire);         \
       if (v != 5)                                                              \
         ok = false;                                                            \
     }                                                                          \
@@ -4060,12 +4262,25 @@ __global__ void kernelDevSignalShadowFlushInterWorldS(const void FLAGCX_IR_GLOBA
 
 #undef S25_INTER_COMBO
 
-  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    result[myBlockIdx] = ok ? 1 : 0;
 }
 
-void launchKernelDevSignalShadowFlushInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                                  int *devResult,
-                                                  flagcxStream_t stream) {
+void launchKernelDevSignalShadowFlushInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+    flagcxStream_t stream, unsigned skew) {
   kernelDevSignalShadowFlushInterWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, devResult);
+      devCommPtr, devResult, skew);
+}
+
+__global__ void
+kernelSignalTestContextCountS(const void FLAGCX_IR_GLOBAL_PTR *ptr,
+                              int *result) {
+  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0)
+    result[0] = ((const flagcxDevComm *)ptr)->getContextCount();
+}
+void launchKernelSignalTestContextCountS(const void FLAGCX_IR_GLOBAL_PTR *ptr,
+                                         int *result, flagcxStream_t stream) {
+  kernelSignalTestContextCountS<<<kFlagcxTestUnifiedCtas, 128, 0,
+                                  stream->base>>>(ptr, result);
 }

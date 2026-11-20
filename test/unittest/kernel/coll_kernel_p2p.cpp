@@ -89,6 +89,8 @@ TEST_F(FlagCXKernelTest, DISABLED_OneSidedAlltoAll) {
 
   // Create device communicator
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.interSignalCount = legacySignalCount(FLAGCX_DEVICE_CTA_COUNT);
+  reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   flagcxDevComm_t devComm = nullptr;
   ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &devComm), flagcxSuccess);
 
