@@ -4,8 +4,8 @@
  * Device-compiled helpers for MUSA Device API host integration.
  ************************************************************************/
 
-#include "device_api/flagcx_device_core.h"
 #include "device_api/flagcx_device_internal.h"
+#include "device_api/flagcx_device_core.h"
 #include <new>
 
 extern "C" size_t flagcxDevNetSizeOf() { return sizeof(flagcxDevNet); }
