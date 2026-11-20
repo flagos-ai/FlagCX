@@ -54,6 +54,48 @@ echo "=== Running symmem unit tests (no MPI/GPU) ==="
 FLAGCX_CI_TEST_LABEL="symmem unit tests" \
   "$TEST_RUNNER" "$BUILD_BIN/symmem_unit_tests" || test_status=$?
 
+# Host resource shims + real bootstrap; three processes, one rank each. These
+# cases need no accelerator, and the third process exercises an empty node.
+mkdir -p "$PROJECT_ROOT/.ci-results"
+lifecycle_xml=$(mktemp -d "$PROJECT_ROOT/.ci-results/symmem-lifecycle.XXXXXX")
+lifecycle_cases=(
+  HeteroFinalizeMpi.RmaSyncAllocationsReleaseLocallyAfterFinalize
+  HeteroFinalizeMpi.ProxyWorkWaitConvergesAndLocalReleaseCanRetry
+  HeteroFinalizeMpi.PendingWorkKeepsDestroyOwnerUntilCompletion
+  HeteroFinalizeMpi.WorkWaitFailureConvergesBeforeAnyImportCloses
+  HeteroFinalizeMpi.IndependentCommunicatorWorkDoesNotDelayClosure
+  HeteroFinalizeMpi.RelayCloseFailureKeepsEveryServiceAliveUntilRetry
+  HeteroFinalizeMpi.DelayedImportAndEmptyRankConfirmBeforeLocalDestroy
+  HeteroFinalizeMpi.FailedImportRetainsExporterAndLocalReleaseCanRetry
+  HeteroFinalizeMpi.ClosureDoesNotWaitForAnotherNode
+  HeteroFinalizeMpi.DeviceSelectionFailureConvergesBeforeClosure
+  SymWindowRollback.NativeOnlyImplicitDestroyFinishesWhilePeersWait
+  SymWindowRollback.TransportDeclarationIncludesEmptyRanksAtInit
+  SymWindowRollback.IpcDeclarationSurvivesRankLocalAllocationFailure
+  SymWindowRollback.IpcDeclarationAndClosureAreNodeLocal
+  SymWindowRollback.PairCommunicatorsCloseInCanonicalOrder
+  SymWindowRollback.FinalizeCloseFailureConvergesIncludingEmptyRanks
+  SymWindowRollback.FinalizedDestroyDoesNotNeedPeers
+  SymWindowRollback.CommDestroyPendingWindowKeepsLeaseUntilImportsClose
+  SymWindowRollback.MixedNativeScopesConvergeBeforeNativeClose
+)
+lifecycle_filter=$(IFS=:; echo "${lifecycle_cases[*]}")
+FLAGCX_CI_MPI_LABEL="symmem lifecycle bootstrap" \
+  "$MPI_RUNNER" -np 3 --allow-run-as-root \
+    -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_IB_DISABLE=1 \
+    -x FLAGCX_P2P_DISABLE=0 -x FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=0 \
+    -x FLAGCX_VMM_ENABLE=0 \
+    bash "$PROJECT_ROOT/.github/scripts/ci/run_gtest_rank_xml.sh" \
+    "$lifecycle_xml" "$BUILD_BIN/symmem_mpi_tests" \
+    --gtest_filter="$lifecycle_filter" || test_status=$?
+lifecycle_required=()
+for test_case in "${lifecycle_cases[@]}"; do
+  lifecycle_required+=( --case "$test_case" )
+done
+python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+  "${lifecycle_required[@]}" "$lifecycle_xml/rank-0.xml" \
+  "$lifecycle_xml/rank-1.xml" "$lifecycle_xml/rank-2.xml" || test_status=$?
+
 echo ""
 echo ""
 echo "=== Running symmem IPC-local MPI tests (np=$LOCAL_NP) ==="

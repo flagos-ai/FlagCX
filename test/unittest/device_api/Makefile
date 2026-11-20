@@ -49,7 +49,7 @@ PLATFORM_INCLUDES := -I$(PLATFORM_IR_DIR)
 
 # All includes
 ALL_INCLUDES := $(FLAGCX_INCLUDES) $(IR_INCLUDE) $(PLATFORM_INCLUDES) \
-    $(KERNEL_INCLUDE) $(PERF_INCLUDE) $(MPI_INCLUDE) $(DEVICE_INCLUDE) $(CCL_INCLUDE)
+    $(KERNEL_INCLUDE) $(FIXTURE_INCLUDE) $(PERF_INCLUDE) $(MPI_INCLUDE) $(DEVICE_INCLUDE) $(CCL_INCLUDE)
 
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
@@ -78,9 +78,10 @@ CXXFLAGS += -DCOMPILE_KERNEL
 endif
 
 # Host-only lifecycle/provenance tests.
-UNIT_SRC := test_dev_comm_cleanup.cpp
-UNIT_OBJ := $(OBJDIR)/test_dev_comm_cleanup.o
+UNIT_SRCS := test_dev_comm_cleanup.cpp test_comm_stream_isolation.cpp
+UNIT_OBJS := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)
 UNIT_TARGET := $(BINDIR)/test_dev_comm_cleanup
+UNIT_NON_VMM_CASE := CommStreamIsolation.HeteroRmaNonVmmFinalizeDoesNotDrainIndependentWork
 
 # Provider dispatch is host-testable without a GPU or a FlagCX library link.
 PROVIDER_TEST_TARGET := $(BINDIR)/test_default_net_provider
@@ -237,12 +238,12 @@ $(TOOLS_OBJ): $(TOOLS_SRC)
 	@echo "Compiling tools.cc"
 	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) $(ALL_INCLUDES)
 
-$(UNIT_OBJ): $(UNIT_SRC)
+$(UNIT_OBJS): $(OBJDIR)/%.o: %.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
 	@$(HOST_CXX) $< -o $@ -c $(UNIT_CXXFLAGS) $(UNIT_INCLUDES)
 
-$(UNIT_TARGET): $(UNIT_OBJ)
+$(UNIT_TARGET): $(UNIT_OBJS)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(HOST_CXX) $^ -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(UNIT_RPATH) $(GTEST_LINK)
@@ -310,7 +311,11 @@ clean:
 	@rm -rf $(BUILDDIR)
 
 run-unit: unit
-	@GTEST_DEATH_TEST_STYLE=threadsafe $(UNIT_TARGET)
+ifneq ($(strip $(UNIT_TARGET)),)
+	@GTEST_DEATH_TEST_STYLE=threadsafe $(UNIT_TARGET) --gtest_filter=-$(UNIT_NON_VMM_CASE)
+# VMM_ENABLE is cached by the runtime; select it before this process starts.
+	@GTEST_DEATH_TEST_STYLE=threadsafe FLAGCX_VMM_ENABLE=0 $(UNIT_TARGET) --gtest_filter=$(UNIT_NON_VMM_CASE)
+endif
 	@$(DEVICEPTR_ARGS_TARGET)
 ifneq ($(PROVIDER_UNIT_TARGET),)
 	@$(PROVIDER_UNIT_TARGET)

@@ -1,6 +1,8 @@
+#include "comm_lifecycle_check.hpp"
 #include "device_api/flagcx_device_internal.h"
 #include "global_comm.h"
 #include "group.h"
+#include "proxy.h"
 #include "runner_fixtures.hpp"
 #include "test_utils.hpp"
 #include "uni_runner_algorithm.h"
@@ -163,4 +165,36 @@ TEST_F(FlagCXCollTest, AllGatherInsideGroup) {
         verifyBuffer(static_cast<float *>(hostrecvbuff) + source * chunkCount,
                      expected.data(), chunkCount));
   }
+}
+
+TEST_F(FlagCXCollTest, UniRunnerIpcFinalizeThenRankLocalDestroy) {
+  ASSERT_TRUE(usingUniRunner());
+  ASSERT_GT(nranks, 1);
+  ScopedUniRunnerAlgorithm selectedAlgorithm;
+  selectedAlgorithm.set(uniRunnerAlgorithmIpcRingAR);
+  const size_t elements = 1024;
+  ASSERT_GE(count, elements);
+  for (size_t i = 0; i < elements; i++)
+    ((float *)hostsendbuff)[i] = (float)(rank + 1);
+  ASSERT_EQ(devHandle->deviceMemcpy(sendbuff, hostsendbuff,
+                                    elements * sizeof(float),
+                                    flagcxMemcpyHostToDevice, stream),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxAllReduce(sendbuff, recvbuff, elements, flagcxFloat,
+                            flagcxSum, comm, stream),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceMemcpy(hostrecvbuff, recvbuff,
+                                    elements * sizeof(float),
+                                    flagcxMemcpyDeviceToHost, stream),
+            flagcxSuccess);
+  ASSERT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
+  for (size_t i = 0; i < elements; i++)
+    EXPECT_FLOAT_EQ(((float *)hostrecvbuff)[i], nranks * (nranks + 1) / 2.0f);
+  ASSERT_NE(comm->internalBuffers, nullptr);
+  ASSERT_EQ(comm->heteroComm->proxyState->uniRunnerState.ipcOwner, comm);
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(comm->heteroComm->proxyState->uniRunnerState.ipcOwner, nullptr);
+  EXPECT_NE(comm->internalBuffers, nullptr);
+  ASSERT_EQ(flagcxTestFinalizeAndDestroyRankLocally(&comm, rank, nranks),
+            flagcxSuccess);
 }
