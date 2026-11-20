@@ -25,27 +25,10 @@ ALL_ENABLED_PLATFORMS = [
 
 
 def enabled_platform_or_matrix(platform):
-    if platform in ALL_ENABLED_PLATFORMS:
-        return [platform]
-    return ALL_ENABLED_PLATFORMS
+    return [platform] if platform in ALL_ENABLED_PLATFORMS else []
 
 
 class CiMatrixRoutingTest(unittest.TestCase):
-    def test_musa_alias_routes_to_mthreads(self):
-        for context in (
-            {"event_name": "pull_request", "labels": ["platform:musa"]},
-            {"event_name": "pull_request", "labels": ["platform:musa", "platform:mthreads"]},
-            {"event_name": "workflow_dispatch", "selection": "musa,mthreads"},
-            {"event_name": "issue_comment", "comment": "/test musa",
-             "is_pull_request": True, "permission": "write"},
-            {"event_name": "issue_comment", "comment": "/test",
-             "labels": ["platform:musa"], "is_pull_request": True,
-             "permission": "write"},
-        ):
-            with self.subTest(context=context):
-                outputs, _ = self.resolve(context)
-                self.assertEqual(outputs["platforms"], ["mthreads"])
-
     def resolve(self, context):
         with tempfile.TemporaryDirectory() as temp_dir:
             context_path = Path(temp_dir) / "context.json"
@@ -68,7 +51,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
         self.assertEqual(
             ALL_ENABLED_PLATFORMS,
-            ["mthreads"],
+            ["mthreads", "kunlunxin"],
         )
         for event_name in ("push", "schedule"):
             with self.subTest(event=event_name):
@@ -90,10 +73,6 @@ class CiMatrixRoutingTest(unittest.TestCase):
             (
                 "flagcx/adaptor/device/cuda_adaptor.cc",
                 enabled_platform_or_matrix("cuda"),
-            ),
-            (
-                "flagcx/adaptor/device/musa_adaptor.cc",
-                enabled_platform_or_matrix("mthreads"),
             ),
             (
                 "flagcx/adaptor/device/ixcuda_adaptor.cc",
@@ -138,7 +117,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
             ),
             (
                 "flagcx/adaptor/kernel/common/nested/foo.h",
-                ["mthreads"],
+                ["cuda", "hygon"],
             ),
             (
                 "test/kernel/nvidia/nested/foo.cu",
@@ -171,11 +150,11 @@ class CiMatrixRoutingTest(unittest.TestCase):
         outputs, _ = self.resolve(
             {
                 "event_name": "pull_request",
-                "labels": ["platform:mthreads"],
+                "labels": ["platform:kunlunxin"],
                 "files": ["README.md"],
             }
         )
-        self.assertEqual(outputs["platforms"], ["mthreads"])
+        self.assertEqual(outputs["platforms"], ["kunlunxin"])
 
     def test_all_label_forces_full_matrix(self):
         outputs, _ = self.resolve(
@@ -223,7 +202,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_fork_repository_and_immutable_ref_are_forwarded(self):
         outputs, _ = self.resolve({
             "event_name": "pull_request", "repository": "contributor/FlagCX",
-            "ref": "a" * 40, "labels": ["platform:mthreads"],
+            "ref": "a" * 40, "labels": ["platform:kunlunxin"],
         })
         self.assertEqual(outputs["repository"], "contributor/FlagCX")
         self.assertEqual(outputs["ref"], "a" * 40)
@@ -231,10 +210,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_comment_without_platform_respects_labels(self):
         outputs, _ = self.resolve({
             "event_name": "issue_comment", "comment": "/test", "permission": "admin",
-            "is_pull_request": True, "labels": ["platform:mthreads"],
+            "is_pull_request": True, "labels": ["platform:kunlunxin"],
             "files": ["flagcx/core/group.cc"],
         })
-        self.assertEqual(outputs["platforms"], ["mthreads"])
+        self.assertEqual(outputs["platforms"], ["kunlunxin"])
 
     def test_every_platform_config_has_watch_patterns(self):
         for platform in ALL_ENABLED_PLATFORMS:
@@ -245,15 +224,15 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (
-            ("workflow_dispatch", {"selection": "mthreads"}, ["mthreads"]),
+            ("workflow_dispatch", {"selection": "kunlunxin"}, ["kunlunxin"]),
             (
                 "issue_comment",
                 {
-                    "comment": "/test mthreads",
+                    "comment": "/test kunlunxin",
                     "permission": "write",
                     "is_pull_request": True,
                 },
-                ["mthreads"],
+                ["kunlunxin"],
             ),
             (
                 "issue_comment",
@@ -272,7 +251,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "is_pull_request": True,
                     "files": ["flagcx/adaptor/device/cuda_adaptor.cc"],
                 },
-                ["mthreads"],
+                enabled_platform_or_matrix("cuda"),
             ),
         ):
             with self.subTest(event=event_name, extra=extra):
@@ -479,10 +458,70 @@ class CiWorkflowWiringTest(unittest.TestCase):
         ):
             source = path.read_text()
             self.assertIn("workflow_call:", source)
-            for platform in ("cuda", "hygon", "metax", "ppu"):
+            for platform in ("cuda", "hygon", "metax", "ppu", "kunlunxin"):
                 self.assertIn(f"contains(fromJSON(inputs.platforms), '{platform}')", source)
             self.assertIn("if: always()", source)
             self.assertIn("check_platform_workflow.sh", source)
+
+    def test_kunlunxin_performance_job_uses_platform_config_and_gate(self):
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/test.yml").read_text()
+        )
+        jobs = workflow["jobs"]
+        job = jobs["perf-test-kunlunxin"]
+        self.assertEqual(
+            job["if"], "contains(fromJSON(inputs.platforms), 'kunlunxin')"
+        )
+        self.assertIn(
+            "outputs.kunlunxin_runs_on",
+            job["runs-on"],
+        )
+        steps = {step.get("name"): step for step in job["steps"]}
+        run_step = steps["Run perf-test (kunlunxin) in job container"]
+        self.assertEqual(
+            job["container"]["image"],
+            "${{ needs.load-hardware-container-configs.outputs.kunlunxin_ci_image }}",
+        )
+        self.assertIn("kunlunxin perf", run_step["run"])
+        self.assertIn("perf-test-kunlunxin", jobs["perf_complete"]["needs"])
+        self.assertIn(
+            "Validate selected KunlunXin performance job",
+            [step.get("name") for step in jobs["perf_complete"]["steps"]],
+        )
+
+    def test_kunlunxin_torch_api_job_uses_platform_config_and_hardware_runner(self):
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/torch-api-test.yml").read_text()
+        )
+        jobs = workflow["jobs"]
+        job = jobs["torch-api-test-kunlunxin"]
+        self.assertEqual(
+            job["if"], "contains(fromJSON(inputs.platforms), 'kunlunxin')"
+        )
+        self.assertIn(
+            "outputs.kunlunxin_runs_on",
+            job["runs-on"],
+        )
+        steps = {step.get("name"): step for step in job["steps"]}
+        run_step = steps["Run torch-api-test (kunlunxin) in job container"]
+        self.assertEqual(
+            job["container"]["image"],
+            "${{ needs.load-hardware-container-configs.outputs.kunlunxin_ci_image }}",
+        )
+        self.assertIn("kunlunxin torch-api", run_step["run"])
+        self.assertIn("torch-api-test-kunlunxin", jobs["torch_api_complete"]["needs"])
+        self.assertIn(
+            "Validate selected KunlunXin Torch API job",
+            [step.get("name") for step in jobs["torch_api_complete"]["steps"]],
+        )
+
+        handler = (
+            REPO_ROOT / ".github/scripts/ci/run_kunlunxin_workload.sh"
+        ).read_text()
+        self.assertIn("FLAGCX_ADAPTOR=klx", handler)
+        self.assertNotIn("export XTDK_HOME=", handler)
+        self.assertIn("torch.cuda.device_count() >= 4", handler)
+        self.assertIn("test/script/torch_api_test.sh", handler)
 
     def test_torch_coverage_upload_is_optional_and_uses_flagcicd_contract(self):
         workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/torch-api-test.yml").read_text())

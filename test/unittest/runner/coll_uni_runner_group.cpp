@@ -130,7 +130,7 @@ TEST_F(FlagCXCollTest, UniRunnerIpcPreparationErrorConverges) {
     GTEST_SKIP() << "Communicator has no bootstrap state";
 
   flagcxDevMem_t handle = nullptr;
-  const flagcxResult_t result = flagcxUniRunnerIpcDevMemCreate(
+  const flagcxResult_t result = flagcxIpcWindowRegisterAndDevMemCreate(
       comm, rank == 0 ? nullptr : sendbuff, size, &handle);
   EXPECT_EQ(result, flagcxInvalidArgument);
   EXPECT_EQ(handle, nullptr);

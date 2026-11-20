@@ -15,6 +15,11 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 mpi_runner="$script_dir/run_mpi_with_timeout.sh"
 platform=${FLAGCX_CI_PERF_PLATFORM:-platform}
 mpi_np=${FLAGCX_CI_PERF_NP:-4}
+configured_skips=$(python3 "$script_dir/ignore_test.py" perf "$mode")
+if [[ -n "$configured_skips" ]]; then
+  FLAGCX_CI_PERF_SKIP_OPERATIONS="${FLAGCX_CI_PERF_SKIP_OPERATIONS:+$FLAGCX_CI_PERF_SKIP_OPERATIONS }$configured_skips"
+  echo "[PERF CONFIG] $platform $mode ignored operations: $configured_skips"
+fi
 
 case "$mode" in
   homogeneous)

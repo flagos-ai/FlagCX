@@ -1,7 +1,8 @@
 include ../../make.inc
 
 # Local include directory for runner fixtures
-LOCAL_INCLUDE := -I$(abspath include)
+LOCAL_INCLUDE := -I$(abspath include) \
+	-I$(PROJECT_ROOT)/flagcx/adaptor/device_api
 
 # [unit] tests: test_*.cpp — no MPI, no GPU required
 UNIT_SRCS   := $(wildcard test_*.cpp)

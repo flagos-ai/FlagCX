@@ -162,6 +162,8 @@ struct Barrier;
 #include "iluvatar_comm_traits.h"
 #elif defined(USE_ENFLAME_ADAPTOR)
 #include "enflame_comm_traits.h"
+#elif defined(USE_ASCEND_ADAPTOR)
+#include "ascend_comm_traits.h"
 #else
 #include "default_comm_traits.h"
 using DeviceAPI = CommTraits<DefaultBackend<DefaultPlatform>>;

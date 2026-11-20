@@ -1,15 +1,24 @@
 # FlagCX CI
 
+The hardware CI matrix enables all seven platforms: CUDA, Hygon, Iluvatar,
+MetaX, KunlunXin, PPU, and Ascend. PR runs select platforms from changed paths
+and PR labels; push and scheduled runs select all enabled platforms. Unit,
+performance, and Torch API jobs run for the selected platforms alongside
+common checks. See `configs/platforms.yml` for the active registry.
+
+Platform-specific test exclusions are defined in each platform's
+`scripts/set_env/*.sh` file and reported as skipped coverage. Platform
+selection, images, runners, and suite lists remain in `configs/*.yml`.
+
 `unit-test.yml` is the automatic controller for PRs to `main`/`devops`, pushes
 to those branches, and the daily schedule. It runs the selected platforms'
 unit, performance, and Torch API tests, plus common checks. Platform-specific
 changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
-PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, `platform:mthreads`, `platform:ppu`, and `platform:ascend`
+PR labels `platform:cuda`, `platform:hygon`, `platform:iluvatar`,
+`platform:metax`, `platform:kunlunxin`, `platform:ppu`, and `platform:ascend`
 override path selection. Multiple platform labels select their union;
-`platform:musa` is an alias for `platform:mthreads`; `musa` also works in
-workflow dispatch selection and `/test musa` commands.
 `platform:all` selects every enabled platform. Invalid platform labels fail
 matrix generation. Add/remove label events rerun the controller.
 
@@ -20,8 +29,9 @@ one of these exact commands on a PR:
 /test
 /test cuda
 /test hygon
+/test iluvatar
 /test metax
-/test mthreads
+/test kunlunxin
 /test ppu
 /test ascend
 /test all
@@ -59,19 +69,24 @@ reproduction stored with the attempt artifacts, preserving the suite failure.
 
 ## Retry Logs
 
-Mthreads CI uses `mt-8g-cicd-flagcx` and the image configured in
-`.github/configs/mthreads.yml`. It runs adaptor, core, device_api_host, p2p,
-rma, runner, service, and symmem host unit suites plus
-homogeneous and heterogeneous collective benchmarks. The symmem job currently
-runs host unit tests only; it does not cover IPC, VMM, or multi-process paths.
-The device adaptor suite excludes `DeviceAdaptorTest.StreamWaitEvent`, which
-currently fails on MUSA; all other device adaptor tests run.
-Device API MPI and kernel suites remain unselected because this repository has
-no MUSA device-kernel compiler backend. Torch plugin tests are also not
-configured for Mthreads. Build its CI image with
-`docker build -f docker/mthreads-ci.Dockerfile .`.
-The platform registry currently enables Mthreads only; CUDA and the other
-hardware platforms remain configured but disabled.
+KunlunXin job containers retain the Actions-managed bridge for checkout and
+artifact steps. RDMA hardware workloads use `run_in_host_network.sh` to enter
+the Docker host's network namespace, using the read-only
+`/proc:/run/flagcx-host-proc:ro` job-container mount. Only networking changes;
+the workload keeps the container filesystem, SDK, environment and working
+directory. If the container uses Docker's embedded bridge DNS, a private mount
+namespace provides the host resolver for this workload; checkout and artifact
+steps retain their original DNS settings. Unit, perf and Torch jobs use the
+same entry point and do not launch another container. The image needs util-linux
+(`nsenter`, `unshare`, `mount`) and the existing privileged container option.
+
+The entry point verifies the namespace identity and checks that every ACTIVE
+mlx5 RoCE port has a GID-associated interface visible through the socket API
+before starting the workload. It fails instead of skipping RDMA tests when
+the mount, permissions or interfaces are missing. On DinD deployments the
+mounted namespace must expose the physical RDMA interfaces; an isolated DinD
+network still needs runner-side network provisioning. This check establishes
+visibility only; the adaptor Host MR and SendRecv tests verify connectivity.
 
 Each test invocation has a timeout and at most one retry. Cancellation and
 missing/non-executable commands do not retry. Builds and container orchestration

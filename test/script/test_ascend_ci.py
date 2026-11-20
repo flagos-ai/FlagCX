@@ -66,6 +66,7 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
             ci.mkdir()
             shutil.copy2(CI / "run_ascend_runner_mpi.sh",
                          ci / "run_ascend_runner_mpi.sh")
+            shutil.copy2(CI / "ignore_test.py", ci / "ignore_test.py")
             self.script(ci / "run_mpi_with_timeout.sh",
                         'printf "%s\\n" "$*" >> "$COMMAND_LOG"\n')
             tools = tmp / "tools"
@@ -77,7 +78,20 @@ printf 'FlagCXCollTest.\n  AllGather\n  AllReduce\n  AlltoAllvAsymmetric\n  Redu
 ''')
             log = tmp / "commands"
             env = {**os.environ, "BASH_ENV": "", "COMMAND_LOG": str(log),
-                   "PATH": f"{tools}:{os.environ['PATH']}"}
+                   "PATH": f"{tools}:{os.environ['PATH']}",
+                   "FLAGCX_CI_IGNORE_TEST": (
+                       '{"runner":[{"test":"FlagCXCollTest.AlltoAllvAsymmetric",'
+                       '"modes":["runner default"],"reason":"HCCL failure"},'
+                       '{"test":"FlagCXCollTest.AllReduce",'
+                       '"modes":["runner heterogeneous","runner forced NET"],'
+                       '"reason":"C2C failure"},'
+                       '{"test":"FlagCXCollTest.Reduce",'
+                       '"modes":["runner heterogeneous","runner forced NET"],'
+                       '"reason":"C2C failure"},'
+                       '{"test":"FlagCXCollTest.ReduceScatter",'
+                       '"modes":["runner heterogeneous","runner forced NET"],'
+                       '"reason":"C2C failure"}]}'
+                   )}
             for label in ("runner default", "runner heterogeneous",
                           "runner forced NET"):
                 with self.subTest(label=label):
@@ -110,6 +124,7 @@ printf 'FlagCXCollTest.\n  AllGather\n  AllReduce\n  AlltoAllvAsymmetric\n  Redu
             tmp = Path(tmp)
             scripts = tmp / ".github/scripts/ci"
             scripts.mkdir(parents=True)
+            shutil.copyfile(CI / "ignore_test.py", scripts / "ignore_test.py")
             self.script(scripts / "run_with_timeout.sh", 'exec "$@"\n')
             self.script(scripts / "run_ascend_diagnostics.sh", 'exit 0\n')
             self.script(

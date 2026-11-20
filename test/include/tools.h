@@ -1,6 +1,7 @@
 #include "check.h"
 #include "flagcx.h"
 #include "mpi.h"
+#include "window_flags.h"
 #include <cstddef>
 #include <cstdint>
 
@@ -19,7 +20,7 @@ public:
 
 class parser {
 public:
-  parser(int argc, char **argv);
+  parser(int argc, char **argv, int defaultLocalRegister = 0);
   size_t getMinBytes() const { return minBytes; }
   size_t getMaxBytes() const { return maxBytes; }
   size_t getStepFactor() const { return stepFactor; }

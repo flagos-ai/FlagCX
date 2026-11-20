@@ -1,5 +1,9 @@
+import json
+import subprocess
 import unittest
 from pathlib import Path
+
+import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -135,14 +139,20 @@ class PpuCiRegressionTest(unittest.TestCase):
             'FLAGCX_CI_MPI_LABEL="symmem local IPC + NET fallback"',
             unit_runner,
         )
-        self.assertIn("FLAGCX_DMABUF_ENABLE=1", unit_runner)
+        self.assertIn('symmem_dmabuf_enable=${FLAGCX_DMABUF_ENABLE:-1}', unit_runner)
+        self.assertIn('-x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable"', unit_runner)
         self.assertIn("FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1", unit_runner)
         self.assertIn("SymMemTest.VmmNetRouteCapabilityUnion", unit_runner)
-        self.assertIn(
-            'if [[ "$platform_name" == "ppu" || '
-            '"$platform_name" == "hygon" ]]',
-            unit_runner,
-        )
+        ppu_config = json.loads(subprocess.check_output(
+            ["bash", "-c",
+             'source "$1"; printf "%s" "$FLAGCX_CI_IGNORE_TEST"',
+             "bash", str(REPO_ROOT / ".github/scripts/set_env/ppu.sh")],
+            text=True,
+        ))
+        self.assertTrue(any(
+            entry["suite"] == "symmem" and entry["name"] == "vmm-net-data"
+            for entry in ppu_config["phases"]
+        ))
         self.assertIn(
             "if ((symmem_run_vmm_net_data != 0)); then", unit_runner
         )
@@ -162,7 +172,7 @@ class PpuCiRegressionTest(unittest.TestCase):
             "SymMemTest.DirectGdrVmmPreservesMrRoute", unit_runner
         )
         self.assertIn(
-            "SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease",
+            "SymMemTest.CrossNodeLocalCleanupFailureRetries",
             unit_runner,
         )
         self.assertIn(
@@ -316,14 +326,8 @@ class PpuCiRegressionTest(unittest.TestCase):
 
         # BAREX needs host networking. GitHub Actions job containers reject
         # --network, so the PPU jobs must launch Docker explicitly.
-        ppu_perf_job = perf_workflow.split("perf-test-ppu:", 1)[1].split(
-            "\n  perf-test-mthreads:", 1
-        )[0]
-        ppu_torch_job = torch_workflow.split("torch-api-test-ppu:", 1)[1].split(
-            "\n  torch-api-test-ascend:", 1
-        )[0]
-        self.assertNotIn("container:", ppu_perf_job)
-        self.assertNotIn("container:", ppu_torch_job)
+        self.assertNotIn("container", yaml.safe_load(perf_workflow)["jobs"]["perf-test-ppu"])
+        self.assertNotIn("container", yaml.safe_load(torch_workflow)["jobs"]["torch-api-test-ppu"])
 
         container_runner = (
             REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh"

@@ -23,16 +23,17 @@
  * Requirements:
  *   - Multi-node, OR single-node with FLAGCX_P2P_DISABLE=1
  *   - FLAGCX_USE_HETERO_COMM=1 (for DevComm with inter context)
+ *   - -R 2 (Window registration prepares IPC or symmetric mappings)
  *
  * Usage: mpirun -np N ./test_device_ir_inter [options]
  *   -b <minbytes>  -e <maxbytes>  -f <stepfactor>
  ************************************************************************/
 
 #include "check.h"
+#include "device_api_window.h"
 #include "device_ir.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
-#include "tools.h"
 
 #include <cassert>
 #include <cmath>
@@ -45,6 +46,10 @@
 // ===========================================================================
 
 int main(int argc, char *argv[]) {
+  parser args(argc, argv);
+  int winFlags;
+  if (!deviceApiWindowMode(args, &winFlags))
+    return 1;
   flagcxDeviceHandle_t devHandle;
   FLAGCXCHECK(flagcxDeviceHandleInit(&devHandle));
   flagcxComm_t comm;
@@ -58,7 +63,6 @@ int main(int argc, char *argv[]) {
   initMpiEnv(argc, argv, worldRank, worldSize, proc, totalProcs, color,
              splitComm, splitMask);
 
-  parser args(argc, argv);
   size_t minBytes = args.getMinBytes();
   size_t maxBytes = args.getMaxBytes();
   int stepFactor = args.getStepFactor();
@@ -116,14 +120,12 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxMemAlloc(&sendBuff, sendBufSize, memAllocator));
   FLAGCXCHECK(flagcxMemAlloc(&recvBuff, bufSize, memAllocator));
 
-  // Register symmetric windows
+  // Window registration prepares the selected IPC or symmetric mappings.
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
   FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, sendBufSize, &sendWin,
-                                       FLAGCX_WIN_COLL_SYMMETRIC,
-                                       memAllocator));
+                                       winFlags, memAllocator));
   FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, bufSize, &recvWin,
-                                       FLAGCX_WIN_COLL_SYMMETRIC,
-                                       memAllocator));
+                                       winFlags, memAllocator));
 
   // Create DevMem handles
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
@@ -149,6 +151,7 @@ int main(int argc, char *argv[]) {
   if (proc == 0) {
     printf("=== Device IR Inter-Node Transport Tests ===\n");
     printf("Ranks: %d\n\n", totalProcs);
+    FLAGCXCHECK(deviceApiReportWindowMode(comm, winFlags));
   }
 
   // =========================================================================
@@ -528,15 +531,12 @@ int main(int argc, char *argv[]) {
   printf("[rank %d] === Overall: %s ===\n", proc, globalPass ? "PASS" : "FAIL");
 
   // Cleanup
+  FLAGCXCHECK(deviceApiCloseWindows(comm, splitComm, devHandle, stream,
+                                    {&sendMem, &recvMem}, {&sendWin, &recvWin},
+                                    memAllocator));
   delete[] hostBuf;
   FLAGCXCHECK(devHandle->deviceFree(devResults, flagcxMemDevice, NULL));
-  FLAGCXCHECK(flagcxDevMemFreeDevicePtr(sendMem));
-  FLAGCXCHECK(flagcxDevMemFreeDevicePtr(recvMem));
   FLAGCXCHECK(flagcxDevCommFreeDevicePtr(devComm));
-  FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
-  FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
-  FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
-  FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
   FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
   FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));

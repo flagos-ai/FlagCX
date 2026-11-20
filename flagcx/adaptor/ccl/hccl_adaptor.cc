@@ -186,13 +186,27 @@ flagcxResult_t hcclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
   return flagcxSuccess;
 }
 
-// TODO: unsupported
 flagcxResult_t hcclAdaptorMemAlloc(void **ptr, size_t size) {
-  return flagcxNotSupported;
+  // This HCCL stack exposes no ncclMemAlloc-style allocator, and the
+  // symmetric-window buffers handed back here are later exported through
+  // the CANN device adaptor's IPC bookkeeping, which only knows about
+  // allocations that went through cannAdaptorDeviceMalloc. Route the CCL
+  // allocation through the active device adaptor so both requirements are
+  // satisfied.
+  if (deviceAdaptor == nullptr || deviceAdaptor->deviceMalloc == nullptr) {
+    WARN("hcclAdaptorMemAlloc: device allocator is not available");
+    return flagcxInternalError;
+  }
+  return deviceAdaptor->deviceMalloc(ptr, size, flagcxMemDevice, nullptr);
 }
 
-// TODO: unsupported
-flagcxResult_t hcclAdaptorMemFree(void *ptr) { return flagcxNotSupported; }
+flagcxResult_t hcclAdaptorMemFree(void *ptr) {
+  if (deviceAdaptor == nullptr || deviceAdaptor->deviceFree == nullptr) {
+    WARN("hcclAdaptorMemFree: device deallocator is not available");
+    return flagcxInternalError;
+  }
+  return deviceAdaptor->deviceFree(ptr, flagcxMemDevice, nullptr);
+}
 
 // TODO: unsupported
 flagcxResult_t hcclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,

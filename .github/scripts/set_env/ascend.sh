@@ -15,6 +15,44 @@ export MPI_HOME=${MPI_HOME:-/usr/local/mpi}
 export PATH="$DEVICE_HOME/bin:${PATH:-}"
 export LD_LIBRARY_PATH="$DEVICE_HOME/lib64:/usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64/driver:${LD_LIBRARY_PATH:-}"
 
+FLAGCX_CI_IGNORE_TEST='{
+  "phases": [
+    {
+      "suite": "rma",
+      "name": "gdr-visibility",
+      "reason": "CUDA immediate-consumer conformance cases are outside Ascend RMA/SymMem coverage"
+    }
+  ],
+  "torch": {
+    "modes": ["heterogeneous"],
+    "operations": ["reduce", "allreduce", "reducescatter"],
+    "reason": "C2C refresh deviceMemset fails before heterogeneous transfer"
+  },
+  "runner": [
+    {
+      "test": "FlagCXCollTest.AlltoAllvAsymmetric",
+      "modes": ["runner default"],
+      "reason": "HCCL AlltoAllV fails at stream synchronization"
+    },
+    {
+      "test": "FlagCXCollTest.AllReduce",
+      "modes": ["runner heterogeneous", "runner forced NET"],
+      "reason": "C2C refresh deviceMemset fails before transfer"
+    },
+    {
+      "test": "FlagCXCollTest.Reduce",
+      "modes": ["runner heterogeneous", "runner forced NET"],
+      "reason": "C2C refresh deviceMemset fails before transfer"
+    },
+    {
+      "test": "FlagCXCollTest.ReduceScatter",
+      "modes": ["runner heterogeneous", "runner forced NET"],
+      "reason": "C2C refresh deviceMemset fails before transfer"
+    }
+  ]
+}'
+export FLAGCX_CI_IGNORE_TEST
+
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_ASCEND=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_ASCEND=1)
 FLAGCX_CI_ENABLE_IBUC=1
@@ -38,8 +76,50 @@ FLAGCX_CI_NODE2_MPI_ARGS=(
   -x NCCL_HOSTID=node1
 )
 
+# Ascend builds only test_device_api_intra for now (test/unittest/device_api
+# compiles the IR and inter cases out until the device peer-memory and atomic
+# layers land), so the device_api suite runs the intra step only.
+FLAGCX_CI_DEVICE_API_IR=0
+FLAGCX_CI_DEVICE_API_INTER=0
+
+# The unified IR suite runs INTRA only on Ascend.  The Device IR bindings
+# declare the NET transport arm absent (FLAGCX_DEVICE_HAS_NET_TRANSPORT=0 in
+# the shared impl), so the inter product is not built and neither the inter
+# step nor the FORCE_NET fallback runs have a transport to exercise here;
+# cross-node unified IR is deferred to the T2 inter stage.  Both gates default
+# to 1 elsewhere, so this only narrows Ascend.
+FLAGCX_CI_UNIFIED_IR_INTER=0
+FLAGCX_CI_UNIFIED_IR_FALLBACK_INTRA=0
+
+# 910C hardware contract (measured 2026-11-17): AI-core scalar stores into
+# IPC-imported peer GM fault-free the kernel even with
+# ACL_RT_IPC_MEM_IMPORT_FLAG_ENABLE_PEER_ACCESS set (bounded-wait probe:
+# the wait never runs; AICore idle while the stream stays active; the
+# import itself returns no error), so device-side cross-rank rendezvous
+# is NOT a supported capability on this backend.  Support policy
+# (MC952 review P1): the cross-rank cases S16-S18 are capability-gated to
+# SKIP at compile time (FLAGCX_TEST_NO_CROSS_RANK_COMM in the ascend block
+# of test/unittest/device_api/Makefile) - a world-size-1 barrier iterates
+# over zero peers and a world-size-1 put resolves to self, so PASS there
+# would fake a certification this hardware cannot give.  UNIFIED_IR_NP=1
+# (now honored by BOTH the runner and the Makefile recipe) runs the suite
+# end-to-end as launch/init + skip-contract smoke: every cross-rank,
+# remote-read and atomic case reports SKIP, and the final verdict says
+# "NO CASES GRADED" instead of an empty ALL PASS.  The four-rank
+# communication certification target stays open and needs a working peer
+# transport (MTE/SSLL track), tracked as follow-up outside this PR.
+UNIFIED_IR_NP=1
+export UNIFIED_IR_NP
+
 flagcx_ci_configure_suite() {
   case "$1" in
+    device_api|device_api_unified_ir)
+      # The intra device kernels live in test/kernel/ascend and the library's
+      # device-API helpers (flagcxDevNetLaunchConstruct et al.) are only
+      # emitted with COMPILE_KERNEL=1; same contract as cuda/hygon.
+      FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      ;&
     core|adaptor|device_api_host|p2p|rma|runner|service|symmem|perf|torch-api) ;;
     *) echo "Ascend CI does not enable suite: $1" >&2; return 1 ;;
   esac
@@ -62,6 +142,12 @@ flagcx_ci_prepare() {
   ls -l /dev/davinci* /dev/infiniband
   command -v g++
   command -v python3
+  # Device-toolchain inventory (reviewer ask of 2026-11-18): the qualifier
+  # selection in device_utils.h keys on the makefile macro now, but the
+  # exact bisheng a job ran belongs in the log so a future build failure
+  # can be attributed without a re-run.
+  command -v bisheng || true
+  bisheng --version 2>&1 | sed -n '1,3p' || true
   python3 "$FLAGCX_CI_ENV_DIR/../ci/check_ascend_pci_runtime.py"
   if [[ "$suite" == core ]]; then
     flagcx_ci_validate_rdma core

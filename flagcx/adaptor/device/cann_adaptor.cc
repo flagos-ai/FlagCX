@@ -10,6 +10,7 @@
 #include <ctype.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -424,12 +425,97 @@ static flagcxResult_t cannIpcFreeAllocation(void *ptr) {
   return flagcxSuccess;
 }
 
+/*
+ * aclrtMallocHost memory is host-visible only until aclrtHostRegister maps
+ * it into the device address space: aclrtHostGetDevicePointer answers
+ * ACL_SUCCESS with a null alias for unregistered memory (measured on 910C,
+ * CANN 9.1.0-beta.3), and the registered alias survives for the lifetime of
+ * the allocation. Register at allocation time and keep the ptr -> alias pair
+ * so the adaptor slot, which carries no size, can answer by lookup alone.
+ */
+struct cannHostMapping {
+  void *hostPtr;
+  void *devAlias;
+  struct cannHostMapping *next;
+};
+
+static pthread_mutex_t cannHostMappingLock = PTHREAD_MUTEX_INITIALIZER;
+static struct cannHostMapping *cannHostMappings = NULL;
+
+static void cannHostMapRegister(void *ptr, size_t size) {
+  void *devAlias = NULL;
+  aclError result =
+      aclrtHostRegister(ptr, size, ACL_HOST_REGISTER_MAPPED, &devAlias);
+  if (result != ACL_SUCCESS || devAlias == NULL) {
+    WARN("CANN host register failed for %p size %zu: ACL error %d", ptr, size,
+         result);
+    return;
+  }
+  struct cannHostMapping *entry =
+      (struct cannHostMapping *)calloc(1, sizeof(*entry));
+  if (entry == NULL) {
+    (void)aclrtHostUnregister(ptr);
+    return;
+  }
+  entry->hostPtr = ptr;
+  entry->devAlias = devAlias;
+  pthread_mutex_lock(&cannHostMappingLock);
+  entry->next = cannHostMappings;
+  cannHostMappings = entry;
+  pthread_mutex_unlock(&cannHostMappingLock);
+}
+
+static void cannHostMapUnregister(void *ptr) {
+  pthread_mutex_lock(&cannHostMappingLock);
+  struct cannHostMapping **link = &cannHostMappings;
+  while (*link != NULL && (*link)->hostPtr != ptr)
+    link = &(*link)->next;
+  struct cannHostMapping *entry = *link;
+  if (entry != NULL) {
+    *link = entry->next;
+    aclError result = aclrtHostUnregister(ptr);
+    if (result != ACL_SUCCESS)
+      WARN("CANN host unregister failed for %p: ACL error %d", ptr, result);
+    free(entry);
+  }
+  pthread_mutex_unlock(&cannHostMappingLock);
+}
+
+flagcxResult_t cannAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
+  if (pDevice == NULL || pHost == NULL)
+    return flagcxInvalidArgument;
+  pthread_mutex_lock(&cannHostMappingLock);
+  for (struct cannHostMapping *entry = cannHostMappings; entry != NULL;
+       entry = entry->next) {
+    if (entry->hostPtr == pHost) {
+      *pDevice = entry->devAlias;
+      pthread_mutex_unlock(&cannHostMappingLock);
+      return flagcxSuccess;
+    }
+  }
+  pthread_mutex_unlock(&cannHostMappingLock);
+  // Not one of ours: the runtime still knows memory registered directly
+  // through aclrtHostRegister/V2 by other components.
+  aclError result = aclrtHostGetDevicePointer(pHost, pDevice, 0);
+  if (result != ACL_SUCCESS) {
+    WARN("CANN host device pointer query failed for %p: ACL error %d", pHost,
+         result);
+    return flagcxUnhandledDeviceError;
+  }
+  if (*pDevice == NULL) {
+    WARN("CANN host memory %p is not registered for device access", pHost);
+    return flagcxNotSupported;
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t cannAdaptorDeviceMalloc(void **ptr, size_t size,
                                        flagcxMemType_t type,
                                        flagcxStream_t stream) {
 
   if (type == flagcxMemHost) {
     DEVCHECK(aclrtMallocHost(ptr, size));
+    cannHostMapRegister(*ptr, size);
   } else {
     DEVCHECK(aclrtMalloc(ptr, size, ACL_MEM_MALLOC_HUGE_FIRST));
     flagcxResult_t result = cannIpcTrackAllocation(*ptr, size);
@@ -445,6 +531,7 @@ flagcxResult_t cannAdaptorDeviceMalloc(void **ptr, size_t size,
 flagcxResult_t cannAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
                                      flagcxStream_t stream) {
   if (type == flagcxMemHost) {
+    cannHostMapUnregister(ptr);
     DEVCHECK(aclrtFreeHost(ptr));
   } else {
     FLAGCXCHECK(cannIpcFreeAllocation(ptr));
@@ -622,6 +709,8 @@ flagcxResult_t cannAdaptorEventQuery(flagcxEvent_t event) {
 struct cannIpcImport {
   void *ptr;
   char key[65];
+  int device;
+  size_t refs;
   struct cannIpcImport *next;
 };
 
@@ -665,8 +754,17 @@ flagcxResult_t cannAdaptorIpcMemHandleGet(flagcxIpcMemHandle_t handle,
   size_t allocationSize = 0;
   flagcxResult_t rangeResult =
       cannAdaptorGetAddressRange(devPtr, &allocationBase, &allocationSize);
-  if (rangeResult != flagcxSuccess || allocationBase != allocation->ptr ||
-      allocationSize < allocation->size) {
+  if (rangeResult == flagcxNotSupported) {
+    // aclrtMemGetAddressRange is not implemented on this platform (measured:
+    // ACL error 207000 = ACL_ERROR_RT_FEATURE_NOT_SUPPORT on Ascend910_9382
+    // with CANN 9.1.0-beta.3), while aclrtIpcMemGetExportKey accepts the
+    // allocation base with the requested size (measured ACL_SUCCESS). Fall
+    // back to the bookkeeping recorded when the allocation was tracked.
+    allocationBase = allocation->ptr;
+    allocationSize = allocation->size;
+  } else if (rangeResult != flagcxSuccess ||
+             allocationBase != allocation->ptr ||
+             allocationSize < allocation->size) {
     pthread_mutex_unlock(&cannIpcAllocationLock);
     return rangeResult == flagcxSuccess ? flagcxNotSupported : rangeResult;
   }
@@ -705,17 +803,37 @@ flagcxResult_t cannAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
   if (handle == NULL || devPtr == NULL)
     return flagcxInvalidArgument;
   *devPtr = NULL;
-
-  struct cannIpcImport *importRecord =
-      (struct cannIpcImport *)calloc(1, sizeof(*importRecord));
-  if (importRecord == NULL)
-    return flagcxSystemError;
-  memcpy(importRecord->key, handle->key, sizeof(handle->key));
-  if (importRecord->key[0] == '\0' ||
-      memchr(importRecord->key, '\0', sizeof(importRecord->key)) == NULL) {
-    free(importRecord);
+  if (handle->key[0] == '\0' ||
+      memchr(handle->key, '\0', sizeof(handle->key)) == NULL)
     return flagcxInvalidArgument;
+
+  int device;
+  DEVCHECK(aclrtGetDevice(&device));
+  pthread_mutex_lock(&cannIpcImportLock);
+  // A runtime key identifies one import on this device, even if multiple
+  // Windows or communicators hold it. Only the last owner may close it.
+  struct cannIpcImport *importRecord = cannIpcImports;
+  while (importRecord != NULL) {
+    if (importRecord->device == device &&
+        strcmp(importRecord->key, handle->key) == 0) {
+      if (importRecord->refs == SIZE_MAX) {
+        pthread_mutex_unlock(&cannIpcImportLock);
+        return flagcxInvalidUsage;
+      }
+      ++importRecord->refs;
+      *devPtr = importRecord->ptr;
+      pthread_mutex_unlock(&cannIpcImportLock);
+      return flagcxSuccess;
+    }
+    importRecord = importRecord->next;
   }
+
+  importRecord = (struct cannIpcImport *)calloc(1, sizeof(*importRecord));
+  if (importRecord == NULL) {
+    pthread_mutex_unlock(&cannIpcImportLock);
+    return flagcxSystemError;
+  }
+  memcpy(importRecord->key, handle->key, sizeof(handle->key));
   aclError result = aclrtIpcMemImportByKey(
       devPtr, importRecord->key, ACL_RT_IPC_MEM_IMPORT_FLAG_ENABLE_PEER_ACCESS);
   if (result != ACL_SUCCESS || *devPtr == NULL) {
@@ -724,12 +842,14 @@ flagcxResult_t cannAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
       (void)aclrtIpcMemClose(importRecord->key);
     *devPtr = NULL;
     free(importRecord);
+    pthread_mutex_unlock(&cannIpcImportLock);
     return result == ACL_ERROR_RT_FEATURE_NOT_SUPPORT
                ? flagcxNotSupported
                : flagcxUnhandledDeviceError;
   }
   importRecord->ptr = *devPtr;
-  pthread_mutex_lock(&cannIpcImportLock);
+  importRecord->device = device;
+  importRecord->refs = 1;
   importRecord->next = cannIpcImports;
   cannIpcImports = importRecord;
   pthread_mutex_unlock(&cannIpcImportLock);
@@ -739,17 +859,25 @@ flagcxResult_t cannAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
 flagcxResult_t cannAdaptorIpcMemHandleClose(void *devPtr) {
   if (devPtr == NULL)
     return flagcxInvalidArgument;
+  int device;
+  DEVCHECK(aclrtGetDevice(&device));
   pthread_mutex_lock(&cannIpcImportLock);
   struct cannIpcImport **link = &cannIpcImports;
-  while (*link != NULL && (*link)->ptr != devPtr)
+  while (*link != NULL && ((*link)->ptr != devPtr || (*link)->device != device))
     link = &(*link)->next;
   if (*link == NULL) {
     pthread_mutex_unlock(&cannIpcImportLock);
     return flagcxInvalidArgument;
   }
   struct cannIpcImport *importRecord = *link;
+  if (importRecord->refs > 1) {
+    --importRecord->refs;
+    pthread_mutex_unlock(&cannIpcImportLock);
+    return flagcxSuccess;
+  }
   aclError result = aclrtIpcMemClose(importRecord->key);
   if (result != ACL_SUCCESS) {
+    // Keep the final reference and mapping so the same owner can retry.
     WARN("CANN IPC import close failed: ACL error %d", result);
     pthread_mutex_unlock(&cannIpcImportLock);
     return flagcxUnhandledDeviceError;
@@ -1092,7 +1220,7 @@ struct flagcxDeviceAdaptor cannAdaptor {
       cannAdaptorDeviceSynchronize, cannAdaptorDeviceMemcpy,
       cannAdaptorDeviceMemset, cannAdaptorDeviceMalloc, cannAdaptorDeviceFree,
       cannAdaptorSetDevice, cannAdaptorGetDevice, cannAdaptorGetDeviceCount,
-      cannAdaptorGetVendor, NULL,
+      cannAdaptorGetVendor, cannAdaptorHostGetDevicePointer,
       // GDR functions
       NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
       NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);

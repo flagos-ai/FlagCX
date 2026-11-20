@@ -13,6 +13,8 @@ platforms:
     enabled: false
   mthreads:
     enabled: true
+  kunlunxin:
+    enabled: true
   ppu:
     enabled: false
   ascend:
