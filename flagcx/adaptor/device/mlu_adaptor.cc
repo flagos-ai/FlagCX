@@ -4,6 +4,8 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "device_event.h"
+#include "runtime_capture.h"
 
 std::map<flagcxMemcpyType_t, cnrtMemTransDir_t> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cnrtMemcpyHostToDev},
@@ -206,15 +208,40 @@ flagcxResult_t mluAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+mluAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                 flagcxStreamCaptureStatus_t *status) {
+  static flagcxRuntimeCaptureQuery_t query =
+      (flagcxRuntimeCaptureQuery_t)dlsym(RTLD_DEFAULT, "cnrtQueueIsCapturing");
+  static const void *begin = dlsym(RTLD_DEFAULT, "cnrtQueueBeginCapture");
+  return flagcxRuntimeQueryCapture(
+      query, begin, stream ? (void *)stream->base : NULL, status);
+}
+
+static flagcxResult_t mluAdaptorEventCreateNative(void *wrapper,
+                                                  unsigned int flags) {
+  (void)flags;
+  DEVCHECK(
+      cnrtNotifierCreateWithFlags(&(((flagcxEvent_t)wrapper)->base), flags));
+  return flagcxSuccess;
+}
+
 flagcxResult_t mluAdaptorEventCreate(flagcxEvent_t *event,
                                      flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? CNRT_NOTIFIER_DEFAULT
                                  : CNRT_NOTIFIER_DISABLE_TIMING_ALL;
-  DEVCHECK(cnrtNotifierCreateWithFlags(&((*event)->base), flags));
-  return flagcxSuccess;
+  static const struct flagcxEventCreateOps ops = {
+      flagcxEventAllocateWrapper, free, mluAdaptorEventCreateNative};
+  void *wrapper = NULL;
+  flagcxResult_t result = flagcxEventCreateTransactional(
+      &wrapper, sizeof(struct flagcxEvent), flags, &ops);
+  if (result == flagcxSuccess)
+    *event = (flagcxEvent_t)wrapper;
+  return result;
 }
 
 flagcxResult_t mluAdaptorEventDestroy(flagcxEvent_t event) {
@@ -391,6 +418,7 @@ struct flagcxDeviceAdaptor mluAdaptor {
             // void *buffer, size_t size, unsigned long long flags);
       mluAdaptorHostRegister, // flagcxResult_t (*hostRegister)(void *, size_t);
       mluAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      mluAdaptorStreamGetCaptureStatus,
       // Symmetric memory VMM functions (not supported)
       mluAdaptorSymPhysAlloc, mluAdaptorSymPhysFree, mluAdaptorSymFlatMap,
       mluAdaptorSymFlatUnmap, mluAdaptorSymMulticastSupported,

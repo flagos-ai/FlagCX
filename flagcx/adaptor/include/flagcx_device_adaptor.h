@@ -20,6 +20,12 @@ struct flagcxDevProps {
   int pciDomainId;
 };
 
+typedef enum {
+  flagcxStreamCaptureNone = 0,
+  flagcxStreamCaptureActive = 1,
+  flagcxStreamCaptureInvalidated = 2
+} flagcxStreamCaptureStatus_t;
+
 // CUDA-compatible APIs are implemented by several vendors, but NVIDIA
 // compute-capability policy must only be applied to NVIDIA CUDA devices.
 typedef enum {
@@ -279,6 +285,11 @@ struct flagcxDeviceAdaptor_latest {
   // hostGetDevicePointer returns a valid per-process GPU VA.
   flagcxResult_t (*hostRegister)(void *ptr, size_t size);
   flagcxResult_t (*hostUnregister)(void *ptr);
+
+  // Internal-only extension; the frozen v1 prefix above is unchanged. Unknown
+  // capture capability must return NotSupported, not guess that capture is off.
+  flagcxResult_t (*streamGetCaptureStatus)(flagcxStream_t stream,
+                                           flagcxStreamCaptureStatus_t *status);
 
   // ---- Symmetric memory VMM functions (NULL if not supported) ----
 

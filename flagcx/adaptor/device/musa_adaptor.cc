@@ -4,6 +4,8 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "device_event.h"
+#include "runtime_capture.h"
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -268,15 +270,39 @@ flagcxResult_t musaAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+musaAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                  flagcxStreamCaptureStatus_t *status) {
+  static flagcxRuntimeCaptureQuery_t query =
+      (flagcxRuntimeCaptureQuery_t)dlsym(RTLD_DEFAULT, "musaStreamIsCapturing");
+  static const void *begin = dlsym(RTLD_DEFAULT, "musaStreamBeginCapture");
+  return flagcxRuntimeQueryCapture(
+      query, begin, stream ? (void *)stream->base : NULL, status);
+}
+
+static flagcxResult_t musaAdaptorEventCreateNative(void *wrapper,
+                                                   unsigned int flags) {
+  (void)flags;
+  DEVCHECK(musaEventCreateWithFlags(&(((flagcxEvent_t)wrapper)->base), flags));
+  return flagcxSuccess;
+}
+
 flagcxResult_t musaAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? musaEventDefault
                                  : musaEventDisableTiming;
-  DEVCHECK(musaEventCreateWithFlags(&((*event)->base), flags));
-  return flagcxSuccess;
+  static const struct flagcxEventCreateOps ops = {
+      flagcxEventAllocateWrapper, free, musaAdaptorEventCreateNative};
+  void *wrapper = NULL;
+  flagcxResult_t result = flagcxEventCreateTransactional(
+      &wrapper, sizeof(struct flagcxEvent), flags, &ops);
+  if (result == flagcxSuccess)
+    *event = (flagcxEvent_t)wrapper;
+  return result;
 }
 
 flagcxResult_t musaAdaptorEventDestroy(flagcxEvent_t event) {
@@ -704,6 +730,7 @@ struct flagcxDeviceAdaptor musaAdaptor {
       musaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       musaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      musaAdaptorStreamGetCaptureStatus,
       // Symmetric memory VMM functions (not supported)
       musaAdaptorSymPhysAlloc, musaAdaptorSymPhysFree, musaAdaptorSymFlatMap,
       musaAdaptorSymFlatUnmap, musaAdaptorSymMulticastSupported,

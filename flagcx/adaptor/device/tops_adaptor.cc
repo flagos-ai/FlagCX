@@ -8,6 +8,8 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "device_event.h"
+#include "runtime_capture.h"
 
 std::map<flagcxMemcpyType_t, topsMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, topsMemcpyHostToDevice},
@@ -185,15 +187,39 @@ flagcxResult_t topsAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+topsAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                  flagcxStreamCaptureStatus_t *status) {
+  static flagcxRuntimeCaptureQuery_t query =
+      (flagcxRuntimeCaptureQuery_t)dlsym(RTLD_DEFAULT, "topsStreamIsCapturing");
+  static const void *begin = dlsym(RTLD_DEFAULT, "topsStreamBeginCapture");
+  return flagcxRuntimeQueryCapture(
+      query, begin, stream ? (void *)stream->base : NULL, status);
+}
+
+static flagcxResult_t topsAdaptorEventCreateNative(void *wrapper,
+                                                   unsigned int flags) {
+  (void)flags;
+  DEVCHECK(topsEventCreateWithFlags(&(((flagcxEvent_t)wrapper)->base), flags));
+  return flagcxSuccess;
+}
+
 flagcxResult_t topsAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? topsEventDefault
                                  : topsEventDisableTiming;
-  DEVCHECK(topsEventCreateWithFlags(&((*event)->base), flags));
-  return flagcxSuccess;
+  static const struct flagcxEventCreateOps ops = {
+      flagcxEventAllocateWrapper, free, topsAdaptorEventCreateNative};
+  void *wrapper = NULL;
+  flagcxResult_t result = flagcxEventCreateTransactional(
+      &wrapper, sizeof(struct flagcxEvent), flags, &ops);
+  if (result == flagcxSuccess)
+    *event = (flagcxEvent_t)wrapper;
+  return result;
 }
 
 flagcxResult_t topsAdaptorEventDestroy(flagcxEvent_t event) {
@@ -499,6 +525,7 @@ struct flagcxDeviceAdaptor topsAdaptor {
       topsAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       topsAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      topsAdaptorStreamGetCaptureStatus,
       // Symmetric memory VMM functions (not supported)
       topsAdaptorSymPhysAlloc, topsAdaptorSymPhysFree, topsAdaptorSymFlatMap,
       topsAdaptorSymFlatUnmap, topsAdaptorSymMulticastSupported,

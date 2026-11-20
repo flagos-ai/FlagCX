@@ -4,6 +4,8 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "device_event.h"
+#include "runtime_capture.h"
 
 std::map<flagcxMemcpyType_t, txMemcpyKind> memcpyTypeMap = {
     {flagcxMemcpyHostToDevice, txMemcpyHostToDevice},
@@ -174,12 +176,38 @@ flagcxResult_t tsmicroAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+tsmicroAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                     flagcxStreamCaptureStatus_t *status) {
+  static flagcxRuntimeCaptureQuery_t query =
+      (flagcxRuntimeCaptureQuery_t)dlsym(RTLD_DEFAULT, "txStreamIsCapturing");
+  static const void *begin = dlsym(RTLD_DEFAULT, "txStreamBeginCapture");
+  return flagcxRuntimeQueryCapture(
+      query, begin, stream ? (void *)stream->base : NULL, status);
+}
+
+static flagcxResult_t tsmicroAdaptorEventCreateNative(void *wrapper,
+                                                      unsigned int flags) {
+  (void)flags;
+  DEVCHECK(txEventCreate(&((flagcxEvent_t)wrapper)->base));
+  return flagcxSuccess;
+}
+
 flagcxResult_t tsmicroAdaptorEventCreate(flagcxEvent_t *event,
                                          flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
-  DEVCHECK(txEventCreate(&(*event)->base));
-  return flagcxSuccess;
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  const unsigned int flags = 0;
+  (void)eventType;
+  static const struct flagcxEventCreateOps ops = {
+      flagcxEventAllocateWrapper, free, tsmicroAdaptorEventCreateNative};
+  void *wrapper = NULL;
+  flagcxResult_t result = flagcxEventCreateTransactional(
+      &wrapper, sizeof(struct flagcxEvent), flags, &ops);
+  if (result == flagcxSuccess)
+    *event = (flagcxEvent_t)wrapper;
+  return result;
 }
 
 flagcxResult_t tsmicroAdaptorEventDestroy(flagcxEvent_t event) {
@@ -465,6 +493,7 @@ struct flagcxDeviceAdaptor tsmicroAdaptor {
       tsmicroAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                     // size_t);
       tsmicroAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      tsmicroAdaptorStreamGetCaptureStatus,
       // Symmetric memory VMM functions (not supported)
       tsmicroAdaptorSymPhysAlloc, tsmicroAdaptorSymPhysFree,
       tsmicroAdaptorSymFlatMap, tsmicroAdaptorSymFlatUnmap,
