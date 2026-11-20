@@ -2,7 +2,6 @@
 #include "device_api/completion_word.h"
 #include "flagcx.h"
 #include "flagcx_kernel_internal.h"
-#include "musa_fifo_errors.h"
 
 FLAGCX_PARAM(KernelFifoCapacity, "KERNEL_FIFO_CAPACITY", FLAGCX_FIFO_CAPACITY);
 
@@ -134,27 +133,12 @@ flagcxResult_t flagcxFifo::flagcxFifoInit() {
   buffer[flagcxFifoIdxProducerState] = 0;
   memset((void *)(buffer + flagcxFifoIdxData), 0,
          flagcxKernelFifoCapacity * sizeof(flagcxDeviceTrigger));
-#ifdef USE_MUSA_ADAPTOR
-  flagcxResult_t registerResult =
-      flagcxMusaRegisterFifoError(&buffer[flagcxFifoIdxTerminalStatus]);
-  if (registerResult != flagcxSuccess) {
-    deviceAdaptor->deviceFree((void *)buffer, flagcxMemHost, NULL);
-    buffer = nullptr;
-    return registerResult;
-  }
-#endif
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxFifo::flagcxFifoDestroy() {
   INFO(FLAGCX_KERNEL, "flagcxFifoDestroy called");
-  if (buffer == nullptr)
-    return flagcxSuccess;
-#ifdef USE_MUSA_ADAPTOR
-  flagcxMusaUnregisterFifoError(&buffer[flagcxFifoIdxTerminalStatus]);
-#endif
   FLAGCXCHECK(deviceAdaptor->deviceFree((void *)buffer, flagcxMemHost, NULL));
-  buffer = nullptr;
   return flagcxSuccess;
 }
 

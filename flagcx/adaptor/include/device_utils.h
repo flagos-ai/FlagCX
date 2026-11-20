@@ -37,9 +37,6 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_MUSA_DEVICE_COMPILER 1
 #endif
 
-#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
-    defined(FLAGCX_MUSA_DEVICE_COMPILER) ||                                    \
-//
 // Ascend takes the same route as Iluvatar, for the same reason: bisheng
 // compiles one ASC translation unit in two passes and defines
 // __CCE_IS_AICORE__ on the device pass only, while the types guarded here
@@ -49,7 +46,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // -DFLAGCX_ASCEND_DEVICE_COMPILE=1 for the whole compilation and the vendor
 // condition keys on it; see makefiles/ascend.mk.
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
-    defined(__CCE_IS_AICORE__) ||                                              \
+    defined(FLAGCX_MUSA_DEVICE_COMPILER) || defined(__CCE_IS_AICORE__) ||      \
     (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
      defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
     defined(__TOPSCC__) ||                                                     \
@@ -74,8 +71,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // directly; see ascend_platform_traits.h.
 #ifndef FLAGCX_CHECK_DEVICE_CC
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
-    defined(FLAGCX_MUSA_DEVICE_COMPILER) ||                                    \
-    defined(__CCE_IS_AICORE__) ||                                              \
+    defined(FLAGCX_MUSA_DEVICE_COMPILER) || defined(__CCE_IS_AICORE__) ||      \
     (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
      defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
     defined(__TOPSCC__)

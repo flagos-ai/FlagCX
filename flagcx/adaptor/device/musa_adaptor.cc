@@ -4,69 +4,11 @@
 
 #include "adaptor.h"
 #include "alloc.h"
-#include "musa_fifo_errors.h"
-#include <algorithm>
-#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
-#include <new>
 #include <unistd.h>
-#include <vector>
-
-namespace {
-struct MusaFifoErrorWord {
-  uint64_t *word;
-  int device;
-};
-std::mutex musaFifoErrorMutex;
-std::vector<MusaFifoErrorWord> musaFifoErrorWords;
-} // namespace
-
-flagcxResult_t flagcxMusaRegisterFifoError(uint64_t *word) {
-  if (word == nullptr)
-    return flagcxInvalidArgument;
-  int device;
-  DEVCHECK(musaGetDevice(&device));
-  std::lock_guard<std::mutex> lock(musaFifoErrorMutex);
-  try {
-    musaFifoErrorWords.push_back({word, device});
-  } catch (const std::bad_alloc &) {
-    return flagcxSystemError;
-  }
-  return flagcxSuccess;
-}
-
-void flagcxMusaUnregisterFifoError(uint64_t *word) {
-  std::lock_guard<std::mutex> lock(musaFifoErrorMutex);
-  musaFifoErrorWords.erase(
-      std::remove_if(musaFifoErrorWords.begin(), musaFifoErrorWords.end(),
-                     [word](const MusaFifoErrorWord &entry) {
-                       return entry.word == word;
-                     }),
-      musaFifoErrorWords.end());
-}
-
-flagcxResult_t flagcxMusaCheckFifoErrors() {
-  int device;
-  DEVCHECK(musaGetDevice(&device));
-  std::lock_guard<std::mutex> lock(musaFifoErrorMutex);
-  for (const auto &entry : musaFifoErrorWords) {
-    if (entry.device != device)
-      continue;
-    const uint64_t status = __atomic_load_n(entry.word, __ATOMIC_ACQUIRE);
-    if (status != flagcxSuccess) {
-      WARN("MUSA device/FIFO failure: device=%d status=%llu word=%p", device,
-           (unsigned long long)status, (void *)entry.word);
-      // A malformed status must not be cast to an arbitrary public result.
-      return status < flagcxNumResults && status != flagcxInProgress
-                 ? (flagcxResult_t)status
-                 : flagcxInternalError;
-    }
-  }
-  return flagcxSuccess;
-}
 
 std::map<flagcxMemcpyType_t, musaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, musaMemcpyHostToDevice},
@@ -76,7 +18,7 @@ std::map<flagcxMemcpyType_t, musaMemcpyKind> memcpy_type_map = {
 
 flagcxResult_t musaAdaptorDeviceSynchronize() {
   DEVCHECK(musaDeviceSynchronize());
-  return flagcxMusaCheckFifoErrors();
+  return flagcxSuccess;
 }
 
 flagcxResult_t musaAdaptorGetLastError() {
@@ -299,7 +241,7 @@ flagcxResult_t musaAdaptorStreamSynchronize(flagcxStream_t stream) {
       return flagcxUnhandledDeviceError;
     }
   }
-  return flagcxMusaCheckFifoErrors();
+  return flagcxSuccess;
 }
 
 flagcxResult_t musaAdaptorStreamQuery(flagcxStream_t stream) {
@@ -314,7 +256,7 @@ flagcxResult_t musaAdaptorStreamQuery(flagcxStream_t stream) {
       res = flagcxUnhandledDeviceError;
     }
   }
-  return res == flagcxSuccess ? flagcxMusaCheckFifoErrors() : res;
+  return res;
 }
 
 flagcxResult_t musaAdaptorStreamWaitEvent(flagcxStream_t stream,
@@ -363,7 +305,7 @@ flagcxResult_t musaAdaptorEventSynchronize(flagcxEvent_t event) {
   if (event != NULL) {
     DEVCHECK(musaEventSynchronize(event->base));
   }
-  return flagcxMusaCheckFifoErrors();
+  return flagcxSuccess;
 }
 
 flagcxResult_t musaAdaptorEventQuery(flagcxEvent_t event) {
@@ -378,7 +320,7 @@ flagcxResult_t musaAdaptorEventQuery(flagcxEvent_t event) {
       res = flagcxUnhandledDeviceError;
     }
   }
-  return res == flagcxSuccess ? flagcxMusaCheckFifoErrors() : res;
+  return res;
 }
 
 // The wrapper owns the exported handle bytes, not the device allocation.

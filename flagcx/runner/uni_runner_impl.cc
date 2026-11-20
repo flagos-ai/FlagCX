@@ -5646,10 +5646,6 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
 }
 
 flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
-  if (deviceAdaptor->hostGetDevicePointer == nullptr) {
-    WARN("uniRunner FIFO: hostGetDevicePointer not supported");
-    return flagcxNotSupported;
-  }
   if (!comm->uniRunnerKernelSupported)
     return flagcxNotSupported;
   flagcxHeteroComm_t hcomm = comm->heteroComm;

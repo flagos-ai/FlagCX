@@ -17,7 +17,6 @@
 #include "device_api/flagcx_device.h"
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
-#include "musa_fifo_errors.h"
 #include "net.h"
 #include "onesided.h"
 #include "p2p.h"
@@ -511,19 +510,6 @@ defaultDevApiCommCreate(flagcxComm_t comm,
                         size_t reqsSize, flagcxDevComm_t devComm) {
   // The default backend consumes only fields in the frozen prefix.
   (void)reqsSize;
-#ifdef USE_MUSA_ADAPTOR
-  // Intra-only communicators can have no Proxy FIFOs. They still need an
-  // observable error channel; never make FIFO presence a new requirement.
-  FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&devComm->deviceErrorHost,
-                                          sizeof(uint64_t), flagcxMemHost,
-                                          NULL));
-  *devComm->deviceErrorHost = flagcxSuccess;
-  if (deviceAdaptor->hostGetDevicePointer == nullptr)
-    return flagcxNotSupported;
-  FLAGCXCHECK(deviceAdaptor->hostGetDevicePointer(
-      (void **)&devComm->deviceErrorStatus, devComm->deviceErrorHost));
-  FLAGCXCHECK(flagcxMusaRegisterFifoError(devComm->deviceErrorHost));
-#endif
   if (reqs->interBarrierCount < 0)
     return flagcxInvalidArgument;
   devComm->interBarrierCount = reqs->interBarrierCount;
@@ -715,13 +701,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
         return res;
       }
       memset(devComm->counterBuffer, 0, cntSize);
-#ifdef USE_MUSA_ADAPTOR
-      // Signal placement does not change the address space of host counters.
-      const bool mapHostCounters = true;
-#else
-      const bool mapHostCounters = hostMappedSignals;
-#endif
-      if (mapHostCounters) {
+      if (hostMappedSignals) {
         if (deviceAdaptor->hostGetDevicePointer == nullptr)
           return flagcxNotSupported;
         res = deviceAdaptor->hostGetDevicePointer(
@@ -746,7 +726,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
         if (res != flagcxSuccess)
           return res;
       } else {
-        devComm->completionCounterBuffer = devComm->counterDeviceBuffer
+        devComm->completionCounterBuffer = hostMappedSignals
                                                ? devComm->counterDeviceBuffer
                                                : devComm->counterBuffer;
       }
@@ -1093,7 +1073,6 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
         deviceAdaptor->deviceFree(devComm->counterBuffer, flagcxMemHost, NULL));
     devComm->counterBuffer = nullptr;
   }
-  devComm->counterDeviceBuffer = nullptr; // Non-owning alias of counterBuffer.
   if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
     if (devComm->completionCounterBuffer) {
       FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->completionCounterBuffer,
@@ -1110,15 +1089,6 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   devComm->putValueStagingTotalSlotCount = 0;
   free(devComm->localRankToRank);
   devComm->localRankToRank = nullptr;
-#ifdef USE_MUSA_ADAPTOR
-  if (devComm->deviceErrorHost != nullptr) {
-    flagcxMusaUnregisterFifoError(devComm->deviceErrorHost);
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->deviceErrorHost,
-                                          flagcxMemHost, NULL));
-    devComm->deviceErrorHost = nullptr;
-    devComm->deviceErrorStatus = nullptr;
-  }
-#endif
 
   // The outer DevComm frees its cached device state after backend teardown.
   return flagcxSuccess;
@@ -1357,10 +1327,7 @@ static flagcxResult_t defaultDevApiMemDestroy(flagcxComm_t comm,
 
 static flagcxResult_t defaultDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
                                                     void **devPtr) {
-  if (!devPtr)
-    return flagcxInvalidArgument;
-  *devPtr = nullptr;
-  if (!devComm)
+  if (!devComm || !devPtr)
     return flagcxInvalidArgument;
 
   pthread_mutex_lock(&devComm->cachedPtrMutex);
@@ -1380,19 +1347,6 @@ static flagcxResult_t defaultDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
   void *netDevPtr = nullptr;
   void *gridSyncPtr = nullptr;
   flagcxResult_t res = flagcxSuccess;
-  const size_t netElementSize = flagcxDevNetSizeOf();
-#ifdef USE_MUSA_ADAPTOR
-  if (hostCopy._contextCount <= 0 ||
-      hostCopy._contextCount > FLAGCX_DEVICE_CTA_COUNT) {
-    res = flagcxInvalidArgument;
-    goto fail;
-  }
-  if (netElementSize == 0) {
-    WARN("DevComm device view requires MUSA kernel helpers (COMPILE_KERNEL=1)");
-    res = flagcxNotSupported;
-    goto fail;
-  }
-#endif
   {
     size_t gsSize = 2 * sizeof(unsigned int);
     FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&gridSyncPtr, gsSize,
@@ -1414,12 +1368,8 @@ static flagcxResult_t defaultDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
       res, fail);
 
   // Step 3: Allocate + construct net array on device
-  if (hostCopy._contextCount > 0 && netElementSize > 0) {
-    if (netElementSize > SIZE_MAX / (size_t)hostCopy._contextCount) {
-      res = flagcxInvalidArgument;
-      goto fail;
-    }
-    size_t netArraySize = hostCopy._contextCount * netElementSize;
+  if (hostCopy._contextCount > 0 && flagcxDevNetSizeOf() > 0) {
+    size_t netArraySize = hostCopy._contextCount * flagcxDevNetSizeOf();
     FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&netDevPtr, netArraySize,
                                                 flagcxMemDevice, NULL),
                     res, fail);
@@ -1492,10 +1442,7 @@ static flagcxResult_t defaultDevApiCommFreeDevicePtr(flagcxDevComm_t devComm) {
 
 static flagcxResult_t defaultDevApiMemGetDevicePtr(flagcxDevMem_t devMem,
                                                    void **devPtr) {
-  if (!devPtr)
-    return flagcxInvalidArgument;
-  *devPtr = nullptr;
-  if (!devMem)
+  if (!devMem || !devPtr)
     return flagcxInvalidArgument;
 
   pthread_mutex_lock(&devMem->cachedPtrMutex);

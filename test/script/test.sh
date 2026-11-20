@@ -14,7 +14,7 @@ elif [[ "$TYPE" == "bi150" ]]; then
     USE_ILUVATAR=1 make -j$(nproc)
 
 else
-    echo "Invalid build type: $TYPE"
+    echo "无效的编译类型: $TYPE"
     exit 1
 fi
 
@@ -31,7 +31,7 @@ if [[ "$TYPE" == "nvidia" ]]; then
 elif [[ "$TYPE" == "bi150"  ]]; then
     make -j$(nproc) USE_ILUVATAR=1
 else
-    echo "Invalid build type: $TYPE"
+    echo "无效的编译类型: $TYPE"
     exit 1
 fi
 

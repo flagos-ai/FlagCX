@@ -3250,8 +3250,8 @@ flagcxResult_t flagcxIbCloseSend(void *sendComm) {
       }
     }
 
-    // Release retransmission resources before the PD, even if retransmission
-    // was disabled at runtime after the MR/control QP had been allocated.
+    // 清理重传使用的资源：即使 runtime 期间禁用了 retrans，也可能已经
+    // 分配了 MR/ctrl QP，必须在 PD 释放前全部销毁
     for (int i = 0; i < comm->base.ndevs; i++) {
       struct flagcxIbSendCommDev *commDev = comm->devs + i;
       if (commDev->ackMr) {

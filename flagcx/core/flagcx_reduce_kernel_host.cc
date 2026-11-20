@@ -133,11 +133,6 @@ enqueue(void *fifoBuffer, uint64_t addr1, uint64_t addr2, uint64_t addr3,
       nthreads > flagcxTriggerMask(flagcxReduceTriggerBitsNThreads)) {
     return flagcxInvalidArgument;
   }
-#ifdef USE_MUSA_ADAPTOR
-  // The MUSA persistent reduction kernel implements float/Sum.
-  if (datatype != flagcxFloat || redop != flagcxSum)
-    return flagcxNotSupported;
-#endif
   int idx = -1;
   uint64_t *buffer = (uint64_t *)fifoBuffer;
   int capacity = buffer[flagcxFifoIdxCapacity];
