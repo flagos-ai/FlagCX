@@ -38,6 +38,29 @@ export FLAGCX_MEM_ENABLE=1
 export FLAGCX_VMM_ENABLE=0
 export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-eth0}"
 
+FLAGCX_CI_IGNORE_TEST='{
+  "gtest": [
+    {
+      "suite": "p2p",
+      "tests": [
+        "P2pAdaptorStruct.*",
+        "P2pAdaptorTest.*",
+        "P2pLoopbackTest.*",
+        "P2pEngineRpcTransportTest.ConnectAcceptIsLocalSameHost"
+      ],
+      "reason": "These tests directly target the IBRC vtable; PPU CI validates the BAREX transport through P2P Engine tests"
+    }
+  ],
+  "phases": [
+    {
+      "suite": "symmem",
+      "name": "vmm-net-data",
+      "reason": "PPU BAREX has no validated VMM-capable MR route"
+    }
+  ]
+}'
+export FLAGCX_CI_IGNORE_TEST
+
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_PPU=1 USE_ACCL_BAREX=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_PPU=1 USE_ACCL_BAREX=1)
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
@@ -68,9 +91,6 @@ flagcx_ci_configure_suite() {
       export FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX
       ;;
     p2p)
-      # These suites call the IBRC vtable directly. The Engine tests use the
-      # runtime transport selector and are retained for BAREX coverage.
-      export GTEST_FILTER="-P2pAdaptorStruct.*:P2pAdaptorTest.*:P2pLoopbackTest.*:P2pEngineRpcTransportTest.ConnectAcceptIsLocalSameHost"
       export FLAGCX_P2P_TRANSPORT=accl
       ;;
     rma)

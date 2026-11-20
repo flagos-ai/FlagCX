@@ -416,6 +416,16 @@ $(LIBOBJ) $(DEVOBJ): $(BUILD_CONFIG_FILE)
 TARGET = libflagcx.so
 all: $(LIBDIR)/$(TARGET) $(BUILD_PUBLIC_HEADERS)
 
+ifeq ($(USE_ILUVATAR), 1)
+ILUVATAR_VMM_DIAGNOSTICS_DIR ?= $(BUILDDIR)/iluvatar-vmm-sdk
+.PHONY: iluvatar-vmm-diagnostics
+iluvatar-vmm-diagnostics:
+	@echo "Build FLAGCX_ILUVATAR_HAS_VMM=$(ILUVATAR_VMM_HEADER_SUPPORT)"
+	@bash "$(ILUVATAR_VMM_CHECK_DIR)/check_iluvatar_vmm.sh" \
+	  diagnose "$(DEVICE_HOME)" "$(ILUVATAR_VMM_DIAGNOSTICS_DIR)" -- \
+	  $(ILUVATAR_VMM_CHECK_COMPILER) $(CPPFLAGS) $(HOST_CXX_STANDARD) $(HOST_CXXFLAGS)
+endif
+
 # Resolve the bitcode route from the same platform configuration that sets
 # ADAPTOR_FLAG for libflagcx.so. DEVICE_BITCODE_ARCH is the single public arch
 # input; the Iluvatar Makefile uses a different variable name internally.

@@ -45,6 +45,13 @@ static FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxStoreVolatile64Internal(Ptr ptr, uint64_t value) {
   auto dst = FLAGCX_IR_GLOBAL_PTR_CAST(volatile uint64_t, ptr);
   *dst = value;
+#if defined(__CCE_IS_AICORE__) && defined(USE_ASCEND_ADAPTOR)
+  // Ascend spells the store-release as plain STG + dirty-line sweep; the
+  // platform's CceAtomic::store uses the identical pair and the same
+  // measured rationale (2026-11-17 host-readback probe, 910C): a bare
+  // STG is not guaranteed at a coherent point by kernel tail.
+  asc_dcci_entire_out();
+#endif
 }
 
 // Prefer a platform's optimized cooperative copy when available.
@@ -176,6 +183,7 @@ flagcxDevFlush(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
                flagcxDevMemoryOrder_t order) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
 
+#if FLAGCX_DEVICE_HAS_NET_TRANSPORT
   // A communicator may use IPC for one memory object and Net fallback for
   // another, so flush both domains.  Flushing an empty FIFO is harmless.
   DeviceAPI::Intrin::threadfenceSystem();
@@ -184,6 +192,30 @@ flagcxDevFlush(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxDevNetFlushS(FLAGCX_IR_NET_ARG(net), coopKind, order);
   }
+#else
+  // No device net transport on this platform (Ascend 2201 today).  Both
+  // statements above reference capabilities this pass declares absent:
+  // Intrin::threadfenceSystem is the never-defined trap call (measured:
+  // the same undefined-symbol class that killed probe r144 N2 through the
+  // put arm), and the net flush arm sits behind a runtime predicate, which
+  // DCE cannot remove at instantiation time (probe r145 named the inlined
+  // kernel as the referrer; r146 then showed only caller-side CONSTANT
+  // scope/kind arguments fold out of flagcxScopedFence - a runtime bool
+  // guard is not one).  What cannot run is irrelevant: an IPC-only comm
+  // has no net contexts, so the FIFO this flushes is empty by
+  // construction.  What flush must still do here is order the calling
+  // core's earlier peer stores ahead of the kernel's result-store, and
+  // the measured dcci pair behind Intrin::threadfenceDevice is the
+  // ordering primitive for exactly that envelope (device scope, single
+  // chip; see the fence note in device_utils.h and the rendezvous record
+  // in ascend_platform_traits.h, whose two-card peer visibility gate is
+  // the hardware premise for the same choice made for put at r144/r146).
+  (void)comm;
+  (void)contextId;
+  (void)coopKind;
+  (void)order;
+  DeviceAPI::Intrin::threadfenceDevice();
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -323,11 +355,21 @@ flagcxIsPeerLocal(const flagcxDevComm &comm, const flagcxTeam &team, int peer) {
 // Validate team semantics and return whether the peer is a P2P candidate.
 // Callers must still check the actual peer pointer: topology alone does not
 // guarantee that IPC/VMM setup succeeded.
+//
+// There is deliberately no caller-name parameter here. It used to be an
+// unused `const char *funcName`, and that argument could not bind at all on
+// address-space-disjoint compilers: measured on Ascend 910C (bisheng
+// 9.1.0-beta.3, probe r139), a string literal in this pass has type
+// `const __gm__ char[N]`, and the device image's generic addrspace pass
+// rejects the cross-space binding at every call site -- in an extern "C"
+// (non-template) inline body, which is type-checked at parse regardless of
+// any dead-code elimination. Dropping the dead argument keeps the behaviour
+// identical on every platform and makes the whole shared surface bindable
+// where literals live in a named address space.
 static FLAGCX_DEVICE_INLINE_DECORATOR bool
 flagcxValidateAndDispatch(const flagcxDevComm &comm, const flagcxTeam &team,
                           int peer, flagcxDevTeamKind_t teamKind,
-                          const char *funcName, bool &shouldReturn) {
-  (void)funcName;
+                          bool &shouldReturn) {
   shouldReturn = false;
   bool isPeerLocal = flagcxIsPeerLocal(comm, team, peer);
 
@@ -360,8 +402,8 @@ flagcxDevPut(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          "flagcxDevPut", shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -377,11 +419,32 @@ flagcxDevPut(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
       flagcxScopedFence(scope);
     flagcxCoopMemcpy(coopKind, peerPtr, localSrc, bytes);
   } else {
+#if FLAGCX_DEVICE_HAS_NET_TRANSPORT
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     FLAGCX_IR_NET_REF(net).put(team, peer, *dst, dstOffset, *src, srcOffset,
                                bytes, flagcxDevNet_None{}, flagcxDevNet_None{},
                                coop);
+#else
+    // No device net transport on this platform (Ascend 2201 today). The
+    // compiler cannot prune this arm - useP2P is a runtime bool - and its
+    // never-defined trap calls would fail the in--c device link of EVERY
+    // put kernel even though the arm cannot run there: probe r144 N2 lost
+    // on exactly that reference and r145's ld.lld context named the
+    // referrer as the inlined kernel (n2k_mix_aic / .aiv). __builtin_trap
+    // is not an option on that pass (lowers to abort; verifier refuses -
+    // T0/T1 in device_utils.h), so the arm lands on the no-symbol
+    // FLAGCX_DEVICE_TRAP, the same spelling the GDA provider-switch
+    // fallbacks already accept. Why that is defensible rather than a
+    // silent no-op: an INTRA-team peer is IPC-mapped, so peerPtr is
+    // non-null and this arm is not reached; if the mapping itself failed
+    // that is the open T2 alias defect, caught by every test's host-side
+    // check of the results buffers, and the Ascend unified runner gates
+    // the net-forcing fallback off (Stage D). Reaching it is UB by
+    // construction - the same trade, documented in the same header, that
+    // the provider-switch sites already make.
+    FLAGCX_DEVICE_TRAP();
+#endif
   }
 }
 
@@ -398,8 +461,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevPut_RSigInc(
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          "flagcxDevPut_RSigInc", shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -447,8 +510,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevPut_RSigAdd(
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          "flagcxDevPut_RSigAdd", shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -496,8 +559,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevPut_LCtrInc(
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          "flagcxDevPut_LCtrInc", shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -548,8 +611,7 @@ flagcxDevPut_RSigInc_LCtrInc(
 
   bool shouldReturn;
   bool useP2P =
-      flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                "flagcxDevPut_RSigInc_LCtrInc", shouldReturn);
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -601,8 +663,7 @@ flagcxDevPut_RSigAdd_LCtrInc(
 
   bool shouldReturn;
   bool useP2P =
-      flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                "flagcxDevPut_RSigAdd_LCtrInc", shouldReturn);
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -657,8 +718,8 @@ flagcxDevGet(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          "flagcxDevGet", shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -674,10 +735,19 @@ flagcxDevGet(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
         order == flagcxDeviceMemoryOrderAcqRel)
       flagcxScopedFence(scope);
   } else {
+#if FLAGCX_DEVICE_HAS_NET_TRANSPORT
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     FLAGCX_IR_NET_REF(net).get(team, peer, *src, srcOffset, *dst, dstOffset,
                                bytes, coop);
+#else
+    // Same gate and reasoning as flagcxDevPut.  On Ascend 2201 today this
+    // instantiation never happens - the S19 launcher is deliberately not
+    // defined there (see test/kernel/ascend/device_ir.asc) - the arm is
+    // pruned so the put/get/putValue family stays consistent for any
+    // future platform that shares the flag.
+    FLAGCX_DEVICE_TRAP();
+#endif
   }
 }
 
@@ -696,8 +766,8 @@ flagcxDevPutValue(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          "flagcxDevPutValue", shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -717,10 +787,19 @@ flagcxDevPutValue(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
     }
     coop.sync();
   } else {
+#if FLAGCX_DEVICE_HAS_NET_TRANSPORT
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     FLAGCX_IR_NET_REF(net).putValue(team, peer, *dst, dstOffset, value,
                                     flagcxDevNet_None{}, coop);
+#else
+    // Same gate and same reasoning as the plain flagcxDevPut above (probe
+    // r144/r145: the runtime useP2P guard does not spare these references
+    // from codegen on a pass where the net glue's ops are never-defined
+    // symbols). An INTRA-team peer is IPC-mapped, so this arm is not
+    // reached; reaching it is UB by construction, documented at put.
+    FLAGCX_DEVICE_TRAP();
+#endif
   }
 }
 
@@ -739,8 +818,8 @@ flagcxDevPutValue_RSigInc(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(
-      *comm, team, peer, teamKind, "flagcxDevPutValue_RSigInc", shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -783,8 +862,8 @@ flagcxDevPutValue_RSigAdd(
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(
-      *comm, team, peer, teamKind, "flagcxDevPutValue_RSigAdd", shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =

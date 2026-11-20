@@ -123,6 +123,8 @@ private:
 #include "enflame_platform_traits.h"
 #elif defined(USE_MUSA_ADAPTOR)
 #include "musa_platform_traits.h"
+#elif defined(USE_ASCEND_ADAPTOR)
+#include "ascend_platform_traits.h"
 #else
 #include "default_platform_traits.h"
 #endif
