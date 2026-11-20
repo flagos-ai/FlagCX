@@ -36,17 +36,11 @@
 
 using DefaultCompletionWord = typename DeviceAPI::CompletionWord;
 
-// Host-visible helpers from the platform device_api_host_helpers source
+// Host-visible helpers from device_api_host_helpers.cu
 #ifdef COMPILE_KERNEL_HOST
 extern "C" size_t flagcxDevNetSizeOf();
 extern "C" void flagcxDevNetLaunchConstruct(void *devNets, void *devComm,
                                             int count, void *stream);
-#ifdef USE_MUSA_ADAPTOR
-extern "C" flagcxResult_t flagcxMusaDevNetLaunchConstructChecked(void *devNets,
-                                                                 void *devComm,
-                                                                 int count,
-                                                                 void *stream);
-#endif
 #else
 static size_t flagcxDevNetSizeOf() { return 0; }
 static void flagcxDevNetLaunchConstruct(void *, void *, int, void *) {}
@@ -1358,7 +1352,17 @@ static flagcxResult_t defaultDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
   }
   hostCopy._gridBarrierState = (unsigned int *)gridSyncPtr;
 
-  // Step 2: Copy flagcxDevComm to device
+  // Allocate the net array before copying the communicator so its pointer is
+  // initialized without computing an offset into a non-standard-layout type.
+  if (hostCopy._contextCount > 0 && flagcxDevNetSizeOf() > 0) {
+    size_t netArraySize = hostCopy._contextCount * flagcxDevNetSizeOf();
+    FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&netDevPtr, netArraySize,
+                                                flagcxMemDevice, NULL),
+                    res, fail);
+    hostCopy._netContexts = netDevPtr;
+  }
+
+  // Step 2: Copy the fully initialized flagcxDevComm to device.
   FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&dPtr, sizeof(flagcxDevComm),
                                               flagcxMemDevice, NULL),
                   res, fail);
@@ -1367,30 +1371,10 @@ static flagcxResult_t defaultDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
                                   flagcxMemcpyHostToDevice, NULL, NULL),
       res, fail);
 
-  // Step 3: Allocate + construct net array on device
-  if (hostCopy._contextCount > 0 && flagcxDevNetSizeOf() > 0) {
-    size_t netArraySize = hostCopy._contextCount * flagcxDevNetSizeOf();
-    FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&netDevPtr, netArraySize,
-                                                flagcxMemDevice, NULL),
-                    res, fail);
-#if defined(USE_MUSA_ADAPTOR) && defined(COMPILE_KERNEL_HOST)
-    FLAGCXCHECKGOTO(flagcxMusaDevNetLaunchConstructChecked(
-                        netDevPtr, dPtr, hostCopy._contextCount, nullptr),
-                    res, fail);
-#else
+  // Step 3: Construct net contexts using the initialized device communicator.
+  if (netDevPtr != nullptr) {
     flagcxDevNetLaunchConstruct(netDevPtr, dPtr, hostCopy._contextCount,
                                 nullptr);
-#endif
-    // Finish construction before publishing the array to IR callers.
-    FLAGCXCHECKGOTO(deviceAdaptor->deviceSynchronize(), res, fail);
-    void *netCtxField = (char *)dPtr + offsetof(flagcxDevComm, _netContexts);
-    FLAGCXCHECKGOTO(
-        deviceAdaptor->deviceMemcpy(netCtxField, &netDevPtr, sizeof(void *),
-                                    flagcxMemcpyHostToDevice, NULL, NULL),
-        res, fail);
-    // The copy above is pageable-sourced and may still be staged when
-    // deviceMemcpy returns, so the handle must not be published (or cached)
-    // until it is complete; otherwise _netContexts can still read as null.
     FLAGCXCHECKGOTO(deviceAdaptor->deviceSynchronize(), res, fail);
   }
 
@@ -1464,9 +1448,6 @@ static flagcxResult_t defaultDevApiMemGetDevicePtr(flagcxDevMem_t devMem,
       deviceAdaptor->deviceMemcpy(dPtr, &hostCopy, sizeof(flagcxDevMem),
                                   flagcxMemcpyHostToDevice, NULL, NULL),
       res, fail);
-  // Same publication rule as flagcxDevCommGetDevicePtr: the copy is
-  // pageable-sourced, so complete it before the pointer becomes visible.
-  FLAGCXCHECKGOTO(deviceAdaptor->deviceSynchronize(), res, fail);
 
   devMem->cachedDevicePtr = dPtr;
   *devPtr = dPtr;

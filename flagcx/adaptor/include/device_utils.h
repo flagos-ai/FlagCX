@@ -29,14 +29,6 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
               "Bulk32 must occupy and align to 32 bytes");
 #endif
 
-// Device compiler detection — defined when any GPU device compiler is active.
-// Extend with __ASCEND_CC__ etc. as new platforms are added.
-#if defined(USE_MUSA_ADAPTOR) &&                                               \
-    (defined(__MUSACC__) || defined(__MTGPU__) || defined(__MUSA_ARCH__) ||    \
-     defined(FLAGCX_MUSA_DEVICE_COMPILE))
-#define FLAGCX_MUSA_DEVICE_COMPILER 1
-#endif
-
 // Ascend takes the same route as Iluvatar, for the same reason: bisheng
 // compiles one ASC translation unit in two passes and defines
 // __CCE_IS_AICORE__ on the device pass only, while the types guarded here
@@ -45,8 +37,8 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // so it cannot be blind to the type. The makefile therefore passes
 // -DFLAGCX_ASCEND_DEVICE_COMPILE=1 for the whole compilation and the vendor
 // condition keys on it; see makefiles/ascend.mk.
-#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
-    defined(FLAGCX_MUSA_DEVICE_COMPILER) || defined(__CCE_IS_AICORE__) ||      \
+#if defined(__CUDACC__) || defined(__MUSACC__) || defined(__HIPCC__) ||        \
+    defined(__xpu__) || defined(__CCE_IS_AICORE__) ||                          \
     (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
      defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
     defined(__TOPSCC__) ||                                                     \
@@ -70,8 +62,8 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // Ascend device path needs to distinguish is keyed on __CCE_IS_AICORE__
 // directly; see ascend_platform_traits.h.
 #ifndef FLAGCX_CHECK_DEVICE_CC
-#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
-    defined(FLAGCX_MUSA_DEVICE_COMPILER) || defined(__CCE_IS_AICORE__) ||      \
+#if defined(__CUDACC__) || defined(__MUSACC__) || defined(__HIPCC__) ||        \
+    defined(__xpu__) || defined(__CCE_IS_AICORE__) ||                          \
     (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
      defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
     defined(__TOPSCC__)
@@ -324,7 +316,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #elif defined(USE_MUSA_ADAPTOR)
 #include <musa_runtime.h>
 
-#if defined(FLAGCX_MUSA_DEVICE_COMPILER)
+#if defined(__MUSACC__)
 // musa/atomic instantiates numeric_limits for the SDK half types.
 // Match MCCL's prerequisite order before its atomic include.
 #include <musa/atomic>
@@ -348,7 +340,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_BLOCK_IDX_X blockIdx.x
 #define FLAGCX_BLOCK_DIM_X blockDim.x
 #define FLAGCX_GRID_DIM_X gridDim.x
-#define FLAGCX_SHARED __shared__
+#define FLAGCX_SHARED_DECORATOR __shared__
 #else
 #define FLAGCX_HOST_DECORATOR
 #define FLAGCX_DEVICE_DECORATOR
@@ -362,7 +354,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_BLOCK_IDX_X 0
 #define FLAGCX_BLOCK_DIM_X 1
 #define FLAGCX_GRID_DIM_X 1
-#define FLAGCX_SHARED static
+#define FLAGCX_SHARED_DECORATOR static
 #endif
 
 // S5000 (mp_31), also used by the source MCCL cooperative groups.

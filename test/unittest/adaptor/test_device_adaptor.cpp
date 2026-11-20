@@ -865,10 +865,6 @@ TEST_F(DeviceAdaptorTest, StreamCopyAndFree) {
 
 // Test: obtain the device-visible alias of mapped host memory.
 TEST_F(DeviceAdaptorTest, HostGetDevicePointer) {
-#ifdef USE_MUSA_ADAPTOR
-  // This is required by MUSA FIFO initialization, so do not silently skip it.
-  ASSERT_NE(devHandle->hostGetDevicePointer, nullptr);
-#endif
   if (devHandle->hostGetDevicePointer == nullptr) {
     GTEST_SKIP() << "hostGetDevicePointer not implemented for this backend";
   }

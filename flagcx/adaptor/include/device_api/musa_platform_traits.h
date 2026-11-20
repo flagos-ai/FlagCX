@@ -27,7 +27,7 @@
 // Match MCCL's compiler boundary: native atomic headers instantiate SDK
 // floating-point types whose definitions are provided by the MUSA compiler.
 // Ordinary host compilation needs only the FlagCX API and object layouts.
-#if defined(FLAGCX_MUSA_DEVICE_COMPILER)
+#if defined(__MUSACC__)
 #include <musa/atomic>
 #include <musa_bf16.h>
 #include <musa_fp16.h>
@@ -55,7 +55,7 @@ struct PlatformTraits<MusaPlatform> {
         FLAGCX_DEVICE_TRAP();
     }
 
-#if defined(FLAGCX_MUSA_DEVICE_COMPILER)
+#if defined(__MUSACC__)
     static FLAGCX_DEVICE_INLINE_DECORATOR int lane() {
       return __builtin_popcount(__get_lanemask_lt());
     }
@@ -148,7 +148,7 @@ struct PlatformTraits<MusaPlatform> {
   };
 
   struct Atomic {
-#if defined(FLAGCX_MUSA_DEVICE_COMPILER)
+#if defined(__MUSACC__)
     static FLAGCX_HOST_DEVICE_INLINE constexpr musa::memory_order
     toNativeOrder(flagcxDeviceMemoryOrder_t order) {
       switch (order) {
@@ -362,7 +362,7 @@ struct PlatformTraits<MusaPlatform> {
       return Intrin::simtWidth * tileCount;
     }
     FLAGCX_DEVICE_INLINE_DECORATOR bool supportsCallerSync() const {
-#if defined(FLAGCX_MUSA_DEVICE_COMPILER)
+#if defined(__MUSACC__)
       return blockDim.y == 1 && blockDim.z == 1 &&
              supportsSync(firstTile, tileCount, FLAGCX_BLOCK_DIM_X) &&
              threadRank() >= 0 && threadRank() < size();
@@ -372,7 +372,7 @@ struct PlatformTraits<MusaPlatform> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
-#if defined(FLAGCX_MUSA_DEVICE_COMPILER)
+#if defined(__MUSACC__)
       if (!supportsCallerSync())
         FLAGCX_DEVICE_TRAP();
 
