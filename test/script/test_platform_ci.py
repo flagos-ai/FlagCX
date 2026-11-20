@@ -138,7 +138,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
     def test_all_hardware_platforms_are_enabled(self):
         self.assertEqual(
             ENABLED_PLATFORMS,
-            ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "ppu", "ascend"],
+            ["cuda", "hygon", "iluvatar", "metax", "mthreads", "kunlunxin", "ppu", "ascend"],
         )
 
     def test_backend_phase_skips_follow_platform_setup(self):

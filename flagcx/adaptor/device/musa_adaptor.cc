@@ -321,9 +321,13 @@ flagcxResult_t musaAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
                                              int) {
   return flagcxNotSupported;
 }
-flagcxResult_t musaAdaptorEventElapsedTime(float *, flagcxEvent_t,
-                                           flagcxEvent_t) {
-  return flagcxNotSupported;
+flagcxResult_t musaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
+                                           flagcxEvent_t end) {
+  if (ms == NULL || start == NULL || end == NULL) {
+    return flagcxInvalidArgument;
+  }
+  DEVCHECK(musaEventElapsedTime(ms, start->base, end->base));
+  return flagcxSuccess;
 }
 
 flagcxResult_t musaAdaptorHostRegister(void *, size_t) {

@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if [[ $# -ne 8 && $# -ne 9 ]]; then
-  echo "Usage: $0 <platforms-json> <config> <cuda-first> <cuda-second> <hygon> [hygon-experimental] <metax> <ppu> <ascend>" >&2
+if [[ $# -ne 8 && $# -ne 9 && $# -ne 10 ]]; then
+  echo "Usage: $0 <platforms-json> <config> <cuda-first> <cuda-second> <hygon> [hygon-experimental] <metax> <ppu> <ascend> [mthreads]" >&2
   exit 2
 fi
 
@@ -28,23 +28,32 @@ require_success() {
   fi
 }
 
-if selected cuda || selected metax || selected hygon || selected ppu || selected ascend; then
+if selected cuda || selected metax || selected hygon || selected ppu || selected ascend || selected mthreads; then
   require_success "Hardware config loading" "$config_result"
 fi
 
 cuda_first=$1
 cuda_specific=$2
 hygon=$3
-if [[ $# -eq 7 ]]; then
+if [[ $# -eq 8 ]]; then
   hygon_experimental=$4
   metax=$5
   ppu=$6
   ascend=$7
+  mthreads=$8
+  require_hygon_experimental=1
+elif [[ $# -eq 7 ]]; then
+  hygon_experimental=$4
+  metax=$5
+  ppu=$6
+  ascend=$7
+  mthreads=""
   require_hygon_experimental=1
 else
   metax=$4
   ppu=$5
   ascend=$6
+  mthreads=""
   require_hygon_experimental=0
 fi
 if selected cuda; then
@@ -65,6 +74,9 @@ if selected ppu; then
 fi
 if selected ascend; then
   require_success "Ascend workload" "$ascend"
+fi
+if [[ -n "$mthreads" ]] && selected mthreads; then
+  require_success "Mthreads workload" "$mthreads"
 fi
 
 echo "All selected platform workloads succeeded."
