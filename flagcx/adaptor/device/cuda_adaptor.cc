@@ -4,7 +4,9 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "device_event.h"
 #include "param.h"
+#include "runtime_capture.h"
 #include "segmented_vmm_allocation.h"
 #include <limits>
 #include <mutex>
@@ -497,15 +499,47 @@ flagcxResult_t cudaAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
   return flagcxUnhandledDeviceError;
 }
 
+flagcxResult_t
+cudaAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                  flagcxStreamCaptureStatus_t *status) {
+  if (status == NULL)
+    return flagcxInvalidArgument;
+#if CUDART_VERSION >= 10000
+  // Do not mistake a statically linked CUDA runtime for missing graph support.
+  cudaStreamCaptureStatus nativeStatus = cudaStreamCaptureStatusInvalidated;
+  cudaError_t result =
+      cudaStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
+  return flagcxRuntimeDecodeCaptureStatus((int)result, (int)nativeStatus,
+                                          status);
+#else
+  *status = flagcxStreamCaptureNone;
+  return flagcxSuccess;
+#endif
+}
+
+static flagcxResult_t cudaAdaptorEventCreateNative(void *wrapper,
+                                                   unsigned int flags) {
+  (void)flags;
+  DEVCHECK(cudaEventCreateWithFlags(&(((flagcxEvent_t)wrapper)->base), flags));
+  return flagcxSuccess;
+}
+
 flagcxResult_t cudaAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? cudaEventDefault
                                  : cudaEventDisableTiming;
-  DEVCHECK(cudaEventCreateWithFlags(&((*event)->base), flags));
-  return flagcxSuccess;
+  static const struct flagcxEventCreateOps ops = {
+      flagcxEventAllocateWrapper, free, cudaAdaptorEventCreateNative};
+  void *wrapper = NULL;
+  flagcxResult_t result = flagcxEventCreateTransactional(
+      &wrapper, sizeof(struct flagcxEvent), flags, &ops);
+  if (result == flagcxSuccess)
+    *event = (flagcxEvent_t)wrapper;
+  return result;
 }
 
 flagcxResult_t cudaAdaptorEventDestroy(flagcxEvent_t event) {
@@ -1614,7 +1648,8 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       cudaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       cudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
-                                 // Symmetric memory VMM functions
+      cudaAdaptorStreamGetCaptureStatus,
+      // Symmetric memory VMM functions
       cudaAdaptorSymPhysAlloc, cudaAdaptorSymPhysFree, cudaAdaptorSymFlatMap,
       cudaAdaptorSymFlatUnmap, cudaAdaptorSymMulticastSupported,
       cudaAdaptorSymMulticastCreate, cudaAdaptorSymMulticastBind,

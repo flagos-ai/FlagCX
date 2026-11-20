@@ -6,7 +6,9 @@
 #include "alloc.h"
 #include "cann_vmm.h"
 #include "check.h"
+#include "device_event.h"
 #include "param.h"
+#include "runtime_capture.h"
 #include <ctype.h>
 #include <dlfcn.h>
 #include <pthread.h>
@@ -652,14 +654,46 @@ flagcxResult_t cannAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+cannAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                  flagcxStreamCaptureStatus_t *status) {
+  if (status == NULL)
+    return flagcxInvalidArgument;
+  *status = flagcxStreamCaptureInvalidated;
+  typedef int (*Query)(void *, int *, void **);
+  static Query query = (Query)dlsym(RTLD_DEFAULT, "aclmdlRICaptureGetInfo");
+  static const void *begin = dlsym(RTLD_DEFAULT, "aclmdlRICaptureBegin");
+  if (query == NULL)
+    return flagcxRuntimeQueryCapture(NULL, begin, stream ? stream->base : NULL,
+                                     status);
+  int nativeStatus = -1;
+  void *model = NULL;
+  int result = query(stream ? stream->base : NULL, &nativeStatus, &model);
+  return flagcxRuntimeDecodeCaptureStatus(result, nativeStatus, status);
+}
+
+static flagcxResult_t cannAdaptorEventCreateNative(void *wrapper,
+                                                   unsigned int flags) {
+  (void)flags;
+  DEVCHECK(aclrtCreateEventWithFlag(&(((flagcxEvent_t)wrapper)->base), flags));
+  return flagcxSuccess;
+}
+
 flagcxResult_t cannAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
   const unsigned int flags =
       (eventType == flagcxEventDefault) ? ACL_EVENT_TIME_LINE : ACL_EVENT_SYNC;
-  DEVCHECK(aclrtCreateEventWithFlag(&((*event)->base), flags));
-  return flagcxSuccess;
+  static const struct flagcxEventCreateOps ops = {
+      flagcxEventAllocateWrapper, free, cannAdaptorEventCreateNative};
+  void *wrapper = NULL;
+  flagcxResult_t result = flagcxEventCreateTransactional(
+      &wrapper, sizeof(struct flagcxEvent), flags, &ops);
+  if (result == flagcxSuccess)
+    *event = (flagcxEvent_t)wrapper;
+  return result;
 }
 
 flagcxResult_t cannAdaptorEventDestroy(flagcxEvent_t event) {
@@ -1127,6 +1161,7 @@ flagcxResult_t cannAdaptorSymLsaVaReserve(size_t size, size_t alignment,
   *base = result == flagcxSuccess ? reinterpret_cast<void *>(address) : NULL;
   return result;
 }
+
 flagcxResult_t cannAdaptorSymLsaVaFree(void *base, size_t size) {
   return CannSegmentOps::freeAddress(reinterpret_cast<uintptr_t>(base), size);
 }
@@ -1265,6 +1300,7 @@ struct flagcxDeviceAdaptor cannAdaptor {
       cannAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       cannAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      cannAdaptorStreamGetCaptureStatus,
       // Symmetric memory VMM functions
       cannAdaptorSymPhysAlloc, cannAdaptorSymPhysFree, cannAdaptorSymFlatMap,
       cannAdaptorSymFlatUnmap, cannAdaptorSymMulticastSupported,

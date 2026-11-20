@@ -2,6 +2,9 @@
 
 #ifdef USE_SUNRISE_ADAPTOR
 
+#include "device_event.h"
+#include "runtime_capture.h"
+
 std::map<flagcxMemcpyType_t, tangMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, tangMemcpyHostToDevice},
     {flagcxMemcpyDeviceToHost, tangMemcpyDeviceToHost},
@@ -194,15 +197,39 @@ flagcxResult_t ptpuAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
 
 // TODO:ref of cuda_adaptor.cc, ignore flags with tangEventBlockingSync,
 // tangEventInterprocess
+static flagcxResult_t
+ptpuAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                  flagcxStreamCaptureStatus_t *status) {
+  static flagcxRuntimeCaptureQuery_t query =
+      (flagcxRuntimeCaptureQuery_t)dlsym(RTLD_DEFAULT, "tangStreamIsCapturing");
+  static const void *begin = dlsym(RTLD_DEFAULT, "tangStreamBeginCapture");
+  return flagcxRuntimeQueryCapture(
+      query, begin, stream ? (void *)stream->base : NULL, status);
+}
+
+static flagcxResult_t ptpuAdaptorEventCreateNative(void *wrapper,
+                                                   unsigned int flags) {
+  (void)flags;
+  DEVCHECK(tangEventCreateWithFlags(&(((flagcxEvent_t)wrapper)->base), flags));
+  return flagcxSuccess;
+}
+
 flagcxResult_t ptpuAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? tangEventDefault
                                  : tangEventDisableTiming;
-  DEVCHECK(tangEventCreateWithFlags(&((*event)->base), flags));
-  return flagcxSuccess;
+  static const struct flagcxEventCreateOps ops = {
+      flagcxEventAllocateWrapper, free, ptpuAdaptorEventCreateNative};
+  void *wrapper = NULL;
+  flagcxResult_t result = flagcxEventCreateTransactional(
+      &wrapper, sizeof(struct flagcxEvent), flags, &ops);
+  if (result == flagcxSuccess)
+    *event = (flagcxEvent_t)wrapper;
+  return result;
 }
 
 flagcxResult_t ptpuAdaptorEventDestroy(flagcxEvent_t event) {
@@ -423,6 +450,7 @@ struct flagcxDeviceAdaptor ptpuAdaptor {
       // DMA buffer
       ptpuAdaptorDmaSupport, ptpuAdaptorGetHandleForAddressRange,
       ptpuAdaptorHostRegister, ptpuAdaptorHostUnregister,
+      ptpuAdaptorStreamGetCaptureStatus,
       // Symmetric memory VMM functions (not supported)
       NULL, // flagcxResult_t (*symPhysAlloc)(...);
       NULL, // flagcxResult_t (*symPhysFree)(...);

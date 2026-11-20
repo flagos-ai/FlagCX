@@ -6,6 +6,7 @@
 #include "hggc_sdk_features.h"
 #include "hggc_vmm.h"
 #include "param.h"
+#include "runtime_capture.h"
 #include <stdio.h>
 #include <unistd.h>
 
@@ -301,8 +302,20 @@ flagcxResult_t hggcAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
 #endif
 }
 
+static flagcxResult_t
+hggcAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                  flagcxStreamCaptureStatus_t *status) {
+  static flagcxRuntimeCaptureQuery_t query =
+      (flagcxRuntimeCaptureQuery_t)dlsym(RTLD_DEFAULT, "hggcStreamIsCapturing");
+  static const void *begin = dlsym(RTLD_DEFAULT, "hggcStreamBeginCapture");
+  return flagcxRuntimeQueryCapture(
+      query, begin, stream ? (void *)stream->base : NULL, status);
+}
+
 flagcxResult_t hggcAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
+  if (event == NULL)
+    return flagcxInvalidArgument;
   (*event) = NULL;
   *event = (flagcxEvent_t)calloc(1, sizeof(**event));
   if (*event == NULL)
@@ -970,6 +983,7 @@ struct flagcxDeviceAdaptor hggcAdaptor {
       // DMA buffer
       hggcAdaptorDmaSupport, hggcAdaptorMemGetHandleForAddressRange,
       hggcAdaptorHostRegister, hggcAdaptorHostUnregister,
+      hggcAdaptorStreamGetCaptureStatus,
       // Symmetric memory VMM functions
       hggcAdaptorSymPhysAlloc, hggcAdaptorSymPhysFree, hggcAdaptorSymFlatMap,
       hggcAdaptorSymFlatUnmap, hggcAdaptorSymMulticastSupported,

@@ -19,9 +19,10 @@ MPIRUN     ?= mpirun
 MPI_NP     ?= 8
 MPI_ENV    ?=
 
-.PHONY: all clean run-unit run-mpi run
+.PHONY: all clean run-unit run-mpi run compile-sunrise
 
 ALL_TARGETS :=
+ALL_TARGETS += compile-sunrise
 ifneq ($(UNIT_SRCS),)
 ALL_TARGETS += $(UNIT_TARGET)
 endif
@@ -54,10 +55,20 @@ $(OBJDIR)/coll_%.o: coll_%.cpp
 clean:
 	@rm -rf $(BUILDDIR)
 
-run-unit: $(UNIT_TARGET)
+run-unit: compile-sunrise $(UNIT_TARGET)
 	@$(UNIT_TARGET)
 
 run-mpi: $(MPI_TARGET)
 	@$(MPIRUN) --allow-run-as-root -np $(MPI_NP) $(MPI_ENV) $(MPI_TARGET)
 
 run: run-unit run-mpi
+
+# Compile the real guarded translation unit on every host CI platform. SDK
+# declarations are intentionally isolated from the real vendor includes; this
+# catches missing internal headers even on hosts without a Sunrise runtime.
+compile-sunrise:
+	@echo "Checking Sunrise adaptor declarations"
+	@$(CXX) $(filter-out -DUSE_%_ADAPTOR -DCOMPILE_KERNEL%,$(CXXFLAGS)) \
+	  -DUSE_SUNRISE_ADAPTOR -DFLAGCX_COMM_TRAITS_DEFAULT \
+	  -Ifixtures/sunrise_sdk $(FLAGCX_INCLUDES) \
+	  -fsyntax-only $(PROJECT_ROOT)/flagcx/adaptor/device/ptpu_adaptor.cc

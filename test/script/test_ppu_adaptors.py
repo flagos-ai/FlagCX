@@ -706,6 +706,116 @@ int main() {
 }
 """)
 
+    def test_hggc_capture_query_uses_native_runtime_and_preserves_errors(self):
+        production = (ROOT / "flagcx/adaptor/device/hggc_adaptor.cc").read_text()
+        start = production.index("static flagcxResult_t\nhggcAdaptorStreamGetCaptureStatus(")
+        end = production.index("flagcxResult_t hggcAdaptorEventCreate(", start)
+        source = '#include "ppu_adaptor.h"\n#include "runtime_capture.h"\n'
+        source += r"""
+static void *seenCaptureStream;
+static int captureResult = 0, captureState = 0;
+extern "C" int hggcStreamIsCapturing(void *stream, int *status) {
+  seenCaptureStream = stream;
+  *status = captureState;
+  return captureResult;
+}
+extern "C" int hggcStreamBeginCapture() { return 0; }
+"""
+        source += production[start:end] + r"""
+int main() {
+  flagcxStream stream{reinterpret_cast<hggcStream_t>(uintptr_t(19))};
+  flagcxStreamCaptureStatus_t status = flagcxStreamCaptureInvalidated;
+  for (int i = 0; i < 3; ++i) {
+    captureState = i;
+    assert(hggcAdaptorStreamGetCaptureStatus(&stream, &status) == flagcxSuccess);
+    assert(int(status) == i && seenCaptureStream == stream.base);
+  }
+  captureState = 0;
+  assert(hggcAdaptorStreamGetCaptureStatus(nullptr, &status) == flagcxSuccess);
+  assert(seenCaptureStream == nullptr);
+  captureResult = 99;
+  assert(hggcAdaptorStreamGetCaptureStatus(&stream, &status) == flagcxUnhandledDeviceError);
+  assert(status == flagcxStreamCaptureInvalidated);
+  captureResult = 0;
+  captureState = 7;
+  assert(hggcAdaptorStreamGetCaptureStatus(&stream, &status) == flagcxInternalError);
+  assert(status == flagcxStreamCaptureInvalidated);
+  assert(hggcAdaptorStreamGetCaptureStatus(&stream, nullptr) == flagcxInvalidArgument);
+}
+"""
+        self.compile_and_run(source)
+
+    def test_hggc_capture_capability_without_query(self):
+        production = (ROOT / "flagcx/adaptor/device/hggc_adaptor.cc").read_text()
+        start = production.index("static flagcxResult_t\nhggcAdaptorStreamGetCaptureStatus(")
+        end = production.index("flagcxResult_t hggcAdaptorEventCreate(", start)
+        for exposes_capture in (False, True):
+            with self.subTest(exposes_capture=exposes_capture):
+                source = '#include "ppu_adaptor.h"\n#include "runtime_capture.h"\n'
+                if exposes_capture:
+                    source += 'extern "C" int hggcStreamBeginCapture() { return 0; }\n'
+                source += production[start:end]
+                expected = "flagcxNotSupported" if exposes_capture else "flagcxSuccess"
+                status = "flagcxStreamCaptureInvalidated" if exposes_capture else "flagcxStreamCaptureNone"
+                source += f"""
+int main() {{
+  flagcxStreamCaptureStatus_t status = flagcxStreamCaptureInvalidated;
+  assert(hggcAdaptorStreamGetCaptureStatus(nullptr, &status) == {expected});
+  assert(status == {status});
+}}
+"""
+                self.compile_and_run(source)
+
+    def test_hggc_event_creation_and_release_keep_retry_ownership(self):
+        production = (ROOT / "flagcx/adaptor/device/hggc_adaptor.cc").read_text()
+        start = production.index("flagcxResult_t hggcAdaptorEventCreate(")
+        end = production.index("flagcxResult_t hggcAdaptorEventRecord(", start)
+        source = '#include "ppu_adaptor.h"\n#include "adaptor.h"\n'
+        source += r"""
+static int createCalls = 0, destroyCalls = 0, wrapperFrees = 0;
+static hggcError_t eventResult = hggcSuccess;
+static const unsigned int hggcEventDefault = 0, hggcEventDisableTiming = 2;
+static hggcError_t hggcEventCreateWithFlags(hggcEvent_t *event, unsigned int) {
+  ++createCalls;
+  *event = reinterpret_cast<hggcEvent_t>(uintptr_t(23));
+  return eventResult;
+}
+static hggcError_t hggcEventDestroy(hggcEvent_t event) {
+  ++destroyCalls;
+  assert(event == reinterpret_cast<hggcEvent_t>(uintptr_t(23)));
+  return eventResult;
+}
+static void releaseWrapper(void *pointer) {
+  ++wrapperFrees;
+  std::free(pointer);
+}
+#define free releaseWrapper
+"""
+        source += production[start:end] + r"""
+#undef free
+int main() {
+  assert(hggcAdaptorEventCreate(nullptr, flagcxEventDefault) == flagcxInvalidArgument);
+  assert(createCalls == 0);
+  flagcxEvent_t event = reinterpret_cast<flagcxEvent_t>(uintptr_t(1));
+  eventResult = hggcErrorUnknown;
+  assert(hggcAdaptorEventCreate(&event, flagcxEventDefault) == flagcxUnhandledDeviceError);
+  assert(event == nullptr && createCalls == 1 && destroyCalls == 0 && wrapperFrees == 1);
+  eventResult = hggcSuccess;
+  assert(hggcAdaptorEventCreate(&event, flagcxEventDisableTiming) == flagcxSuccess);
+  assert(event != nullptr && createCalls == 2 && wrapperFrees == 1);
+  eventResult = hggcErrorNotReady;
+  assert(hggcAdaptorEventDestroy(event) == flagcxInProgress);
+  assert(destroyCalls == 1 && wrapperFrees == 1);
+  eventResult = hggcErrorUnknown;
+  assert(hggcAdaptorEventDestroy(event) == flagcxUnhandledDeviceError);
+  assert(destroyCalls == 2 && wrapperFrees == 1);
+  eventResult = hggcSuccess;
+  assert(hggcAdaptorEventDestroy(event) == flagcxSuccess);
+  assert(destroyCalls == 3 && wrapperFrees == 2);
+}
+"""
+        self.compile_and_run(source)
+
     def test_async_allocator_uses_current_pool_and_preserves_stream_and_errors(self):
         source = (ROOT / "flagcx/adaptor/device/hggc_adaptor.cc").read_text()
         start = source.index("flagcxResult_t hggcAdaptorDeviceMalloc(")
