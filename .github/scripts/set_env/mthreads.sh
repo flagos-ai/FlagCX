@@ -43,6 +43,11 @@ FLAGCX_CI_IGNORE_TEST=$(cat <<'JSON'
       "reason": "MUSA IPC handle creation is unavailable in the Mthreads CI image, so RMA symmetric data windows cannot be registered"
     },
     {
+      "suite": "rma",
+      "name": "gdr-visibility",
+      "reason": "MUSA has no validated immediate-consumer GDR visibility contract in the Mthreads CI image"
+    },
+    {
       "suite": "runner",
       "name": "runner-heterogeneous",
       "reason": "MUSA hybrid runner collectives currently return incorrect data; default and forced-NET runner phases remain enabled"
