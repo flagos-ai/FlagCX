@@ -8,6 +8,9 @@
 #include "comm.h"
 #include "cost_model.h"
 #include "dev_api_backend.h"
+#if defined(FLAGCX_USE_GDA)
+#include "device_api/devnet/flagcx_dev_net_adaptor.h"
+#endif
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
 #include "flagcx_net.h"
@@ -2839,6 +2842,13 @@ flagcxCommWindowRegisterFresh(flagcxComm_t comm, void *buff, size_t size,
   return flagcxNotSupported;
 }
 
+#if defined(FLAGCX_USE_GDA)
+static flagcxResult_t
+flagcxCommWindowDeregisterTracked(flagcxComm_t comm, flagcxWindow_t win,
+                                  flagcxMemAllocator_t allocator,
+                                  flagcxSymCleanupMode cleanupMode);
+#endif
+
 // Validate the complete transaction before mode-dependent provider collectives.
 static flagcxResult_t
 flagcxValidateWindowRegistration(flagcxComm_t comm, int mode,
@@ -2906,6 +2916,18 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     local = flagcxInvalidUsage;
   FLAGCXCHECK(
       flagcxValidateWindowRegistration(comm, winFlags, allocator, local));
+#if defined(FLAGCX_USE_GDA)
+  // Check before constructing a Window, so overflow cannot strand a newly
+  // allocated resource in an untracked state.
+  flagcxResult_t idStatus =
+      comm->nextDevNetWindowId == std::numeric_limits<uint64_t>::max()
+          ? flagcxInvalidUsage
+          : flagcxSuccess;
+  flagcxResult_t commonIdStatus = flagcxSuccess;
+  FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, idStatus, &commonIdStatus));
+  if (commonIdStatus != flagcxSuccess)
+    return commonIdStatus;
+#endif
 
   flagcxWindow_t created = nullptr;
   flagcxResult_t result = flagcxCommWindowRegisterFresh(
@@ -2927,6 +2949,26 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     comm->publicWindows = created;
     *win = created;
   }
+#if defined(FLAGCX_USE_GDA)
+  if (result == flagcxSuccess) {
+    flagcxWindow_t window = *win;
+    window->devNetRegistrationId = ++comm->nextDevNetWindowId;
+    window->userBase = buff;
+    window->userSize = size;
+    window->devNetNext = comm->devNetWindows;
+    comm->devNetWindows = window;
+
+    flagcxDevComm_t devComm = comm->devNetCommHandle;
+    if (devComm != nullptr && devComm->gdaProvider != 0) {
+      result = flagcxDevNetGda.registerWindow(comm, devComm, window);
+      if (result != flagcxSuccess) {
+        flagcxResult_t cleanup = flagcxCommWindowDeregisterTracked(
+            comm, window, allocator, flagcxSymCleanupLocal);
+        return cleanup == flagcxSuccess ? result : cleanup;
+      }
+    }
+  }
+#endif
   return result;
 }
 
@@ -3079,6 +3121,83 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+flagcxCommWindowDeregisterTracked(flagcxComm_t comm, flagcxWindow_t win,
+                                  flagcxMemAllocator_t allocator,
+                                  flagcxSymCleanupMode cleanupMode) {
+#if defined(FLAGCX_USE_GDA)
+  if (comm == nullptr && win != nullptr)
+    return flagcxInvalidArgument;
+  if (win != nullptr) {
+    if (win->ownerComm != nullptr && win->ownerComm != comm)
+      return flagcxInvalidArgument;
+    if (win->devMemRefs != 0)
+      return flagcxInvalidUsage;
+    if (win->defaultBase != nullptr && win->defaultBase->ipcSlot >= 0 &&
+        comm->ipcTable[win->defaultBase->ipcSlot].refCount != 0)
+      return flagcxInvalidUsage;
+  }
+#endif
+#if defined(FLAGCX_USE_GDA)
+  flagcxWindow_t *link = comm != nullptr ? &comm->devNetWindows : nullptr;
+  while (link != nullptr && *link != nullptr && *link != win)
+    link = &(*link)->devNetNext;
+  flagcxWindow_t next = win != nullptr ? win->devNetNext : nullptr;
+  flagcxDevMem_t views = win != nullptr ? win->devMemViews : nullptr;
+  const bool publicHandle = win != nullptr && win->ownerComm != nullptr;
+  if (win != nullptr && win->gdaRegistrationActive) {
+    // Reject live views and quiesce device work before releasing this rank's
+    // MR. Public Window deregistration is local and remains retryable.
+    flagcxSymWindow_t sym = win->defaultBase;
+    if (sym != nullptr) {
+      __atomic_store_n(&sym->state, flagcxSymWindowCleanupRequired,
+                       __ATOMIC_RELEASE);
+      while (__atomic_load_n(&sym->inSubmit, __ATOMIC_ACQUIRE) != 0)
+        sched_yield();
+    }
+    flagcxResult_t localReady = flagcxDevNetGda.prepareWindowDeregister(win);
+    flagcxResult_t commonReady = localReady;
+    if (cleanupMode == flagcxSymCleanupCollective) {
+      FLAGCXCHECK(
+          flagcxConvergeBootstrapStatus(comm, localReady, &commonReady));
+    }
+    if (commonReady != flagcxSuccess)
+      return commonReady;
+
+    flagcxResult_t local = flagcxDevNetGda.deregisterWindow(win);
+    flagcxResult_t common = local;
+    if (cleanupMode == flagcxSymCleanupCollective) {
+      FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, local, &common));
+    }
+    if (common != flagcxSuccess)
+      return common;
+    win->gdaRegistrationActive = false;
+  }
+#endif
+  flagcxResult_t result =
+      flagcxCommWindowDeregisterInternal(comm, win, allocator, cleanupMode);
+#if defined(FLAGCX_USE_GDA)
+  if (result == flagcxSuccess) {
+    for (flagcxDevMem_t view = views; view != nullptr;) {
+      flagcxDevMem_t following = view->gdaWindowNext;
+      view->winHandle = nullptr;
+      view->gdaWindowNext = nullptr;
+      view = following;
+    }
+    if (link != nullptr && *link == win)
+      *link = next;
+    if (publicHandle) {
+      win->devNetRegistrationId = 0;
+      win->userBase = nullptr;
+      win->userSize = 0;
+      win->devNetNext = nullptr;
+      win->devMemViews = nullptr;
+    }
+  }
+#endif
+  return result;
+}
+
 flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm, flagcxWindow_t win,
                                           flagcxMemAllocator_t allocator) {
   if (win == nullptr || allocator == flagcxMemSHMEM)
@@ -3088,8 +3207,8 @@ flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm, flagcxWindow_t win,
     return flagcxInvalidArgument;
   if (win->vendorBase == nullptr && win->defaultBase == nullptr)
     return flagcxInvalidUsage;
-  return flagcxCommWindowDeregisterInternal(comm, win, allocator,
-                                            flagcxSymCleanupLocal);
+  return flagcxCommWindowDeregisterTracked(comm, win, allocator,
+                                           flagcxSymCleanupLocal);
 }
 
 flagcxResult_t flagcxIsHomoComm(flagcxComm_t comm, int *isHomo) {
@@ -4156,7 +4275,7 @@ static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
     for (flagcxWindow_t win = comm->publicWindows; win != nullptr;
          win = win->nextOwned) {
       if (win->vendorBase != nullptr) {
-        cleanupResult = flagcxCommWindowDeregisterInternal(
+        cleanupResult = flagcxCommWindowDeregisterTracked(
             comm, win, flagcxMemCCL, flagcxSymCleanupLocal);
         if (cleanupResult != flagcxSuccess)
           return cleanupResult;
@@ -4184,7 +4303,7 @@ static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
         flagcxWindow_t liveWindow = comm->heteroComm->symWindows->owner;
         if (liveWindow == NULL)
           return flagcxInternalError;
-        cleanupResult = flagcxCommWindowDeregisterInternal(
+        cleanupResult = flagcxCommWindowDeregisterTracked(
             comm, liveWindow, flagcxMemCCL, flagcxSymCleanupLocal);
         if (cleanupResult != flagcxSuccess)
           return cleanupResult;
@@ -4196,6 +4315,15 @@ static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     }
+#if defined(FLAGCX_USE_GDA)
+    // Drain any remaining tracked Windows while the CCL adaptor is still live.
+    while (comm->devNetWindows != nullptr) {
+      cleanupResult = flagcxCommWindowDeregisterTracked(
+          comm, comm->devNetWindows, flagcxMemCCL, flagcxSymCleanupLocal);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    }
+#endif
   }
 
   if (stage == 3) {

@@ -229,9 +229,23 @@ struct CommTraits<NvshmemBackend> {
   struct Net {
     Comm _dc;
     int _contextId;
+    flagcxDevNetResourceSharingMode_t _sharingMode;
 
     FLAGCX_HOST_DEVICE_INLINE
-    Net(const Comm &dc, int contextIndex) : _dc(dc), _contextId(contextIndex) {}
+    Net(const Comm &dc, int contextIndex,
+        flagcxDevNetResourceSharingMode_t sharingMode =
+            flagcxDevNetResourceSharingDevice)
+        : _dc(dc), _contextId(contextIndex), _sharingMode(sharingMode) {
+      if (!flagcxDevNetResourceSharingModeValid(sharingMode))
+        FLAGCX_DEVICE_TRAP();
+      // Keep the native default protection, which also safely covers the
+      // narrower Block/Thread promises on SDKs without sharing controls.
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxDevNetResourceSharingMode_t
+    getResourceSharingMode() const {
+      return _sharingMode;
+    }
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
       if (_dc.signalCount > 0 && _dc.signalBuffer == nullptr)

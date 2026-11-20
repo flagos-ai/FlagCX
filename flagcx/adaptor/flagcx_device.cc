@@ -192,6 +192,10 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
   if (hetero != nullptr) {
     hetero->devCommHandle = handle;
   }
+#if defined(FLAGCX_USE_GDA)
+  if (handle->gdaProvider != 0)
+    comm->devNetCommHandle = handle;
+#endif
 
   return flagcxSuccess;
 }
@@ -238,12 +242,22 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
                             comm->heteroComm->devCommHandle == devComm;
   if (wasPublished)
     comm->heteroComm->devCommHandle = devComm->previousActive;
+#if defined(FLAGCX_USE_GDA)
+  const bool gdaPublished =
+      comm != nullptr && comm->devNetCommHandle == devComm;
+  if (gdaPublished)
+    comm->devNetCommHandle = nullptr;
+#endif
 
   if (!devComm->backendDestroyed) {
     flagcxResult_t result = devApiBackend->devCommDestroy(comm, devComm);
     if (result != flagcxSuccess) {
       if (wasPublished)
         comm->heteroComm->devCommHandle = devComm;
+#if defined(FLAGCX_USE_GDA)
+      if (gdaPublished)
+        comm->devNetCommHandle = devComm;
+#endif
       return result;
     }
     devComm->backendDestroyed = true;
@@ -309,6 +323,7 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
   }
   if (localPrepare == flagcxSuccess) {
     handle->rawPtr = buff;
+    handle->viewSize = size;
     handle->ipcIndex = -1;
     handle->runnerOwned = preparedIpcSlot >= 0;
   }
@@ -389,6 +404,12 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
     }
   }
 
+#if defined(FLAGCX_USE_GDA)
+  if (win != nullptr) {
+    handle->gdaWindowNext = win->devMemViews;
+    win->devMemViews = handle;
+  }
+#endif
   *devMem = handle;
   return flagcxSuccess;
 }
@@ -447,6 +468,18 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
     FLAGCXCHECK(devApiBackend->devMemDestroy(comm, devMem));
     devMem->backendDestroyed = true;
   }
+
+#if defined(FLAGCX_USE_GDA)
+  flagcxWindow_t hostWindow = devMem->boundWindow;
+  if (hostWindow != nullptr) {
+    flagcxDevMem_t *link = &hostWindow->devMemViews;
+    while (*link != nullptr && *link != devMem)
+      link = &(*link)->gdaWindowNext;
+    if (*link == devMem)
+      *link = devMem->gdaWindowNext;
+    devMem->gdaWindowNext = nullptr;
+  }
+#endif
 
   if (devMem->ipcIndex >= 0) {
     if (devMem->ipcIndex >= comm->ipcTableCapacity)

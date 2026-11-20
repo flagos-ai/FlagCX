@@ -5,10 +5,11 @@
  ************************************************************************/
 
 #include "device_api/comm_traits.h"
-#include "device_api/nvidia_net_provider.h"
+#include "device_api/devnet/nvidia_net_provider.h"
 
 #include <cassert>
 #include <cstdint>
+#include <initializer_list>
 #include <type_traits>
 #include <typeinfo>
 
@@ -18,6 +19,7 @@ static int mockGdaCalls = 0;
 struct MockBarrierCall {
   int contextId;
   const std::type_info *operation;
+  flagcxDevNetResourceSharingMode_t sharingMode;
 };
 static MockBarrierCall mockBarrierCalls[8];
 static int mockBarrierCallCount = 0;
@@ -77,8 +79,8 @@ struct DefaultNetGdaProvider<MockGdaPlatform> {
           ctx, static_cast<Args &&>(args)...)) {
     if (ctx.handle == reinterpret_cast<void *>(0x2000)) {
       assert(mockBarrierCallCount < 8);
-      mockBarrierCalls[mockBarrierCallCount++] = {ctx.contextId,
-                                                  &typeid(Operation)};
+      mockBarrierCalls[mockBarrierCallCount++] = {
+          ctx.contextId, &typeid(Operation), ctx.resourceSharingMode};
       typedef decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
           ctx, static_cast<Args &&>(args)...)) Result;
       return MockBarrierResult<Result>::get();
@@ -99,6 +101,16 @@ static_assert(
     "non-NVIDIA Barrier must not carry Provider state");
 static_assert(static_cast<uint32_t>(flagcxDevNetFenceLevel::Relaxed) == 0,
               "Relaxed must retain its existing value");
+static_assert(flagcxDevNetResourceSharingDevice == 0,
+              "zero-initialized sharing must allow device-wide callers");
+static_assert(DefaultNetContext{}.resourceSharingMode ==
+                  flagcxDevNetResourceSharingDevice,
+              "legacy/default context construction must use Device sharing");
+static_assert(std::is_trivially_copyable<DefaultNetContext>::value,
+              "dispatch contexts must remain safe to copy by value");
+static_assert(!flagcxDevNetResourceSharingModeValid(
+                  static_cast<flagcxDevNetResourceSharingMode_t>(3)),
+              "unknown sharing modes must be rejected");
 static_assert(flagcxDevNetFenceHas(flagcxDevNetFenceLevel::Put |
                                        flagcxDevNetFenceLevel::Get,
                                    flagcxDevNetFenceLevel::Put),
@@ -165,6 +177,10 @@ int main() {
   typedef DefaultNetProviderPolicy<NvidiaPlatform> Policy;
   DefaultNetContext ctx{DefaultNetProviderProxy, 0, nullptr, 0};
   MockNet mock;
+  DefaultNetContext invalid = ctx;
+  invalid.resourceSharingMode =
+      static_cast<flagcxDevNetResourceSharingMode_t>(3);
+  assert(!DefaultNetDispatch<NvidiaPlatform>::isValid(invalid, mock, true));
 
   DefaultNetDispatch<NvidiaPlatform>::call<Net::PutOp>(ctx, mock);
   DefaultNetDispatch<NvidiaPlatform>::call<Net::GetOp>(ctx, mock);
@@ -199,6 +215,15 @@ int main() {
   assert(defaultNetSelectProvider<MockGdaPlatform>(
              8, DefaultNetGdaRequiredCapabilities, true) ==
          DefaultNetProviderProxy);
+  const unsigned putBarrier =
+      DefaultNetGdaPut | DefaultNetGdaFlush | DefaultNetGdaBarrier;
+  assert(defaultNetSelectProvider<MockGdaPlatform>(
+             7, putBarrier, putBarrier, true) == DefaultNetProviderGda);
+  assert(defaultNetSelectProvider<MockGdaPlatform>(
+             7, putBarrier & ~DefaultNetGdaBarrier, putBarrier, true) ==
+         DefaultNetProviderProxy);
+  assert(defaultNetSelectProvider<MockGdaPlatform>(
+             7, putBarrier, putBarrier, false) == DefaultNetProviderProxy);
   DefaultNetContext gdaContext{DefaultNetProviderGda, 7,
                                reinterpret_cast<void *>(0x1000), 0};
   assert(DefaultNetGdaProvider<NvidiaPlatform>::supportsBarrierFence(
@@ -220,6 +245,7 @@ int main() {
   assert(DeviceAPI::Net(proxyComm, 0).term(DeviceAPI::CoopThread{}) ==
          flagcxInvalidUsage);
   proxyComm.fifoBuffers[0] = &fifo;
+  assert(DeviceAPI::Net(proxyComm, 0).requireProxyFifo() == flagcxSuccess);
   proxyComm.signalBuffer = nullptr;
   assert(!DeviceAPI::Net(proxyComm, 0).isValid());
   proxyComm.signalBuffer = &signal;
@@ -245,8 +271,14 @@ int main() {
   assert(gdaNet.wait(gdaThread) == flagcxNotSupported);
   gdaComm.fifoBuffers[0] = &fifo;
   MockGdaApi::Net gdaWithProxyFifo(gdaComm, 0);
-  assert(gdaWithProxyFifo.fifoBuffer == nullptr);
+  assert(gdaWithProxyFifo.fifoBuffer == &fifo);
+  assert(gdaWithProxyFifo.requireProxyFifo() == flagcxNotSupported);
+  assert(gdaWithProxyFifo.send(gdaThread, gdaWindow, 0, 0, flagcxInt32, 0) ==
+         flagcxNotSupported);
+  assert(gdaWithProxyFifo.recv(gdaThread, gdaWindow, 0, 0, flagcxInt32, 0) ==
+         flagcxNotSupported);
   assert(gdaWithProxyFifo.term(gdaThread) == flagcxNotSupported);
+  assert(gdaWithProxyFifo.wait(gdaThread) == flagcxNotSupported);
   gdaComm.fifoBuffers[0] = nullptr;
   gdaComm.gdaDeviceContext = nullptr;
   assert(!MockGdaApi::Net(gdaComm, 0).isValid());
@@ -267,15 +299,67 @@ int main() {
   barrierComm.shadowBuffer = barrierShadows;
   barrierComm.signalCount = 8;
   barrierComm.interBarrierCount = 3;
+  barrierComm.nRanks = 2;
+  barrierComm.rank = 0;
   barrierComm.nTeamRanks = 2;
   barrierComm.teamRank = 0;
   barrierComm.intraSize = 1;
   barrierComm.intraRank = 0;
   MockGdaApi::Net barrierNet(barrierComm, 1);
+  MockGdaApi::Comm gdaWorldComm = barrierComm;
+  gdaWorldComm.rank = 1;
+  gdaWorldComm.nRanks = 4;
+  gdaWorldComm.nTeamRanks = 2;
+  gdaWorldComm.teamRank = 0;
+  gdaWorldComm.intraSize = 2;
+  gdaWorldComm.intraRank = 1;
+  uint64_t gdaWorldEpochs[FLAGCX_DEVICE_CTA_COUNT] = {};
+  gdaWorldComm.epochBuffer = gdaWorldEpochs;
+  gdaWorldComm.nBarriers = FLAGCX_DEVICE_CTA_COUNT;
+  MockGdaApi::Net gdaWorldNet(gdaWorldComm, 0);
+  typedef MockGdaApi::Barrier<flagcxTeamTagWorld, MockGdaApi::CoopThread>
+      MockWorldBarrier;
+  MockWorldBarrier gdaWorld(MockGdaApi::CoopThread{}, flagcxTeamTagWorld{},
+                            gdaWorldNet, gdaWorldComm, 0, false, 1);
+  // World keeps its intra + Inter composition with either Net provider.
+  assert(gdaWorld._nInterPeers == 1);
+  assert(gdaWorld._inter._nTeamRanks == 2);
+  assert(gdaWorld._inter._teamRank == 0);
+  assert(gdaWorld._inter._stride == 2);
+  assert(gdaWorld._inter._localRank == 1);
   typedef MockGdaApi::Barrier<flagcxTeamTagInter, MockGdaApi::CoopThread>
       MockBarrier;
   MockBarrier barrier(MockGdaApi::CoopThread{}, barrierNet, barrierComm,
                       MockGdaApi::Team{2, 0, 1}, 0, 1);
+  assert(barrierNet.getResourceSharingMode() ==
+         flagcxDevNetResourceSharingDevice);
+  assert(barrier.context().resourceSharingMode ==
+         flagcxDevNetResourceSharingDevice);
+  // Per-Net selection must survive dispatch and both Barrier constructors;
+  // other Net objects on the same communicator retain their own defaults.
+  for (auto mode :
+       {flagcxDevNetResourceSharingDevice, flagcxDevNetResourceSharingBlock,
+        flagcxDevNetResourceSharingThread}) {
+    MockGdaApi::Net selected(barrierComm, 1, mode);
+    assert(selected.getResourceSharingMode() == mode);
+    assert(selected.context().resourceSharingMode == mode);
+    MockBarrier selectedBarrier(MockGdaApi::CoopThread{}, selected, barrierComm,
+                                MockGdaApi::Team{2, 0, 1}, 0, 1);
+    assert(selectedBarrier.context().resourceSharingMode == mode);
+    MockGdaApi::Net selectedWorldNet(gdaWorldComm, 1, mode);
+    MockWorldBarrier selectedWorld(MockGdaApi::CoopThread{},
+                                   flagcxTeamTagWorld{}, selectedWorldNet,
+                                   gdaWorldComm, 0, false, 1);
+    assert(selectedWorld._inter.context().resourceSharingMode == mode);
+    mockBarrierCallCount = 0;
+    selectedBarrier.sync();
+    assert(mockBarrierCallCount == 3);
+    for (int i = 0; i < mockBarrierCallCount; ++i)
+      assert(mockBarrierCalls[i].sharingMode == mode);
+    assert(barrierNet.getResourceSharingMode() ==
+           flagcxDevNetResourceSharingDevice);
+  }
+  mockBarrierCallCount = 0;
   barrier.sync(flagcxDeviceMemoryOrderAcqRel,
                flagcxDevNetFenceLevel::Put | flagcxDevNetFenceLevel::Get);
   assert(mockBarrierCallCount == 4);
@@ -311,6 +395,7 @@ int main() {
 
   mockBarrierCallCount = 0;
   barrierComm.nTeamRanks = 1;
+  barrierComm.nRanks = 1;
   MockGdaApi::Net singleNet(barrierComm, 1);
   MockBarrier singleBarrier(MockGdaApi::CoopThread{}, singleNet, barrierComm,
                             MockGdaApi::Team{1, 0, 1}, 2, 0);
@@ -350,12 +435,13 @@ int main() {
   mockBarrierCallCount = 0;
   subgroupSyncCalls = 0;
   barrierComm.nTeamRanks = 4;
+  barrierComm.nRanks = 4;
   barrierComm.interBarrierCount = 2;
   MockGdaApi::Net subgroupNet(barrierComm, 1);
   SubgroupBarrier multiPeerBarrier(nonleader, subgroupNet, barrierComm,
                                    MockGdaApi::Team{4, 0, 1}, 0, 3);
   multiPeerBarrier.sync();
-  assert(subgroupSyncCalls == 4);
+  assert(subgroupSyncCalls == 5);
   assert(mockBarrierCallCount == 2);
   assert(*mockBarrierCalls[0].operation == typeid(MockGdaApi::Net::SignalOp));
   assert(*mockBarrierCalls[1].operation ==
@@ -380,7 +466,12 @@ int main() {
   } hostComm;
   struct HostWindow : Policy::WindowState {
   } hostWindow;
-  Policy::initComm(hostComm);
+  struct HostInput {
+    int gdaProvider;
+    unsigned gdaProviderId;
+    void *gdaDeviceContext;
+  } hostInput{0, 0, nullptr};
+  Policy::initComm(hostComm, hostInput);
   Policy::initWindow(hostWindow);
   assert(hostComm.netProvider == DefaultNetProviderProxy);
   assert(hostComm.netProviderId == 0);
@@ -388,5 +479,9 @@ int main() {
   assert(hostWindow.netDeviceHandle == nullptr);
   assert(Policy::makeContext(hostComm, reinterpret_cast<void *>(0x1000), 2)
              .handle == reinterpret_cast<void *>(0x1000));
+  hostInput = {DefaultNetProviderGda, 7, reinterpret_cast<void *>(0x2000)};
+  Policy::initComm(hostComm, hostInput);
+  assert(Policy::makeContext(hostComm, reinterpret_cast<void *>(0x1000), 2)
+             .handle == reinterpret_cast<void *>(0x2000));
   return 0;
 }
