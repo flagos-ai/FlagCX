@@ -1,9 +1,9 @@
 #ifdef USE_DU_ADAPTOR
 
 #include "flagcx.h"
-#include "rccl.h"
 #include <hip/hip_runtime.h>
 #include <map>
+#include <rccl/rccl.h>
 struct flagcxInnerDevComm {};
 
 struct flagcxInnerComm {

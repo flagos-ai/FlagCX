@@ -1924,7 +1924,8 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void FLAGCX_IR_GLOBAL
 #define S20_INTRA_COMBO(slot, teamKind, peer, coopKind, signalVariant,         \
                         waitOrder)                                             \
   do {                                                                         \
-    uint64_t expected = (signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC        \
+    const int signalMode = (int)(signalVariant);                              \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
                             ? expectedInc                                      \
                             : expectedAdd;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
@@ -1942,7 +1943,7 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void FLAGCX_IR_GLOBAL
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      if ((signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC)                     \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
         flagcxDevSignalInc(devCommPtr, teamKind, peer,                         \
                            (flagcxDevSignal_t)(slot), contextId, coopKind,     \
                            flagcxDeviceScopeSystem);                           \
@@ -2163,7 +2164,8 @@ __global__ void kernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PT
 
 #define S21_INTRA_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    uint64_t expected = (signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC        \
+    const int signalMode = (int)(signalVariant);                              \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
@@ -2177,7 +2179,7 @@ __global__ void kernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PT
       flagcxDevPut(devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes,          \
                    teamKind, peer, contextId, coopKind,                        \
                    flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);   \
-      if ((signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC) {                   \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC) {                       \
         flagcxDevSignalInc(devCommPtr, teamKind, peer,                         \
                            (flagcxDevSignal_t)(slot), contextId, coopKind,     \
                            flagcxDeviceScopeSystem);                           \
@@ -2274,7 +2276,8 @@ __global__ void kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
 
 #define S22_INTRA_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    uint64_t expected = (signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC        \
+    const int signalMode = (int)(signalVariant);                              \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
@@ -2293,7 +2296,7 @@ __global__ void kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
       size_t off = (slot)*bytes;                                               \
-      if ((signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC)                     \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
         flagcxDevPut_RSigInc(                                                  \
             devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
             contextId, coopKind, flagcxDeviceScopeSystem,                      \
@@ -2566,7 +2569,8 @@ __global__ void kernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR
 
 #define S24_INTRA_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    uint64_t expected = (signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC        \
+    const int signalMode = (int)(signalVariant);                              \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
@@ -2586,7 +2590,7 @@ __global__ void kernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
       size_t off = (slot) * sizeof(uint64_t);                                  \
       uint64_t val = (uint64_t)(worldRank * 100 + (slot));                     \
-      if ((signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC)                     \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
         flagcxDevPutValue_RSigInc(                                             \
             devCommPtr, dstMemPtr, off, val, teamKind, peer, contextId,        \
             coopKind, flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease, \
@@ -3203,7 +3207,8 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void FLAGCX_IR_GLOBAL
 
 #define S20_INTER_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    uint64_t expected = (signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC        \
+    const int signalMode = (int)(signalVariant);                              \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
                             ? expectedInc                                      \
                             : expectedAdd;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
@@ -3221,7 +3226,7 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void FLAGCX_IR_GLOBAL
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      if ((signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC)                     \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
         flagcxDevSignalInc(devCommPtr, teamKind, peer,                         \
                            (flagcxDevSignal_t)(slot), contextId, coopKind,     \
                            flagcxDeviceScopeSystem);                           \
@@ -3467,7 +3472,8 @@ __global__ void kernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PT
 
 #define S21_INTER_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    uint64_t expected = (signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC        \
+    const int signalMode = (int)(signalVariant);                              \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
@@ -3481,7 +3487,7 @@ __global__ void kernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PT
       flagcxDevPut(devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes,          \
                    teamKind, peer, contextId, coopKind,                        \
                    flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);   \
-      if ((signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC)                     \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
         flagcxDevSignalInc(devCommPtr, teamKind, peer,                         \
                            (flagcxDevSignal_t)(slot), contextId, coopKind,     \
                            flagcxDeviceScopeSystem);                           \
@@ -3578,7 +3584,8 @@ __global__ void kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
 
 #define S22_INTER_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    uint64_t expected = (signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC        \
+    const int signalMode = (int)(signalVariant);                              \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
@@ -3597,7 +3604,7 @@ __global__ void kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
       size_t off = (slot)*bytes;                                               \
-      if ((signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC)                     \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
         flagcxDevPut_RSigInc(                                                  \
             devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
             contextId, coopKind, flagcxDeviceScopeSystem,                      \
@@ -3866,7 +3873,8 @@ __global__ void kernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR
 
 #define S24_INTER_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
-    uint64_t expected = (signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC        \
+    const int signalMode = (int)(signalVariant);                              \
+    uint64_t expected = signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC            \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
@@ -3886,7 +3894,7 @@ __global__ void kernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
       size_t off = (slot) * sizeof(uint64_t);                                  \
       uint64_t val = (uint64_t)(worldRank * 100 + (slot));                     \
-      if ((signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC)                     \
+      if (signalMode == FLAGCX_UNIFIED_IR_SIGNAL_INC)                         \
         flagcxDevPutValue_RSigInc(                                             \
             devCommPtr, dstMemPtr, off, val, teamKind, peer, contextId,        \
             coopKind, flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease, \

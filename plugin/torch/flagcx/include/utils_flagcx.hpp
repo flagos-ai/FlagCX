@@ -9,12 +9,13 @@
 // Macro to throw on a non-successful Flagcx return value.
 #define C10D_FLAGCX_CHECK(cmd, failureReason)                                  \
   do {                                                                         \
-    flagcxResult_t result = cmd;                                               \
-    if (result != flagcxSuccess) {                                             \
-      std::string err = "FLAGCX error in: " + std::string(__FILE__) + ":" +    \
-                        std::to_string(__LINE__) +                             \
-                        ", " /*+ flagcxGetErrorWithVersion(result)*/ + "\n" +  \
-                        getFlagcxErrorDetailStr(result, failureReason);        \
+    flagcxResult_t flagcxCheckResult_ = (cmd);                                 \
+    if (flagcxCheckResult_ != flagcxSuccess) {                                 \
+      std::string err =                                                        \
+          "FLAGCX error in: " + std::string(__FILE__) + ":" +                  \
+          std::to_string(__LINE__) +                                           \
+          ", " /*+ flagcxGetErrorWithVersion(result)*/ + "\n" +                \
+          getFlagcxErrorDetailStr(flagcxCheckResult_, failureReason);          \
       TORCH_CHECK_WITH(DistBackendError, false, err);                          \
     }                                                                          \
   } while (0)

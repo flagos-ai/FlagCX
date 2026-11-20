@@ -44,7 +44,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
     defined(__CCE_IS_AICORE__) ||                                              \
     (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
      defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
-    defined(__TOPSCC__) || defined(__HGGCCC__) ||                               \
+    defined(__TOPSCC__) || defined(__HGGCCC__) ||                              \
     (defined(USE_ASCEND_ADAPTOR) && defined(FLAGCX_ASCEND_DEVICE_COMPILE))
 #define FLAGCX_DEVICE_COMPILE 1
 #endif

@@ -1338,8 +1338,9 @@ TEST_F(NetAdaptorLoopback, RegisterDmaBufMr) {
     GTEST_SKIP() << "Selected device adaptor cannot export DMA-BUF memory";
   const bool isIxcuda = strcmp(deviceAdaptor->name, "IXCUDA") == 0;
   ASSERT_EQ(deviceAdaptor->setDevice(gpuDev_), flagcxSuccess);
-  if (isIxcuda)
+  if (isIxcuda) {
     EXPECT_EQ(deviceAdaptor->dmaSupport(nullptr), flagcxInvalidArgument);
+  }
   bool supported = false;
   ASSERT_EQ(deviceAdaptor->dmaSupport(&supported), flagcxSuccess);
   if (!supported)
@@ -1361,14 +1362,18 @@ TEST_F(NetAdaptorLoopback, RegisterDmaBufMr) {
     void *recvMr = nullptr;
     int fd = -1;
     ~Resources() {
-      if (dmaMr != nullptr)
+      if (dmaMr != nullptr) {
         EXPECT_EQ(net->deregMr(sendComm, dmaMr), flagcxSuccess);
-      if (recvMr != nullptr)
+      }
+      if (recvMr != nullptr) {
         EXPECT_EQ(net->deregMr(recvComm, recvMr), flagcxSuccess);
-      if (fd >= 0)
+      }
+      if (fd >= 0) {
         EXPECT_EQ(close(fd), 0);
-      if (buffer != nullptr)
+      }
+      if (buffer != nullptr) {
         EXPECT_EQ(deviceAdaptor->gdrMemFree(buffer, nullptr), flagcxSuccess);
+      }
     }
   } resources{net_, sendComm_, recvComm_};
 

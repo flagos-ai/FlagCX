@@ -55,6 +55,11 @@ FLAGCX_CI_IGNORE_TEST='{
   ],
   "phases": [
     {
+      "suite": "p2p",
+      "name": "p2p-legacy-unit",
+      "reason": "Legacy ACCL P2P unit tests can hang in BAREX process-exit statistics cleanup; shared-engine unit and WRITE MPI coverage remains enabled"
+    },
+    {
       "suite": "symmem",
       "name": "vmm-net-data",
       "reason": "PPU BAREX has no validated VMM-capable MR route"

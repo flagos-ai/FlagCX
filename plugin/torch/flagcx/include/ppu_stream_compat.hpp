@@ -2,7 +2,13 @@
 
 #include "flagcx.h"
 #include <cstring>
+// The compatibility SDK defines this macro unconditionally, while the native
+// runtime may already have defined it. Keep the native spelling outside this
+// include; neither SDK's internal annotation macro is part of this interface.
+#pragma push_macro("__annotate__")
+#undef __annotate__
 #include <cuda_runtime.h>
+#pragma pop_macro("__annotate__")
 #include <hggc_runtime.h>
 #include <type_traits>
 

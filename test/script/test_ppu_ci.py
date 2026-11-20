@@ -14,6 +14,65 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class PpuCiRegressionTest(unittest.TestCase):
+    def test_legacy_unit_skip_keeps_other_p2p_phases_and_failures(self):
+        source = (REPO_ROOT / '.github/scripts/ci/run_unit_test.sh').read_text()
+        case = source[source.index('    p2p)\n'):source.index('    rma)\n')]
+        helpers = source[source.index('flagcx_ci_report_skipped_suite() {'):
+                         source.index('\nif [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == kunlunxin ]]')]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recorder = root / 'record'
+            recorder.write_text('''#!/usr/bin/env python3
+import json, os, sys
+label = os.getenv('FLAGCX_CI_MPI_LABEL', os.getenv('FLAGCX_CI_TEST_LABEL', 'build'))
+with open(os.environ['CAPTURE'], 'a') as out:
+    out.write(json.dumps(label) + '\\n')
+sys.exit(17 if label == os.getenv('FAIL_LABEL') else 0)
+''')
+            recorder.chmod(0o755)
+            harness = '''set -euo pipefail
+source "$1"
+PROJECT_ROOT=$2
+SUITE=p2p
+suite_dir=/fake/p2p
+args=(TEST_ONLY=1)
+TEST_RUNNER=$3
+MPI_RUNNER=/fake/mpi
+export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}
+nproc() { echo 2; }
+make() { "$TEST_RUNNER" "$@"; }
+''' + helpers + '''
+run_suite() {
+  case "$SUITE" in
+''' + case + '''  esac
+}
+run_suite
+'''
+            legacy = 'p2p unit tests'
+            phases = ['p2p Engine WRITE MPI tests', 'p2p shared-engine unit tests',
+                      'p2p shared-engine WRITE MPI tests']
+            for platform in ('ppu', 'cuda', 'hygon'):
+                for failure in ('', legacy, phases[1], phases[2]):
+                    with self.subTest(platform=platform, failure=failure):
+                        capture = root / 'calls'
+                        capture.write_text('')
+                        result = subprocess.run(
+                            ['bash', '-c', harness, 'bash',
+                             str(REPO_ROOT / f'.github/scripts/set_env/{platform}.sh'),
+                             str(REPO_ROOT), str(recorder)],
+                            env={**os.environ, 'CAPTURE': str(capture),
+                                 'FAIL_LABEL': failure, 'MPI_HOME': '/fake/mpi'},
+                            capture_output=True, text=True, timeout=15,
+                        )
+                        labels = [json.loads(line) for line in capture.read_text().splitlines()]
+                        expected_failure = bool(failure) and not (platform == 'ppu' and failure == legacy)
+                        self.assertEqual(result.returncode, int(expected_failure), result.stderr)
+                        self.assertEqual(legacy in labels, platform != 'ppu')
+                        for label in phases:
+                            self.assertIn(label, labels)
+                        self.assertEqual('SKIPPED p2p/p2p-legacy-unit' in result.stdout,
+                                         platform == 'ppu')
+
     def test_runner_uses_builtin_kernels_for_all_operations_and_preserves_failures(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

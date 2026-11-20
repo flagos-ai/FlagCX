@@ -192,6 +192,47 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                     self.assertEqual(f"SKIPPED {marker}" in result.stdout,
                                      (suite, phase) in ignored)
 
+    def test_run_override_distinguishes_completion_failure_and_real_skip(self):
+        source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        run = source[source.index("run_suite() {"):
+                     source.index("\nrun_supplemental_unit_tests() {")]
+        report = source[source.index("flagcx_ci_report_skipped_suite() {"):
+                        source.index("\n# A platform can exclude a phase")]
+        platform = (REPO_ROOT / ".github/scripts/set_env/kunlunxin.sh").read_text()
+        skip = platform[platform.index("flagcx_ci_run_suite_override() {"):
+                        platform.index("\nflagcx_ci_validate_rdma() {")]
+        prefix = ("set -euo pipefail\nPROJECT_ROOT=$1\nSUITE=$2\n"
+                  "FLAGCX_CI_TEST_MAKE_ARGS=(TEST_ONLY=1)\n")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for status in (0, 59):
+                with self.subTest(status=status):
+                    hook = ("flagcx_ci_run_suite_override() {\n"
+                            "  FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1\n"
+                            f"  return {status}\n" "}\n")
+                    result = subprocess.run(
+                        ["bash", "-c", prefix + report + run + hook + "run_suite\n",
+                         "bash", str(root), "runner"],
+                        text=True, capture_output=True,
+                        env={**os.environ, "GITHUB_STEP_SUMMARY": str(root / "summary")},
+                    )
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    self.assertNotIn("SKIPPED", result.stdout)
+                    self.assertNotIn("::warning", result.stdout)
+                    self.assertFalse((root / "summary").exists())
+            result = subprocess.run(
+                ["bash", "-c", prefix + report + run + skip + "run_suite\n",
+                 "bash", str(root), "device_api_unified_ir"],
+                text=True, capture_output=True,
+                env={**os.environ, "FLAGCX_CI_XPU_TOOLCHAIN_AVAILABLE": "0",
+                     "GITHUB_STEP_SUMMARY": str(root / "summary")},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("SKIPPED device_api_unified_ir", result.stdout)
+            self.assertIn("install or mount the KunlunXin XTDK", result.stdout)
+            self.assertIn("::warning", result.stdout)
+            self.assertIn("Suite skipped", (root / "summary").read_text())
+
     def test_kunlunxin_device_suite_dependency_gap_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             env_script = Path(temp_dir) / "kunlunxin.sh"
@@ -247,7 +288,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         ).read_text()
         self.assertIn("flagcx_ci_find_xpu_toolchain", env_script)
         self.assertIn("FLAGCX_CI_XPU_TOOLCHAIN_AVAILABLE=0", env_script)
-        self.assertIn("SKIPPED $suite", env_script)
+        self.assertIn('flagcx_ci_report_skipped_suite "$suite"', env_script)
         self.assertIn("FLAGCX_CI_REQUIRE_ADAPTOR_GPU_TESTS", env_script)
         self.assertIn("FLAGCX_CI_REQUIRE_ADAPTOR_GPU_TESTS=1", env_script)
         self.assertIn("FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1", env_script)

@@ -493,8 +493,6 @@ run_suite() {
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
     flagcx_ci_run_suite_override "$SUITE" "$suite_dir" "${args[@]}"
     if [[ "$FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED" == 1 ]]; then
-      flagcx_ci_report_skipped_suite "$SUITE" \
-        "the platform set_env script reported this suite as unrunnable on this image"
       return
     fi
   fi
@@ -675,11 +673,13 @@ run_suite() {
       if [[ "${FLAGCX_P2P_TRANSPORT:-ib}" == "accl" ]]; then
         p2p_mpi_env="-x FLAGCX_P2P_TRANSPORT=accl"
       fi
-      FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
-        FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
-        FLAGCX_CI_TEST_LABEL="p2p unit tests" \
-        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
-        unit_status=$?
+      if flagcx_ci_phase_supported p2p-legacy-unit; then
+        FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+          FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
+          FLAGCX_CI_TEST_LABEL="p2p unit tests" \
+          "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
+          unit_status=$?
+      fi
       if flagcx_ci_phase_supported p2p-write-mpi; then
         FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
           FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
