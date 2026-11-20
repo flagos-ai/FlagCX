@@ -1068,7 +1068,7 @@ run_suite() {
       : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
       local platform_name
       local unit_status=0 default_status=0 hybrid_status=0 net_status=0 stripe_status=0 pxn_status=0
-      local p2p_1m_status=0 net_1m_status=0
+      local p2p_1m_status=0 net_1m_status=0 fused_preflight_status=0
       local runner_platform_filter="${FLAGCX_CI_RUNNER_MPI_FILTER:-}"
       local runner_mpi_runner="$MPI_RUNNER"
       local -a runner_net_platform_env=()
@@ -1107,6 +1107,7 @@ run_suite() {
       if ! flagcx_ci_phase_supported runner-mpi; then
         return "$unit_status"
       fi
+      bash "$PROJECT_ROOT/test/script/runner_fused_preflight_test.sh" || fused_preflight_status=$?
       cd "$suite_dir"
       FLAGCX_CI_MPI_LABEL="runner default" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
@@ -1244,14 +1245,14 @@ run_suite() {
           "${pxn_platform_env[@]}" \
           "${runner_net_platform_env[@]}" \
           ./build/bin/runner_mpi_tests \
-          --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll || pxn_status=$?
+          --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll:FlagCXCollTest.FinalizeThenRankLocalDestroy || pxn_status=$?
       elif [[ "${FLAGCX_CI_HAS_RDMA:-1}" != "1" && "${FLAGCX_CI_ENABLE_PXN:-1}" == "1" ]]; then
         echo "Skipping runner PXN: FLAGCX_CI_HAS_RDMA=0 (no RDMA device available)"
       fi
       if ((unit_status != 0 || default_status != 0 || hybrid_status != 0 ||
            net_status != 0 || p2p_1m_status != 0 || net_1m_status != 0 ||
-           stripe_status != 0 || pxn_status != 0)); then
-        echo "Runner failures: unit=$unit_status default=$default_status hybrid=$hybrid_status NET=$net_status P2P_1MiB=$p2p_1m_status NET_1MiB=$net_1m_status striping=$stripe_status PXN=$pxn_status" >&2
+           stripe_status != 0 || pxn_status != 0 || fused_preflight_status != 0)); then
+        echo "Runner failures: unit=$unit_status default=$default_status hybrid=$hybrid_status NET=$net_status P2P_1MiB=$p2p_1m_status NET_1MiB=$net_1m_status striping=$stripe_status PXN=$pxn_status fused_preflight=$fused_preflight_status" >&2
         return 1
       fi
       ;;
@@ -1306,7 +1307,7 @@ run_suite() {
         -x LD_LIBRARY_PATH
       )
       local symmem_bin="$PROJECT_ROOT/test/unittest/symmem/build/bin/symmem_mpi_tests"
-      local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.FullMeshRoundFailureConvergesAndRetries:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricLocalDeregisterUsesCommonPublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.SegmentedMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeLocalCleanupFailureRetries:SymMemTest.CrossNodeMixedVmmRejectsSymmetricAndRetriesIpc:SymMemTest.CrossNodeMixedMultiSegmentVmmRejectsSymmetricAndRetriesVmm:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.LsaWindowsShareArenaAndReuseReleasedOffset:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow"
+      local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.FullMeshRoundFailureConvergesAndRetries:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricLocalDeregisterUsesCommonPublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.SegmentedMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeLocalCleanupFailureRetries:SymMemTest.CrossNodeMixedVmmRejectsSymmetricAndRetriesIpc:SymMemTest.CrossNodeMixedMultiSegmentVmmRejectsSymmetricAndRetriesVmm:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.LsaWindowsShareArenaAndReuseReleasedOffset:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow:SymMemTest.FinalizeThenDestroyIsRankLocal"
 
       if ((symmem_run_vmm_local != 0)); then
         FLAGCX_CI_MPI_LABEL="symmem remote without NET" \

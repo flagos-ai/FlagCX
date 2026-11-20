@@ -90,7 +90,7 @@ if args[0] != "make":
     assert exports["PCCL_ENABLE_EXT_KERNEL"] == "0"
     assert "./build/bin/runner_mpi_tests" in args
     if label == "runner PPU PXN four-rank":
-        assert args[-1] == "--gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll"
+        assert args[-1] == "--gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll:FlagCXCollTest.FinalizeThenRankLocalDestroy"
     else:
         assert not any("gtest_filter" in arg for arg in args)
 with open(os.environ["CALL_LOG"], "a") as out:

@@ -25,6 +25,7 @@
  ************************************************************************/
 
 #include "check.h"
+#include "comm_lifecycle_check.hpp"
 #include "device_ir.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
@@ -804,9 +805,10 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
   FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
   FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
-  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+  // Leave the live DevComm to Finalize to cover implicit owner cleanup.
   FLAGCXCHECK(devHandle->streamDestroy(stream));
-  FLAGCXCHECK(flagcxCommDestroy(comm));
+  FLAGCXCHECK(flagcxTestFinalizeAndDestroyRankLocally(&comm, proc, totalProcs,
+                                                      splitComm));
 
   if (proc == 0) {
     if (gradedCases == 0)
