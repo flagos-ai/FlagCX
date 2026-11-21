@@ -472,7 +472,7 @@ TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
   // allocated and keeps it alive until those allocations are freed.
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-  reqs.interSignalCount = 1;
+  reqs.interSignalCount = legacySignalCount(FLAGCX_DEVICE_CTA_COUNT);
   flagcxDevComm_t devComm = nullptr;
   ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &devComm), flagcxSuccess);
 

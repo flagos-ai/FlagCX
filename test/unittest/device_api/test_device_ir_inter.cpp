@@ -32,6 +32,7 @@
 #include "check.h"
 #include "device_api_window.h"
 #include "device_ir.h"
+#include "device_signal_test.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 
@@ -62,6 +63,7 @@ int main(int argc, char *argv[]) {
   int color = 0;
   initMpiEnv(argc, argv, worldRank, worldSize, proc, totalProcs, color,
              splitComm, splitMask);
+  const auto signalOptions = flagcxSignalTestOptions(splitComm);
 
   size_t minBytes = args.getMinBytes();
   size_t maxBytes = args.getMaxBytes();
@@ -92,8 +94,9 @@ int main(int argc, char *argv[]) {
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-  reqs.interSignalCount = 3;
-  reqs.interCounterCount = 1;
+  reqs.interContextCount = signalOptions.contexts;
+  reqs.interSignalCount = legacySignalCount(FLAGCX_DEVICE_CTA_COUNT);
+  reqs.interCounterCount = FLAGCX_DEVICE_CTA_COUNT;
 
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
@@ -142,8 +145,9 @@ int main(int argc, char *argv[]) {
 
   // Allocate results buffer
   int *devResults = nullptr;
-  FLAGCXCHECK(devHandle->deviceMalloc((void **)&devResults, 256 * sizeof(int),
-                                      flagcxMemDevice, NULL));
+  FLAGCXCHECK(devHandle->deviceMalloc(
+      (void **)&devResults, 4 * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t),
+      flagcxMemDevice, NULL));
 
   // Host scratch
   float *hostBuf = new float[maxBytes / sizeof(float)];
@@ -168,6 +172,8 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->deviceMemcpy(hostS1, devResults, 4 * sizeof(int),
                                       flagcxMemcpyDeviceToHost, stream));
 
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+  flagcxSignalTestCheckContexts(hostS1[2], splitComm);
   bool s1Pass = (hostS1[0] == 1);
   bool s1Skip = (hostS1[0] == 0);
   int intraSize = hostS1[1] > 0 ? hostS1[1] : totalProcs;
@@ -187,12 +193,15 @@ int main(int argc, char *argv[]) {
   launchKernelNetResetS(devCommPtr, devResults, stream);
   FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
-  int hostS2[4] = {0};
-  FLAGCXCHECK(devHandle->deviceMemcpy(hostS2, devResults, 4 * sizeof(int),
+  int hostS2[3 * FLAGCX_DEVICE_CTA_COUNT] = {};
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostS2, devResults, sizeof(hostS2),
                                       flagcxMemcpyDeviceToHost, stream));
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
-  bool s2Pass = (hostS2[0] == 1) && (hostS2[1] == 1) && (hostS2[2] == 1);
-  bool s2Skip = (hostS2[0] == 0) && (hostS2[1] == 0) && (hostS2[2] == 0);
+  bool s2Pass = true;
+  for (int v : hostS2)
+    s2Pass &= v == 1;
+  bool s2Skip = s1Skip;
   printf("[rank %d] S2  ResetS: %s\n", proc,
          s2Skip ? "SKIP (no transport contexts)" : (s2Pass ? "PASS" : "FAIL"));
   if (s2Skip)
@@ -230,9 +239,11 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(devHandle->deviceMemcpy(hostContextResults, devResults,
                                         sizeof(hostContextResults),
                                         flagcxMemcpyDeviceToHost, stream));
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
     FLAGCXCHECK(devHandle->deviceMemcpy(
         multiRecv.data(), (char *)recvBuff + multiContextBase,
         multiContextBytes, flagcxMemcpyDeviceToHost, stream));
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     int contextCount = hostContextResults[FLAGCX_DEVICE_CTA_COUNT];
     int nNodes = intraSize > 0 ? totalProcs / intraSize : 0;
@@ -346,14 +357,22 @@ int main(int argc, char *argv[]) {
       MPI_Barrier(MPI_COMM_WORLD);
 
       launchKernelNetCounterPipelineS(devCommPtr, sendMemPtr, recvMemPtr,
-                                      countPerPeer, stream);
+                                      countPerPeer, stream,
+                                      (uint64_t *)devResults);
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
       // Custom verification: round 2 sends stamped data (999.0f at offset 0)
       devHandle->deviceMemcpy(hostBuf, recvBuff,
                               (size_t)totalProcs * countPerPeer * sizeof(float),
                               flagcxMemcpyDeviceToHost, stream);
-      bool s5Ok = true;
+      uint64_t pipelineResults[4 * FLAGCX_DEVICE_CTA_COUNT] = {};
+      FLAGCXCHECK(devHandle->deviceMemcpy(pipelineResults, devResults,
+                                          sizeof(pipelineResults),
+                                          flagcxMemcpyDeviceToHost, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      bool s5Ok =
+          flagcxPipelineResults(pipelineResults, FLAGCX_DEVICE_CTA_COUNT, 128,
+                                totalProcs, proc, intraBase, intraSize);
       for (int src = 0; src < totalProcs; src++) {
         if (src >= intraBase && src < intraBase + intraSize)
           continue;
@@ -402,6 +421,7 @@ int main(int argc, char *argv[]) {
                                           (char *)recvBuff + putValBase,
                                           (size_t)totalProcs * sizeof(uint64_t),
                                           flagcxMemcpyDeviceToHost, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
       bool s7Ok = true;
       for (int src = 0; src < totalProcs; src++) {
         if (src >= intraBase && src < intraBase + intraSize)
@@ -457,9 +477,27 @@ int main(int argc, char *argv[]) {
     // --- S11: WaitSignal + Flush (standalone) ---
     if (!s1Skip) {
       MPI_Barrier(MPI_COMM_WORLD);
-      launchKernelNetWaitSignalFlushS(devCommPtr, stream);
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
-      printf("[rank %d] S11 WaitSignal+Flush: PASS\n", proc);
+      bool s11Ok = true, sawOverlap = false;
+      uint64_t waitResults[kFlagcxTestWaitResultWords *
+                           FLAGCX_DEVICE_CTA_COUNT] = {};
+      for (int iteration = 0; iteration < signalOptions.repeats; ++iteration) {
+        FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(waitResults),
+                                            flagcxMemDevice, stream));
+        launchKernelNetWaitSignalFlushS(
+            devCommPtr, stream, (uint64_t *)devResults, signalOptions.skew);
+        FLAGCXCHECK(devHandle->streamSynchronize(stream));
+        FLAGCXCHECK(devHandle->deviceMemcpy(waitResults, devResults,
+                                            sizeof(waitResults),
+                                            flagcxMemcpyDeviceToHost, stream));
+        FLAGCXCHECK(devHandle->streamSynchronize(stream));
+        s11Ok &= flagcxWaitSignalResults(waitResults, FLAGCX_DEVICE_CTA_COUNT,
+                                         totalProcs - intraSize, &sawOverlap);
+      }
+      s11Ok &=
+          flagcxSignalOverlapResult(sawOverlap, signalOptions.skew, splitComm);
+      allInterPass &= s11Ok;
+      printf("[rank %d] S11 WaitSignal+Flush: %s\n", proc,
+             s11Ok ? "PASS" : "FAIL");
       fflush(stdout);
       MPI_Barrier(MPI_COMM_WORLD);
     }
@@ -475,6 +513,7 @@ int main(int argc, char *argv[]) {
       int hostRes[1] = {0};
       FLAGCXCHECK(devHandle->deviceMemcpy(hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
       printf("[rank %d] S12 InterBarrier: %s\n", proc,
              hostRes[0] == 1 ? "PASS" : (hostRes[0] == -1 ? "SKIP" : "FAIL"));
       fflush(stdout);

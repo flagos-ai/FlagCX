@@ -30,7 +30,7 @@ static bool runAlltoAll(flagcxComm_t comm, flagcxDeviceHandle_t devHandle,
                         int contextCount) {
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-  reqs.interSignalCount = 1;
+  reqs.interSignalCount = legacySignalCount(FLAGCX_DEVICE_CTA_COUNT);
   reqs.interContextCount = contextCount;
 
   flagcxDevComm_t devComm = nullptr;
