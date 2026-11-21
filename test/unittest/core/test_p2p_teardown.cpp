@@ -134,6 +134,95 @@ TEST_F(P2pTeardownTest, StreamFailureKeepsImportOpen) {
   EXPECT_EQ(resources.importedRecvFifoBase, reinterpret_cast<void *>(0x5000));
 }
 
+TEST_F(P2pTeardownTest, PendingSendCleanupRetainsImportEventsAndStream) {
+  struct RestoreChunks {
+    int64_t saved;
+    ~RestoreChunks() { flagcxP2pChunks = saved; }
+  } restoreChunks{flagcxP2pChunks};
+  flagcxP2pChunks = 2;
+  auto *resources = (flagcxP2pResources *)calloc(1, sizeof(flagcxP2pResources));
+  flagcxProxyConnection connection = {};
+  connection.send = 1;
+  connection.transportResources = resources;
+  resources->importedRecvFifoBase = (void *)0x5000;
+  resources->proxyInfo.stream = (flagcxStream_t)0x1000;
+  resources->proxyInfo.events[0] = (flagcxEvent_t)0x2000;
+  resources->proxyInfo.events[1] = (flagcxEvent_t)0x3000;
+  static int eventCalls[2], streamCalls;
+  static bool pendingEvent, pendingStream;
+  eventCalls[0] = eventCalls[1] = streamCalls = 0;
+  pendingEvent = pendingStream = true;
+  testDeviceAdaptor_.eventDestroy = [](flagcxEvent_t event) {
+    int i = event == (flagcxEvent_t)0x2000 ? 0 : 1;
+    eventCalls[i]++;
+    return i == 1 && pendingEvent ? flagcxInProgress : flagcxSuccess;
+  };
+  testDeviceAdaptor_.streamDestroy = [](flagcxStream_t) {
+    streamCalls++;
+    return pendingStream ? flagcxInProgress : flagcxSuccess;
+  };
+  auto cleanup = [&] {
+    return flagcxP2pCleanupProxyConnection(
+        &connection, flagcxTransportCleanupReleaseResources);
+  };
+  streamSynchronizeResult = flagcxInProgress;
+  ASSERT_EQ(cleanup(), flagcxInProgress);
+  ASSERT_EQ(connection.transportResources, resources);
+  EXPECT_NE(resources->importedRecvFifoBase, nullptr);
+  EXPECT_EQ(eventCalls[0] + streamCalls, 0);
+  streamSynchronizeResult = flagcxSuccess;
+  closeImportResult = flagcxInProgress;
+  ASSERT_EQ(cleanup(), flagcxInProgress);
+  ASSERT_EQ(connection.transportResources, resources);
+  EXPECT_NE(resources->importedRecvFifoBase, nullptr);
+  closeImportResult = flagcxSuccess;
+  ASSERT_EQ(cleanup(), flagcxInProgress);
+  ASSERT_EQ(connection.transportResources, resources);
+  EXPECT_EQ(resources->importedRecvFifoBase, nullptr);
+  EXPECT_EQ(resources->proxyInfo.events[0], nullptr);
+  EXPECT_NE(resources->proxyInfo.events[1], nullptr);
+  EXPECT_EQ(streamCalls, 0);
+  pendingEvent = false;
+  ASSERT_EQ(cleanup(), flagcxInProgress);
+  ASSERT_EQ(connection.transportResources, resources);
+  EXPECT_EQ(resources->proxyInfo.events[1], nullptr);
+  EXPECT_NE(resources->proxyInfo.stream, nullptr);
+  pendingStream = false;
+  ASSERT_EQ(cleanup(), flagcxSuccess);
+  EXPECT_EQ(connection.transportResources, nullptr);
+  EXPECT_EQ(eventCalls[0], 1);
+  EXPECT_EQ(eventCalls[1], 2);
+  EXPECT_EQ(streamCalls, 2);
+  EXPECT_EQ(cleanup(), flagcxSuccess);
+  EXPECT_EQ(streamCalls, 2);
+}
+
+TEST_F(P2pTeardownTest, PendingExportFreeRetainsDescriptorAndAllocation) {
+  auto *resources = (flagcxP2pResources *)calloc(1, sizeof(flagcxP2pResources));
+  resources->localRecvFifo = (void *)0x7000;
+  resources->importsClosedConfirmed = 1;
+  flagcxProxyConnection connection = {};
+  connection.transportResources = resources;
+  static flagcxResult_t setResult;
+  setResult = flagcxInProgress;
+  testDeviceAdaptor_.setDevice = [](int) { return setResult; };
+  auto cleanup = [&] {
+    return flagcxP2pCleanupProxyConnection(
+        &connection, flagcxTransportCleanupReleaseResources);
+  };
+  ASSERT_EQ(cleanup(), flagcxInProgress);
+  ASSERT_EQ(connection.transportResources, resources);
+  EXPECT_EQ(freedExport, nullptr);
+  setResult = flagcxSuccess;
+  freeExportResult = flagcxInProgress;
+  ASSERT_EQ(cleanup(), flagcxInProgress);
+  ASSERT_EQ(connection.transportResources, resources);
+  EXPECT_EQ(resources->localRecvFifo, (void *)0x7000);
+  freeExportResult = flagcxSuccess;
+  EXPECT_EQ(cleanup(), flagcxSuccess);
+  EXPECT_EQ(connection.transportResources, nullptr);
+}
+
 TEST_F(P2pTeardownTest, ExportIsPreservedUntilFinalizeConfirmation) {
   flagcxP2pShm shm = {};
   flagcxP2pResources resources = {};

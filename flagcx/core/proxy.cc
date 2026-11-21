@@ -427,6 +427,7 @@ proxyFreeConnection(struct flagcxProxyConnection *connection,
 
 flagcxResult_t flagcxProxyCleanupConnections(struct flagcxHeteroComm *comm,
                                              int cleanupPhase) {
+  flagcxResult_t result;
   if (comm == NULL || comm->proxyState == NULL)
     return flagcxInvalidArgument;
   if (comm->proxyState->initialized != 0)
@@ -455,9 +456,11 @@ flagcxResult_t flagcxProxyCleanupConnections(struct flagcxHeteroComm *comm,
           resources->importsClosedConfirmed =
               comm->finalizeState.importsClosedConfirmed;
         }
-        FLAGCXCHECK(proxyFreeConnection(
-            connection, comm,
-            cleanupPhase == flagcxTransportCleanupCloseImports));
+        result = proxyFreeConnection(connection, comm,
+                                     cleanupPhase ==
+                                         flagcxTransportCleanupCloseImports);
+        if (result != flagcxSuccess)
+          return result;
       }
     }
   }
@@ -3349,6 +3352,7 @@ flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm) {
 }
 
 flagcxResult_t flagcxProxyFinalize(struct flagcxHeteroComm *comm) {
+  flagcxResult_t result;
   if (comm->proxyState->initialized == 1) {
     if (pthread_join(comm->proxyState->thread, NULL) != 0)
       return flagcxSystemError;
@@ -3356,40 +3360,53 @@ flagcxResult_t flagcxProxyFinalize(struct flagcxHeteroComm *comm) {
   }
   // A failed retire retains the worker handle. Retry before touching imports.
   if (comm->proxyState->progressState.worker != NULL) {
-    FLAGCXCHECK(
-        comm->workerPool->retire(&comm->proxyState->progressState.worker));
+    result = comm->workerPool->retire(&comm->proxyState->progressState.worker);
+    if (result != flagcxSuccess)
+      return result;
   }
 #ifdef COMPILE_KERNEL_HOST
   for (int i = 0; i < comm->proxyState->kernelState.contextCount; i++) {
-    if (comm->proxyState->kernelState.workers[i] != NULL)
-      FLAGCXCHECK(
-          comm->workerPool->retire(&comm->proxyState->kernelState.workers[i]));
+    if (comm->proxyState->kernelState.workers[i] != NULL) {
+      result =
+          comm->workerPool->retire(&comm->proxyState->kernelState.workers[i]);
+      if (result != flagcxSuccess)
+        return result;
+    }
   }
   for (int i = 0; i < comm->proxyState->kernelState.contextCount; i++) {
     delete comm->proxyState->kernelState.workerStates[i];
     comm->proxyState->kernelState.workerStates[i] = NULL;
     flagcxFifo_t fifo = comm->proxyState->kernelState.fifos[i];
     if (fifo != NULL) {
-      FLAGCXCHECK(fifo->flagcxFifoDestroy());
+      result = fifo->flagcxFifoDestroy();
+      if (result != flagcxSuccess)
+        return result;
       delete fifo;
       comm->proxyState->kernelState.fifos[i] = NULL;
     }
     comm->fifoBuffers[i] = NULL;
   }
 #endif
-  FLAGCXCHECK(
-      flagcxProxyCleanupConnections(comm, flagcxTransportCleanupCloseImports));
+  result =
+      flagcxProxyCleanupConnections(comm, flagcxTransportCleanupCloseImports);
+  if (result != flagcxSuccess)
+    return result;
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm) {
+  flagcxResult_t result;
   // Local release only. Finalize has stopped/joined the service and confirmed
   // every importer in the node, including ranks with no connections.
   if (comm->proxyState->initialized != 0)
     return flagcxInvalidUsage;
-  FLAGCXCHECK(flagcxProxyCleanupConnections(
-      comm, flagcxTransportCleanupReleaseResources));
-  FLAGCXCHECK(flagcxProxyFree(comm));
+  result = flagcxProxyCleanupConnections(
+      comm, flagcxTransportCleanupReleaseResources);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxProxyFree(comm);
+  if (result != flagcxSuccess)
+    return result;
   while (comm->proxyState->relayImports != NULL) {
     auto *import = comm->proxyState->relayImports;
     comm->proxyState->relayImports = import->next;

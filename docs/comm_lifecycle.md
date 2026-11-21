@@ -133,6 +133,13 @@ Outside a group Finalize blocks. Check every return value in application code.
 Do not concurrently submit work or start multiple lifecycle operations on the
 same handle. On a local cleanup failure, retry Finalize with the node's ranks;
 after successful Finalize, a failed free can be retried by that rank alone.
+Proxy cleanup propagates every result other than Success, including InProgress,
+through the transport, connection pool, Finalize and Destroy layers. Pending
+import closure participates in the current node status exchange but cannot
+authorize exporter release. Pending local release retains the pool and resource
+descriptors; fields cleared by earlier successful releases are skipped on retry.
+Device events, streams, registrations and FIFO allocations follow this rule.
+
 Bootstrap or device failure can prevent progress; owners remain retained while
 closure is unconfirmed.
 

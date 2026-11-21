@@ -199,6 +199,11 @@ path.write_text('<testsuites><testsuite name="FlagCXCollTest">'
         for rank in range(3):
             self.assertIn(f'rank-{rank}.xml', lifecycle)
         for case in (
+            'PendingImportRetainsExporterAndEmptyRankUntilRetry',
+            'PendingLocalReleaseRetriesWhilePeersWait',
+        ):
+            self.assertIn(f'HeteroFinalizeMpi.{case}', lifecycle)
+        for case in (
             'NativeOnlyImplicitDestroyFinishesWhilePeersWait',
             'TransportDeclarationIncludesEmptyRanksAtInit',
             'IpcDeclarationSurvivesRankLocalAllocationFailure',

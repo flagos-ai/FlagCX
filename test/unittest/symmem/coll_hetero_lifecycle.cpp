@@ -14,6 +14,7 @@ protected:
   int rank = 0, nranks = 0, fifoFrees = 0, importCloses = 0;
   int closeDelayMs = 0;
   bool failImport = false, failFifo = false;
+  flagcxResult_t importResult = flagcxSuccess, fifoResult = flagcxSuccess;
   struct Fence {
     bool ready;
   };
@@ -67,11 +68,11 @@ protected:
       active->importCloses++;
       std::this_thread::sleep_for(
           std::chrono::milliseconds(active->closeDelayMs));
-      return active->failImport ? flagcxRemoteError : flagcxSuccess;
+      return active->failImport ? flagcxRemoteError : active->importResult;
     };
     device.deviceFree = [](void *, flagcxMemType_t, flagcxStream_t) {
       active->fifoFrees++;
-      return active->failFifo ? flagcxSystemError : flagcxSuccess;
+      return active->failFifo ? flagcxSystemError : active->fifoResult;
     };
     ASSERT_EQ(bootstrapNetInit(), flagcxSuccess);
     flagcxBootstrapHandle handle = {};
@@ -137,6 +138,7 @@ protected:
   }
   void TearDown() override {
     failImport = failFifo = false;
+    importResult = fifoResult = flagcxSuccess;
     closeDelayMs = 0;
     failDevice = false;
     if (owner != nullptr)
@@ -264,6 +266,53 @@ TEST_F(HeteroFinalizeMpi, FailedImportRetainsExporterAndLocalReleaseCanRetry) {
   destroyInRankOrder();
   EXPECT_EQ(fifoFrees, rank == 0 ? 2 : 0);
   EXPECT_EQ(importCloses, rank == 1 ? 2 : 0);
+}
+
+TEST_F(HeteroFinalizeMpi, PendingImportRetainsExporterAndEmptyRankUntilRetry) {
+  importResult = rank == 1 ? flagcxInProgress : flagcxSuccess;
+  EXPECT_EQ(destroy(), flagcxInProgress);
+  ASSERT_NE(owner, nullptr);
+  EXPECT_EQ(owner->finalizeState.phase, flagcxHeteroFinalizeProxy);
+  EXPECT_FALSE(owner->finalizeState.importsClosedConfirmed);
+  EXPECT_EQ(owner->destroyProxyComplete, rank != 1);
+  EXPECT_EQ(fifoFrees, 0);
+  if (rank == 1) {
+    ASSERT_NE(owner->proxyState->connectionPool, nullptr);
+    auto *resource =
+        (flagcxP2pResources *)owner->proxyState->connectionPool->pools[0][0]
+            .transportResources;
+    ASSERT_NE(resource, nullptr);
+    EXPECT_EQ(resource->importedRecvFifoBase, (void *)0x55000);
+  }
+  importResult = flagcxSuccess;
+  ASSERT_EQ(flagcxHeteroCommFinalize(owner), flagcxSuccess);
+  EXPECT_TRUE(owner->finalizeState.importsClosedConfirmed);
+  EXPECT_EQ(importCloses, rank == 1 ? 2 : 0);
+  EXPECT_EQ(fifoFrees, 0);
+  destroyInRankOrder();
+  EXPECT_EQ(fifoFrees, rank == 0 ? 1 : 0);
+}
+
+TEST_F(HeteroFinalizeMpi, PendingLocalReleaseRetriesWhilePeersWait) {
+  ASSERT_EQ(flagcxHeteroCommFinalize(owner), flagcxSuccess);
+  if (rank == 0) {
+    fifoResult = flagcxInProgress;
+    EXPECT_EQ(destroy(), flagcxInProgress);
+    ASSERT_NE(owner, nullptr);
+    EXPECT_EQ(owner->finalizeState.phase, flagcxHeteroFinalizeComplete);
+    EXPECT_TRUE(owner->finalizeState.importsClosedConfirmed);
+    ASSERT_NE(owner->proxyState->connectionPool, nullptr);
+    auto *resource =
+        (flagcxP2pResources *)owner->proxyState->connectionPool->pools[0][0]
+            .transportResources;
+    ASSERT_NE(resource, nullptr);
+    EXPECT_EQ(resource->localRecvFifo, (void *)0x44000);
+    fifoResult = flagcxSuccess;
+  }
+  // Other ranks wait in MPI while rank zero retries only local destruction.
+  destroyInRankOrder();
+  EXPECT_EQ(fifoFrees, rank == 0 ? 2 : 0);
+  EXPECT_EQ(importCloses, rank == 1 ? 1 : 0);
 }
 
 TEST_F(HeteroFinalizeMpi, ClosureDoesNotWaitForAnotherNode) {
