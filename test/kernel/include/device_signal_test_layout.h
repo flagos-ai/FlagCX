@@ -65,7 +65,7 @@ FLAGCX_TEST_HD int unifiedPayloadGroup(int combo, int variants) {
 }
 // Float payloads have a nonempty, element-aligned slice for every CTA. Tiny
 // requests are raised to four elements; larger requests keep whole elements.
-FLAGCX_TEST_HD size_t unifiedPayloadBytes(size_t requested) {
+inline size_t unifiedPayloadBytes(size_t requested) {
   size_t elements = requested / sizeof(float);
   if (elements < size_t(kFlagcxTestUnifiedCtas))
     elements = kFlagcxTestUnifiedCtas;
@@ -102,8 +102,8 @@ FLAGCX_TEST_HD FlagcxTestPayloadSlice unifiedPayloadSlice(size_t bytes,
 }
 // Small exactly representable floats distinguish senders, scenarios and rounds
 // without losing the low bits when large buffers are checked.
-FLAGCX_TEST_HD float unifiedPayloadValue(int rank, int scenario, int round,
-                                         size_t index) {
+inline float unifiedPayloadValue(int rank, int scenario, int round,
+                                 size_t index) {
   uint32_t v = uint32_t(index) * 2654435761u ^
                uint32_t(rank + 1) * 2246822519u ^
                uint32_t(scenario) * 3266489917u ^ uint32_t(round) * 668265263u;
