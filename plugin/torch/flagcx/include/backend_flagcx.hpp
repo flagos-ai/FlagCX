@@ -152,6 +152,8 @@ public:
 
   ~flagcxBackend() override;
 
+  std::optional<std::string> getHcclCommName(int device);
+
   void startCoalescing() override;
 
   c10::intrusive_ptr<Work> endCoalescing() override;
@@ -393,7 +395,8 @@ protected:
   void checkSubmissionHealthy();
   void runTensorReaper() noexcept;
   void discardTensorBatch(inflightTensorIter batch) noexcept;
-  void finishTensorBatch(inflightTensorIter batch);
+  void finishTensorBatch(inflightTensorIter batch,
+                         bool storageTrackedByAllocator = false);
   void finishTensorBatchOnError(inflightTensorIter batch,
                                 bool mayHaveSubmitted) noexcept;
   class retainedTensorBatch {
@@ -407,6 +410,7 @@ protected:
     void add(const std::vector<at::Tensor> &tensors);
     void markSubmitted() noexcept { mayHaveSubmitted_ = true; }
     void finish();
+    void finishBaseCollective();
 
   private:
     flagcxBackend &backend_;

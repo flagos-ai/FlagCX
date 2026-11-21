@@ -4,7 +4,12 @@
  * Copyright (c) 2025 by DU. All Rights Reserved.
  ************************************************************************/
 #include "backend_flagcx.hpp"
+#include "flagcx_ascend.h"
 #include "utils_flagcx.hpp"
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+#include "torch_npu/csrc/core/npu/NPUCachingAllocator.h"
+#include "torch_npu/csrc/core/npu/NPUGraphsUtils.h"
+#endif
 #include <algorithm>
 #include <c10/util/ScopeExit.h>
 #include <chrono>
@@ -21,6 +26,21 @@
 
 namespace c10d {
 namespace {
+
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+// Older torch_npu allocators cannot identify their blocks. Retain the batch's
+// storage references on those builds.
+template <typename Allocator>
+auto ownsNativeBlock(Allocator *allocator, const c10::DataPtr &ptr, int)
+    -> decltype(allocator->getBlockPtr(ptr) != nullptr) {
+  return allocator->getBlockPtr(ptr) != nullptr;
+}
+
+template <typename Allocator>
+bool ownsNativeBlock(Allocator *, const c10::DataPtr &, long) {
+  return false;
+}
+#endif
 
 bool heteroP2pRequested() {
   const char *useHeteroComm = std::getenv("FLAGCX_USE_HETERO_COMM");
@@ -664,6 +684,22 @@ void flagcxBackend::initComm() {
 #endif
 }
 
+std::optional<std::string> flagcxBackend::getHcclCommName(int device) {
+#ifdef USE_ASCEND_ADAPTOR
+  TORCH_CHECK(device >= 0 && device < nDevs_, "Invalid NPU device index ",
+              device);
+  initComm(at::Device(at::DeviceType::PrivateUse1, device));
+  char name[128] = {};
+  auto ret = flagcxCommGetHcclCommName(comm_, name, sizeof(name));
+  if (ret == flagcxNotSupported)
+    return std::nullopt;
+  C10D_FLAGCX_CHECK(ret, std::nullopt);
+  return std::string(name);
+#else
+  return std::nullopt;
+#endif
+}
+
 flagcxComm_t flagcxBackend::getOrCreatePairComm(int peer) {
   std::string key;
   int numRanks;
@@ -898,10 +934,16 @@ void flagcxBackend::discardTensorBatch(inflightTensorIter batch) noexcept {
   inflightTensorBatches_.erase(batch);
 }
 
-void flagcxBackend::finishTensorBatch(inflightTensorIter batch) {
+void flagcxBackend::finishTensorBatch(inflightTensorIter batch,
+                                      bool storageTrackedByAllocator) {
   const auto result = devHandle_->eventRecord(batch->event, batch->stream);
   if (result == flagcxSuccess) {
     batch->recorded = true;
+    // Only the storage lifetime transfers to the allocator. The recorded event
+    // stays with the batch for async error detection and communicator teardown.
+    if (storageTrackedByAllocator) {
+      batch->storages.clear();
+    }
     try {
       std::lock_guard<std::mutex> lock(tensorReaperMutex_);
       if (!tensorReaperThread_.joinable()) {
@@ -963,6 +1005,42 @@ void flagcxBackend::retainedTensorBatch::add(
 void flagcxBackend::retainedTensorBatch::finish() {
   finished_ = true;
   backend_.finishTensorBatch(batch_);
+}
+
+void flagcxBackend::retainedTensorBatch::finishBaseCollective() {
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+  const auto stream = c10_npu::getCurrentNPUStream(batch_->deviceId);
+  auto *allocator = c10_npu::NPUCachingAllocator::get();
+  char commName[128];
+  if (!backend_.coalescedStreamPinned_ && backend_.activeGroupCounter_ == 0 &&
+      stream.stream(false) == *reinterpret_cast<aclrtStream *>(batch_->stream) &&
+      c10_npu::currentStreamCaptureStatusMayInitCtx() ==
+          c10_npu::CaptureStatus::None &&
+      allocator->name() == "native" &&
+      flagcxCommGetHcclCommName(backend_.comm_, commName, sizeof(commName)) ==
+          flagcxSuccess) {
+    const auto deleter = allocator->raw_deleter();
+    const auto &storages = batch_->storages;
+    if (std::all_of(storages.begin(), storages.end(), [&](const auto &s) {
+          const auto &p = s.data_ptr();
+          return p.device().index() == batch_->deviceId && p.get() &&
+                 p.get() == p.get_context() && p.get_deleter() == deleter &&
+                 ownsNativeBlock(allocator, p, 0);
+        })) {
+      // The collective and its Work event are already on this stream. Native
+      // eraseStream leaves the record intact for blocks allocated on another
+      // stream. Keep every strong reference until all registrations succeed.
+      for (const auto &s : storages) {
+        allocator->recordStream(s.data_ptr(), stream);
+        allocator->eraseStream(s.data_ptr(), stream);
+      }
+      finished_ = true;
+      backend_.finishTensorBatch(batch_, /*storageTrackedByAllocator=*/true);
+      return;
+    }
+  }
+#endif
+  finish();
 }
 
 void flagcxBackend::startCoalescing() {
@@ -1313,7 +1391,7 @@ flagcxBackend::_allgather_base(at::Tensor &outputTensor,
       std::nullopt);
 
   work->event_->record(stream, deviceId_);
-  retained.finish();
+  retained.finishBaseCollective();
   work->deviceId_ = deviceId_;
   // Create a future to track the allgather operation
   std::vector<at::Device> devices{inputTensor.device()};
@@ -1869,7 +1947,7 @@ flagcxBackend::_reduce_scatter_base(at::Tensor &outputTensor,
   }
 
   work->event_->record(stream, deviceId_);
-  retained.finish();
+  retained.finishBaseCollective();
   work->deviceId_ = deviceId_;
   // Create a future to track the reducescatter operation
   std::vector<at::Device> devices{outputTensor.device()};
@@ -2300,6 +2378,17 @@ c10::intrusive_ptr<Backend> flagcxBackend::createFlagcxBackend(
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("createFlagcxBackend", &flagcxBackend::createFlagcxBackend);
+  m.def(
+      "get_hccl_comm_name",
+      [](const c10::intrusive_ptr<Backend> &backend, int device) {
+        auto *flagcx = dynamic_cast<flagcxBackend *>(backend.get());
+        TORCH_CHECK(flagcx != nullptr, "Expected a FlagCX backend");
+        return flagcx->getHcclCommName(device);
+      },
+      py::arg("backend"), py::arg("device"),
+      "Return an HCCL name or None when unsupported. First use initializes the "
+      "communicator collectively; all group ranks must participate. Keep the "
+      "group alive and order external operations against FlagCX collectives.");
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
     defined(TORCH_VER_GE_250)
