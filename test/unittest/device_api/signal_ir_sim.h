@@ -4,6 +4,20 @@
 constexpr int kCompletionBits = 64;
 using flagcxDevContext_t = int;
 using flagcxDevCoopKind_t = int;
+using flagcxDevTeamKind_t = int;
+using flagcxStream_t = void *;
+// XPU descriptor copies and CTA identifiers, without emulating its SDK.
+int core_id() { return 0; }
+int cluster_id() { return simCta; }
+struct IrPrimaryTeam {
+  flagcxDevTeamKind_t kind;
+  int rank;
+  int size;
+};
+#define GM2LM(src, dst, bytes) std::memcpy(dst, src, bytes)
+#define FLAGCX_IR_PROLOGUE(ptr)                                                \
+  flagcxDevComm comm = *(ptr);                                                 \
+  const int contextId = simCta % comm.getContextCount()
 constexpr int FLAGCX_COOP_THREAD = 0, FLAGCX_COOP_WARP = 1,
               FLAGCX_COOP_BLOCK = 2;
 constexpr int FLAGCX_TEAM_WORLD = 0, FLAGCX_TEAM_INTRA = 1,

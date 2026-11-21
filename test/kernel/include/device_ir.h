@@ -263,12 +263,15 @@ void launchKernelDevGetIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *localMemPtr, int *devResult, size_t bytes,
     flagcxStream_t stream);
 
+// S21-S23 launch one variant per call; the host validates before buffer reuse.
+// bytes is the total per coop/team payload group, partitioned across four CTAs.
+// selectedVariant: 0/1 for S21/S22 and 0/1/2 for S23.
 // S21: DevPutSignalWait — INTRA + WORLD
 void launchKernelDevPutSignalWaitIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream, unsigned skew = 0);
+    flagcxStream_t stream, unsigned skew, int selectedVariant);
 
 // S16: DevBarrier — INTRA + WORLD
 void launchKernelDevBarrierIntraWorldS(
@@ -322,7 +325,7 @@ void launchKernelDevPutSignalWaitInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream, unsigned skew = 0);
+    flagcxStream_t stream, unsigned skew, int selectedVariant);
 
 // S16: DevBarrier — INTER + WORLD
 void launchKernelDevBarrierInterWorldS(
@@ -361,14 +364,14 @@ void launchKernelDevPutRSigIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream, unsigned skew = 0);
+    flagcxStream_t stream, unsigned skew, int selectedVariant);
 
 // S22: DevPut_RSigInc + DevPut_RSigAdd — INTER + WORLD
 void launchKernelDevPutRSigInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream, unsigned skew = 0);
+    flagcxStream_t stream, unsigned skew, int selectedVariant);
 
 // S23: DevPut_LCtrInc + DevPut_RSigInc_LCtrInc + DevPut_RSigAdd_LCtrInc — INTRA
 // + WORLD
@@ -376,7 +379,7 @@ void launchKernelDevPutCounterIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream, unsigned skew = 0);
+    flagcxStream_t stream, unsigned skew, int selectedVariant);
 
 // S23: DevPut_LCtrInc + DevPut_RSigInc_LCtrInc + DevPut_RSigAdd_LCtrInc — INTER
 // + WORLD
@@ -384,7 +387,7 @@ void launchKernelDevPutCounterInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream, unsigned skew = 0);
+    flagcxStream_t stream, unsigned skew, int selectedVariant);
 
 // S24: DevPutValue_RSigInc + DevPutValue_RSigAdd — INTRA + WORLD
 void launchKernelDevPutValueRSigIntraWorldS(

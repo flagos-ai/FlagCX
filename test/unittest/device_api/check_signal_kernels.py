@@ -56,6 +56,11 @@ def main():
                 for team in ['Intra', 'Inter']
                 for variant in ['SignalStandalone', 'PutSignalWait', 'PutRSig',
                                 'PutCounter', 'PutValueRSig', 'SignalShadowFlush']]
+    # Compile the changed launcher calls as ordinary host calls as well: an
+    # omitted round argument must fail here even without a device compiler.
+    irnames += [f'launchKernelDev{variant}{team}WorldS'
+                for team in ['Intra', 'Inter']
+                for variant in ['PutSignalWait', 'PutRSig', 'PutCounter']]
     ir_reference = None
     for platform, extension in [('nvidia', 'cu'), ('du', 'hip'),
                                  ('ppu', 'cu'), ('iluvatar', 'cu')]:
@@ -79,8 +84,34 @@ def main():
             raise ValueError(f'{platform}: scalar/unified protocol differs from NVIDIA')
         ir_reference = normalized
         if platform == 'nvidia':
-            ir_bodies = bodies
+            ir_bodies = [re.sub(r'<<<.*?>>>', '', body, flags=re.S)
+                         for body in bodies]
     reference += ir_bodies
+    source = (root / 'test/kernel/klx/device_ir.xpu').read_text()
+    for result, name in [('bool', 'irCoopActive'),
+                         ('bool', 'irPutCoopSupported'),
+                         ('IrPrimaryTeam', 'irPrimaryTeam')]:
+        reference.append(result + ' ' + definition(source, name))
+    reference += ['void ' + definition(source, f'kernelDev{variant}UnifiedS')
+                  for variant in ['PutSignalWait', 'PutRSig', 'PutCounter']]
+    # The other platform launchers must forward the round argument and retain
+    # the same public test signature, including unsupported GIN stubs.
+    reference.append('#include <type_traits>')
+    for platform, extension in [('klx', 'xpu'), ('enflame', 'tops')]:
+        source = (root / f'test/kernel/{platform}/device_ir.{extension}').read_text()
+        reference.append(f'namespace {platform}Launch {{')
+        if platform == 'klx':
+            reference.append('using XPUStream = void *;\n'
+                             'void irWait(XPUStream, const char *) {}')
+        for team in ['Intra', 'Inter']:
+            for variant in ['PutSignalWait', 'PutRSig', 'PutCounter']:
+                name = f'launchKernelDev{variant}{team}WorldS'
+                body = re.sub(r'<<<.*?>>>', '', definition(source, name), flags=re.S)
+                reference.append('void ' + body)
+                reference.append('static_assert(std::is_same<decltype(&' + name +
+                                 '), decltype(&::' + name + ')>::value, '
+                                 '"platform launcher signature mismatch");')
+        reference.append('}')
     with tempfile.TemporaryDirectory(prefix='flagcx-signal-') as directory:
         temporary = Path(directory)
         (temporary / 'signal_test_kernels.inc').write_text('\n\n'.join(reference))

@@ -57,12 +57,14 @@ flagcxTeam flagcxTeamWorld(flagcxDevComm) { return {false}; }
 flagcxTeam flagcxTeamIntra(flagcxDevComm) { return {true}; }
 struct flagcxDevMem {
   float (*data)[rowWords];
+  size_t baseWords = 0;
+  size_t capacityWords = rowWords;
 };
 float sendData[ranks][rowWords], recvData[ranks][rowWords];
 std::atomic<uint64_t> signals[ranks][4][slots], counters[ranks][4][slots];
 uint64_t shadows[ranks][4][slots];
 void *flagcxGetLocalPointer(flagcxDevMem mem, size_t off) {
-  return (char *)mem.data[simRank] + off;
+  return (char *)(mem.data[simRank] + mem.baseWords) + off;
 }
 void *flagcxGetPeerPointer(flagcxDevMem mem, size_t off, flagcxTeam team,
                            int peer) {
@@ -143,15 +145,22 @@ struct flagcxDevNet {
   void put(flagcxTeam, int peer, flagcxDevMem dst, size_t dstOff,
            flagcxDevMem src, size_t srcOff, size_t bytes, Remote r, Local l,
            flagcxCoopThread) {
-    std::memcpy((char *)dst.data[peer] + dstOff,
-                (char *)src.data[simRank] + srcOff, bytes);
+    assert(dstOff <= dst.capacityWords * sizeof(float));
+    assert(bytes <= dst.capacityWords * sizeof(float) - dstOff);
+    assert(srcOff <= src.capacityWords * sizeof(float));
+    assert(bytes <= src.capacityWords * sizeof(float) - srcOff);
+    std::memcpy((char *)(dst.data[peer] + dst.baseWords) + dstOff,
+                (char *)(src.data[simRank] + src.baseWords) + srcOff, bytes);
     remote(peer, r);
     local(l);
   }
   template <class Remote>
   void putValue(flagcxTeam, int peer, flagcxDevMem dst, size_t off,
                 uint64_t value, Remote r, flagcxCoopThread) {
-    std::memcpy((char *)dst.data[peer] + off, &value, sizeof(value));
+    assert(off <= dst.capacityWords * sizeof(float));
+    assert(sizeof(value) <= dst.capacityWords * sizeof(float) - off);
+    std::memcpy((char *)(dst.data[peer] + dst.baseWords) + off, &value,
+                sizeof(value));
     remote(peer, r);
   }
   template <class Remote>
@@ -397,38 +406,118 @@ void runIrTests(flagcxDevComm &dc, flagcxDevMem send, flagcxDevMem recv) {
       Combos, Payload, Scalar)
         CHECK_UNIFIED(SignalStandalone, 12, false, false, );
 #undef CHECK_UNIFIED
-        scenario(
-            [&] {
-              if (inter)
-                kernelDevPutSignalWaitInterWorldS(comm, dst, src,
-                                                  verdict[simRank],
-                                                  words * sizeof(float), 100);
-              else
-                kernelDevPutSignalWaitIntraWorldS(comm, dst, src,
-                                                  verdict[simRank],
-                                                  words * sizeof(float), 100);
-            },
-            12, true, false);
-        scenario(
-            [&] {
-              if (inter)
-                kernelDevPutRSigInterWorldS(comm, dst, src, verdict[simRank],
-                                            words * sizeof(float), 100);
-              else
-                kernelDevPutRSigIntraWorldS(comm, dst, src, verdict[simRank],
-                                            words * sizeof(float), 100);
-            },
-            12, true, false);
-        scenario(
-            [&] {
-              if (inter)
-                kernelDevPutCounterInterWorldS(comm, dst, src, verdict[simRank],
-                                               words * sizeof(float), 100);
-              else
-                kernelDevPutCounterIntraWorldS(comm, dst, src, verdict[simRank],
-                                               words * sizeof(float), 100);
-            },
-            18, true, false);
+        // Every launch uses exactly six groups, with guards on both sides.
+        // Non-divisible lengths expose byte/element partitioning mistakes.
+        for (size_t requested :
+             {size_t(1), size_t(20), size_t(28), size_t(60)}) {
+          size_t groupBytes = unifiedPayloadBytes(requested);
+          size_t groupWords = groupBytes / sizeof(float);
+          size_t payloadWords = kFlagcxTestPayloadGroups * groupWords;
+          const size_t guardWords = 8;
+          flagcxDevMem boundedSrc{sendData, guardWords, payloadWords};
+          flagcxDevMem boundedDst{recvData, guardWords, payloadWords};
+          for (int test = 21; test <= 23; ++test) {
+            int variants = test == 23 ? 3 : 2;
+            for (bool klx : {false, true})
+              for (int variant = 0; variant < variants; ++variant) {
+                int tag = round * 3 + variant;
+                for (int r = 0; r < ranks; ++r) {
+                  for (int b = 0; b < ctas; ++b)
+                    verdict[r][b] = 0;
+                  for (int i = 0; i < rowWords; ++i)
+                    sendData[r][i] = recvData[r][i] = -919;
+                  for (size_t i = 0; i < payloadWords; ++i)
+                    sendData[r][guardWords + i] =
+                        unifiedPayloadValue(r, test, tag, i);
+                }
+                stage = "six-group payload round";
+                run([&] {
+                  if (klx) {
+                    if (test == 21)
+                      kernelDevPutSignalWaitUnifiedS(
+                          &dc, &boundedDst, &boundedSrc, verdict[simRank],
+                          int(groupBytes), inter, 100, variant);
+                    else if (test == 22)
+                      kernelDevPutRSigUnifiedS(
+                          &dc, &boundedDst, &boundedSrc, verdict[simRank],
+                          int(groupBytes), inter, 100, variant);
+                    else
+                      kernelDevPutCounterUnifiedS(
+                          &dc, &boundedDst, &boundedSrc, verdict[simRank],
+                          int(groupBytes), inter, 100, variant);
+                  } else if (test == 21) {
+                    if (inter)
+                      kernelDevPutSignalWaitInterWorldS(
+                          comm, &boundedDst, &boundedSrc, verdict[simRank],
+                          groupBytes, 100, variant);
+                    else
+                      kernelDevPutSignalWaitIntraWorldS(
+                          comm, &boundedDst, &boundedSrc, verdict[simRank],
+                          groupBytes, 100, variant);
+                  } else if (test == 22) {
+                    if (inter)
+                      kernelDevPutRSigInterWorldS(comm, &boundedDst,
+                                                  &boundedSrc, verdict[simRank],
+                                                  groupBytes, 100, variant);
+                    else
+                      kernelDevPutRSigIntraWorldS(comm, &boundedDst,
+                                                  &boundedSrc, verdict[simRank],
+                                                  groupBytes, 100, variant);
+                  } else {
+                    if (inter)
+                      kernelDevPutCounterInterWorldS(
+                          comm, &boundedDst, &boundedSrc, verdict[simRank],
+                          groupBytes, 100, variant);
+                    else
+                      kernelDevPutCounterIntraWorldS(
+                          comm, &boundedDst, &boundedSrc, verdict[simRank],
+                          groupBytes, 100, variant);
+                  }
+                });
+                for (int r = 0; r < ranks; ++r) {
+                  for (int b = 0; b < ctas; ++b) {
+                    assert(verdict[r][b] == 1);
+                    for (int g = 0; g < kFlagcxTestPayloadGroups; ++g) {
+                      if (klx && inter && g < 2)
+                        continue; // KLX INTER lacks THREAD-cooperative puts.
+                      int combo = unifiedPayloadCombo(g, variant, variants);
+                      int id = unifiedCompletionId(b, combo),
+                          ctx = b % contexts;
+                      uint64_t expected = test == 23     ? (variant == 0   ? 0
+                                                            : variant == 1 ? 1
+                                                                           : 3)
+                                          : variant == 0 ? 1
+                                                         : 3;
+                      assert(signals[r][ctx][id] == expected);
+                      if (test == 23)
+                        assert(counters[r][ctx][id] == 1);
+                    }
+                  }
+                  for (int i = 0; i < rowWords; ++i) {
+                    if (size_t(i) < guardWords ||
+                        size_t(i) >= guardWords + payloadWords) {
+                      assert(recvData[r][i] == -919 && sendData[r][i] == -919);
+                      continue;
+                    }
+                    size_t index = size_t(i) - guardWords;
+                    int group = int(index / groupWords);
+                    int previous =
+                        group % 2 ? (r + ranks - 1) % ranks
+                        : inter ? ((r / 2 + ranks / 2 - 1) % (ranks / 2)) * 2 +
+                                      r % 2
+                                : r - r % 2 + (r % 2 + 1) % 2;
+                    assert(sendData[r][i] ==
+                           unifiedPayloadValue(r, test, tag, index));
+                    if (klx && inter && group < 2)
+                      assert(recvData[r][i] == -919);
+                    else
+                      assert(recvData[r][i] ==
+                             unifiedPayloadValue(previous, test, tag, index));
+                  }
+                }
+              }
+          }
+        }
         scenario(
             [&] {
               if (inter)
@@ -452,5 +541,5 @@ void runIrTests(flagcxDevComm &dc, flagcxDevMem send, flagcxDevMem recv) {
       }
   }
   std::puts("actual scalar/unified kernels: PASS (1-4 contexts, "
-            "INTRA/INTER/WORLD, skew)");
+            "INTRA/INTER/WORLD, skew, six payload groups, tails/guards, KLX)");
 }
