@@ -40,7 +40,6 @@
 #include <iostream>
 
 constexpr int kUnifiedIrSignalComboCount = 12;
-constexpr int kUnifiedIrS23ComboCount = 18;
 
 int main(int argc, char *argv[]) {
   flagcxDeviceHandle_t devHandle;
@@ -90,7 +89,7 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->streamCreate(&stream));
 
   // Create DevComm with signal/counter/barrier slots
-  // Signal variants use 12 slots; S23 uses 18 signal/counter slots.
+  // Per CTA: 12 signal variants; S23 uses 18 signal/counter slots.
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.barrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
@@ -102,11 +101,18 @@ int main(int argc, char *argv[]) {
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
-  // Allocate send/recv buffers for S23, the largest combination matrix.
-  if (maxBytes > SIZE_MAX / kFlagcxTestUnifiedCompletionCount)
+  // Six payload groups (coop x team), partitioned across CTAs. Completion
+  // slots stay independent; variants reuse payload only after host validation.
+  size_t bufSize =
+      unifiedPayloadBufferBytes(maxBytes, size_t(6) * size_t(totalProcs));
+  if (bufSize == 0) {
+    std::fprintf(stderr, "Unified payload allocation size overflow\n");
     MPI_Abort(MPI_COMM_WORLD, 1);
-  size_t bufSize = std::max(maxBytes, size_t(sizeof(uint64_t))) *
-                   kFlagcxTestUnifiedCompletionCount;
+  }
+  if (proc == 0)
+    printf(
+        "# payload: %d groups, %zu bytes per buffer; CTAs share each group\n",
+        kFlagcxTestPayloadGroups, bufSize);
   void *sendBuff = nullptr, *recvBuff = nullptr;
 #ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
   flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
@@ -195,13 +201,12 @@ int main(int argc, char *argv[]) {
 
   for (int iteration = 0; iteration < signalOptions.repeats; ++iteration) {
     for (size_t size = minBytes; size <= maxBytes; size *= (size_t)stepFactor) {
-      size_t count = size / sizeof(float);
-      if (count == 0)
-        count = 1;
-      size_t bytes = count * sizeof(float);
+      size_t bytes = unifiedPayloadBytes(size);
+      size_t count = bytes / sizeof(float);
 
       if (proc == 0)
-        printf("# Size = %zu bytes, count = %zu\n", bytes, count);
+        printf("# Size = %zu bytes/group (requested %zu), count = %zu\n", bytes,
+               size, count);
 
       MPI_Barrier(MPI_COMM_WORLD);
 
@@ -563,219 +568,86 @@ int main(int argc, char *argv[]) {
         MPI_Barrier(MPI_COMM_WORLD);
       }
 
-      // S21: DevPutSignalWait — INTRA + WORLD (12 full combinations)
-      // ResetSignal → Put → SignalInc/SignalAdd → WaitSignal → ReadSignal
-      // verify
-      {
-        for (size_t i = 0;
-             i < kFlagcxTestUnifiedCtas * kUnifiedIrSignalComboCount * count;
-             i++)
-          hostSend[i] = (float)(proc * 3000 + i);
-        FLAGCXCHECK(devHandle->deviceMemcpy(
-            sendBuff, hostSend,
-            kFlagcxTestUnifiedCtas * kUnifiedIrSignalComboCount * bytes,
-            flagcxMemcpyHostToDevice, stream));
-        FLAGCXCHECK(devHandle->deviceMemset(
-            recvBuff, 0,
-            kFlagcxTestUnifiedCtas * kUnifiedIrSignalComboCount * bytes,
-            flagcxMemDevice, stream));
-        FLAGCXCHECK(devHandle->deviceMemcpy(devResults, zeroResults,
-                                            sizeof(zeroResults),
-                                            flagcxMemcpyHostToDevice, stream));
-        FLAGCXCHECK(devHandle->streamSynchronize(stream));
-        MPI_Barrier(MPI_COMM_WORLD);
-
-        launchKernelDevPutSignalWaitIntraWorldS(devCommPtr, recvMemPtr,
-                                                sendMemPtr, devResults, bytes,
-                                                stream, signalOptions.skew);
-        FLAGCXCHECK(devHandle->streamSynchronize(stream));
-        MPI_Barrier(MPI_COMM_WORLD);
-
-        int hostRes[kFlagcxTestUnifiedCtas] = {};
-        FLAGCXCHECK(devHandle->deviceMemcpy(hostRes, devResults,
-                                            sizeof(hostRes),
-                                            flagcxMemcpyDeviceToHost, stream));
-        FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-        FLAGCXCHECK(devHandle->deviceMemcpy(
-            hostRecv, recvBuff,
-            kFlagcxTestUnifiedCtas * kUnifiedIrSignalComboCount * bytes,
-            flagcxMemcpyDeviceToHost, stream));
-        FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-        bool s21Pass = flagcxUnifiedSignalResults(hostRes);
+      // S21/S22: two signal variants. S23: three completion variants.
+      // Each launch runs six coop x team groups, split across all CTAs.
+      // Check every variant before reusing these groups for the next round.
+      for (int scenario = 21; scenario <= 23; ++scenario) {
+        const int variants = scenario == 23 ? 3 : 2;
+        const char *names[] = {"DevPutSignalWait", "DevPut_RSig",
+                               "DevPutCounter"};
+        const uint32_t expectedMask =
+            scenario == 23 ? expectedPutCounterMask : expectedPutCoopMask;
+        bool scenarioPass = true;
         int prevIntra = (intraRank + intraSize - 1) % intraSize;
         int prevWorld = (proc + totalProcs - 1) % totalProcs;
+        for (int variant = 0; variant < variants; ++variant) {
+          const int roundTag = iteration * 3 + variant;
+          const size_t payloadBytes = kFlagcxTestPayloadGroups * bytes;
+          for (size_t i = 0; i < kFlagcxTestPayloadGroups * count; ++i)
+            hostSend[i] = unifiedPayloadValue(proc, scenario, roundTag, i);
+          FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, payloadBytes,
+                                              flagcxMemcpyHostToDevice,
+                                              stream));
+          // NaN sentinel: a missing write cannot match a previous round's data.
+          FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0xff, payloadBytes,
+                                              flagcxMemDevice, stream));
+          FLAGCXCHECK(devHandle->deviceMemcpy(
+              devResults, zeroResults, sizeof(zeroResults),
+              flagcxMemcpyHostToDevice, stream));
+          FLAGCXCHECK(devHandle->streamSynchronize(stream));
+          MPI_Barrier(MPI_COMM_WORLD);
 
-        for (int payload = 0;
-             payload < kFlagcxTestUnifiedCtas * kUnifiedIrSignalComboCount &&
-             s21Pass;
-             ++payload) {
-          int combo = payload % kUnifiedIrSignalComboCount;
-          if ((expectedPutCoopMask & (uint32_t{1} << combo)) == 0)
-            continue;
-          int teamIdx = combo % 2;
-          size_t off = payload * count;
-          int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
+          if (scenario == 21)
+            launchKernelDevPutSignalWaitIntraWorldS(
+                devCommPtr, recvMemPtr, sendMemPtr, devResults, bytes, stream,
+                signalOptions.skew, variant);
+          else if (scenario == 22)
+            launchKernelDevPutRSigIntraWorldS(
+                devCommPtr, recvMemPtr, sendMemPtr, devResults, bytes, stream,
+                signalOptions.skew, variant);
+          else
+            launchKernelDevPutCounterIntraWorldS(
+                devCommPtr, recvMemPtr, sendMemPtr, devResults, bytes, stream,
+                signalOptions.skew, variant);
+          FLAGCXCHECK(devHandle->streamSynchronize(stream));
+          MPI_Barrier(MPI_COMM_WORLD);
 
-          for (size_t i = 0; i < count && s21Pass; i++) {
-            float expected = (float)(senderRank * 3000 + off + i);
-            if (hostRecv[off + i] != expected) {
-              s21Pass = false;
+          int hostRes[kFlagcxTestUnifiedCtas] = {};
+          FLAGCXCHECK(
+              devHandle->deviceMemcpy(hostRes, devResults, sizeof(hostRes),
+                                      flagcxMemcpyDeviceToHost, stream));
+          FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, payloadBytes,
+                                              flagcxMemcpyDeviceToHost,
+                                              stream));
+          FLAGCXCHECK(devHandle->streamSynchronize(stream));
+          bool roundPass = flagcxUnifiedSignalResults(hostRes);
+          for (int group = 0; group < kFlagcxTestPayloadGroups; ++group) {
+            int combo = unifiedPayloadCombo(group, variant, variants);
+            if ((expectedMask & (uint32_t{1} << combo)) == 0)
+              continue;
+            int senderRank = group % 2 == 0 ? prevIntra : prevWorld;
+            size_t off = size_t(group) * count;
+            for (size_t i = 0; i < count; ++i) {
+              float expected =
+                  unifiedPayloadValue(senderRank, scenario, roundTag, off + i);
+              if (hostRecv[off + i] != expected) {
+                std::fprintf(
+                    stderr,
+                    "S%d variant=%d group=%d index=%zu payload mismatch\n",
+                    scenario, variant, group, i);
+                roundPass = false;
+                break;
+              }
             }
           }
+          scenarioPass &= roundPass;
+          // All ranks finish consuming this round before any buffer is reused.
+          MPI_Barrier(MPI_COMM_WORLD);
         }
-
-        RPRINTF("S21 DevPutSignalWait(INTRA+WORLD): %s\n",
-                s21Pass ? "PASS" : "FAIL");
+        RPRINTF("S%d %s(INTRA+WORLD): %s\n", scenario, names[scenario - 21],
+                scenarioPass ? "PASS" : "FAIL");
         gradedCases++;
-        allPass &= s21Pass;
-        MPI_Barrier(MPI_COMM_WORLD);
-      }
-
-      // =======================================================================
-      // S22: DevPut_RSigInc + DevPut_RSigAdd — INTRA + WORLD
-      // ResetSignal → assert ReadSignal==0 → Put_RSigInc/RSigAdd →
-      // WaitSignal → assert ReadSignal==expected
-      // =======================================================================
-      {
-        for (size_t i = 0;
-             i < kFlagcxTestUnifiedCtas * kUnifiedIrSignalComboCount * count;
-             i++)
-          hostSend[i] = (float)(proc * 4000 + i);
-        FLAGCXCHECK(devHandle->deviceMemcpy(
-            sendBuff, hostSend,
-            kFlagcxTestUnifiedCtas * kUnifiedIrSignalComboCount * bytes,
-            flagcxMemcpyHostToDevice, stream));
-        FLAGCXCHECK(devHandle->deviceMemset(
-            recvBuff, 0,
-            kFlagcxTestUnifiedCtas * kUnifiedIrSignalComboCount * bytes,
-            flagcxMemDevice, stream));
-        FLAGCXCHECK(devHandle->deviceMemcpy(devResults, zeroResults,
-                                            sizeof(zeroResults),
-                                            flagcxMemcpyHostToDevice, stream));
-        FLAGCXCHECK(devHandle->streamSynchronize(stream));
-        MPI_Barrier(MPI_COMM_WORLD);
-
-        launchKernelDevPutRSigIntraWorldS(devCommPtr, recvMemPtr, sendMemPtr,
-                                          devResults, bytes, stream,
-                                          signalOptions.skew);
-        FLAGCXCHECK(devHandle->streamSynchronize(stream));
-        MPI_Barrier(MPI_COMM_WORLD);
-
-        int hostRes[kFlagcxTestUnifiedCtas] = {};
-        FLAGCXCHECK(devHandle->deviceMemcpy(hostRes, devResults,
-                                            sizeof(hostRes),
-                                            flagcxMemcpyDeviceToHost, stream));
-        FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-        FLAGCXCHECK(devHandle->deviceMemcpy(
-            hostRecv, recvBuff,
-            kFlagcxTestUnifiedCtas * kUnifiedIrSignalComboCount * bytes,
-            flagcxMemcpyDeviceToHost, stream));
-        FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-        bool s22Pass = flagcxUnifiedSignalResults(hostRes);
-        int prevIntra = (intraRank + intraSize - 1) % intraSize;
-        int prevWorld = (proc + totalProcs - 1) % totalProcs;
-
-        for (int payload = 0;
-             payload < kFlagcxTestUnifiedCtas * kUnifiedIrSignalComboCount &&
-             s22Pass;
-             ++payload) {
-          int combo = payload % kUnifiedIrSignalComboCount;
-          if ((expectedPutCoopMask & (uint32_t{1} << combo)) == 0)
-            continue;
-          int teamIdx = combo % 2;
-          size_t off = payload * count;
-          int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
-
-          for (size_t i = 0; i < count && s22Pass; i++) {
-            float expected = (float)(senderRank * 4000 + off + i);
-            if (hostRecv[off + i] != expected) {
-              s22Pass = false;
-            }
-          }
-        }
-
-        RPRINTF("S22 DevPut_RSig(INTRA+WORLD): %s\n",
-                s22Pass ? "PASS" : "FAIL");
-        gradedCases++;
-        allPass &= s22Pass;
-        MPI_Barrier(MPI_COMM_WORLD);
-      }
-
-      // =======================================================================
-      // S23: DevPut_LCtrInc + DevPut_RSigInc_LCtrInc + DevPut_RSigAdd_LCtrInc
-      //      — INTRA + WORLD (counter mega-scenario)
-      // ResetCounter/Signal → assert Read==0 → Put_*LCtrInc variants →
-      // WaitCounter → assert ReadCounter==1 → WaitSignal (if applicable) →
-      // assert ReadSignal==expected
-      // =======================================================================
-      {
-        for (size_t i = 0;
-             i < kFlagcxTestUnifiedCtas * kUnifiedIrS23ComboCount * count; i++)
-          hostSend[i] = (float)(proc * 5000 + i);
-        FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend,
-                                            kFlagcxTestUnifiedCtas *
-                                                kUnifiedIrS23ComboCount * bytes,
-                                            flagcxMemcpyHostToDevice, stream));
-        FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0,
-                                            kFlagcxTestUnifiedCtas *
-                                                kUnifiedIrS23ComboCount * bytes,
-                                            flagcxMemDevice, stream));
-        FLAGCXCHECK(devHandle->deviceMemcpy(devResults, zeroResults,
-                                            sizeof(zeroResults),
-                                            flagcxMemcpyHostToDevice, stream));
-        FLAGCXCHECK(devHandle->streamSynchronize(stream));
-        MPI_Barrier(MPI_COMM_WORLD);
-
-        launchKernelDevPutCounterIntraWorldS(devCommPtr, recvMemPtr, sendMemPtr,
-                                             devResults, bytes, stream,
-                                             signalOptions.skew);
-        FLAGCXCHECK(devHandle->streamSynchronize(stream));
-        MPI_Barrier(MPI_COMM_WORLD);
-
-        int hostRes[kFlagcxTestUnifiedCtas] = {};
-        FLAGCXCHECK(devHandle->deviceMemcpy(hostRes, devResults,
-                                            sizeof(hostRes),
-                                            flagcxMemcpyDeviceToHost, stream));
-        FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-        FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff,
-                                            kFlagcxTestUnifiedCtas *
-                                                kUnifiedIrS23ComboCount * bytes,
-                                            flagcxMemcpyDeviceToHost, stream));
-        FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-        bool s23Pass = flagcxUnifiedSignalResults(hostRes);
-        int prevIntra = (intraRank + intraSize - 1) % intraSize;
-        int prevWorld = (proc + totalProcs - 1) % totalProcs;
-
-        for (int payload = 0;
-             payload < kFlagcxTestUnifiedCtas * kUnifiedIrS23ComboCount &&
-             s23Pass;
-             ++payload) {
-          int combo = payload % kUnifiedIrS23ComboCount;
-          if ((expectedPutCounterMask & (uint32_t{1} << combo)) == 0)
-            continue;
-          int teamIdx = combo % 2;
-          size_t off = payload * count;
-          int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
-
-          for (size_t i = 0; i < count && s23Pass; i++) {
-            float expected = (float)(senderRank * 5000 + off + i);
-            if (hostRecv[off + i] != expected) {
-              s23Pass = false;
-            }
-          }
-        }
-
-        RPRINTF("S23 DevPutCounter(INTRA+WORLD): %s\n",
-                s23Pass ? "PASS" : "FAIL");
-        gradedCases++;
-        allPass &= s23Pass;
-        MPI_Barrier(MPI_COMM_WORLD);
+        allPass &= scenarioPass;
       }
 
       // =======================================================================

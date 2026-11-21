@@ -2242,7 +2242,8 @@ __global__ void
 kernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
-                                  int *result, size_t bytes, unsigned skew) {
+                                  int *result, size_t bytes, unsigned skew,
+                                  int selectedVariant) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -2254,10 +2255,13 @@ kernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
   flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
+  const auto slice = unifiedPayloadSlice(bytes, myBlockIdx);
   bool ok = true;
 
 #define S21_INTRA_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
+    if (((slot) / 2) % 2 != selectedVariant)                                  \
+      break;                                                                  \
     uint64_t expected = (signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC        \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
@@ -2270,8 +2274,9 @@ kernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (myBlockIdx * 12 + (slot)) * bytes;                         \
-      flagcxDevPut(devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes,          \
+      size_t off = size_t(unifiedPayloadGroup((slot), 2)) * bytes +           \
+                   slice.offset;                                              \
+      flagcxDevPut(devCommPtr, dstMemPtr, off, srcMemPtr, off, slice.bytes,   \
                    teamKind, peer, contextId, coopKind,                        \
                    flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);   \
       if ((signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC) {                   \
@@ -2336,6 +2341,10 @@ kernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 #undef S21_INTRA_COMBO
 
+  // Drain this CTA before the host validates and reuses the payload.
+  flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+                 flagcxDeviceMemoryOrderRelaxed);
+
   if (FLAGCX_THREAD_IDX_X == 0)
     result[myBlockIdx] = ok ? 1 : 0;
 }
@@ -2344,9 +2353,10 @@ void launchKernelDevPutSignalWaitIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream, unsigned skew) {
+    flagcxStream_t stream, unsigned skew, int selectedVariant) {
   kernelDevPutSignalWaitIntraWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew);
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew,
+      selectedVariant);
 }
 
 // ---------------------------------------------------------------------------
@@ -2364,7 +2374,8 @@ __global__ void
 kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                             const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                             const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
-                            int *result, size_t bytes, unsigned skew) {
+                            int *result, size_t bytes, unsigned skew,
+                            int selectedVariant) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -2376,10 +2387,13 @@ kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
   flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
+  const auto slice = unifiedPayloadSlice(bytes, myBlockIdx);
   bool ok = true;
 
 #define S22_INTRA_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
+    if (((slot) / 2) % 2 != selectedVariant)                                  \
+      break;                                                                  \
     uint64_t expected = (signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC        \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
@@ -2401,16 +2415,19 @@ kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (myBlockIdx * 12 + (slot)) * bytes;                         \
+      size_t off = size_t(unifiedPayloadGroup((slot), 2)) * bytes +           \
+                   slice.offset;                                              \
       if ((signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC)                     \
         flagcxDevPut_RSigInc(                                                  \
-            devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
+            devCommPtr, dstMemPtr, off, srcMemPtr, off, slice.bytes,          \
+            teamKind, peer,                                                   \
             contextId, coopKind, flagcxDeviceScopeSystem,                      \
             flagcxDeviceMemoryOrderRelease,                                    \
             (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));       \
       else                                                                     \
         flagcxDevPut_RSigAdd(                                                  \
-            devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
+            devCommPtr, dstMemPtr, off, srcMemPtr, off, slice.bytes,          \
+            teamKind, peer,                                                   \
             contextId, coopKind, flagcxDeviceScopeSystem,                      \
             flagcxDeviceMemoryOrderRelease,                                    \
             (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
@@ -2466,6 +2483,10 @@ kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 #undef S22_INTRA_COMBO
 
+  // Drain this CTA before the host validates and reuses the payload.
+  flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+                 flagcxDeviceMemoryOrderRelaxed);
+
   if (FLAGCX_THREAD_IDX_X == 0)
     result[myBlockIdx] = ok ? 1 : 0;
 }
@@ -2474,9 +2495,10 @@ void launchKernelDevPutRSigIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream, unsigned skew) {
+    flagcxStream_t stream, unsigned skew, int selectedVariant) {
   kernelDevPutRSigIntraWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew);
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew,
+      selectedVariant);
 }
 
 // ---------------------------------------------------------------------------
@@ -2504,7 +2526,8 @@ __global__ void
 kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
-                               int *result, size_t bytes, unsigned skew) {
+                               int *result, size_t bytes, unsigned skew,
+                               int selectedVariant) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -2516,10 +2539,13 @@ kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
   flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
+  const auto slice = unifiedPayloadSlice(bytes, myBlockIdx);
   bool ok = true;
 
 #define S23_INTRA_COMBO(slot, teamKind, peer, coopKind, variant)               \
   do {                                                                         \
+    if (((slot) / 2) % 3 != selectedVariant)                                  \
+      break;                                                                  \
     flagcxDevCounter_t ctr =                                                   \
         (flagcxDevCounter_t)unifiedCompletionId(myBlockIdx, (slot));           \
     flagcxDevSignal_t sig =                                                    \
@@ -2547,20 +2573,24 @@ kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                          flagcxDeviceScopeSystem);                             \
     /* Put operation with counter (and optionally signal) */                   \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (myBlockIdx * 18 + (slot)) * bytes;                         \
+      size_t off = size_t(unifiedPayloadGroup((slot), 3)) * bytes +           \
+                   slice.offset;                                              \
       if (variant == 0)                                                        \
         flagcxDevPut_LCtrInc(devCommPtr, dstMemPtr, off, srcMemPtr, off,       \
-                             bytes, teamKind, peer, contextId, coopKind,       \
+                             slice.bytes, teamKind, peer, contextId,          \
+            coopKind,                                                         \
                              flagcxDeviceScopeSystem,                          \
                              flagcxDeviceMemoryOrderRelease, ctr);             \
       else if (variant == 1)                                                   \
         flagcxDevPut_RSigInc_LCtrInc(                                          \
-            devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
+            devCommPtr, dstMemPtr, off, srcMemPtr, off, slice.bytes,          \
+            teamKind, peer,                                                   \
             contextId, coopKind, flagcxDeviceScopeSystem,                      \
             flagcxDeviceMemoryOrderRelease, sig, ctr);                         \
       else                                                                     \
         flagcxDevPut_RSigAdd_LCtrInc(                                          \
-            devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
+            devCommPtr, dstMemPtr, off, srcMemPtr, off, slice.bytes,          \
+            teamKind, peer,                                                   \
             contextId, coopKind, flagcxDeviceScopeSystem,                      \
             flagcxDeviceMemoryOrderRelease, sig, (uint64_t)3, ctr);            \
     }                                                                          \
@@ -2651,6 +2681,10 @@ kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 #undef S23_INTRA_COMBO
 
+  // Drain this CTA before the host validates and reuses the payload.
+  flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+                 flagcxDeviceMemoryOrderRelaxed);
+
   if (FLAGCX_THREAD_IDX_X == 0)
     result[myBlockIdx] = ok ? 1 : 0;
 }
@@ -2659,9 +2693,10 @@ void launchKernelDevPutCounterIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream, unsigned skew) {
+    flagcxStream_t stream, unsigned skew, int selectedVariant) {
   kernelDevPutCounterIntraWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew);
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew,
+      selectedVariant);
 }
 
 // ---------------------------------------------------------------------------
@@ -3601,7 +3636,8 @@ __global__ void
 kernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
-                                  int *result, size_t bytes, unsigned skew) {
+                                  int *result, size_t bytes, unsigned skew,
+                                  int selectedVariant) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -3614,10 +3650,13 @@ kernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
   flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
+  const auto slice = unifiedPayloadSlice(bytes, myBlockIdx);
   bool ok = true;
 
 #define S21_INTER_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
+    if (((slot) / 2) % 2 != selectedVariant)                                  \
+      break;                                                                  \
     uint64_t expected = (signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC        \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
@@ -3630,8 +3669,9 @@ kernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (myBlockIdx * 12 + (slot)) * bytes;                         \
-      flagcxDevPut(devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes,          \
+      size_t off = size_t(unifiedPayloadGroup((slot), 2)) * bytes +           \
+                   slice.offset;                                              \
+      flagcxDevPut(devCommPtr, dstMemPtr, off, srcMemPtr, off, slice.bytes,   \
                    teamKind, peer, contextId, coopKind,                        \
                    flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);   \
       if ((signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC)                     \
@@ -3695,6 +3735,10 @@ kernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 #undef S21_INTER_COMBO
 
+  // Drain this CTA before the host validates and reuses the payload.
+  flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+                 flagcxDeviceMemoryOrderRelaxed);
+
   if (FLAGCX_THREAD_IDX_X == 0)
     result[myBlockIdx] = ok ? 1 : 0;
 }
@@ -3703,9 +3747,10 @@ void launchKernelDevPutSignalWaitInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream, unsigned skew) {
+    flagcxStream_t stream, unsigned skew, int selectedVariant) {
   kernelDevPutSignalWaitInterWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew);
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew,
+      selectedVariant);
 }
 
 // ---------------------------------------------------------------------------
@@ -3723,7 +3768,8 @@ __global__ void
 kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                             const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                             const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
-                            int *result, size_t bytes, unsigned skew) {
+                            int *result, size_t bytes, unsigned skew,
+                            int selectedVariant) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -3736,10 +3782,13 @@ kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
   flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
+  const auto slice = unifiedPayloadSlice(bytes, myBlockIdx);
   bool ok = true;
 
 #define S22_INTER_COMBO(slot, teamKind, peer, coopKind, signalVariant)         \
   do {                                                                         \
+    if (((slot) / 2) % 2 != selectedVariant)                                  \
+      break;                                                                  \
     uint64_t expected = (signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC        \
                             ? (uint64_t)1                                      \
                             : (uint64_t)3;                                     \
@@ -3761,16 +3810,19 @@ kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
                          flagcxDeviceScopeSystem);                             \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (myBlockIdx * 12 + (slot)) * bytes;                         \
+      size_t off = size_t(unifiedPayloadGroup((slot), 2)) * bytes +           \
+                   slice.offset;                                              \
       if ((signalVariant) == FLAGCX_UNIFIED_IR_SIGNAL_INC)                     \
         flagcxDevPut_RSigInc(                                                  \
-            devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
+            devCommPtr, dstMemPtr, off, srcMemPtr, off, slice.bytes,          \
+            teamKind, peer,                                                   \
             contextId, coopKind, flagcxDeviceScopeSystem,                      \
             flagcxDeviceMemoryOrderRelease,                                    \
             (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)));       \
       else                                                                     \
         flagcxDevPut_RSigAdd(                                                  \
-            devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
+            devCommPtr, dstMemPtr, off, srcMemPtr, off, slice.bytes,          \
+            teamKind, peer,                                                   \
             contextId, coopKind, flagcxDeviceScopeSystem,                      \
             flagcxDeviceMemoryOrderRelease,                                    \
             (flagcxDevSignal_t)unifiedCompletionId(myBlockIdx, (slot)),        \
@@ -3826,6 +3878,10 @@ kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 #undef S22_INTER_COMBO
 
+  // Drain this CTA before the host validates and reuses the payload.
+  flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+                 flagcxDeviceMemoryOrderRelaxed);
+
   if (FLAGCX_THREAD_IDX_X == 0)
     result[myBlockIdx] = ok ? 1 : 0;
 }
@@ -3834,9 +3890,10 @@ void launchKernelDevPutRSigInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream, unsigned skew) {
+    flagcxStream_t stream, unsigned skew, int selectedVariant) {
   kernelDevPutRSigInterWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew);
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew,
+      selectedVariant);
 }
 
 // ---------------------------------------------------------------------------
@@ -3858,7 +3915,8 @@ __global__ void
 kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
-                               int *result, size_t bytes, unsigned skew) {
+                               int *result, size_t bytes, unsigned skew,
+                               int selectedVariant) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -3871,10 +3929,13 @@ kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
   flagcxTestSignalDelay(worldRank, myBlockIdx, skew);
+  const auto slice = unifiedPayloadSlice(bytes, myBlockIdx);
   bool ok = true;
 
 #define S23_INTER_COMBO(slot, teamKind, peer, coopKind, variant)               \
   do {                                                                         \
+    if (((slot) / 2) % 3 != selectedVariant)                                  \
+      break;                                                                  \
     flagcxDevCounter_t ctr =                                                   \
         (flagcxDevCounter_t)unifiedCompletionId(myBlockIdx, (slot));           \
     flagcxDevSignal_t sig =                                                    \
@@ -3902,20 +3963,24 @@ kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                          flagcxDeviceScopeSystem);                             \
     /* Put operation with counter (and optionally signal) */                   \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      size_t off = (myBlockIdx * 18 + (slot)) * bytes;                         \
+      size_t off = size_t(unifiedPayloadGroup((slot), 3)) * bytes +           \
+                   slice.offset;                                              \
       if (variant == 0)                                                        \
         flagcxDevPut_LCtrInc(devCommPtr, dstMemPtr, off, srcMemPtr, off,       \
-                             bytes, teamKind, peer, contextId, coopKind,       \
+                             slice.bytes, teamKind, peer, contextId,          \
+            coopKind,                                                         \
                              flagcxDeviceScopeSystem,                          \
                              flagcxDeviceMemoryOrderRelease, ctr);             \
       else if (variant == 1)                                                   \
         flagcxDevPut_RSigInc_LCtrInc(                                          \
-            devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
+            devCommPtr, dstMemPtr, off, srcMemPtr, off, slice.bytes,          \
+            teamKind, peer,                                                   \
             contextId, coopKind, flagcxDeviceScopeSystem,                      \
             flagcxDeviceMemoryOrderRelease, sig, ctr);                         \
       else                                                                     \
         flagcxDevPut_RSigAdd_LCtrInc(                                          \
-            devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes, teamKind, peer, \
+            devCommPtr, dstMemPtr, off, srcMemPtr, off, slice.bytes,          \
+            teamKind, peer,                                                   \
             contextId, coopKind, flagcxDeviceScopeSystem,                      \
             flagcxDeviceMemoryOrderRelease, sig, (uint64_t)3, ctr);            \
     }                                                                          \
@@ -4006,6 +4071,10 @@ kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 #undef S23_INTER_COMBO
 
+  // Drain this CTA before the host validates and reuses the payload.
+  flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+                 flagcxDeviceMemoryOrderRelaxed);
+
   if (FLAGCX_THREAD_IDX_X == 0)
     result[myBlockIdx] = ok ? 1 : 0;
 }
@@ -4014,9 +4083,10 @@ void launchKernelDevPutCounterInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream, unsigned skew) {
+    flagcxStream_t stream, unsigned skew, int selectedVariant) {
   kernelDevPutCounterInterWorldS<<<4, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew);
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, skew,
+      selectedVariant);
 }
 
 // ---------------------------------------------------------------------------

@@ -1269,7 +1269,7 @@ void launchKernelDevPutSignalWaitIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream) {
+    flagcxStream_t stream, unsigned skew, int selectedVariant) {
   // TODO, gin not support now
   (void)devCommPtr;
   (void)dstMemPtr;
@@ -1277,6 +1277,8 @@ void launchKernelDevPutSignalWaitIntraWorldS(
   (void)devResult;
   (void)bytes;
   (void)stream;
+  (void)skew;
+  (void)selectedVariant;
 }
 
 // ---------------------------------------------------------------------------
@@ -1304,7 +1306,7 @@ void launchKernelDevPutRSigIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream) {
+    flagcxStream_t stream, unsigned skew, int selectedVariant) {
   // TODO, gin not support now
   (void)devCommPtr;
   (void)dstMemPtr;
@@ -1312,6 +1314,8 @@ void launchKernelDevPutRSigIntraWorldS(
   (void)devResult;
   (void)bytes;
   (void)stream;
+  (void)skew;
+  (void)selectedVariant;
 }
 
 // Completion-variant selector used by the S23 bodies. nvidia:2306.
@@ -1347,7 +1351,7 @@ void launchKernelDevPutCounterIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream) {
+    flagcxStream_t stream, unsigned skew, int selectedVariant) {
   // TODO, gin not support now
   (void)devCommPtr;
   (void)dstMemPtr;
@@ -1355,6 +1359,8 @@ void launchKernelDevPutCounterIntraWorldS(
   (void)devResult;
   (void)bytes;
   (void)stream;
+  (void)skew;
+  (void)selectedVariant;
 }
 
 // ---------------------------------------------------------------------------
@@ -1612,7 +1618,7 @@ void launchKernelDevPutSignalWaitInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream) {
+    flagcxStream_t stream, unsigned skew, int selectedVariant) {
   // TODO, gin not support now
   (void)devCommPtr;
   (void)dstMemPtr;
@@ -1620,6 +1626,8 @@ void launchKernelDevPutSignalWaitInterWorldS(
   (void)devResult;
   (void)bytes;
   (void)stream;
+  (void)skew;
+  (void)selectedVariant;
 }
 
 // ---------------------------------------------------------------------------
@@ -1642,7 +1650,7 @@ void launchKernelDevPutRSigInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream) {
+    flagcxStream_t stream, unsigned skew, int selectedVariant) {
   // TODO, gin not support now
   (void)devCommPtr;
   (void)dstMemPtr;
@@ -1650,6 +1658,8 @@ void launchKernelDevPutRSigInterWorldS(
   (void)devResult;
   (void)bytes;
   (void)stream;
+  (void)skew;
+  (void)selectedVariant;
 }
 
 // ---------------------------------------------------------------------------
@@ -1673,7 +1683,7 @@ void launchKernelDevPutCounterInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream) {
+    flagcxStream_t stream, unsigned skew, int selectedVariant) {
   // TODO, gin not support now
   (void)devCommPtr;
   (void)dstMemPtr;
@@ -1681,6 +1691,8 @@ void launchKernelDevPutCounterInterWorldS(
   (void)devResult;
   (void)bytes;
   (void)stream;
+  (void)skew;
+  (void)selectedVariant;
 }
 
 // ---------------------------------------------------------------------------
