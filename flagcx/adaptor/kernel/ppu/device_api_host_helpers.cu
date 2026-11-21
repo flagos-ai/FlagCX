@@ -3,21 +3,21 @@
  *
  * Device-compiled helpers for device API host integration.
  * Compiled by hgcc, linked into libflagcx.so.
- * Called from flagcx_device.cc via extern "C". PPU selects its own
+ * Called from default_dev_api_backend.cc via extern "C". PPU selects its own
  * DefaultBackend traits while using the CUDA-compatible launch syntax.
  *
  * Other vendors provide equivalent implementations in their own
  * device-compiled files (.xpu, .hip, etc.).
  ************************************************************************/
 
-#include "device_api/flagcx_device_internal.h"
-#include "device_api/flagcx_device_core.h"
+#include "device_api/flagcx_device.h"
 #include <new>
 
 extern "C" size_t flagcxDevNetSizeOf() { return sizeof(flagcxDevNet); }
 
 static __global__ void flagcxDevNetConstructKernel(flagcxDevNet *nets,
-                                            flagcxDevComm *comm, int count) {
+                                                   flagcxDevComm *comm,
+                                                   int count) {
   int i = threadIdx.x + blockIdx.x * blockDim.x;
   if (i < count) {
     ::new (&nets[i]) flagcxDevNet(*comm, i);

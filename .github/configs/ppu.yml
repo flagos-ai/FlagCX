@@ -7,6 +7,7 @@ paths_watch:
   - .github/configs/ppu.yml
   - .github/scripts/set_env/ppu.sh
   - .github/scripts/ci/run_ppu_workload.sh
+  - .github/scripts/ci/run_ppu_perf_experimental.sh
   - flagcx/adaptor/device/ptpu_adaptor.cc
   - flagcx/adaptor/device/hggc_adaptor.cc
   - flagcx/adaptor/ccl/ppu_pccl_adaptor.cc
@@ -14,10 +15,10 @@ paths_watch:
   - flagcx/adaptor/include/device_api/ppu_*.h
   - flagcx/adaptor/kernel/ppu/**/*
   - test/kernel/ppu/**/*
-  - makefiles/ppu.mk
   - tools/probe_hggc_sdk.py
   - flagcx/adaptor/include/barex_runtime.h
   - flagcx/adaptor/net/barex_adaptor.cc
+  - makefiles/ppu.mk
 
 ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:manual-20260827-ppu-dev
 
