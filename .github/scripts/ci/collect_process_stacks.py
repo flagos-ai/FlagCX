@@ -11,6 +11,15 @@ import time
 active_debugger = None
 
 
+def is_test_binary(name):
+    # Linux truncates /proc/comm to 15 characters. These prefixes cover both
+    # MPI and host-only suite binaries without attaching to launcher helpers.
+    return name.startswith(("runner_mpi_test", "runner_unit_tes", "core_unit_tests",
+                            "core_mpi_tests", "adaptor_unit_te", "adaptor_mpi_tes",
+                            "rma_unit_tests", "rma_mpi_tests", "symmem_unit_tes",
+                            "symmem_mpi_test", "service_unit_te", "test_dev_comm"))
+
+
 def stop(signum, frame):
     if active_debugger is not None:
         active_debugger.kill()
@@ -61,7 +70,7 @@ def capture(root_pid):
         for thread in threads:
             print(f"TID {thread.name} name={read(thread / 'comm')} "
                   f"wchan={read(thread / 'wchan')}\n{read(thread / 'stack')}", flush=True)
-        if debugger is not None and name.startswith("runner_mpi_test"):
+        if debugger is not None and is_test_binary(name):
             # Bound each attach so diagnostics cannot consume the job budget.
             active_debugger = subprocess.Popen(
                 [debugger, "-q", "-nx", "-batch", "-p", str(pid),

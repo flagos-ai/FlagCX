@@ -2,7 +2,8 @@ include ../../make.inc
 .DEFAULT_GOAL := all
 
 # Local include directory for core test fixtures
-LOCAL_INCLUDE := -I$(abspath include)
+LOCAL_INCLUDE := -I$(abspath include) \
+    -I$(PROJECT_ROOT)/flagcx/adaptor/device_api
 
 # [unit] tests: test_*.cpp — no MPI, no GPU required
 UNIT_SRCS   := $(wildcard test_*.cpp)
@@ -11,9 +12,15 @@ UNIT_TARGET := $(BINDIR)/core_unit_tests
 UNIT_DEPS   := $(UNIT_OBJS:.o=.d)
 
 # Host-only v1 plugin verifies cleanup reference ownership through the real loader.
+HANDLE_DEVICE_PLUGIN := $(abspath $(OBJDIR))/libflagcx-handle-device-test.so
 HANDLE_CCL_PLUGIN := $(abspath $(OBJDIR))/libflagcx-handle-owner-test.so
 $(OBJDIR)/test_device_handle_lifecycle.o: CXXFLAGS += -DFLAGCX_TEST_HANDLE_CCL_PLUGIN='"$(HANDLE_CCL_PLUGIN)"'
-$(OBJDIR)/test_device_handle_lifecycle.o: $(HANDLE_CCL_PLUGIN)
+$(OBJDIR)/test_device_handle_lifecycle.o: CXXFLAGS += -DFLAGCX_TEST_HANDLE_DEVICE_PLUGIN='"$(HANDLE_DEVICE_PLUGIN)"'
+$(OBJDIR)/test_device_handle_lifecycle.o: $(HANDLE_CCL_PLUGIN) $(HANDLE_DEVICE_PLUGIN)
+
+$(HANDLE_DEVICE_PLUGIN): fixtures/handle_owner_device_plugin.cpp
+	@mkdir -p $(dir $@)
+	@$(CXX) -std=c++17 -shared -fPIC $< -o $@ $(FLAGCX_INCLUDES)
 
 $(HANDLE_CCL_PLUGIN): fixtures/handle_owner_ccl_plugin.cpp
 	@mkdir -p $(dir $@)

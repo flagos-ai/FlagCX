@@ -239,6 +239,14 @@ markers are never queried, synchronized, or inserted into the event reuse pool
 as proof that a graph execution has finished. Their POD records may be reused
 without retaining any SDK graph object or recording an event into the graph.
 
+A heterogeneous group establishes one completion stream after all operation
+readiness dependencies and its proxy semaphore wait. Every affected communicator
+retains its own event recorded at that completion boundary, including work
+submitted on other streams. A partially published group without a confirmed
+completion boundary retains uncertain records and cannot authorize cleanup.
+Empty groups and failures before transport publication keep their original
+submission boundaries. No event is appended later at Finalize.
+
 Capture is enabled for native homogeneous operations without tuning. Captured
 AllReduce bypasses custom callbacks and uses the native SDK. UniRunner, fused,
 and direct Hetero stream submissions reject active capture before issuing work.
@@ -281,3 +289,16 @@ and waits for the proxy tracker, then quiesces RMA. Services stay alive througho
 this drain. Direct Hetero Finalize follows the same order. A terminal producer
 error remains an error even when FIFO produced and completed counters are equal.
 Both trackers retain event ownership on release failure for local Destroy retry.
+
+## Optional host SDK owners
+
+MPI and Gloo fallback communicators are destroyed whenever their hostComm owner
+exists, including automatic fallback for singleton homogeneous clusters without
+FLAGCX_USE_HOST_COMM. Staging allocations are associated with that host
+communicator and are never reused or released by another communicator. Gloo
+releases native unbound buffers before their backing allocations; pending native
+operations retain their owner. Finalize can clear the native context while
+retaining its wrapper, and Destroy frees the wrapper after successful cleanup.
+Host Destroy pending/error results retain the outer communicator and its cursor.
+The adaptor suite includes SDK-independent production-helper contracts and a
+separate actual-MPI executable with required two-rank XML results.

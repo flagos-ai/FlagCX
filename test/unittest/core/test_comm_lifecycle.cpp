@@ -115,15 +115,20 @@ TEST(CommLifecycleTest, IndependentCommunicatorsReleaseImmediately) {
 TEST(CommLifecycleTest, FailedNativeDestroyKeepsOwnerForLocalRetry) {
   LifecycleProviderGuard guard;
   static int calls;
-  calls = 0;
+  static flagcxResult_t firstResult;
   guard.provider.commDestroy = [](flagcxInnerComm_t) {
-    return ++calls == 1 ? flagcxRemoteError : flagcxSuccess;
+    return ++calls == 1 ? firstResult : flagcxSuccess;
   };
-  auto *comm = makeFinalizedComm(1);
-  EXPECT_EQ(flagcxCommDestroy(comm), flagcxRemoteError);
-  EXPECT_EQ(comm->homoComm, (flagcxInnerComm_t)1);
-  EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
-  EXPECT_EQ(calls, 2);
+  for (auto result : {flagcxRemoteError, flagcxInProgress}) {
+    calls = 0;
+    firstResult = result;
+    auto *comm = makeFinalizedComm(1);
+    EXPECT_EQ(flagcxCommDestroy(comm), result);
+    EXPECT_EQ(comm->homoComm, (flagcxInnerComm_t)1);
+    EXPECT_EQ(comm->destroyPhase, flagcxDestroyVendors);
+    EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+    EXPECT_EQ(calls, 2);
+  }
 }
 
 TEST(CommLifecycleTest, GroupedFinalizePreservesCallerTlsAndFifoOrder) {
@@ -359,13 +364,16 @@ TEST(CommLifecycleTest, VendorFailureRetainsCompletedCleanupForRetry) {
   deviceAdaptor = savedDevice;
 }
 
-TEST(CommLifecycleTest,
-     NativeRegistrationFailureRetriesBeforeClosingNativeContext) {
+class NativeRegistrationRetry
+    : public ::testing::TestWithParam<flagcxResult_t> {};
+TEST_P(NativeRegistrationRetry, ClosesBeforeNativeContext) {
   LifecycleProviderGuard guard;
   static int deregisters, finalizers, destructors;
+  static flagcxResult_t firstResult;
+  firstResult = GetParam();
   deregisters = finalizers = destructors = 0;
   guard.provider.commDeregister = [](flagcxInnerComm_t, void *) {
-    return ++deregisters == 1 ? flagcxRemoteError : flagcxSuccess;
+    return ++deregisters == 1 ? firstResult : flagcxSuccess;
   };
   guard.provider.commFinalize = [](flagcxInnerComm_t) {
     EXPECT_EQ(deregisters, 2);
@@ -394,8 +402,14 @@ TEST(CommLifecycleTest,
                                            (void *)1, flagcxSuccess),
             flagcxSuccess);
   globalRegPool.releaseItem(&snapshot);
-  EXPECT_EQ(flagcxCommFinalize(comm), flagcxRemoteError);
-  EXPECT_EQ(finalizers, 0);
+  EXPECT_EQ(flagcxCommFinalize(comm), firstResult);
+  EXPECT_EQ(comm->finalizeState.commonPhase, flagcxFinalizeOwners);
+  EXPECT_FALSE(comm->finalizeState.localDoneMask &
+               (1u << flagcxFinalizeOwners));
+  EXPECT_EQ(comm->homoComm, (flagcxInnerComm_t)0x5533);
+  EXPECT_EQ(globalRegPool.releaseOwnerReferences(comm->homoComm),
+            flagcxInvalidUsage);
+  EXPECT_EQ(finalizers + destructors, 0);
   EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
   EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
   EXPECT_EQ(deregisters, 2);
@@ -436,4 +450,108 @@ TEST(CommLifecycleTest, ConfirmedNativeOnlyPolicyMustAgreeBeforeFirstExport) {
   EXPECT_FALSE(comm.internalBuffersNeedPeerClose);
   EXPECT_EQ(flagcxCommRequireIpcClose(&comm, 1), flagcxInvalidArgument);
   EXPECT_FALSE(comm.ipcClosePolicyConfirmed);
+}
+
+INSTANTIATE_TEST_SUITE_P(Provider, NativeRegistrationRetry,
+                         ::testing::Values(flagcxRemoteError,
+                                           flagcxInProgress));
+
+TEST(CommLifecycleTest, NativeRegistrationRetryKeepsSuccessfulPrefix) {
+  LifecycleProviderGuard guard;
+  static int calls, successful[3], finalizers;
+  calls = finalizers = 0;
+  memset(successful, 0, sizeof(successful));
+  guard.provider.commDeregister = [](flagcxInnerComm_t, void *handle) {
+    int index = (uintptr_t)handle;
+    EXPECT_EQ(successful[index], 0);
+    if (++calls == 2)
+      return flagcxInProgress;
+    successful[index]++;
+    return flagcxSuccess;
+  };
+  guard.provider.commFinalize = [](flagcxInnerComm_t) {
+    EXPECT_EQ(successful[1] + successful[2], 2);
+    finalizers++;
+    return flagcxSuccess;
+  };
+  guard.provider.commDestroy = [](flagcxInnerComm_t) { return flagcxSuccess; };
+  auto *comm = makeFinalizedComm(0x5534);
+  comm->finalizeState = {};
+  for (int i = 1; i <= 2; i++) {
+    flagcxRegSnapshot snapshot = {};
+    ASSERT_EQ(globalRegPool.registerAndAcquire(
+                  comm->homoComm, (void *)(uintptr_t)(0x991000 + i * 0x1000),
+                  64, &snapshot),
+              flagcxSuccess);
+    void *handle = nullptr;
+    int create = 0;
+    ASSERT_EQ(globalRegPool.beginHomoHandle(comm->homoComm, snapshot.item,
+                                            &handle, &create),
+              flagcxSuccess);
+    ASSERT_EQ(create, 1);
+    ASSERT_EQ(globalRegPool.finishHomoHandle(comm->homoComm, snapshot.item,
+                                             (void *)(uintptr_t)i,
+                                             flagcxSuccess),
+              flagcxSuccess);
+    globalRegPool.releaseItem(&snapshot);
+  }
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxInProgress);
+  EXPECT_EQ(calls, 2);
+  EXPECT_EQ(finalizers, 0);
+  EXPECT_EQ(successful[1] + successful[2], 1);
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(calls, 3);
+  EXPECT_EQ(finalizers, 1);
+  EXPECT_EQ(successful[1], 1);
+  EXPECT_EQ(successful[2], 1);
+  EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+}
+
+TEST(CommLifecycleTest, PendingNativeOwnerReferencesPreventNativeDestroy) {
+  LifecycleProviderGuard guard;
+  static int destroys;
+  destroys = 0;
+  guard.provider.commDestroy = [](flagcxInnerComm_t) {
+    destroys++;
+    return flagcxSuccess;
+  };
+  auto *comm = makeFinalizedComm(0x5535);
+  void *buffer = (void *)0x995000;
+  ASSERT_EQ(globalRegPool.registerBuffer(comm->homoComm, buffer, 64),
+            flagcxSuccess);
+  auto *item = globalRegPool.getItem(comm->homoComm, buffer);
+  ASSERT_NE(item, nullptr);
+  ASSERT_NE(item->owners, nullptr);
+  item->owners->closing = 1;
+  EXPECT_EQ(flagcxCommDestroy(comm), flagcxInProgress);
+  EXPECT_EQ(comm->homoComm, (flagcxInnerComm_t)0x5535);
+  EXPECT_EQ(comm->destroyPhase, flagcxDestroyVendors);
+  EXPECT_EQ(destroys, 0);
+  item->owners->closing = 0;
+  EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+  EXPECT_EQ(destroys, 1);
+}
+
+TEST(CommLifecycleTest, PendingHostDestroyRetainsAutomaticFallbackOwner) {
+  auto *saved = cclAdaptors[flagcxCCLAdaptorHost];
+  flagcxCCLAdaptor provider = *saved;
+  cclAdaptors[flagcxCCLAdaptorHost] = &provider;
+  struct Restore {
+    flagcxCCLAdaptor *saved;
+    ~Restore() { cclAdaptors[flagcxCCLAdaptorHost] = saved; }
+  } restore{saved};
+  static int calls;
+  calls = 0;
+  provider.commDestroy = [](flagcxInnerComm_t) {
+    return ++calls == 1 ? flagcxInProgress : flagcxSuccess;
+  };
+  auto *comm = makeFinalizedComm(0);
+  comm->commType = flagcxCommunicatorHybrid;
+  comm->hasSingleRankHomoComm = 1;
+  comm->hostComm = (flagcxInnerComm_t)0x5599;
+  EXPECT_EQ(flagcxCommDestroy(comm), flagcxInProgress);
+  ASSERT_EQ(comm->hostComm, (flagcxInnerComm_t)0x5599);
+  EXPECT_EQ(comm->destroyPhase, flagcxDestroyHost);
+  EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+  EXPECT_EQ(calls, 2);
 }

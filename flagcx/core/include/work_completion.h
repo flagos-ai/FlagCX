@@ -18,6 +18,13 @@ enum flagcxWorkState {
 };
 enum flagcxWorkGroupDomain { flagcxWorkNativeGroup = 0, flagcxWorkHeteroGroup };
 
+// Borrowed only until the outermost heterogeneous GroupEnd returns.
+struct flagcxWorkGroupBoundary {
+  flagcxStream_t stream;
+  int submitted;
+  int ready;
+};
+
 struct flagcxWorkRecord {
   struct flagcxWorkRecord *next;
   struct flagcxWorkRecord *groupNext;
@@ -52,6 +59,9 @@ flagcxResult_t flagcxWorkFinish(struct flagcxWorkRecord *record,
                                 int deferred);
 flagcxResult_t flagcxWorkGroupComplete(enum flagcxWorkGroupDomain domain,
                                        flagcxResult_t result);
+flagcxResult_t flagcxWorkGroupCompleteAtBoundary(
+    enum flagcxWorkGroupDomain domain, flagcxResult_t result,
+    const struct flagcxWorkGroupBoundary *boundary);
 void flagcxWorkRetain(struct flagcxWorkRecord *record);
 void flagcxWorkDrop(struct flagcxWorkRecord *record);
 flagcxResult_t flagcxWorkWaitRecord(struct flagcxWorkRecord *record);

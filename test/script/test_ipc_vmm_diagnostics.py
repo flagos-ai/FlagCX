@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from symmem_ci_fixture import install_rank_report_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / '.github/scripts/ci/run_ipc_vmm_diagnostics.sh'
@@ -96,10 +97,10 @@ print('IPC_REPRO_PASS case=' + case, flush=True)
             ci.mkdir(parents=True)
             shutil.copyfile(ROOT / '.github/scripts/ci/ignore_test.py',
                             ci / 'ignore_test.py')
+            generator = install_rank_report_fixture(root)
             for name in ('run_with_timeout.sh', 'run_mpi_with_timeout.sh'):
                 path = ci / name
-                path.write_text('''#!/bin/bash
-printf '%s\\n' "$*" >> "$SYMMEM_CALLS"
+                path.write_text(f'#!/bin/bash\npython3 "{generator}" "$@"\n' + '''printf '%s\\n' "$*" >> "$SYMMEM_CALLS"
 if [[ "$*" == *--gtest_filter=SymMemTest.UntrackedVmmMappingIsRejected* ]]; then
   exit 139
 fi

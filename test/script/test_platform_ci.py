@@ -166,6 +166,8 @@ from pathlib import Path
 path = Path(os.environ['GTEST_OUTPUT'][4:])
 path.write_text('<testsuites><testsuite name="FlagCXCollTest">'
                 '<testcase name="UniRunnerIpcFinalizeThenRankLocalDestroy" '
+                'status="run" result="completed"/>'
+                '<testcase name="GroupedCommunicatorsFinalizeTheNonLaunchStreamFirst" '
                 'status="run" result="completed"/></testsuite></testsuites>')
 ''')
                 binary.chmod(0o755)
@@ -188,6 +190,22 @@ path.write_text('<testsuites><testsuite name="FlagCXCollTest">'
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn('passed in 4 report(s)', result.stdout)
 
+    def test_adaptor_host_cleanup_requires_real_mpi_and_named_reports(self):
+        script = (REPO_ROOT / 'test/script/host_mpi_cleanup_test.sh').read_text()
+        dispatch = (REPO_ROOT / '.github/scripts/ci/run_unit_test.sh').read_text()
+        makefile = (REPO_ROOT / 'test/unittest/adaptor/Makefile').read_text()
+        self.assertIn('host_mpi_cleanup_test.sh', dispatch)
+        self.assertIn('host_cleanup_status != 0', dispatch)
+        self.assertIn('$(PROJECT_ROOT)/flagcx/adaptor/ccl/mpi_adaptor.cc', makefile)
+        self.assertIn('$(HOST_MPI_TARGET)', makefile)
+        self.assertIn('"$MPI_RUNNER" -np 2', script)
+        self.assertIn('check_required_gtests.py', script)
+        for case in ('EmptyAndStagedOwnersDestroyIndependently',
+                     'AutomaticFallbackOwnerDestroysWhilePeersWait'):
+            self.assertIn('HostMpiCleanup.' + case, script)
+        for rank in range(2):
+            self.assertIn(f'rank-{rank}.xml', script)
+
     def test_symmem_lifecycle_bootstrap_requires_three_rank_reports(self):
         source = (REPO_ROOT / 'test/script/symmem_test.sh').read_text()
         lifecycle = source.split('lifecycle_cases=(', 1)[1].split(
@@ -201,6 +219,8 @@ path.write_text('<testsuites><testsuite name="FlagCXCollTest">'
         for case in (
             'PendingImportRetainsExporterAndEmptyRankUntilRetry',
             'PendingLocalReleaseRetriesWhilePeersWait',
+            'FailedGroupPrefixConvergesBeforeImportClosure',
+            'GroupCompletionStreamProtectsNonLaunchCommunicator',
         ):
             self.assertIn(f'HeteroFinalizeMpi.{case}', lifecycle)
         for case in (
@@ -209,6 +229,7 @@ path.write_text('<testsuites><testsuite name="FlagCXCollTest">'
             'IpcDeclarationSurvivesRankLocalAllocationFailure',
             'IpcDeclarationAndClosureAreNodeLocal',
             'PairCommunicatorsCloseInCanonicalOrder',
+            'PendingNativeRegistrationIncludesEmptyRanks',
             'FinalizeCloseFailureConvergesIncludingEmptyRanks',
         ):
             self.assertIn(f'SymWindowRollback.{case}', lifecycle)

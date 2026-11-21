@@ -57,7 +57,8 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
   }
   ~flagcxHostSemaphore() override {
     for (auto event : events) {
-      deviceAdaptor->eventDestroy(event);
+      if (event != nullptr)
+        deviceAdaptor->eventDestroy(event);
     }
   }
   flagcxEvent_t getEvent() override {
@@ -191,7 +192,8 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
     // Clear event in the pool
     deviceSemaphoreBufferPool.setEvent(slotId, nullptr);
     for (auto event : events) {
-      deviceAdaptor->eventDestroy(event);
+      if (event != nullptr)
+        deviceAdaptor->eventDestroy(event);
     }
   }
   flagcxEvent_t getEvent() override {
@@ -279,7 +281,8 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
       deviceAdaptor->eventDestroy(completionEvent);
     }
     for (auto event : events) {
-      deviceAdaptor->eventDestroy(event);
+      if (event != nullptr)
+        deviceAdaptor->eventDestroy(event);
     }
     streamValueBufferPool.release(signals);
   }

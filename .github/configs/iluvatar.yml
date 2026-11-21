@@ -23,7 +23,7 @@ runner_labels:
   - ts-8g-cicd-flagcx
 
 docker_volumes:
-  - /dev:/dev
+  # --privileged exposes host devices; preserve the runtime's /dev layout.
   - /lib/modules:/lib/modules
   - /usr/local/corex-4.5.0/lib64/libcuda.so.1:/usr/local/corex/lib64/libcuda.so.1
   - /usr/local/corex-4.5.0/lib64/libixml.so:/usr/local/corex/lib64/libixml.so

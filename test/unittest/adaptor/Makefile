@@ -15,6 +15,10 @@ UNIT_TARGET := $(BINDIR)/adaptor_unit_tests
 MPI_SRCS   := $(wildcard coll_*.cpp)
 MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/adaptor_mpi_tests
+HOST_MPI_TARGET := $(BINDIR)/adaptor_host_mpi_cleanup_tests
+HOST_MPI_OBJ := $(OBJDIR)/host_mpi_adaptor.o
+# Compile the actual optional host SDK without the device adaptor's opaque types.
+HOST_MPI_FLAGS := $(filter-out -DUSE_%_ADAPTOR -DCOMPILE_KERNEL%,$(CXXFLAGS)) -DUSE_MPI_ADAPTOR -DFLAGCX_COMM_TRAITS_DEFAULT
 MPIRUN     ?= mpirun
 MPI_NP     ?= 8
 MPI_ENV    ?=
@@ -27,7 +31,7 @@ endif
 .PHONY: all clean run-unit run-mpi run compile-sunrise
 
 ALL_TARGETS :=
-ALL_TARGETS += compile-sunrise
+ALL_TARGETS += compile-sunrise $(HOST_MPI_TARGET)
 ifneq ($(UNIT_SRCS),)
 ALL_TARGETS += $(UNIT_TARGET)
 endif
@@ -77,3 +81,11 @@ compile-sunrise:
 	  -DUSE_SUNRISE_ADAPTOR -DFLAGCX_COMM_TRAITS_DEFAULT \
 	  -Ifixtures/sunrise_sdk $(FLAGCX_INCLUDES) \
 	  -fsyntax-only $(PROJECT_ROOT)/flagcx/adaptor/device/ptpu_adaptor.cc
+
+$(HOST_MPI_OBJ): $(PROJECT_ROOT)/flagcx/adaptor/ccl/mpi_adaptor.cc $(PROJECT_ROOT)/flagcx/adaptor/ccl/mpi_staging_cleanup.h $(PROJECT_ROOT)/flagcx/adaptor/ccl/host_comm_lifecycle.h
+	@mkdir -p $(dir $@)
+	@$(CXX) $(HOST_MPI_FLAGS) $(FLAGCX_INCLUDES) $(MPI_INCLUDE) -c $< -o $@
+
+$(HOST_MPI_TARGET): host_mpi_cleanup.cpp $(HOST_MPI_OBJ)
+	@mkdir -p $(dir $@)
+	@$(CXX) $(HOST_MPI_FLAGS) $(FLAGCX_INCLUDES) $(MPI_INCLUDE) $(GTEST_INCLUDE) $^ -o $@ $(FLAGCX_LINK) $(GTEST_BASE_LINK) $(MPI_LINK)

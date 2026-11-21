@@ -1205,8 +1205,9 @@ TEST(PpuPcclLoading, NativeCommBeforeBarexHostMrRegistration) {
     flagcxCCLAdaptor *adaptor;
     flagcxInnerComm_t comm;
     ~NativeCommGuard() {
+      // Successful adaptor destruction owns the wrapper as well as native
+      // state.
       EXPECT_EQ(adaptor->commDestroy(comm), flagcxSuccess);
-      free(comm);
     }
   } native{ccl, nativeComm};
 

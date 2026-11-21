@@ -62,7 +62,7 @@ TEST_F(WorkGroupBoundary, EventRecordFailureClearsPendingButKeepsOwner) {
   EXPECT_EQ(recorded, 1);
 }
 
-TEST_F(WorkGroupBoundary, FailedLaunchDoesNotRecordSuccessfulCompletion) {
+TEST_F(WorkGroupBoundary, FailedLaunchPreservesBoundaryForSafeCleanup) {
   flagcxHeteroComm comm = {};
   flagcxProxyState proxy = {};
   uint64_t connectSend = 0, connectRecv = 0;
@@ -83,10 +83,10 @@ TEST_F(WorkGroupBoundary, FailedLaunchDoesNotRecordSuccessfulCompletion) {
   flagcxIntruQueueEnqueue(&flagcxAsyncJobs, job);
   flagcxGroupCommPreconnectHead = &comm;
   EXPECT_EQ(flagcxGroupEndInternal(true), flagcxInternalError);
-  EXPECT_EQ(record->state, flagcxWorkUncertain);
-  EXPECT_EQ(flagcxWorkWait(&tracker), flagcxInternalError);
-  EXPECT_EQ(recorded, 0);
+  EXPECT_EQ(record->state, flagcxWorkRecorded);
+  EXPECT_EQ(flagcxWorkWait(&tracker), flagcxSuccess);
+  EXPECT_EQ(recorded, 1);
   ASSERT_EQ(flagcxHeteroGroupStart(), flagcxSuccess);
   EXPECT_EQ(flagcxHeteroGroupEnd(), flagcxSuccess);
-  EXPECT_EQ(recorded, 0);
+  EXPECT_EQ(recorded, 1);
 }

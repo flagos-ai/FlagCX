@@ -198,3 +198,63 @@ TEST_F(FlagCXCollTest, UniRunnerIpcFinalizeThenRankLocalDestroy) {
   ASSERT_EQ(flagcxTestFinalizeAndDestroyRankLocally(&comm, rank, nranks),
             flagcxSuccess);
 }
+
+TEST_F(FlagCXCollTest, GroupedCommunicatorsFinalizeTheNonLaunchStreamFirst) {
+  if (!usingUniRunner())
+    GTEST_SKIP() << "requires the heterogeneous runner";
+  flagcxUniqueId id = {};
+  if (rank == 0)
+    ASSERT_EQ(flagcxGetUniqueId(&id), flagcxSuccess);
+  MPI_Bcast(&id, sizeof(id), MPI_BYTE, 0, MPI_COMM_WORLD);
+  flagcxComm_t other = nullptr;
+  flagcxStream_t otherStream = nullptr;
+  void *otherSend = nullptr, *otherRecv = nullptr;
+  ASSERT_EQ(flagcxCommInitRank(&other, nranks, &id, rank), flagcxSuccess);
+  ASSERT_EQ(devHandle->streamCreate(&otherStream), flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceMalloc(&otherSend, sizeof(float), flagcxMemDevice,
+                                    nullptr),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceMalloc(&otherRecv, sizeof(float), flagcxMemDevice,
+                                    nullptr),
+            flagcxSuccess);
+  ((float *)hostsendbuff)[0] = rank + 1;
+  ASSERT_EQ(devHandle->deviceMemcpy(sendbuff, hostsendbuff, sizeof(float),
+                                    flagcxMemcpyHostToDevice, stream),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceMemcpy(otherSend, hostsendbuff, sizeof(float),
+                                    flagcxMemcpyHostToDevice, otherStream),
+            flagcxSuccess);
+  int next = (rank + 1) % nranks, previous = (rank + nranks - 1) % nranks;
+  ASSERT_EQ(flagcxGroupStart(comm), flagcxSuccess);
+  ASSERT_EQ(flagcxSend(sendbuff, 1, flagcxFloat, next, comm, stream),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxRecv(recvbuff, 1, flagcxFloat, previous, comm, stream),
+            flagcxSuccess);
+  // The last joined communicator supplies the group's launch stream.
+  ASSERT_EQ(flagcxSend(otherSend, 1, flagcxFloat, next, other, otherStream),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxRecv(otherRecv, 1, flagcxFloat, previous, other, otherStream),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxGroupEnd(comm), flagcxSuccess);
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceMemcpy(hostrecvbuff, recvbuff, sizeof(float),
+                                    flagcxMemcpyDeviceToHost, stream),
+            flagcxSuccess);
+  ASSERT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
+  EXPECT_FLOAT_EQ(((float *)hostrecvbuff)[0], previous + 1);
+  ASSERT_EQ(flagcxCommFinalize(other), flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceMemcpy(hostrecvbuff, otherRecv, sizeof(float),
+                                    flagcxMemcpyDeviceToHost, otherStream),
+            flagcxSuccess);
+  ASSERT_EQ(synchronizeAndCheckAsyncError(other, otherStream), flagcxSuccess);
+  EXPECT_FLOAT_EQ(((float *)hostrecvbuff)[0], previous + 1);
+  ASSERT_EQ(flagcxTestFinalizeAndDestroyRankLocally(&comm, rank, nranks),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxTestFinalizeAndDestroyRankLocally(&other, rank, nranks),
+            flagcxSuccess);
+  EXPECT_EQ(devHandle->deviceFree(otherSend, flagcxMemDevice, nullptr),
+            flagcxSuccess);
+  EXPECT_EQ(devHandle->deviceFree(otherRecv, flagcxMemDevice, nullptr),
+            flagcxSuccess);
+  EXPECT_EQ(devHandle->streamDestroy(otherStream), flagcxSuccess);
+}

@@ -677,6 +677,9 @@ flagcxResult_t flagcxHeteroCommFinalize(flagcxHeteroComm_t comm) {
     int phase = state->phase;
     flagcxResult_t local = deviceAdaptor->setDevice(comm->cudaDev);
     if (local == flagcxSuccess && !(state->localDoneMask & (1u << phase))) {
+      INFO(FLAGCX_INIT,
+           "Lifecycle hetero=%p rank=%d finalize phase=%d local begin", comm,
+           comm->rank, phase);
       switch (state->phase) {
         case flagcxHeteroFinalizeDrain:
           local = flagcxWorkWait(&comm->submittedWork);
@@ -698,11 +701,21 @@ flagcxResult_t flagcxHeteroCommFinalize(flagcxHeteroComm_t comm) {
           local = flagcxInternalError;
           break;
       }
+      INFO(FLAGCX_INIT,
+           "Lifecycle hetero=%p rank=%d finalize phase=%d local end result=%d",
+           comm, comm->rank, phase, (int)local);
       if (local == flagcxSuccess)
         state->localDoneMask |= 1u << phase;
     }
     flagcxResult_t common = local;
+    INFO(FLAGCX_INIT,
+         "Lifecycle hetero=%p rank=%d finalize phase=%d agreement begin", comm,
+         comm->rank, phase);
     result = flagcxHeteroFinalizeStatus(comm, phase, local, &common);
+    INFO(FLAGCX_INIT,
+         "Lifecycle hetero=%p rank=%d finalize phase=%d agreement end "
+         "transport=%d common=%d",
+         comm, comm->rank, phase, (int)result, (int)common);
     if (result == flagcxSuccess)
       result = common;
     if (result != flagcxSuccess)

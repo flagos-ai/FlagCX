@@ -6,6 +6,7 @@
 #include "param.h"
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <gtest/gtest.h>
 #include <string>
@@ -72,6 +73,9 @@ struct IsolationOwners {
 // Each process owns one rank and two independent single-rank communicators.
 // Uses the real adaptor/SDK in the existing Device API unit CI target.
 static void runIsolation(bool withPartialOwners, bool withRma = false) {
+  std::fprintf(stderr, "ISOLATION begin partial=%d rma=%d\n", withPartialOwners,
+               withRma);
+  std::fflush(stderr);
   int count = 0;
   if (!deviceAdaptor->getDeviceCount || !deviceAdaptor->launchHostFunc ||
       deviceAdaptor->getDeviceCount(&count) != flagcxSuccess || count == 0)
@@ -87,7 +91,11 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
   for (int i = 0; i < 2; i++) {
     flagcxUniqueId id = {};
     ASSERT_EQ(flagcxGetUniqueId(&id), flagcxSuccess);
+    std::fprintf(stderr, "ISOLATION comm-init begin index=%d\n", i);
+    std::fflush(stderr);
     ASSERT_EQ(flagcxCommInitRank(&owners.comms[i], 1, &id, 0), flagcxSuccess);
+    std::fprintf(stderr, "ISOLATION comm-init done index=%d\n", i);
+    std::fflush(stderr);
     ASSERT_EQ(deviceAdaptor->streamCreate(&owners.streams[i]), flagcxSuccess);
     ASSERT_EQ(deviceAdaptor->deviceMalloc(&owners.buffers[i], sizeof(float),
                                           flagcxMemDevice, nullptr),
@@ -119,10 +127,14 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
                                           flagcxMemDevice, nullptr),
               flagcxSuccess);
   }
-  ASSERT_EQ(flagcxAllReduce(owners.buffers[0], owners.buffers[0], 1,
-                            flagcxFloat, flagcxSum, owners.comms[0],
-                            owners.streams[0]),
-            flagcxSuccess);
+  // RMA workers are created at CommInitRank. This test checks their cleanup,
+  // and must not require single-rank heterogeneous AllReduce support.
+  if (!withRma) {
+    ASSERT_EQ(flagcxAllReduce(owners.buffers[0], owners.buffers[0], 1,
+                              flagcxFloat, flagcxSum, owners.comms[0],
+                              owners.streams[0]),
+              flagcxSuccess);
+  }
   ASSERT_EQ(deviceAdaptor->streamSynchronize(owners.streams[0]), flagcxSuccess);
   if (withRma) {
     ASSERT_NE(owners.comms[0]->heteroComm, nullptr);
@@ -133,6 +145,8 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
     // Complete initialization before B's independent work is blocked.
     ASSERT_EQ(deviceAdaptor->deviceSynchronize(), flagcxSuccess);
   }
+  std::fprintf(stderr, "ISOLATION independent callback submit\n");
+  std::fflush(stderr);
   flagcxResult_t launched = deviceAdaptor->launchHostFunc(
       owners.streams[1], IndependentWork::hold, &owners.work);
   if (launched == flagcxNotSupported)
@@ -155,7 +169,12 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
     std::this_thread::yield();
   ASSERT_TRUE(owners.work.entered);
   ASSERT_FALSE(owners.work.expired);
+  std::fprintf(stderr, "ISOLATION finalize A begin\n");
+  std::fflush(stderr);
   EXPECT_EQ(flagcxCommFinalize(owners.comms[0]), flagcxSuccess);
+  std::fprintf(stderr, "ISOLATION finalize A done expired=%d\n",
+               owners.work.expired.load());
+  std::fflush(stderr);
   EXPECT_FALSE(owners.work.expired)
       << "Finalize(A) waited for independent work on communicator B";
   if (withRma) {

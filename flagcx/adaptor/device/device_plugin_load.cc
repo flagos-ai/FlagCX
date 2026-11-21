@@ -155,7 +155,9 @@ flagcxResult_t flagcxDeviceAdaptorPluginFinalize() {
   std::lock_guard<std::mutex> lock(devicePluginMutex);
   if (devicePluginRefCount == 1) {
     INFO(FLAGCX_INIT, "Unloading device adaptor plugin");
-    FLAGCXCHECK(flagcxDeviceAdaptorPluginUnload());
+    flagcxResult_t result = flagcxDeviceAdaptorPluginUnload();
+    if (result != flagcxSuccess)
+      return result;
     devicePluginRefCount = 0;
   } else if (devicePluginRefCount > 1) {
     --devicePluginRefCount;

@@ -7,6 +7,8 @@ static int groupDepth = 0;
 static std::vector<stagedBuffer_t> sendStagedBufferList;
 static std::vector<stagedBuffer_t> recvStagedBufferList;
 
+#include "mpi_staging_cleanup.h"
+
 static flagcxResult_t validateComm(flagcxInnerComm_t comm) {
   if (!comm || !comm->base) {
     return flagcxInvalidArgument;
@@ -28,48 +30,6 @@ flagcxResult_t mpiAdaptorGetVersion(int *version) {
 }
 
 flagcxResult_t mpiAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
-  return flagcxSuccess;
-}
-
-flagcxResult_t mpiAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
-                                         void **buff, size_t size, int isRecv) {
-  stagedBuffer *sbuff = NULL;
-  if (isRecv) {
-    for (auto it = recvStagedBufferList.begin();
-         it != recvStagedBufferList.end(); it++) {
-      if ((*it)->size - (*it)->offset >= size) {
-        sbuff = (*it);
-        break;
-      }
-    }
-  } else {
-    for (auto it = sendStagedBufferList.begin();
-         it != sendStagedBufferList.end(); it++) {
-      if ((*it)->size - (*it)->offset >= size) {
-        sbuff = (*it);
-        break;
-      }
-    }
-  }
-  if (sbuff == NULL) {
-    FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
-    sbuff->offset = 0;
-    int newSize = MPI_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
-    while (newSize < size) {
-      newSize *= 2;
-    }
-    sbuff->buffer = malloc(newSize);
-    if (sbuff->buffer == NULL) {
-      return flagcxSystemError;
-    }
-    sbuff->size = newSize;
-    if (isRecv) {
-      recvStagedBufferList.push_back(sbuff);
-    } else {
-      sendStagedBufferList.push_back(sbuff);
-    }
-  }
-  *buff = (void *)((char *)sbuff->buffer + sbuff->offset);
   return flagcxSuccess;
 }
 
@@ -139,53 +99,17 @@ flagcxResult_t mpiAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
   return flagcxSuccess;
 }
 
-flagcxResult_t mpiAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = sendStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = recvStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  sendStagedBufferList.clear();
-  recvStagedBufferList.clear();
-  comm->base.reset();
-  return flagcxSuccess;
-}
-
-flagcxResult_t mpiAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = sendStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = recvStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  sendStagedBufferList.clear();
-  recvStagedBufferList.clear();
-  comm->base.reset();
-  return flagcxSuccess;
-}
+#define FLAGCX_HOST_FINALIZE mpiAdaptorCommFinalize
+#define FLAGCX_HOST_DESTROY mpiAdaptorCommDestroy
+#define FLAGCX_HOST_CLEANUP mpiCleanupOwner
+#include "host_comm_lifecycle.h"
 
 flagcxResult_t mpiAdaptorCommAbort(flagcxInnerComm_t comm) {
-  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = sendStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = recvStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  sendStagedBufferList.clear();
-  recvStagedBufferList.clear();
+  flagcxResult_t result = mpiCleanupOwner(comm);
+  if (result != flagcxSuccess)
+    return result;
+  if (comm->base == nullptr)
+    return flagcxInvalidUsage;
   MPI_Abort(comm->base->getMpiComm(), 1);
   return flagcxSuccess;
 }

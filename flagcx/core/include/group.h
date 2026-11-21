@@ -9,6 +9,7 @@
 
 #include "assert.h"
 #include "comm.h"
+#include "work_completion.h"
 
 typedef flagcxResult_t (*flagcxInitFunc_t)(flagcxHeteroComm_t *newcomm,
                                            int ndev, flagcxUniqueId commId,
@@ -54,6 +55,7 @@ struct flagcxGroupJob {
       *asyncJobsPtr;
   bool initialized;
   bool useStreamValue;
+  struct flagcxWorkGroupBoundary completion;
 };
 
 flagcxResult_t flagcxGroupStartInternal();

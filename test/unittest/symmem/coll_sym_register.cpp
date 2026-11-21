@@ -11,6 +11,7 @@
 #include "global_comm.h"
 #include "mem_alloc_registry.h"
 #include "onesided.h"
+#include "reg_pool.h"
 #include "sym_heap.h"
 #include "symmem_test.hpp"
 #include "transport.h"
@@ -2258,8 +2259,12 @@ TEST_F(SymMemTest, FinalizeThenDestroyIsRankLocal) {
   auto binding = buildIpcPeerPointers(owned, exporter, 64);
   ASSERT_TRUE(allRanksSucceeded(binding.buildStatus));
   ASSERT_EQ(flagcxCommFinalize(owned), flagcxSuccess);
-  ASSERT_NE(owned->internalBuffers, nullptr);
-  EXPECT_EQ(owned->internalBuffers->pointer, exporter);
+  bool exporterRetained = false;
+  for (auto *buffer = owned->internalBuffers; buffer != nullptr;
+       buffer = buffer->next)
+    exporterRetained |= buffer->pointer == exporter &&
+                        buffer->kind == flagcxInternalBufferDevice;
+  EXPECT_TRUE(exporterRetained);
   MPI_Barrier(MPI_COMM_WORLD);
   int result = flagcxSuccess;
   if (rank == 0) {
@@ -4254,6 +4259,75 @@ TEST_F(SymWindowRollback, CommDestroyPendingWindowKeepsLeaseUntilImportsClose) {
   MPI_Barrier(MPI_COMM_WORLD);
   EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxSuccess);
   resources.buffer = nullptr;
+}
+
+TEST_F(SymWindowRollback, PendingNativeRegistrationIncludesEmptyRanks) {
+  ScopedRollbackBackend backend;
+  static int closes, finalizes, destroys;
+  closes = finalizes = destroys = 0;
+  backend.provider.finalizeScope = flagcxCclFinalizeIntraNode;
+  backend.provider.commDeregister = [](flagcxInnerComm_t, void *) {
+    return ++closes == 1 ? flagcxInProgress : flagcxSuccess;
+  };
+  backend.provider.commFinalize = [](flagcxInnerComm_t) {
+    finalizes++;
+    return flagcxSuccess;
+  };
+  backend.provider.commDestroy = [](flagcxInnerComm_t) {
+    destroys++;
+    return flagcxSuccess;
+  };
+  flagcxComm_t owned = nullptr;
+  ASSERT_EQ(flagcxCalloc(&owned, 1), flagcxSuccess);
+  owned->commType = flagcxCommunicatorHomo;
+  owned->homoComm = (flagcxInnerComm_t)0x5590;
+  owned->rank = owned->localRank = rank;
+  owned->nranks = owned->localRanks = nranks;
+  owned->localRankToRank = (int *)calloc(nranks, sizeof(int));
+  ASSERT_NE(owned->localRankToRank, nullptr);
+  for (int peer = 0; peer < nranks; peer++)
+    owned->localRankToRank[peer] = peer;
+  owned->bootstrap = bootstrap.state;
+  bootstrap.state = nullptr;
+  testComm.bootstrap = nullptr;
+  // All local peers join the lifecycle agreement, including rank two, which
+  // has no registered buffer. Only rank one has a fallible native close.
+  ASSERT_EQ(flagcxCommRequireIpcClose(owned, rank == 1), flagcxSuccess);
+  if (rank == 1) {
+    flagcxRegSnapshot snapshot = {};
+    ASSERT_EQ(globalRegPool.registerAndAcquire(owned->homoComm,
+                                               resources.buffer, 64, &snapshot),
+              flagcxSuccess);
+    void *handle = nullptr;
+    int create = 0;
+    ASSERT_EQ(globalRegPool.beginHomoHandle(owned->homoComm, snapshot.item,
+                                            &handle, &create),
+              flagcxSuccess);
+    ASSERT_EQ(create, 1);
+    ASSERT_EQ(globalRegPool.finishHomoHandle(owned->homoComm, snapshot.item,
+                                             (void *)1, flagcxSuccess),
+              flagcxSuccess);
+    globalRegPool.releaseItem(&snapshot);
+  }
+  EXPECT_EQ(flagcxCommFinalize(owned), flagcxInProgress);
+  EXPECT_EQ(owned->finalizeState.commonPhase, flagcxFinalizeOwners);
+  EXPECT_EQ(
+      !!(owned->finalizeState.localDoneMask & (1u << flagcxFinalizeOwners)),
+      rank != 1);
+  EXPECT_EQ(finalizes + destroys, 0);
+  EXPECT_EQ(closes, rank == 1 ? 1 : 0);
+  ASSERT_EQ(flagcxCommFinalize(owned), flagcxSuccess);
+  EXPECT_EQ(finalizes, 1);
+  EXPECT_EQ(closes, rank == 1 ? 2 : 0);
+  int released = 1;
+  if (rank != 0)
+    MPI_Recv(&released, 1, MPI_INT, 0, 0x6f72, MPI_COMM_WORLD,
+             MPI_STATUS_IGNORE);
+  EXPECT_EQ(flagcxCommDestroy(owned), flagcxSuccess);
+  EXPECT_EQ(destroys, 1);
+  if (rank == 0)
+    for (int peer = 1; peer < nranks; peer++)
+      MPI_Send(&released, 1, MPI_INT, peer, 0x6f72, MPI_COMM_WORLD);
 }
 
 TEST_F(SymWindowRollback, FinalizedDestroyDoesNotNeedPeers) {

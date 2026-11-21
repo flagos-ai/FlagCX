@@ -303,13 +303,20 @@ void flagcxStreamValueBufferPool::release(uint64_t *signals) {
 
 flagcxResult_t
 flagcxStreamValueSemaphore::enqueueCompletion(flagcxStream_t launchStream) {
-  FLAGCXCHECK(
-      deviceAdaptor->eventCreate(&completionEvent, flagcxEventDisableTiming));
-  FLAGCXCHECK(deviceAdaptor->streamWriteValue64(launchStream, dSignals, 1, 0));
-  FLAGCXCHECK(deviceAdaptor->streamWaitValue64(
-      launchStream, static_cast<char *>(dSignals) + sizeof(uint64_t), 1, 0));
-  FLAGCXCHECK(deviceAdaptor->eventRecord(completionEvent, launchStream));
-  // Publish the event handle only after it has captured the stream work.
+  flagcxResult_t result =
+      deviceAdaptor->eventCreate(&completionEvent, flagcxEventDisableTiming);
+  if (result != flagcxSuccess)
+    return result;
+  result = deviceAdaptor->streamWriteValue64(launchStream, dSignals, 1, 0);
+  if (result != flagcxSuccess)
+    return result;
+  result = deviceAdaptor->streamWaitValue64(
+      launchStream, static_cast<char *>(dSignals) + sizeof(uint64_t), 1, 0);
+  if (result != flagcxSuccess)
+    return result;
+  result = deviceAdaptor->eventRecord(completionEvent, launchStream);
+  if (result != flagcxSuccess)
+    return result;
   __atomic_store_n(&completionState, 1, __ATOMIC_RELEASE);
   return flagcxSuccess;
 }

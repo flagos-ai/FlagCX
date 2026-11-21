@@ -169,6 +169,16 @@ printf '[  SKIPPED ] FlagCXCollTest.SendRecv\n'
         self.assertNotIn("FLAGCX_CI_ILUVATAR_QUARANTINE", platform)
         self.assertNotIn("FLAGCX_CI_ILUVATAR_QUARANTINE", runner)
 
+    def test_privileged_container_preserves_runtime_device_layout(self):
+        import yaml
+        config = yaml.safe_load((ROOT / ".github/configs/iluvatar.yml").read_text())
+        self.assertIn("--privileged", config["docker_options"])
+        self.assertFalse(any(volume.split(":")[:2] == ["/dev", "/dev"]
+                             for volume in config["docker_volumes"]))
+        self.assertIn("/lib/modules:/lib/modules", config["docker_volumes"])
+        self.assertIn("/sys/class/infiniband:/sys/class/infiniband:ro",
+                      config["docker_volumes"])
+
     def test_timeout_does_not_hide_failures_or_prevent_later_cases(self):
         reason = timeout_wrapper_unsupported()
         if reason:
@@ -366,6 +376,37 @@ fi
             unrelated.terminate()
             child.wait()
             unrelated.wait()
+
+    def test_host_suite_debugger_attach_is_bounded(self):
+        reason = requires_proc()
+        if reason:
+            self.skipTest(reason)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "core_unit_tests"
+            shutil.copyfile(shutil.which("sleep"), binary)
+            binary.chmod(0o755)
+            debugger = root / "gdb"
+            debugger.write_text(
+                f"#!{sys.executable}\nimport time, sys\n"
+                f"open({str(root / 'attach')!r}, 'w').write(' '.join(sys.argv))\n"
+                "time.sleep(30)\n")
+            debugger.chmod(0o755)
+            child = subprocess.Popen([str(binary), "30"])
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(CI / "collect_process_stacks.py"),
+                     "--pid", str(child.pid), "--delay", "0"],
+                    env={**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"]},
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("gdb attach exceeded 5s", result.stdout)
+                self.assertIn(f"-p {child.pid}", (root / "attach").read_text())
+                self.assertIn("thread apply all bt", (root / "attach").read_text())
+            finally:
+                child.terminate()
+                child.wait()
 
 
 if __name__ == "__main__":

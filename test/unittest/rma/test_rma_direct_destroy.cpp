@@ -52,6 +52,23 @@ TEST_F(RmaDirectDestroyTest, StopsLiveWorkerBeforeTransportShutdown) {
   EXPECT_EQ(releases, 1);
 }
 
+TEST_F(RmaDirectDestroyTest, RetiredOperationErrorDoesNotLeakResources) {
+  ASSERT_NO_FATAL_FAILURE(start());
+  __atomic_store_n(&owner->rmaProxy->rmaError, 1, __ATOMIC_RELEASE);
+  EXPECT_EQ(flagcxHeteroDrainProducers(owner), flagcxRemoteError);
+  ASSERT_EQ(flagcxHeteroCommFinalize(owner), flagcxSuccess);
+  ASSERT_NE(owner->rmaProxy, nullptr);
+  EXPECT_EQ(owner->rmaProxy->rmaError, 1);
+  EXPECT_TRUE(owner->rmaProxy->stopComplete);
+  EXPECT_EQ(doneFrees + readyFrees, 0);
+  EXPECT_EQ(destroy(), flagcxSuccess);
+  EXPECT_EQ(unmaps, 2);
+  EXPECT_EQ(doneFrees, 1);
+  EXPECT_EQ(readyFrees, 1);
+  EXPECT_EQ(closes, 1);
+  EXPECT_EQ(releases, 1);
+}
+
 TEST_F(RmaDirectDestroyTest, UnmapFailurePreservesOwnerAndTransportForRetry) {
   ASSERT_NO_FATAL_FAILURE(start());
   unmapFailures = 1;

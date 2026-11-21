@@ -360,7 +360,14 @@ flagcxResult_t kunlunAdaptorIpcMemHandleFree(flagcxIpcMemHandle_t handle) {
 flagcxResult_t kunlunAdaptorLaunchHostFunc(flagcxStream_t stream,
                                            void (*fn)(void *), void *args) {
   if (stream != NULL) {
-    DEVCHECK(cudaLaunchHostFunc(stream->base, fn, args));
+    cudaError_t result = cudaLaunchHostFunc(stream->base, fn, args);
+    if (result == cudaErrorNotSupported)
+      return flagcxNotSupported;
+    if (result != cudaSuccess) {
+      WARN("KunlunXin host callback failed: native error %d (%s)", (int)result,
+           cudaGetErrorString(result));
+      return flagcxUnhandledDeviceError;
+    }
   }
   return flagcxSuccess;
 }

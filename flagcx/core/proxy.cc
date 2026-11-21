@@ -3373,19 +3373,8 @@ flagcxResult_t flagcxProxyFinalize(struct flagcxHeteroComm *comm) {
         return result;
     }
   }
-  for (int i = 0; i < comm->proxyState->kernelState.contextCount; i++) {
-    delete comm->proxyState->kernelState.workerStates[i];
-    comm->proxyState->kernelState.workerStates[i] = NULL;
-    flagcxFifo_t fifo = comm->proxyState->kernelState.fifos[i];
-    if (fifo != NULL) {
-      result = fifo->flagcxFifoDestroy();
-      if (result != flagcxSuccess)
-        return result;
-      delete fifo;
-      comm->proxyState->kernelState.fifos[i] = NULL;
-    }
-    comm->fifoBuffers[i] = NULL;
-  }
+  // Pinned host frees can synchronize unrelated device streams. The stopped
+  // worker/FIFO owners survive Finalize and are released by local Destroy.
 #endif
   result =
       flagcxProxyCleanupConnections(comm, flagcxTransportCleanupCloseImports);
@@ -3400,6 +3389,25 @@ flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm) {
   // every importer in the node, including ranks with no connections.
   if (comm->proxyState->initialized != 0)
     return flagcxInvalidUsage;
+#ifdef COMPILE_KERNEL_HOST
+  for (int i = 0; i < comm->proxyState->kernelState.contextCount; i++) {
+    if (comm->proxyState->kernelState.workers[i] != NULL)
+      return flagcxInvalidUsage;
+  }
+  for (int i = 0; i < comm->proxyState->kernelState.contextCount; i++) {
+    delete comm->proxyState->kernelState.workerStates[i];
+    comm->proxyState->kernelState.workerStates[i] = NULL;
+    flagcxFifo_t fifo = comm->proxyState->kernelState.fifos[i];
+    if (fifo != NULL) {
+      result = fifo->flagcxFifoDestroy();
+      if (result != flagcxSuccess)
+        return result;
+      delete fifo;
+      comm->proxyState->kernelState.fifos[i] = NULL;
+    }
+    comm->fifoBuffers[i] = NULL;
+  }
+#endif
   result = flagcxProxyCleanupConnections(
       comm, flagcxTransportCleanupReleaseResources);
   if (result != flagcxSuccess)

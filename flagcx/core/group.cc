@@ -85,9 +85,32 @@ void *flagcxAsyncJobMain(void *arg) {
 
 static int64_t p2pScheduleDisable = flagcxParamP2pScheduleDisable();
 
+typedef struct flagcxIntruQueue<struct flagcxTaskP2p, &flagcxTaskP2p::next>
+    flagcxGroupTaskQueue;
+static struct flagcxTaskP2p *groupTakeTask(flagcxGroupTaskQueue *queue,
+                                           struct flagcxTaskP2p **owned) {
+  struct flagcxTaskP2p *task = flagcxIntruQueueDequeue(queue);
+  task->next = *owned;
+  *owned = task;
+  return task;
+}
+static void groupForgetTask(struct flagcxTaskP2p **owned,
+                            struct flagcxTaskP2p *task) {
+  while (*owned != task)
+    owned = &(*owned)->next;
+  *owned = task->next;
+  task->next = NULL;
+}
+
 static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
   flagcxResult_t ret = flagcxSuccess;
-  // bool errorJobAbortFlag = false;
+#define GROUPCHECK(call)                                                       \
+  do {                                                                         \
+    ret = (call);                                                              \
+    if (ret != flagcxSuccess)                                                  \
+      goto fail;                                                               \
+  } while (0)
+  // A published proxy prefix needs a transport-completion boundary.
   struct flagcxGroupJob *gjob = (struct flagcxGroupJob *)job_;
   struct flagcxHeteroComm *groupCommHeadMain = *gjob->groupCommHeadPtr;
 
@@ -130,6 +153,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
   // temporary stored proxy ops in step order
   std::map<int, std::vector<std::pair<flagcxHeteroComm *, flagcxProxyOp *>>>
       proxyOps;
+  struct flagcxProxyOp *preparingOp = NULL;
+  struct flagcxTaskP2p *ownedTasks = NULL;
 
   if (groupCommPreconnectHeadMain != nullptr) {
     struct flagcxHeteroComm *comm = groupCommPreconnectHeadMain;
@@ -214,10 +239,10 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
         std::vector<flagcxTaskP2p *> recvTasks;
         while (!flagcxIntruQueueEmpty(&tasks->peers[peer].sendQueue))
           sendTasks.push_back(
-              flagcxIntruQueueDequeue(&tasks->peers[peer].sendQueue));
+              groupTakeTask(&tasks->peers[peer].sendQueue, &ownedTasks));
         while (!flagcxIntruQueueEmpty(&tasks->peers[peer].recvQueue))
           recvTasks.push_back(
-              flagcxIntruQueueDequeue(&tasks->peers[peer].recvQueue));
+              groupTakeTask(&tasks->peers[peer].recvQueue, &ownedTasks));
 
         for (size_t i = 0; i < sendTasks.size();) {
           bool matched = false;
@@ -227,7 +252,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 sendTasks[i]->channelId == recvTasks[j]->channelId) {
               if (sendTasks[i]->buff != recvTasks[j]->buff) {
                 flagcxProxyOp *op;
-                FLAGCXCHECK(flagcxNewProxyOp(&op));
+                GROUPCHECK(flagcxNewProxyOp(&op));
+                preparingOp = op;
                 op->pattern = flagcxPatternSend;
                 op->nbytes = sendTasks[i]->bytes;
                 op->sendbuff = (uint8_t *)sendTasks[i]->buff;
@@ -240,6 +266,10 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                                      .proxyConn.connection;
                 op->stream = sendTasks[i]->stream;
                 op->event = semaphore->getEvent();
+                if (op->event == NULL) {
+                  ret = flagcxSystemError;
+                  goto fail;
+                }
                 op->args.chunkSteps = 1; // single step
                 op->args.semaphore = semaphore;
                 op->args.opId = sendTasks[i]->opId == INT_MAX
@@ -250,12 +280,12 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                                     : sendTasks[i]->step;
                 semaphore->addCounter(op->args.opId);
                 defaultOpId++;
-                FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
+                GROUPCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
                 if (launchStream == nullptr) {
                   launchStream = op->stream;
                   launchEvent = op->event;
                 } else {
-                  FLAGCXCHECK(
+                  GROUPCHECK(
                       deviceAdaptor->streamWaitEvent(launchStream, op->event));
                 }
                 if (proxyOps.find(op->args.step) == proxyOps.end()) {
@@ -263,7 +293,10 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                       std::pair<flagcxHeteroComm *, flagcxProxyOp *>>();
                 }
                 proxyOps[op->args.step].push_back({comm, op});
+                preparingOp = NULL;
               }
+              groupForgetTask(&ownedTasks, sendTasks[i]);
+              groupForgetTask(&ownedTasks, recvTasks[j]);
               free(sendTasks[i]);
               free(recvTasks[j]);
               sendTasks.erase(sendTasks.begin() + i);
@@ -275,10 +308,14 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
           if (!matched)
             i++;
         }
-        for (auto *task : sendTasks)
+        for (auto *task : sendTasks) {
+          groupForgetTask(&ownedTasks, task);
           flagcxIntruQueueEnqueue(&tasks->peers[peer].sendQueue, task);
-        for (auto *task : recvTasks)
+        }
+        for (auto *task : recvTasks) {
+          groupForgetTask(&ownedTasks, task);
           flagcxIntruQueueEnqueue(&tasks->peers[peer].recvQueue, task);
+        }
       }
 
       // Round 1..nRanks-1: use p2pSchedule to pair recv/send with different
@@ -300,10 +337,11 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
           // Process one recv task (for IPC register)
           if (!flagcxIntruQueueEmpty(&tasks->peers[recvPeer].recvQueue)) {
             flagcxTaskP2p *p2p =
-                flagcxIntruQueueDequeue(&tasks->peers[recvPeer].recvQueue);
+                groupTakeTask(&tasks->peers[recvPeer].recvQueue, &ownedTasks);
             int peer = recvPeer;
             flagcxProxyOp *op;
-            FLAGCXCHECK(flagcxNewProxyOp(&op));
+            GROUPCHECK(flagcxNewProxyOp(&op));
+            preparingOp = op;
             op->pattern = flagcxPatternRecv;
             op->nbytes = p2p->bytes;
             op->recvbuff = (uint8_t *)p2p->buff;
@@ -320,7 +358,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                    comm->rank, peer, op->channelId);
               return flagcxInternalError;
             }
-            FLAGCXCHECK(flagcxTransportPrepareProxyOp(
+            GROUPCHECK(flagcxTransportPrepareProxyOp(
                 comm, op, p2p->buff, p2p->bytes, peer, p2p->dtype));
             op->args.semaphore = semaphore;
             op->args.opId =
@@ -332,15 +370,19 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                     ? (p2pScheduleDisable ? defaultStep : roundRecvStep)
                     : p2p->step;
             op->event = semaphore->getEvent();
+            if (op->event == NULL) {
+              ret = flagcxSystemError;
+              goto fail;
+            }
             semaphore->addCounter(op->args.opId);
             defaultOpId++;
             roundRecvStep++;
-            FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
+            GROUPCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
             if (launchStream == nullptr) {
               launchStream = op->stream;
               launchEvent = op->event;
             } else {
-              FLAGCXCHECK(
+              GROUPCHECK(
                   deviceAdaptor->streamWaitEvent(launchStream, op->event));
             }
             if (proxyOps.find(op->args.step) == proxyOps.end()) {
@@ -348,15 +390,18 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                   std::vector<std::pair<flagcxHeteroComm *, flagcxProxyOp *>>();
             }
             proxyOps[op->args.step].push_back({comm, op});
+            preparingOp = NULL;
+            groupForgetTask(&ownedTasks, p2p);
             free(p2p);
           }
           // Process one send task (for IPC lookup - after recv's register)
           if (!flagcxIntruQueueEmpty(&tasks->peers[sendPeer].sendQueue)) {
             flagcxTaskP2p *p2p =
-                flagcxIntruQueueDequeue(&tasks->peers[sendPeer].sendQueue);
+                groupTakeTask(&tasks->peers[sendPeer].sendQueue, &ownedTasks);
             int peer = sendPeer;
             flagcxProxyOp *op;
-            FLAGCXCHECK(flagcxNewProxyOp(&op));
+            GROUPCHECK(flagcxNewProxyOp(&op));
+            preparingOp = op;
             op->pattern = flagcxPatternSend;
             op->nbytes = p2p->bytes;
             op->recvbuff = (uint8_t *)p2p->buff;
@@ -374,7 +419,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                    comm->rank, peer, op->channelId);
               return flagcxInternalError;
             }
-            FLAGCXCHECK(flagcxTransportPrepareProxyOp(
+            GROUPCHECK(flagcxTransportPrepareProxyOp(
                 comm, op, p2p->buff, p2p->bytes, peer, p2p->dtype));
             op->args.semaphore = semaphore;
             op->args.opId = p2p->opId == INT_MAX
@@ -385,15 +430,19 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                     ? (p2pScheduleDisable ? defaultStep : roundSendStep)
                     : p2p->step;
             op->event = semaphore->getEvent();
+            if (op->event == NULL) {
+              ret = flagcxSystemError;
+              goto fail;
+            }
             semaphore->addCounter(op->args.opId);
             defaultOpId++;
             roundSendStep++;
-            FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
+            GROUPCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
             if (launchStream == nullptr) {
               launchStream = op->stream;
               launchEvent = op->event;
             } else {
-              FLAGCXCHECK(
+              GROUPCHECK(
                   deviceAdaptor->streamWaitEvent(launchStream, op->event));
             }
             if (proxyOps.find(op->args.step) == proxyOps.end()) {
@@ -401,6 +450,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                   std::vector<std::pair<flagcxHeteroComm *, flagcxProxyOp *>>();
             }
             proxyOps[op->args.step].push_back({comm, op});
+            preparingOp = NULL;
+            groupForgetTask(&ownedTasks, p2p);
             free(p2p);
           }
         }
@@ -412,8 +463,10 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
 
   // Save all proxy ops in step order
   for (auto it = proxyOps.begin(); it != proxyOps.end(); ++it) {
-    for (auto pair : it->second) {
-      FLAGCXCHECK(flagcxProxySaveOp(pair.first, pair.second));
+    for (auto &pair : it->second) {
+      gjob->completion.submitted = 1;
+      GROUPCHECK(flagcxProxySaveOp(pair.first, pair.second));
+      pair.second = NULL; // Ownership transferred to the proxy queue.
     }
   }
 
@@ -442,14 +495,16 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
         goto fail;
       }
     } else if (deviceAsyncKernel) {
-      FLAGCXCHECK(deviceAdaptor->launchDeviceFunc(
+      GROUPCHECK(deviceAdaptor->launchDeviceFunc(
           launchStream, deviceAsyncKernel, (void *)semaphore->getSignals()));
       // device semaphore need this event to signal completion
-      FLAGCXCHECK(deviceAdaptor->eventRecord(launchEvent, launchStream));
+      GROUPCHECK(deviceAdaptor->eventRecord(launchEvent, launchStream));
     } else {
-      FLAGCXCHECK(deviceAdaptor->launchHostFunc(launchStream, cpuAsyncKernel,
-                                                (void *)semaphore.get()));
+      GROUPCHECK(deviceAdaptor->launchHostFunc(launchStream, cpuAsyncKernel,
+                                               (void *)semaphore.get()));
     }
+    gjob->completion.stream = launchStream;
+    gjob->completion.ready = 1;
   }
 
   while (!flagcxIntruQueueEmpty(asyncJobsMain)) {
@@ -466,7 +521,17 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
 exit:
   return ret;
 fail:
+  while (ownedTasks != NULL) {
+    struct flagcxTaskP2p *task = ownedTasks;
+    ownedTasks = task->next;
+    free(task);
+  }
+  delete preparingOp;
+  for (auto &step : proxyOps)
+    for (auto &entry : step.second)
+      delete entry.second; // Unpublished suffix; queued prefix remains owned.
   goto exit;
+#undef GROUPCHECK
 }
 
 static flagcxResult_t groupCleanup(struct flagcxAsyncJob *job_) {
@@ -495,6 +560,14 @@ static flagcxResult_t groupCleanup(struct flagcxAsyncJob *job_) {
   while (groupCommHeadMain != nullptr) {
     struct flagcxHeteroComm *comm = groupCommHeadMain;
     struct flagcxHeteroComm *next = comm->groupNext;
+    if (comm->tasks.peers != NULL) {
+      for (int peer = 0; peer < comm->nRanks; peer++) {
+        while (!flagcxIntruQueueEmpty(&comm->tasks.peers[peer].sendQueue))
+          free(flagcxIntruQueueDequeue(&comm->tasks.peers[peer].sendQueue));
+        while (!flagcxIntruQueueEmpty(&comm->tasks.peers[peer].recvQueue))
+          free(flagcxIntruQueueDequeue(&comm->tasks.peers[peer].recvQueue));
+      }
+    }
     (void)flagcxGroupCommLeave(comm);
     groupCommHeadMain = next;
   }
@@ -512,6 +585,7 @@ static inline void groupResetJobState() {
 
 flagcxResult_t flagcxGroupEndInternal(bool useStreamValue) {
   flagcxResult_t ret = flagcxSuccess;
+  struct flagcxWorkGroupBoundary completion = {};
   if (flagcxGroupDepth <= 0)
     return flagcxInvalidUsage;
   flagcxGroupDepth--;
@@ -524,19 +598,17 @@ flagcxResult_t flagcxGroupEndInternal(bool useStreamValue) {
       flagcxGroupJobMain.useStreamValue = useStreamValue;
       flagcxGroupJobMain.initialized = true;
       flagcxGroupJobMainPtr = &flagcxGroupJobMain;
-      FLAGCXCHECKGOTO(groupLaunch(&flagcxGroupJobMainPtr->base), ret, fail);
+      ret = groupLaunch(&flagcxGroupJobMainPtr->base);
+      // Preserve the borrowed completion stream before resetting the job.
+      completion = flagcxGroupJobMain.completion;
+      if (ret != flagcxSuccess)
+        groupCleanup(&flagcxGroupJobMainPtr->base);
       groupResetJobState();
     }
+    // The group wait lives on one stream, after all operation readiness
+    // events. Every communicator owns its own marker on that actual boundary.
+    ret = flagcxWorkGroupCompleteAtBoundary(flagcxWorkHeteroGroup, ret,
+                                            &completion);
   }
-
-exit:
-  // UniRunner also ends groups directly with useStreamValue=true. Flush at
-  // this actual submission boundary, before invocation streams can be freed.
-  if (flagcxGroupDepth == 0)
-    ret = flagcxWorkGroupComplete(flagcxWorkHeteroGroup, ret);
   return ret;
-fail:
-  groupCleanup(&flagcxGroupJobMainPtr->base);
-  groupResetJobState();
-  goto exit;
 }

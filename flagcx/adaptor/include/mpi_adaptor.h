@@ -14,90 +14,56 @@
 #include <string>
 #include <vector>
 
-#define GENERATE_MPI_TYPES(type, func, args...)                                \
-  switch (type) {                                                              \
-    case flagcxChar:                                                           \
-      func<char, MPI_CHAR>(args);                                              \
-      break;                                                                   \
-    case flagcxUint8:                                                          \
-      func<uint8_t, MPI_UNSIGNED_CHAR>(args);                                  \
-      break;                                                                   \
-    case flagcxInt:                                                            \
-      func<int, MPI_INT>(args);                                                \
-      break;                                                                   \
-    case flagcxUint32:                                                         \
-      func<uint32_t, MPI_UNSIGNED>(args);                                      \
-      break;                                                                   \
-    case flagcxInt64:                                                          \
-      func<int64_t, MPI_LONG_LONG>(args);                                      \
-      break;                                                                   \
-    case flagcxUint64:                                                         \
-      func<uint64_t, MPI_UNSIGNED_LONG_LONG>(args);                            \
-      break;                                                                   \
-    case flagcxFloat:                                                          \
-      func<float, MPI_FLOAT>(args);                                            \
-      break;                                                                   \
-    case flagcxDouble:                                                         \
-      func<double, MPI_DOUBLE>(args);                                          \
-      break;                                                                   \
-    case flagcxHalf:                                                           \
-      func<uint16_t, MPI_UINT16_T>(args);                                      \
-      break;                                                                   \
-    case flagcxBfloat16:                                                       \
-      printf("Invalid data type");                                             \
-      break;                                                                   \
-    default:                                                                   \
-      printf("Invalid data type");                                             \
-      break;                                                                   \
-  }
-
-#define GENERATE_MPI_REDUCTION_OPS(op, func, args...)                          \
-  switch (op) {                                                                \
-    case flagcxSum:                                                            \
-      func<MPI_SUM>(args);                                                     \
-      break;                                                                   \
-    case flagcxProd:                                                           \
-      func<MPI_PROD>(args);                                                    \
-      break;                                                                   \
-    case flagcxMax:                                                            \
-      func<MPI_MAX>(args);                                                     \
-      break;                                                                   \
-    case flagcxMin:                                                            \
-      func<MPI_MIN>(args);                                                     \
-      break;                                                                   \
-    case flagcxAvg:                                                            \
-      printf("MPI backend does not support flagcxAvg\n");                      \
-      break;                                                                   \
-    default:                                                                   \
-      break;                                                                   \
-  }
-
-template <typename T, MPI_Datatype mpi_type>
-void getMpiDataType(MPI_Datatype &result) {
-  result = mpi_type;
-}
-
-template <MPI_Op mpi_op>
-void getMpiOp(MPI_Op &result) {
-  result = mpi_op;
-}
-
+// Predefined handles can be pointers (OpenMPI) or integers (MPICH). Keep
+// them as runtime values instead of non-type C++ template arguments.
 inline MPI_Datatype getFlagcxToMpiDataType(flagcxDataType_t datatype) {
-  MPI_Datatype result = MPI_DATATYPE_NULL;
-  GENERATE_MPI_TYPES(datatype, getMpiDataType, result);
-  return result;
+  switch (datatype) {
+    case flagcxChar:
+      return MPI_CHAR;
+    case flagcxUint8:
+      return MPI_UNSIGNED_CHAR;
+    case flagcxInt:
+      return MPI_INT;
+    case flagcxUint32:
+      return MPI_UNSIGNED;
+    case flagcxInt64:
+      return MPI_LONG_LONG;
+    case flagcxUint64:
+      return MPI_UNSIGNED_LONG_LONG;
+    case flagcxFloat:
+      return MPI_FLOAT;
+    case flagcxDouble:
+      return MPI_DOUBLE;
+    case flagcxHalf:
+      return MPI_UINT16_T;
+    default:
+      return MPI_DATATYPE_NULL;
+  }
 }
 
 inline MPI_Op getFlagcxToMpiOp(flagcxRedOp_t op) {
-  MPI_Op result = MPI_OP_NULL;
-  GENERATE_MPI_REDUCTION_OPS(op, getMpiOp, result);
-  return result;
+  switch (op) {
+    case flagcxSum:
+      return MPI_SUM;
+    case flagcxProd:
+      return MPI_PROD;
+    case flagcxMax:
+      return MPI_MAX;
+    case flagcxMin:
+      return MPI_MIN;
+    default:
+      return MPI_OP_NULL;
+  }
 }
 
-template <typename T, MPI_Datatype mpi_type>
-void callMpiFunction(int func_type, const void *sendbuf, void *recvbuf,
-                     size_t count, MPI_Op op, int root, MPI_Comm comm,
-                     int *result) {
+inline void callMpi(int func_type, flagcxDataType_t datatype,
+                    const void *sendbuf, void *recvbuf, size_t count, MPI_Op op,
+                    int root, MPI_Comm comm, int *result) {
+  MPI_Datatype mpi_type = getFlagcxToMpiDataType(datatype);
+  if (mpi_type == MPI_DATATYPE_NULL) {
+    *result = MPI_ERR_TYPE;
+    return;
+  }
   switch (func_type) {
     case 0: // ALLREDUCE
       *result = MPI_Allreduce(sendbuf, recvbuf, count, mpi_type, op, comm);
@@ -133,11 +99,6 @@ void callMpiFunction(int func_type, const void *sendbuf, void *recvbuf,
                                    mpi_type, op, comm);
     } break;
   }
-}
-
-template <typename... Args>
-void callMpi(int func_type, flagcxDataType_t datatype, Args... args) {
-  GENERATE_MPI_TYPES(datatype, callMpiFunction, func_type, args...);
 }
 
 #define CALL_MPI_ALLREDUCE(datatype, sendbuf, recvbuf, count, op, comm,        \
@@ -279,6 +240,7 @@ inline bool flagcxMpiContext::validateMpiEnvironment() {
 
 #define MPI_ADAPTOR_MAX_STAGED_BUFFER_SIZE (8 * 1024 * 1024) // 8MB
 struct stagedBuffer {
+  flagcxInnerComm_t owner;
   int offset;
   int size;
   void *buffer;

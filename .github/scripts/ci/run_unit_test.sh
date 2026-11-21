@@ -145,6 +145,8 @@ fi
 export FLAGCX_DEBUG=INFO
 export FLAGCX_DEBUG_SUBSYS=ALL
 export FLAGCX_VMM_ENABLE=0
+# Capture a bounded live stack while a stalled test still owns its threads.
+export FLAGCX_CI_TEST_DIAGNOSTICS_AFTER=${FLAGCX_CI_TEST_DIAGNOSTICS_AFTER:-60}
 if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == iluvatar &&
       ( "$SUITE" == adaptor || "$SUITE" == runner ) ]]; then
   export FLAGCX_DEBUG=TRACE
@@ -546,7 +548,7 @@ run_suite() {
       local unit_status=0
       local ibuc_status=0
       local ipc_status=0
-      local geometry_status=0
+      local geometry_status=0 host_cleanup_status=0
       local gpu_result_xml="$suite_dir/build/adaptor_gpu_results.xml"
       local check_gpu_tests=${FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS:-1}
       # Each platform declares its own GPU MR capability in set_env; this
@@ -723,9 +725,10 @@ run_suite() {
           "$suite_dir/build/bin/adaptor_mpi_tests" \
           --gtest_filter="$geometry_filter" || geometry_status=$?
       fi
+      bash "$PROJECT_ROOT/test/script/host_mpi_cleanup_test.sh" || host_cleanup_status=$?
       if ((unit_status != 0 || ibuc_status != 0 || ipc_status != 0 ||
-           geometry_status != 0)); then
-        echo "Adaptor failures: IBRC=$unit_status IBUC=$ibuc_status IPC=$ipc_status geometry=$geometry_status" >&2
+           geometry_status != 0 || host_cleanup_status != 0)); then
+        echo "Adaptor failures: IBRC=$unit_status IBUC=$ibuc_status IPC=$ipc_status geometry=$geometry_status host_cleanup=$host_cleanup_status" >&2
         return 1
       fi
       ;;

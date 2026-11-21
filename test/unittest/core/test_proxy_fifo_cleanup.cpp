@@ -41,7 +41,7 @@ TEST_F(ProxyFifoCleanupTest, BufferOwnerSurvivesPendingAndFailedFree) {
 }
 
 #ifdef COMPILE_KERNEL_HOST
-TEST_F(ProxyFifoCleanupTest, FinalizeRetainsFifoAndAliasUntilReleaseSucceeds) {
+TEST_F(ProxyFifoCleanupTest, FinalizeDefersFifoReleaseToLocalDestroy) {
   flagcxHeteroComm comm = {};
   flagcxProxyState proxy = {};
   comm.proxyState = &proxy;
@@ -50,12 +50,14 @@ TEST_F(ProxyFifoCleanupTest, FinalizeRetainsFifoAndAliasUntilReleaseSucceeds) {
   fifo->buffer = (uint64_t *)0x1000;
   proxy.kernelState.fifos[0] = fifo;
   comm.fifoBuffers[0] = fifo->buffer;
-  ASSERT_EQ(flagcxProxyFinalize(&comm), flagcxInProgress);
+  ASSERT_EQ(flagcxProxyFinalize(&comm), flagcxSuccess);
+  EXPECT_EQ(frees, 0);
+  ASSERT_EQ(flagcxProxyDestroy(&comm), flagcxInProgress);
   EXPECT_EQ(proxy.kernelState.fifos[0], fifo);
   EXPECT_EQ(fifo->buffer, (uint64_t *)0x1000);
   EXPECT_EQ(comm.fifoBuffers[0], (void *)0x1000);
   freeResult = flagcxSuccess;
-  EXPECT_EQ(flagcxProxyFinalize(&comm), flagcxSuccess);
+  EXPECT_EQ(flagcxProxyDestroy(&comm), flagcxSuccess);
   EXPECT_EQ(proxy.kernelState.fifos[0], nullptr);
   EXPECT_EQ(comm.fifoBuffers[0], nullptr);
   EXPECT_EQ(flagcxProxyFinalize(&comm), flagcxSuccess);

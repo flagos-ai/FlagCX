@@ -233,11 +233,15 @@ flagcxResult_t flagcxDeviceHandleFree(flagcxDeviceHandle_t devHandle) {
   struct flagcxDeviceHandleOwner *owner =
       (struct flagcxDeviceHandleOwner *)devHandle;
   if (owner->cclRefHeld) {
-    FLAGCXCHECK(flagcxCCLAdaptorPluginFinalize());
+    flagcxResult_t result = flagcxCCLAdaptorPluginFinalize();
+    if (result != flagcxSuccess)
+      return result;
     owner->cclRefHeld = 0;
   }
   if (owner->deviceRefHeld) {
-    FLAGCXCHECK(flagcxDeviceAdaptorPluginFinalize());
+    flagcxResult_t result = flagcxDeviceAdaptorPluginFinalize();
+    if (result != flagcxSuccess)
+      return result;
     owner->deviceRefHeld = 0;
   }
   free(owner);
@@ -250,7 +254,9 @@ flagcxResult_t flagcxHandleInit(flagcxHandlerGroup_t *handler) {
   flagcxResult_t res = flagcxSuccess;
   (*handler) = NULL;
   FLAGCXCHECKGOTO(flagcxCalloc(handler, 1), res, fail);
-  FLAGCXCHECKGOTO(flagcxDeviceHandleInit(&(*handler)->devHandle), res, fail);
+  res = flagcxDeviceHandleInit(&(*handler)->devHandle);
+  if (res != flagcxSuccess)
+    goto fail;
   return flagcxSuccess;
 
 fail:
@@ -267,7 +273,9 @@ fail:
 
 flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
   if (handler != NULL) {
-    FLAGCXCHECK(flagcxDeviceHandleFree(handler->devHandle));
+    flagcxResult_t result = flagcxDeviceHandleFree(handler->devHandle);
+    if (result != flagcxSuccess)
+      return result;
     handler->devHandle = NULL;
     handler->uniqueId = NULL;
     handler->comm = NULL;
@@ -4265,8 +4273,19 @@ static flagcxResult_t flagcxCommDestroyHomoResources(flagcxComm_t comm) {
   for (unsigned int i = 0; i < count; i++) {
     flagcxInnerComm_t inner = flagcxCommVendorAt(comm, i);
     if (inner != NULL) {
-      FLAGCXCHECK(globalRegPool.releaseOwnerReferences(inner));
-      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(inner));
+      flagcxResult_t ownerResult = globalRegPool.releaseOwnerReferences(inner);
+      if (ownerResult != flagcxSuccess)
+        return ownerResult;
+      INFO(FLAGCX_INIT,
+           "Lifecycle comm=%p rank=%d native-destroy index=%u begin", comm,
+           comm->rank, i);
+      flagcxResult_t result =
+          cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(inner);
+      INFO(FLAGCX_INIT,
+           "Lifecycle comm=%p rank=%d native-destroy index=%u end result=%d",
+           comm, comm->rank, i, (int)result);
+      if (result != flagcxSuccess)
+        return result;
       flagcxCommClearVendorAliases(comm, inner);
     }
   }
@@ -4276,8 +4295,11 @@ static flagcxResult_t flagcxCommDestroyHomoResources(flagcxComm_t comm) {
 static flagcxResult_t flagcxCommCloseNativeRegistrations(flagcxComm_t comm) {
   for (unsigned int i = 0; i < flagcxCommVendorCount(comm); i++) {
     flagcxInnerComm_t inner = flagcxCommVendorAt(comm, i);
-    if (inner != NULL)
-      FLAGCXCHECK(globalRegPool.removeAllHomoHandles(inner));
+    if (inner != NULL) {
+      flagcxResult_t result = globalRegPool.removeAllHomoHandles(inner);
+      if (result != flagcxSuccess)
+        return result;
+    }
   }
   return flagcxSuccess;
 }
@@ -4314,7 +4336,13 @@ static flagcxResult_t flagcxCommFinalizeVendorOne(flagcxComm_t comm,
   if (!state->vendorFinalizeStarted) {
     if (adaptor == NULL || adaptor->commFinalize == NULL)
       return flagcxNotSupported;
+    INFO(FLAGCX_INIT,
+         "Lifecycle comm=%p rank=%d native-finalize index=%u begin", comm,
+         comm->rank, index);
     result = adaptor->commFinalize(inner);
+    INFO(FLAGCX_INIT,
+         "Lifecycle comm=%p rank=%d native-finalize index=%u end result=%d",
+         comm, comm->rank, index, (int)result);
     if (result != flagcxSuccess && result != flagcxInProgress)
       return result;
     state->vendorFinalizeStarted = 1;
@@ -4396,6 +4424,9 @@ flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
         status = flagcxSuccess;
       local = status == flagcxSuccess ? ready : status;
     }
+    INFO(FLAGCX_INIT,
+         "Lifecycle comm=%p rank=%d finalize phase=%d local begin cached=%d",
+         comm, comm->rank, phase, !needsLocal);
     if (local == flagcxSuccess && needsLocal) {
       switch (state->commonPhase) {
         case flagcxFinalizeDrain:
@@ -4428,6 +4459,9 @@ flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
           break;
       }
     }
+    INFO(FLAGCX_INIT,
+         "Lifecycle comm=%p rank=%d finalize phase=%d local end result=%d",
+         comm, comm->rank, phase, (int)local);
     // Preserve the pre-existing cross-node NET relay rendezvous. Converge
     // drain failures before it so no node enters a barrier its peer skipped.
     // IPC closure below uses only intra-node agreement.
@@ -4445,6 +4479,9 @@ flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
     if (local == flagcxSuccess && needsLocal)
       state->localDoneMask |= 1u << phase;
     flagcxResult_t common = local;
+    INFO(FLAGCX_INIT,
+         "Lifecycle comm=%p rank=%d finalize phase=%d agreement begin", comm,
+         comm->rank, phase);
     if (comm->nativeFinalizeScope == flagcxCclFinalizeWorld &&
         comm->nranks > 1) {
       result = flagcxConvergeBootstrapStatus(comm, local, &common);
@@ -4458,6 +4495,9 @@ flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
         break;
     }
     result = common;
+    INFO(FLAGCX_INIT,
+         "Lifecycle comm=%p rank=%d finalize phase=%d agreement end result=%d",
+         comm, comm->rank, phase, (int)result);
     if (result != flagcxSuccess)
       break;
     state->commonPhase = (flagcxFinalizePhase)(phase + 1);
@@ -4489,7 +4529,9 @@ static flagcxResult_t flagcxCommReleaseLocalResources(flagcxComm_t comm) {
     comm->destroyPhase = flagcxDestroyVendors;
   }
   if (comm->destroyPhase == flagcxDestroyVendors) {
-    FLAGCXCHECK(flagcxCommDestroyHomoResources(comm));
+    flagcxResult_t result = flagcxCommDestroyHomoResources(comm);
+    if (result != flagcxSuccess)
+      return result;
     comm->destroyPhase = flagcxDestroyHetero;
   }
   if (comm->destroyPhase == flagcxDestroyHetero) {
@@ -4507,8 +4549,10 @@ static flagcxResult_t flagcxCommReleaseLocalResources(flagcxComm_t comm) {
   }
   if (comm->destroyPhase == flagcxDestroyHost) {
     if (comm->hostComm != NULL) {
-      FLAGCXCHECK(
-          cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->hostComm));
+      flagcxResult_t result =
+          cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->hostComm);
+      if (result != flagcxSuccess)
+        return result;
       comm->hostComm = NULL;
     }
     comm->destroyPhase = flagcxDestroyBootstrap;
@@ -4530,11 +4574,15 @@ static flagcxResult_t flagcxCommReleaseLocalResources(flagcxComm_t comm) {
     comm->destroyPhase = flagcxDestroyCclPlugin;
   }
   if (comm->destroyPhase == flagcxDestroyCclPlugin) {
-    FLAGCXCHECK(flagcxCCLAdaptorPluginFinalize());
+    flagcxResult_t result = flagcxCCLAdaptorPluginFinalize();
+    if (result != flagcxSuccess)
+      return result;
     comm->destroyPhase = flagcxDestroyDevicePlugin;
   }
   if (comm->destroyPhase == flagcxDestroyDevicePlugin) {
-    FLAGCXCHECK(flagcxDeviceAdaptorPluginFinalize());
+    flagcxResult_t result = flagcxDeviceAdaptorPluginFinalize();
+    if (result != flagcxSuccess)
+      return result;
     comm->destroyPhase = flagcxDestroyComplete;
   }
   free(comm->clusterIds);
@@ -4569,7 +4617,15 @@ static flagcxResult_t flagcxCommReleaseLocalResources(flagcxComm_t comm) {
 flagcxResult_t flagcxCommDestroyLocal(flagcxComm_t comm) {
   if (comm == NULL || comm->finalizeState.commonPhase != flagcxFinalizeComplete)
     return flagcxInvalidUsage;
-  return flagcxCommReleaseLocalResources(comm);
+  // The owner can be freed below. Preserve its address/rank for diagnostics.
+  void *owner = comm;
+  int rank = comm->rank;
+  INFO(FLAGCX_INIT, "Lifecycle comm=%p rank=%d local-destroy begin phase=%d",
+       owner, rank, (int)comm->destroyPhase);
+  flagcxResult_t result = flagcxCommReleaseLocalResources(comm);
+  INFO(FLAGCX_INIT, "Lifecycle comm=%p rank=%d local-destroy end result=%d",
+       owner, rank, (int)result);
+  return result;
 }
 
 static flagcxResult_t flagcxCommRollbackInit(flagcxComm_t comm) {

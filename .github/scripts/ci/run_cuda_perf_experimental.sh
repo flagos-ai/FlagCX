@@ -60,9 +60,10 @@ FLAGCX_CI_MPI_LABEL='CUDA experimental UniRunner IPC lifecycle' \
     "${cuda_experimental_runner_env[@]}" -x FLAGCX_UNIRUNNER_ALGO=2 \
     bash "$project_root/.github/scripts/ci/run_gtest_rank_xml.sh" \
     "$lifecycle_xml" "$cuda_experimental_runner" \
-    --gtest_filter=FlagCXCollTest.UniRunnerIpcFinalizeThenRankLocalDestroy
+    --gtest_filter=FlagCXCollTest.UniRunnerIpcFinalizeThenRankLocalDestroy:FlagCXCollTest.GroupedCommunicatorsFinalizeTheNonLaunchStreamFirst
 python3 "$project_root/.github/scripts/ci/check_required_gtests.py" \
   --case FlagCXCollTest.UniRunnerIpcFinalizeThenRankLocalDestroy \
+  --case FlagCXCollTest.GroupedCommunicatorsFinalizeTheNonLaunchStreamFirst \
   "$lifecycle_xml/rank-0.xml" "$lifecycle_xml/rank-1.xml" \
   "$lifecycle_xml/rank-2.xml" "$lifecycle_xml/rank-3.xml"
 

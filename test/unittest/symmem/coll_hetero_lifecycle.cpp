@@ -17,6 +17,7 @@ protected:
   flagcxResult_t importResult = flagcxSuccess, fifoResult = flagcxSuccess;
   struct Fence {
     bool ready;
+    flagcxStream_t stream = nullptr;
   };
   int waitFailures = 0, workWaits = 0, eventsCreated = 0, eventsFreed = 0;
   std::vector<int> localRanks;
@@ -45,11 +46,15 @@ protected:
       active->eventsCreated++;
       return flagcxSuccess;
     };
-    device.eventRecord = [](flagcxEvent_t, flagcxStream_t) {
+    device.eventRecord = [](flagcxEvent_t event, flagcxStream_t stream) {
+      ((Fence *)event)->stream = stream;
       return flagcxSuccess;
     };
     device.eventQuery = [](flagcxEvent_t event) {
-      return ((Fence *)event)->ready ? flagcxSuccess : flagcxInProgress;
+      auto *fence = (Fence *)event;
+      bool ready = fence->stream != nullptr ? ((Fence *)fence->stream)->ready
+                                            : fence->ready;
+      return ready ? flagcxSuccess : flagcxInProgress;
     };
     device.eventSynchronize = [](flagcxEvent_t event) {
       active->workWaits++;
@@ -215,6 +220,25 @@ TEST_F(HeteroFinalizeMpi, PendingWorkKeepsDestroyOwnerUntilCompletion) {
   ((Fence *)pending->event)->ready = true;
   ASSERT_EQ(flagcxHeteroCommFinalize(owner), flagcxSuccess);
   destroyInRankOrder();
+}
+
+TEST_F(HeteroFinalizeMpi, FailedGroupPrefixConvergesBeforeImportClosure) {
+  flagcxWorkRecord *record = nullptr;
+  ASSERT_EQ(flagcxWorkPrepare(&owner->submittedWork, nullptr, 0, &record),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxWorkFinish(record, nullptr, flagcxSuccess,
+                             flagcxWorkNativeGroup, 1),
+            flagcxSuccess);
+  EXPECT_EQ(flagcxWorkGroupComplete(flagcxWorkNativeGroup, flagcxRemoteError),
+            flagcxRemoteError);
+  ((Fence *)record->event)->ready = rank != 1;
+  EXPECT_EQ(flagcxHeteroCommFinalize(owner), flagcxInProgress);
+  EXPECT_EQ(importCloses + fifoFrees, 0);
+  EXPECT_FALSE(owner->finalizeState.importsClosedConfirmed);
+  ((Fence *)record->event)->ready = true;
+  ASSERT_EQ(flagcxHeteroCommFinalize(owner), flagcxSuccess);
+  destroyInRankOrder();
+  EXPECT_EQ(eventsCreated, eventsFreed);
 }
 
 TEST_F(HeteroFinalizeMpi, ProxyWorkWaitConvergesAndLocalReleaseCanRetry) {
@@ -385,3 +409,33 @@ TEST_F(HeteroFinalizeMpi, RelayCloseFailureKeepsEveryServiceAliveUntilRetry) {
 }
 
 } // namespace
+
+TEST_F(HeteroFinalizeMpi, GroupCompletionStreamProtectsNonLaunchCommunicator) {
+  Fence original = {true}, completion = {rank != 1};
+  flagcxWorkTracker other = {};
+  flagcxWorkRecord *first = nullptr, *second = nullptr;
+  ASSERT_EQ(flagcxWorkPrepare(&owner->submittedWork, (flagcxStream_t)&original,
+                              0, &first),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxWorkPrepare(&other, (flagcxStream_t)&completion, 0, &second),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxWorkFinish(first, (flagcxStream_t)&original, flagcxSuccess,
+                             flagcxWorkHeteroGroup, 1),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxWorkFinish(second, (flagcxStream_t)&completion, flagcxSuccess,
+                             flagcxWorkHeteroGroup, 1),
+            flagcxSuccess);
+  flagcxWorkGroupBoundary boundary = {(flagcxStream_t)&completion, 1, 1};
+  ASSERT_EQ(flagcxWorkGroupCompleteAtBoundary(flagcxWorkHeteroGroup,
+                                              flagcxSuccess, &boundary),
+            flagcxSuccess);
+  EXPECT_EQ(((Fence *)first->event)->stream, (flagcxStream_t)&completion);
+  EXPECT_EQ(flagcxHeteroCommFinalize(owner), flagcxInProgress);
+  EXPECT_EQ(importCloses + fifoFrees, 0);
+  EXPECT_FALSE(owner->finalizeState.importsClosedConfirmed);
+  completion.ready = true;
+  ASSERT_EQ(flagcxHeteroCommFinalize(owner), flagcxSuccess);
+  destroyInRankOrder();
+  EXPECT_EQ(flagcxWorkWait(&other), flagcxSuccess);
+  EXPECT_EQ(flagcxWorkRelease(&other), flagcxSuccess);
+}

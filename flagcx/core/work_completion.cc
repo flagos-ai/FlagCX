@@ -157,9 +157,21 @@ flagcxResult_t flagcxWorkCancel(struct flagcxWorkRecord *record) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t workRecord(struct flagcxWorkRecord *record,
-                                 flagcxResult_t groupResult) {
-  flagcxResult_t result = groupResult;
+static flagcxResult_t
+workRecord(struct flagcxWorkRecord *record, flagcxResult_t submission,
+           const struct flagcxWorkGroupBoundary *boundary) {
+  // A terminal operation error does not invalidate the submitted prefix's
+  // completion fence. Pending submission can still enqueue work after this
+  // call, so it cannot establish a completion boundary yet.
+  flagcxResult_t result =
+      submission == flagcxInProgress ? flagcxInProgress : flagcxSuccess;
+  flagcxStream_t completionStream = record->stream;
+  if (boundary != NULL && boundary->submitted) {
+    if (!boundary->ready)
+      result = submission != flagcxSuccess ? submission : flagcxInternalError;
+    else
+      completionStream = boundary->stream;
+  }
   flagcxStreamCaptureStatus_t captureStatus = flagcxStreamCaptureInvalidated;
   if (result == flagcxSuccess) {
     result =
@@ -167,8 +179,18 @@ static flagcxResult_t workRecord(struct flagcxWorkRecord *record,
     if (result == flagcxSuccess && captureStatus != record->captureStatus)
       result = flagcxInvalidUsage;
   }
+  if (result == flagcxSuccess && completionStream != record->stream) {
+    flagcxStreamCaptureStatus_t completionCapture =
+        flagcxStreamCaptureInvalidated;
+    result = deviceAdaptor->streamGetCaptureStatus(completionStream,
+                                                   &completionCapture);
+    if (result == flagcxSuccess &&
+        (captureStatus != flagcxStreamCaptureNone ||
+         completionCapture != flagcxStreamCaptureNone))
+      result = flagcxInvalidUsage;
+  }
   if (result == flagcxSuccess && captureStatus == flagcxStreamCaptureNone)
-    result = deviceAdaptor->eventRecord(record->event, record->stream);
+    result = deviceAdaptor->eventRecord(record->event, completionStream);
   pthread_mutex_lock(&record->owner->mutex);
   record->state = result != flagcxSuccess ? flagcxWorkUncertain
                   : captureStatus == flagcxStreamCaptureActive
@@ -197,12 +219,18 @@ flagcxResult_t flagcxWorkFinish(struct flagcxWorkRecord *record,
   }
   // A failed call may still have queued a successful prefix. Fence it at the
   // original boundary rather than discarding its ownership record.
-  flagcxResult_t recorded = workRecord(record, flagcxSuccess);
+  flagcxResult_t recorded = workRecord(record, result, NULL);
   return result != flagcxSuccess ? result : recorded;
 }
 
 flagcxResult_t flagcxWorkGroupComplete(enum flagcxWorkGroupDomain domain,
                                        flagcxResult_t result) {
+  return flagcxWorkGroupCompleteAtBoundary(domain, result, NULL);
+}
+
+flagcxResult_t flagcxWorkGroupCompleteAtBoundary(
+    enum flagcxWorkGroupDomain domain, flagcxResult_t result,
+    const struct flagcxWorkGroupBoundary *boundary) {
   struct flagcxWorkRecord *records = pendingWork[domain];
   pendingWork[domain] = NULL;
   flagcxResult_t first = result;
@@ -210,7 +238,7 @@ flagcxResult_t flagcxWorkGroupComplete(enum flagcxWorkGroupDomain domain,
     struct flagcxWorkRecord *record = records;
     records = record->groupNext;
     record->groupNext = NULL;
-    flagcxResult_t recorded = workRecord(record, result);
+    flagcxResult_t recorded = workRecord(record, result, boundary);
     if (first == flagcxSuccess)
       first = recorded;
   }

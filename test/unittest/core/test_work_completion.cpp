@@ -107,14 +107,15 @@ TEST_F(WorkCompletionTest, PartialNativeCreateFailureLeavesNoInvalidEvent) {
   EXPECT_EQ(wrappersAllocated, wrappersFreed);
 }
 
-TEST_F(WorkCompletionTest, FailedNativeGroupLeavesUncertainOwner) {
+TEST_F(WorkCompletionTest, FailedNativeGroupRetainsCompletionFence) {
   auto *record = prepare();
   EXPECT_EQ(finish(record, &stream, flagcxSuccess, 1), flagcxSuccess);
   EXPECT_EQ(recorded, 0);
   EXPECT_EQ(flagcxWorkGroupComplete(flagcxWorkNativeGroup, flagcxRemoteError),
             flagcxRemoteError);
-  EXPECT_EQ(flagcxWorkWait(&tracker), flagcxRemoteError);
-  EXPECT_EQ(recorded, 0);
+  EXPECT_EQ(record->state, flagcxWorkRecorded);
+  EXPECT_EQ(flagcxWorkWait(&tracker), flagcxSuccess);
+  EXPECT_EQ(recorded, 1);
 }
 
 TEST_F(WorkCompletionTest,
@@ -272,4 +273,40 @@ TEST_F(WorkCompletionTest, PublicNativeCaptureGroupsDoNotRecordCapturedEvents) {
   stream.capture = flagcxStreamCaptureNone;
   EXPECT_EQ(flagcxWorkWait(&comm.submittedWork), flagcxSuccess);
   releaseFake(&comm.submittedWork);
+}
+
+TEST_F(WorkCompletionTest, FailedGroupWaitsForSubmittedPrefixBeforeRelease) {
+  auto *record = prepare();
+  stream.submitted = 1;
+  ASSERT_EQ(finish(record, &stream, flagcxSuccess, 1), flagcxSuccess);
+  EXPECT_EQ(flagcxWorkGroupComplete(flagcxWorkNativeGroup, flagcxRemoteError),
+            flagcxRemoteError);
+  EXPECT_EQ(flagcxWorkWait(&tracker), flagcxInProgress);
+  EXPECT_EQ(flagcxWorkRelease(&tracker), flagcxInvalidUsage);
+  stream.completed = 1;
+  EXPECT_EQ(flagcxWorkWait(&tracker), flagcxSuccess);
+  EXPECT_EQ(flagcxWorkRelease(&tracker), flagcxSuccess);
+}
+
+TEST_F(WorkCompletionTest, FailedGroupCannotHideBoundaryRecordFailure) {
+  auto *record = prepare();
+  ASSERT_EQ(finish(record, &stream, flagcxSuccess, 1), flagcxSuccess);
+  recordFailures = 1;
+  EXPECT_EQ(flagcxWorkGroupComplete(flagcxWorkNativeGroup, flagcxSystemError),
+            flagcxSystemError);
+  EXPECT_EQ(record->state, flagcxWorkUncertain);
+  EXPECT_EQ(flagcxWorkWait(&tracker), flagcxRemoteError);
+}
+
+TEST_F(WorkCompletionTest, PendingGroupCannotFenceWorkThatMayLaunchLater) {
+  auto *record = prepare();
+  ASSERT_EQ(flagcxWorkFinish(record, (flagcxStream_t)&stream, flagcxSuccess,
+                             flagcxWorkNativeGroup, 1),
+            flagcxSuccess);
+  EXPECT_EQ(flagcxWorkGroupComplete(flagcxWorkNativeGroup, flagcxInProgress),
+            flagcxInProgress);
+  EXPECT_EQ(recorded, 0);
+  EXPECT_EQ(record->state, flagcxWorkUncertain);
+  EXPECT_EQ(flagcxWorkWait(&tracker), flagcxInProgress);
+  EXPECT_EQ(flagcxWorkRelease(&tracker), flagcxInvalidUsage);
 }

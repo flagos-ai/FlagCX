@@ -24,6 +24,55 @@ def load_kunlunxin_ignore_config():
 
 
 class KunlunXinUnitDispatchTest(unittest.TestCase):
+    def test_host_callback_distinguishes_unsupported_from_device_failure(self):
+        compiler = shutil.which("g++") or shutil.which("clang++")
+        if compiler is None:
+            self.fail("A host C++ compiler is required for adaptor contract tests")
+        source = (REPO_ROOT / "flagcx/adaptor/device/kunlunxin_adaptor.cc").read_text()
+        function = source.split("flagcxResult_t kunlunAdaptorLaunchHostFunc", 1)[1]
+        function = "flagcxResult_t kunlunAdaptorLaunchHostFunc" + function.split(
+            "flagcxResult_t kunlunAdaptorLaunchDeviceFunc", 1)[0]
+        fixture = r'''
+#include <cassert>
+#include <cstddef>
+enum flagcxResult_t {flagcxSuccess, flagcxUnhandledDeviceError, flagcxNotSupported};
+enum cudaError_t {cudaSuccess, cudaErrorNotSupported, cudaErrorUnknown};
+struct Stream {void *base;};
+typedef Stream *flagcxStream_t;
+static cudaError_t nativeResult;
+static int calls;
+static void *expectedStream, *expectedArgs;
+static void (*expectedCallback)(void *);
+static cudaError_t cudaLaunchHostFunc(void *stream, void (*fn)(void *), void *args) {
+  assert(stream == expectedStream && fn == expectedCallback && args == expectedArgs);
+  ++calls;
+  return nativeResult;
+}
+static const char *cudaGetErrorString(cudaError_t) {return "injected error";}
+#define WARN(...) ((void)0)
+''' + function + r'''
+int main() {
+  Stream stream = {(void *)1};
+  expectedStream = stream.base;
+  expectedArgs = (void *)2;
+  expectedCallback = [](void *) {};
+  nativeResult = cudaSuccess;
+  assert(kunlunAdaptorLaunchHostFunc(&stream, expectedCallback, expectedArgs) == flagcxSuccess);
+  nativeResult = cudaErrorNotSupported;
+  assert(kunlunAdaptorLaunchHostFunc(&stream, expectedCallback, expectedArgs) == flagcxNotSupported);
+  nativeResult = cudaErrorUnknown;
+  assert(kunlunAdaptorLaunchHostFunc(&stream, expectedCallback, expectedArgs) == flagcxUnhandledDeviceError);
+  assert(calls == 3);
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "callback.cc"
+            source_path.write_text(fixture)
+            binary = Path(directory) / "callback"
+            subprocess.run([compiler, "-std=c++17", str(source_path), "-o", str(binary)],
+                           check=True, capture_output=True, text=True)
+            subprocess.run([str(binary)], check=True, timeout=5)
+
     def test_ignore_config_is_owned_by_platform_shell(self):
         config = (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
         self.assertNotIn("ignore_test:", config)

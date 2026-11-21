@@ -1786,8 +1786,25 @@ static flagcxResult_t flagcxHeteroProducerStatus(flagcxHeteroComm_t comm) {
       return result;
   }
   if (comm->rmaProxy != NULL &&
-      __atomic_load_n(&comm->rmaProxy->rmaError, __ATOMIC_ACQUIRE))
-    return flagcxRemoteError;
+      __atomic_load_n(&comm->rmaProxy->rmaError, __ATOMIC_ACQUIRE)) {
+    struct flagcxRmaProxyState *proxy = comm->rmaProxy;
+    // A failed operation remains visible to data-path waiters. During closed
+    // admission it need not prevent cleanup after every accepted descriptor
+    // and native request has retired. Never reset the recorded operation error.
+    if (!__atomic_load_n(&comm->finalizeState.started, __ATOMIC_ACQUIRE))
+      return flagcxRemoteError;
+    if (proxy->pis == NULL || proxy->cis == NULL || proxy->inFlights == NULL ||
+        proxy->opSeqs == NULL || proxy->doneSeqs == NULL)
+      return flagcxRemoteError;
+    for (int peer = 0; peer < proxy->nRanks; peer++) {
+      if (__atomic_load_n(&proxy->pis[peer], __ATOMIC_ACQUIRE) !=
+              __atomic_load_n(&proxy->cis[peer], __ATOMIC_ACQUIRE) ||
+          __atomic_load_n(&proxy->inFlights[peer], __ATOMIC_ACQUIRE) != 0 ||
+          __atomic_load_n(&proxy->doneSeqs[peer], __ATOMIC_ACQUIRE) !=
+              __atomic_load_n(&proxy->opSeqs[peer], __ATOMIC_ACQUIRE))
+        return flagcxRemoteError;
+    }
+  }
   return flagcxSuccess;
 }
 
