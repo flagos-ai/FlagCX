@@ -100,6 +100,20 @@ ifeq ($(KERNEL_PLATFORM),nvidia)
 PROVIDER_UNIT_TARGET := $(PROVIDER_TEST_TARGET)
 endif
 
+GDA_HOST_TARGET :=
+ifeq ($(USE_XPUNETIO)$(KERNEL_PLATFORM),1nvidia)
+GDA_HOST_TARGET := $(BINDIR)/test_net_gda_host_control
+$(GDA_HOST_TARGET): test_net_gda_host_control.cpp \
+    $(PROJECT_ROOT)/flagcx/adaptor/device_api/devnet/xpu_netio_gda_host.cc \
+    $(DEVICE_TEST_CONFIG_STAMP)
+	@mkdir -p $(BINDIR) $(OBJDIR)
+	@$(HOST_CXX) -std=c++17 $(HOST_ADAPTOR_DEFINE) $(FLAGCX_INCLUDES) \
+	    $(GTEST_INCLUDE) $(DEVICE_INCLUDE) -I$(PROJECT_ROOT)/flagcx/adaptor/device_api \
+	    -MMD -MP -MF $(OBJDIR)/test_net_gda_host_control.d -MT $@ \
+	    $< -o $@ -Wl,--export-dynamic $(FLAGCX_LINK) $(DEVICE_LINK) $(GTEST_LINK)
+-include $(OBJDIR)/test_net_gda_host_control.d
+endif
+
 # This host-only test must not select device CommTraits: KLX's SHMEM traits are
 # compiled by xpu-clang, not g++. Pass only the allocator choice needed by the
 # provenance assertions.
@@ -210,7 +224,7 @@ ifneq ($(SKIPPED_TARGETS),)
 	@echo "Skipped unsupported targets on $(KERNEL_PLATFORM): $(SKIPPED_TARGETS)"
 endif
 
-unit: $(UNIT_TARGET) $(PROVIDER_UNIT_TARGET)
+unit: $(UNIT_TARGET) $(PROVIDER_UNIT_TARGET) $(GDA_HOST_TARGET)
 
 require-compile-kernel:
 	$(REQUIRE_COMPILE_KERNEL)
@@ -333,6 +347,9 @@ run-unit: unit
 ifneq ($(PROVIDER_UNIT_TARGET),)
 	@$(PROVIDER_UNIT_TARGET)
 endif
+ifneq ($(GDA_HOST_TARGET),)
+	@$(GDA_HOST_TARGET)
+endif
 
 # Use the same backend selection as the library and device kernels. Default
 # tests retain their IPC configuration; vendor tests require homo/SYMMETRIC.
@@ -447,15 +464,19 @@ run-mpi: run-mpi-intra run-mpi-inter run-mpi-unified-intra \
 # Run the same inter API suite with the compiled GDA provider. Unsupported
 # operations are explicit SKIPs until their public Net contracts are implemented.
 .PHONY: run-mpi-gda
+GDA_RANKS_PER_NODE ?= 1
+GDA_NODE0_ENV ?= $(INTER_NODE0_ENV) $(MPI_ENV_FLAG) CUDA_VISIBLE_DEVICES=0
+GDA_NODE1_ENV ?= $(INTER_NODE1_ENV) $(MPI_ENV_FLAG) CUDA_VISIBLE_DEVICES=1
+GDA_TEST_ARGS ?= -b 16K -e 1M -f 2 -R 2 -n 64
 ifeq ($(USE_XPUNETIO)$(KERNEL_PLATFORM),1nvidia)
 run-mpi-gda: $(BINDIR)/test_device_api_inter
 	$(MPIRUN) $(MPI_ROOT_ARGS) \
-		-n 2 $(INTER_ENV) $(INTER_NODE0_ENV) \
+		-n $(GDA_RANKS_PER_NODE) $(INTER_ENV) $(GDA_NODE0_ENV) \
 		$(MPI_ENV_FLAG) FLAGCX_DEVNET_ENABLE=1 $(MPI_ENV_FLAG) FLAGCX_DEVNET_TYPE=1 \
-		$(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2 \
-		: -n 2 $(INTER_ENV) $(INTER_NODE1_ENV) \
+		$(BINDIR)/test_device_api_inter $(GDA_TEST_ARGS) \
+		: -n $(GDA_RANKS_PER_NODE) $(INTER_ENV) $(GDA_NODE1_ENV) \
 		$(MPI_ENV_FLAG) FLAGCX_DEVNET_ENABLE=1 $(MPI_ENV_FLAG) FLAGCX_DEVNET_TYPE=1 \
-		$(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2
+		$(BINDIR)/test_device_api_inter $(GDA_TEST_ARGS)
 else
 run-mpi-gda:
 	@echo "Net GDA test requires USE_NVIDIA=1 USE_XPUNETIO=1"

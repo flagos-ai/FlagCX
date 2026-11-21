@@ -27,6 +27,8 @@ flagcxResult_t queryComm(flagcxDevComm_t devComm, unsigned *capabilities,
                          unsigned *requiredAlignment);
 flagcxResult_t clearError(flagcxDevComm_t devComm);
 flagcxResult_t pollError(flagcxDevComm_t devComm);
+flagcxResult_t abortComm(flagcxDevComm_t devComm);
+flagcxResult_t prepareCommDestroy(flagcxDevComm_t devComm);
 
 } // namespace XpuNetioGda
 

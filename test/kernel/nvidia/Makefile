@@ -45,6 +45,20 @@ $(BINDIR)/test_device_api_traits: device_api_traits.cu
 device_traits: $(BINDIR)/test_device_api_traits
 	@$(BINDIR)/test_device_api_traits
 
+# SDK-backed synthetic SQ/CQ and wait/abort tests; these use a GPU, not NIC DMA.
+ifeq ($(USE_XPUNETIO),1)
+$(BINDIR)/test_net_gda_%: net_gda_%.cu
+	@mkdir -p $(BINDIR)
+	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) -o $@ $< \
+	    -MMD -MP -MF $@.d -MT $@ \
+	    $(ALL_INCLUDES) $(ADAPTOR_DEFINE) -DCOMPILE_KERNEL $(DEVICE_LINK)
+
+.PHONY: gda_device_tests
+gda_device_tests: $(BINDIR)/test_net_gda_put_signal $(BINDIR)/test_net_gda_wait_control
+	@$(BINDIR)/test_net_gda_put_signal
+	@$(BINDIR)/test_net_gda_wait_control
+endif
+
 $(OBJDIR)/gdr_visibility.o: gdr_visibility.cu \
 	../include/gdr_visibility_test.h \
 	../include/gdr_visibility_test_kernel.cuh
@@ -117,3 +131,8 @@ endif
 
 clean:
 	@rm -rf $(BUILDDIR)
+
+ifeq ($(USE_XPUNETIO),1)
+$(BINDIR)/test_net_gda_put_signal $(BINDIR)/test_net_gda_wait_control: $(DEVICE_CONFIG_STAMP)
+-include $(wildcard $(BINDIR)/test_net_gda_*.d)
+endif

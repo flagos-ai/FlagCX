@@ -144,6 +144,8 @@ struct flagcxDevCommInternal {
   unsigned gdaProviderId;
   void *gdaDeviceContext;
   void *gdaHostOwner;
+  int gdaDraining; // Cleanup-only: no new device views may be published.
+  int gdaQuiesced; // All ranks have retired their sender QPs.
 
   // ---- P2P signal IPC pointers (intra-node direct atomic path) ----
   uint64_t **signalPeerPtrs; // Device array: local peer direct signal planes

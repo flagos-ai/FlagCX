@@ -10,7 +10,10 @@
 #include "xpu_netio_gda_view.h"
 
 #if defined(__CUDACC__)
+#define XPU_NETIO_DEVICE_PLATFORM_HEADER                                       \
+  "device_api/devnet/nvidia_xpu_netio_platform.cuh"
 #include <xpu_netio/device_api.cuh>
+#undef XPU_NETIO_DEVICE_PLATFORM_HEADER
 #endif
 
 #include <type_traits>
@@ -36,6 +39,27 @@ struct DefaultNetGdaProvider<NvidiaPlatform> {
     return fence == flagcxDevNetFenceLevel::Relaxed;
   }
 
+  FLAGCX_DEVICE_INLINE_DECORATOR static uint64_t
+  beginBarrierWait(DefaultNetContext ctx) {
+    return ctx.provider == DefaultNetProviderGda ? Clock::now() : 0;
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool
+  continueBarrierWait(DefaultNetContext ctx, uint64_t start) {
+#if defined(__CUDACC__)
+    if (ctx.provider != DefaultNetProviderGda)
+      return true;
+    const auto &state = view(ctx);
+    if (!ready(state))
+      return false;
+    if (Clock::elapsedNs(start, Clock::now()) >= state.timeoutNs) {
+      fail(state, XPU_NETIO_TIMEOUT);
+      return false;
+    }
+#endif
+    return true;
+  }
+
   template <typename NetT>
   FLAGCX_DEVICE_INLINE_DECORATOR static bool isValid(DefaultNetContext ctx,
                                                      const NetT &) {
@@ -45,7 +69,7 @@ struct DefaultNetGdaProvider<NvidiaPlatform> {
     return compiled(ctx.providerId) && ctx.contextId == 0 && view != nullptr &&
            view->contexts != nullptr && view->signalRemote != nullptr &&
            view->signalBuffer != nullptr && view->errorFlag != nullptr &&
-           view->rank < view->nranks;
+           view->atomicResults.address != 0 && view->rank < view->nranks;
 #else
     return compiled(ctx.providerId) && ctx.handle != nullptr;
 #endif
@@ -68,6 +92,9 @@ struct DefaultNetGdaProvider<NvidiaPlatform> {
     else if constexpr (std::is_same<Operation,
                                     typename Net::WaitSignalOp>::value)
       return waitSignal(ctx, static_cast<Args &&>(args)...);
+    else if constexpr (std::is_same<Operation,
+                                    typename Net::ReadSignalOp>::value)
+      return readSignal(ctx, static_cast<Args &&>(args)...);
     else {
       typedef decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
           ctx, static_cast<Args &&>(args)...)) Result;
@@ -137,6 +164,12 @@ private:
 
   FLAGCX_DEVICE_INLINE_DECORATOR static bool
   ready(const flagcxXpuNetioDeviceContext &state) {
+    if (state.abortFlag != nullptr &&
+        Atomic::load(const_cast<uint32_t *>(state.abortFlag),
+                     flagcxDeviceMemoryOrderAcquire) != 0) {
+      fail(state, XPU_NETIO_ABORTED);
+      return false;
+    }
     return state.contexts != nullptr && state.errorFlag != nullptr &&
            Atomic::load(state.errorFlag, flagcxDeviceMemoryOrderAcquire) == 0;
   }
@@ -147,7 +180,8 @@ private:
     if (status == XPU_NETIO_SUCCESS) {
       xpu_netio_request_wait_op_t operation{};
       operation.timeout_ns = state.timeoutNs;
-      operation.abort_flag = state.errorFlag;
+      operation.abort_flag =
+          state.abortFlag ? state.abortFlag : state.errorFlag;
       status = xpu_netio_request_wait(state.contexts, &request, &operation);
     }
     if (status != XPU_NETIO_SUCCESS)
@@ -169,7 +203,12 @@ private:
           static_cast<const flagcxXpuNetioDeviceWindow *>(src.netDeviceHandle);
       const auto *target =
           static_cast<const flagcxXpuNetioDeviceWindow *>(dst.netDeviceHandle);
-      if (net.isSignal(remoteAction) || net.isCounter(localAction) ||
+      const bool signalAction = net.isSignal(remoteAction);
+      const int signalIdx = net.getSignalIdx(remoteAction);
+      if ((!std::is_same<RA, flagcxDevNet_None>::value && !signalAction) ||
+          !std::is_same<LA, flagcxDevNet_None>::value ||
+          (signalAction && (signalIdx < 0 || static_cast<uint32_t>(signalIdx) >=
+                                                 state.userSignalCount)) ||
           source == nullptr || target == nullptr || worldPeer < 0 ||
           static_cast<uint32_t>(worldPeer) >= state.nranks ||
           srcOff > source->bytes || bytes > source->bytes - srcOff ||
@@ -186,12 +225,19 @@ private:
         operation.local_offset = srcOff;
         operation.remote_offset = dstOff;
         operation.bytes = bytes;
-        operation.wait = {state.timeoutNs, state.errorFlag};
+        operation.wait = {state.timeoutNs,
+                          state.abortFlag ? state.abortFlag : state.errorFlag};
         xpu_netio_request_t request{};
-        wait(state,
-             xpu_netio_post_write_cooperative(state.contexts, &operation,
-                                              &request, ThreadCoop{}),
-             request);
+        const bool written =
+            wait(state,
+                 xpu_netio_post_write_cooperative(state.contexts, &operation,
+                                                  &request, ThreadCoop{}),
+                 request);
+        // Signal follows every payload chunk on the same logical peer QP.
+        // Do not publish successful completion after a failed Write.
+        if (written && signalAction)
+          postSignal(ctx, state, worldPeer, signalIdx,
+                     net.getSignalValue(remoteAction));
       }
     }
     coop.sync();
@@ -208,7 +254,12 @@ private:
       const int worldPeer = net.teamRankToWorld(team, peer);
       const auto *target =
           static_cast<const flagcxXpuNetioDeviceWindow *>(dst.netDeviceHandle);
-      if (net.isSignal(remoteAction) || target == nullptr || worldPeer < 0 ||
+      const bool signalAction = net.isSignal(remoteAction);
+      const int signalIdx = net.getSignalIdx(remoteAction);
+      if ((!std::is_same<RA, flagcxDevNet_None>::value && !signalAction) ||
+          (signalAction && (signalIdx < 0 || static_cast<uint32_t>(signalIdx) >=
+                                                 state.userSignalCount)) ||
+          target == nullptr || worldPeer < 0 ||
           static_cast<uint32_t>(worldPeer) >= state.nranks ||
           sizeof(T) > XPU_NETIO_INLINE_VALUE_CAPACITY ||
           dstOff > target->bytes || sizeof(T) > target->bytes - dstOff) {
@@ -225,12 +276,17 @@ private:
         const uint8_t *source = reinterpret_cast<const uint8_t *>(&value);
         for (unsigned i = 0; i < sizeof(T); ++i)
           operation.value[i] = source[i];
-        operation.wait = {state.timeoutNs, state.errorFlag};
+        operation.wait = {state.timeoutNs,
+                          state.abortFlag ? state.abortFlag : state.errorFlag};
         xpu_netio_request_t request{};
-        wait(state,
-             xpu_netio_post_inline_cooperative(state.contexts, &operation,
-                                               &request, ThreadCoop{}),
-             request);
+        const bool written =
+            wait(state,
+                 xpu_netio_post_inline_cooperative(state.contexts, &operation,
+                                                   &request, ThreadCoop{}),
+                 request);
+        if (written && signalAction)
+          postSignal(ctx, state, worldPeer, signalIdx,
+                     net.getSignalValue(remoteAction));
       }
     }
     coop.sync();
@@ -250,7 +306,8 @@ private:
         operation.peer = peer;
         operation.queue_hint = XPU_NETIO_QUEUE_HINT_NONE;
         operation.flags = sharingFlags(ctx, state);
-        operation.wait = {state.timeoutNs, state.errorFlag};
+        operation.wait = {state.timeoutNs,
+                          state.abortFlag ? state.abortFlag : state.errorFlag};
         xpu_netio_request_t request{};
         if (!wait(state,
                   xpu_netio_flush_async(state.contexts, &operation, &request),
@@ -261,6 +318,45 @@ private:
     coop.sync();
   }
 
+  FLAGCX_DEVICE_INLINE_DECORATOR static void
+  postSignal(DefaultNetContext ctx, const flagcxXpuNetioDeviceContext &state,
+             int targetRank, int signalIdx, uint64_t increment) {
+    if (!ready(state))
+      return;
+    if (targetRank < 0 || static_cast<uint32_t>(targetRank) >= state.nranks ||
+        signalIdx < 0 ||
+        static_cast<uint32_t>(signalIdx) >= state.signalCount) {
+      fail(state, XPU_NETIO_INVALID_ARGUMENT);
+      return;
+    }
+    // Each arrival increments this source's slot on the destination. Fetch
+    // result is discarded, but RC atomic requires a registered return buffer.
+    // Separate slots prevent concurrent peers/Barrier channels aliasing it.
+    xpu_netio_atomic_op_t operation{};
+    operation.peer = targetRank;
+    operation.queue_hint = XPU_NETIO_QUEUE_HINT_NONE;
+    operation.flags =
+        sharingFlags(ctx, state) | XPU_NETIO_OP_FLAG_RELEASE_SYSTEM;
+    operation.remote = state.signalRemote[targetRank];
+    operation.remote_offset =
+        static_cast<uint64_t>(signalIdx) * sizeof(uint64_t);
+    operation.opcode = XPU_NETIO_ATOMIC_OPCODE_ADD;
+    operation.operand_size = sizeof(uint64_t);
+    operation.fetch = 1;
+    operation.operand = increment;
+    operation.result = state.atomicResults;
+    operation.result_offset =
+        (static_cast<uint64_t>(signalIdx) * state.nranks + targetRank) *
+        sizeof(uint64_t);
+    operation.wait = {state.timeoutNs,
+                      state.abortFlag ? state.abortFlag : state.errorFlag};
+    xpu_netio_request_t request{};
+    wait(state,
+         xpu_netio_post_atomic_cooperative(state.contexts, &operation, &request,
+                                           ThreadCoop{}),
+         request);
+  }
+
   template <typename Coop, typename Desc>
   FLAGCX_DEVICE_INLINE_DECORATOR static void
   signal(DefaultNetContext ctx,
@@ -269,44 +365,26 @@ private:
          Team, int peer, flagcxDevNet_SignalInc action,
          typename PlatformTraits<NvidiaPlatform>::CoopThread, Desc,
          flagcxDeviceScope_t, flagcxDeviceScope_t) {
-    const auto &state = view(ctx);
-    if (!ready(state))
-      return;
-    // The Barrier peer is an Inter-team index; map it to the corresponding
-    // world rank exactly as the Proxy signal path does.
     const int targetRank = peer * barrier._stride + barrier._localRank;
-    const int signalIdx = static_cast<int>(action.signal);
-    if (targetRank < 0 || static_cast<uint32_t>(targetRank) >= state.nranks ||
-        signalIdx < 0 ||
-        static_cast<uint32_t>(signalIdx) >= state.signalCount) {
-      fail(state, XPU_NETIO_INVALID_ARGUMENT);
-      return;
-    }
-    const uint64_t epoch = barrier._shadowBuffer[signalIdx];
-    xpu_netio_inline_op_t operation{};
-    operation.peer = targetRank;
-    operation.queue_hint = XPU_NETIO_QUEUE_HINT_NONE;
-    operation.flags =
-        sharingFlags(ctx, state) | XPU_NETIO_OP_FLAG_RELEASE_SYSTEM;
-    operation.remote = state.signalRemote[targetRank];
-    operation.remote_offset =
-        static_cast<uint64_t>(signalIdx) * sizeof(uint64_t);
-    operation.value_size = sizeof(epoch);
-    const uint8_t *bytes = reinterpret_cast<const uint8_t *>(&epoch);
-    for (unsigned i = 0; i < sizeof(epoch); ++i)
-      operation.value[i] = bytes[i];
-    operation.wait = {state.timeoutNs, state.errorFlag};
-    xpu_netio_request_t request{};
-    wait(state,
-         xpu_netio_post_inline_cooperative(state.contexts, &operation, &request,
-                                           ThreadCoop{}),
-         request);
+    postSignal(ctx, view(ctx), targetRank, static_cast<int>(action.signal), 1);
   }
 
-  template <typename... Args>
-  FLAGCX_DEVICE_INLINE_DECORATOR static void signal(DefaultNetContext,
-                                                    const Net &, Args &&...) {
-    FLAGCX_DEVICE_TRAP();
+  template <typename RA, typename Coop, typename Desc>
+  FLAGCX_DEVICE_INLINE_DECORATOR static void
+  signal(DefaultNetContext ctx, const Net &net, Team team, int peer, RA action,
+         Coop coop, Desc, flagcxDeviceScope_t, flagcxDeviceScope_t) {
+    const auto &state = view(ctx);
+    coop.sync();
+    if (coop.threadRank() == 0 && ready(state)) {
+      const int idx = net.getSignalIdx(action);
+      if (!net.isSignal(action) || idx < 0 ||
+          static_cast<uint32_t>(idx) >= state.userSignalCount)
+        fail(state, XPU_NETIO_INVALID_ARGUMENT);
+      else
+        postSignal(ctx, state, net.teamRankToWorld(team, peer), idx,
+                   net.getSignalValue(action));
+    }
+    coop.sync();
   }
 
   template <typename Coop>
@@ -327,7 +405,7 @@ private:
     while (Atomic::load(slot, flagcxDeviceMemoryOrderAcquire) < expected) {
       if (!ready(state))
         return;
-      if (Clock::now() - start >= state.timeoutNs) {
+      if (Clock::elapsedNs(start, Clock::now()) >= state.timeoutNs) {
         fail(state, XPU_NETIO_TIMEOUT);
         return;
       }
@@ -335,10 +413,44 @@ private:
     }
   }
 
-  template <typename... Args>
+  template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR static void
-  waitSignal(DefaultNetContext, const Net &, Args &&...) {
-    FLAGCX_DEVICE_TRAP();
+  waitSignal(DefaultNetContext ctx, const Net &, Coop coop,
+             flagcxDevSignal_t signalId, uint64_t expected, int bits,
+             flagcxDeviceMemoryOrder_t) {
+    const auto &state = view(ctx);
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      if (bits != 64 ||
+          static_cast<uint32_t>(signalId) >= state.userSignalCount)
+        fail(state, XPU_NETIO_INVALID_ARGUMENT);
+      else {
+        const uint64_t start = Clock::now();
+        while (ready(state) &&
+               Atomic::load(&state.signalBuffer[signalId],
+                            flagcxDeviceMemoryOrderAcquire) < expected) {
+          if (Clock::elapsedNs(start, Clock::now()) >= state.timeoutNs) {
+            fail(state, XPU_NETIO_TIMEOUT);
+            break;
+          }
+          PlatformTraits<NvidiaPlatform>::Intrin::spinBackoff(0);
+        }
+      }
+    }
+    coop.sync();
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR static uint64_t
+  readSignal(DefaultNetContext ctx, const Net &, flagcxDevSignal_t signalId,
+             int bits, flagcxDeviceMemoryOrder_t) {
+    const auto &state = view(ctx);
+    if (bits != 64 ||
+        static_cast<uint32_t>(signalId) >= state.userSignalCount) {
+      fail(state, XPU_NETIO_INVALID_ARGUMENT);
+      return 0;
+    }
+    return Atomic::load(&state.signalBuffer[signalId],
+                        flagcxDeviceMemoryOrderAcquire);
   }
 #endif // __CUDACC__
 };

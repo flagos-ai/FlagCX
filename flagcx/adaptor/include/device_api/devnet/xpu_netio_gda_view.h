@@ -20,12 +20,17 @@ struct flagcxXpuNetioDeviceContext {
   const xpu_netio_device_context_t *contexts;
   const xpu_netio_remote_region_t *signalRemote;
   xpu_netio_local_region_t signalLocal;
+  // Separate registered return slots for each (barrier signal, target rank).
+  xpu_netio_local_region_t atomicResults;
   uint64_t *signalBuffer;
   uint32_t *errorFlag;
+  // Host is the only writer; remains writable while a kernel is waiting.
+  const uint32_t *abortFlag;
   uint64_t timeoutNs;
   uint32_t rank;
   uint32_t nranks;
   uint32_t signalCount;
+  uint32_t userSignalCount;
 };
 
 #endif // FLAGCX_XPU_NETIO_GDA_VIEW_H_

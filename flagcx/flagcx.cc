@@ -4862,10 +4862,22 @@ flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (comm->initRollbackPending || comm->pluginRollbackOnly)
     return flagcxInvalidUsage;
-  // Heterogeneous Abort is not implemented. Do not consume a native owner
-  // before reporting that limitation; normal rollback/teardown remains usable.
-  if (!useHomoComm(comm) || comm->heteroComm != NULL)
-    return flagcxNotSupported;
+  bool gdaAborted = false;
+#if defined(FLAGCX_USE_GDA)
+  flagcxDevComm_t gda = comm->devNetCommHandle != nullptr
+                            ? comm->devNetCommHandle
+                            : comm->pendingDevCommCleanup;
+  if (gda != nullptr && gda->gdaHostOwner != nullptr) {
+    FLAGCXCHECK(flagcxDevNetGda.abortComm(gda));
+    gdaAborted = true;
+  }
+#endif
+  // GDA cancellation must reach device waits without consuming native owners.
+  // Other heterogeneous Abort paths retain their existing unsupported result.
+  if (!useHomoComm(comm) || comm->heteroComm != nullptr)
+    return gdaAborted ? flagcxSuccess : flagcxNotSupported;
+  if (gdaAborted && comm->homoComm == nullptr)
+    return flagcxSuccess;
   auto *state = &comm->finalizeState;
   int expected = 0;
   if (!__atomic_compare_exchange_n(&state->running, &expected, 1, false,
@@ -5032,6 +5044,23 @@ flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
         __atomic_load_n(&comm->finalizeState.lastResult, __ATOMIC_ACQUIRE);
     return flagcxSuccess;
   }
+#if defined(FLAGCX_USE_GDA)
+  flagcxDevComm_t gda = comm->devNetCommHandle != nullptr
+                            ? comm->devNetCommHandle
+                            : comm->pendingDevCommCleanup;
+  if (gda != nullptr && gda->gdaHostOwner != nullptr) {
+    flagcxResult_t gdaError = flagcxDevNetGda.pollError(gda);
+    if (gdaError != flagcxSuccess) {
+      *asyncError = gdaError;
+      return flagcxSuccess;
+    }
+    // An exclusively GDA communicator can have no vendor/proxy state.
+    if (comm->homoComm == nullptr && comm->heteroComm == nullptr) {
+      *asyncError = flagcxSuccess;
+      return flagcxSuccess;
+    }
+  }
+#endif
 
   if (comm->heteroComm != nullptr && (!useHomoComm(comm) || useHeteroComm())) {
     flagcxResult_t result = flagcxSuccess;

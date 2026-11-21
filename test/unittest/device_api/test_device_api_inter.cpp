@@ -48,6 +48,7 @@
 #if defined(FLAGCX_USE_XPU_NETIO)
 #include "device_api/comm_traits.h"
 #include "device_api/devnet/xpu_netio_gda_host.h"
+#include "net_gda_test.h"
 #include "utils.h"
 #endif
 
@@ -66,12 +67,13 @@
 
 static void initSendBuff(void *sendBuff, size_t countPerPeer, int nRanks,
                          int myRank, flagcxDeviceHandle_t devHandle,
-                         flagcxStream_t stream, void *hostScratch) {
+                         flagcxStream_t stream, void *hostScratch,
+                         int round = 0) {
   float *h = (float *)hostScratch;
   for (int r = 0; r < nRanks; r++)
     for (size_t i = 0; i < countPerPeer; i++)
       h[(size_t)r * countPerPeer + i] =
-          (float)(myRank * 1000 + r * 100 + (int)i);
+          (float)(myRank * 1000 + r * 100 + (int)i + round * 17);
   devHandle->deviceMemcpy(sendBuff, hostScratch,
                           (size_t)nRanks * countPerPeer * sizeof(float),
                           flagcxMemcpyHostToDevice, stream);
@@ -79,10 +81,10 @@ static void initSendBuff(void *sendBuff, size_t countPerPeer, int nRanks,
 }
 
 static bool verifyAlltoAll(const float *buf, size_t countPerPeer, int nRanks,
-                           int myRank) {
+                           int myRank, int round = 0) {
   for (int src = 0; src < nRanks; src++)
     for (size_t i = 0; i < countPerPeer; i++) {
-      float expected = (float)(src * 1000 + myRank * 100 + (int)i);
+      float expected = (float)(src * 1000 + myRank * 100 + (int)i + round * 17);
       if (buf[(size_t)src * countPerPeer + i] != expected)
         return false;
     }
@@ -256,10 +258,10 @@ int main(int argc, char *argv[]) {
       flagcxReadDevNetConfig(&netEnabled, &netType) == flagcxSuccess &&
       netEnabled != 0 && netType == 1;
   if (requestGda) {
-    // TODO(XPUNetIO): request user signals/counters and multiple contexts
-    // when their public Net contracts are implemented by the adapter.
+    // The MLX5 adapter supports indexed 64-bit signals on one context.
+    // Counters and multiple contexts remain explicit SKIPs.
     reqs.interContextCount = 1;
-    reqs.interSignalCount = 0;
+    reqs.interSignalCount = 3;
     reqs.interCounterCount = 0;
     reqs.interForceEnable = true;
   }
@@ -272,6 +274,7 @@ int main(int argc, char *argv[]) {
   bool supportsMultiContext = true;
   unsigned requiredAlignment = 1;
 #if defined(FLAGCX_USE_XPU_NETIO)
+  size_t gdaChunkBytes = 0;
   useGda = devComm->gdaProvider != 0;
   if (requestGda && !useGda) {
     fprintf(stderr, "Explicit GDA test selected a different Net provider\n");
@@ -296,6 +299,9 @@ int main(int argc, char *argv[]) {
     MPI_Allreduce(&requiredAlignment, &commonAlignment, 1, MPI_UNSIGNED,
                   MPI_MAX, splitComm);
     requiredAlignment = commonAlignment;
+    uint64_t commonMaxChunk = 0;
+    MPI_Allreduce(&maxChunkBytes, &commonMaxChunk, 1, MPI_UINT64_T, MPI_MIN,
+                  splitComm);
     supportsSignal =
         (commonCapabilities & DefaultNetGdaSignal) != 0 &&
         (commonCapabilities & DefaultNetGdaSignalCompletion) != 0 &&
@@ -304,6 +310,10 @@ int main(int argc, char *argv[]) {
         (commonCapabilities & DefaultNetGdaCounterCompletion) != 0 &&
         reqs.interCounterCount > 0;
     supportsPutValue = (commonCapabilities & DefaultNetGdaPutValue) != 0;
+    gdaChunkBytes = static_cast<size_t>(
+        std::min<uint64_t>(commonMaxChunk,
+                           std::max<uint64_t>(requiredAlignment, 3072)) /
+        requiredAlignment * requiredAlignment);
     supportsMultiContext = devComm->contextCount > 1;
     FLAGCXCHECK(XpuNetioGda::clearError(devComm));
   }
@@ -642,18 +652,55 @@ int main(int argc, char *argv[]) {
         // for its kernel to reach the entry Barrier before posting puts.
         if (useGda && size == minBytes && iteration == 0 && proc == 0)
           usleep(100000);
+        const int round = useGda ? iteration + 1 : 0;
         initSendBuff(sendBuff, countPerPeer, totalProcs, proc, devHandle,
-                     stream, hostBuff);
+                     stream, hostBuff, round);
         FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, floatSize,
                                             flagcxMemDevice, stream));
-        FLAGCXCHECK(launchKernelNetOneSidedAlltoAll(
-            sendMem, recvMem, countPerPeer, DATATYPE, devComm, stream));
+#if defined(FLAGCX_USE_XPU_NETIO)
+        if (useGda) {
+          static_assert(sizeof(flagcxNetGdaVisibilityResult) ==
+                            sizeof(hResultBuf),
+                        "diagnostic buffer size");
+          FLAGCXCHECK(devHandle->deviceMemset(dResultBuf, 0, sizeof(hResultBuf),
+                                              flagcxMemDevice, stream));
+          FLAGCXCHECK(devHandle->deviceMemset(
+              dResultBuf + 3, 0xff, sizeof(uint64_t), flagcxMemDevice, stream));
+          // Small aligned chunks exercise multiple notifications and tails.
+          FLAGCXCHECK(launchKernelNetOneSidedAlltoAll(
+              sendMem, recvMem, countPerPeer, DATATYPE, devComm, stream, round,
+              std::min(gdaChunkBytes, countPerPeer * sizeof(float)),
+              reinterpret_cast<flagcxNetGdaVisibilityResult *>(dResultBuf)));
+        } else
+#endif
+          FLAGCXCHECK(launchKernelNetOneSidedAlltoAll(
+              sendMem, recvMem, countPerPeer, DATATYPE, devComm, stream));
         FLAGCXCHECK(synchronizeInterTest(devHandle, stream, devComm));
         FLAGCXCHECK(devHandle->deviceMemcpy(hostBuff, recvBuff, floatSize,
                                             flagcxMemcpyDeviceToHost, stream));
         FLAGCXCHECK(synchronizeInterTest(devHandle, stream, devComm));
-        const bool k14Ok = verifyAlltoAll((const float *)hostBuff, countPerPeer,
-                                          totalProcs, proc);
+        bool k14Ok = verifyAlltoAll((const float *)hostBuff, countPerPeer,
+                                    totalProcs, proc, round);
+#if defined(FLAGCX_USE_XPU_NETIO)
+        if (useGda) {
+          flagcxNetGdaVisibilityResult result{};
+          FLAGCXCHECK(
+              devHandle->deviceMemcpy(&result, dResultBuf, sizeof(result),
+                                      flagcxMemcpyDeviceToHost, stream));
+          FLAGCXCHECK(synchronizeInterTest(devHandle, stream, devComm));
+          const bool visible =
+              result.checkedBytes == floatSize && result.mismatchCount == 0;
+          printResult("K14 GPU payload after signal", visible, proc);
+          if (!visible)
+            fprintf(stderr,
+                    "[rank %d] GDA immediate payload check: checked=%llu "
+                    "mismatches=%llu first=%llu\n",
+                    proc, (unsigned long long)result.checkedBytes,
+                    (unsigned long long)result.mismatchCount,
+                    (unsigned long long)result.firstMismatchOffset);
+          k14Ok &= visible;
+        }
+#endif
         printResult("K14 OneSidedAlltoAll", k14Ok, proc);
         allPass &= k14Ok;
         ++alltoallRuns;

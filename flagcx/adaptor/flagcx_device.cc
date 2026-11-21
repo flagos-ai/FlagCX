@@ -272,16 +272,30 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
        comm->activeDevComms != devComm))
     return flagcxInvalidUsage;
   devComm->cleanupStarted = true;
-  if (comm != NULL) {
+  bool collectiveGdaDrain = false;
+#if defined(FLAGCX_USE_GDA)
+  collectiveGdaDrain =
+      devComm->gdaHostOwner != nullptr &&
+      ((comm != nullptr && comm->devNetCommHandle == devComm) ||
+       devComm->gdaDraining);
+#endif
+  if (comm != nullptr) {
     flagcxResult_t result =
         flagcxCommDrainSnapshot(comm, &devComm->cleanupWork);
+    // Every participant must observe snapshot failure before entering the
+    // collective GDA retirement path; retain the snapshot for a retry.
+    if (collectiveGdaDrain) {
+      flagcxResult_t common = flagcxSuccess;
+      FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, result, &common));
+      result = common;
+    }
     if (result != flagcxSuccess)
       return result;
   }
 
   // Stop the proxy from acquiring a new reference while the backend tears
-  // down fields reachable through DevComm. Restore publication on failure so
-  // the still-owned object remains retryable.
+  // down fields reachable through DevComm. Proxy can restore publication on
+  // failure; a draining GDA owner is retained for cleanup-only retries.
   const bool wasPublished = comm != nullptr && comm->heteroComm != nullptr &&
                             comm->heteroComm->devCommHandle == devComm;
   if (wasPublished)
@@ -291,15 +305,25 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
       comm != nullptr && comm->devNetCommHandle == devComm;
   if (gdaPublished)
     comm->devNetCommHandle = nullptr;
+  if (devComm->gdaHostOwner != nullptr &&
+      (gdaPublished || devComm->gdaDraining)) {
+    flagcxResult_t result = devComm->gdaQuiesced
+                                ? flagcxSuccess
+                                : flagcxDevNetGda.prepareCommDestroy(devComm);
+    if (comm != nullptr)
+      comm->pendingDevCommCleanup = devComm;
+    if (result != flagcxSuccess)
+      return result;
+  }
 #endif
 
   if (!devComm->backendDestroyed) {
     flagcxResult_t result = devApiBackend->devCommDestroy(comm, devComm);
     if (result != flagcxSuccess) {
-      if (wasPublished)
+      if (wasPublished && !devComm->gdaDraining)
         comm->heteroComm->devCommHandle = devComm;
 #if defined(FLAGCX_USE_GDA)
-      if (gdaPublished)
+      if (gdaPublished && !devComm->gdaDraining)
         comm->devNetCommHandle = devComm;
 #endif
       return result;
@@ -334,6 +358,8 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   if (comm != nullptr && comm->activeDevComms == devComm)
     comm->activeDevComms = devComm->previousActive;
   flagcxWorkSnapshotRelease(&devComm->cleanupWork);
+  if (comm != nullptr && comm->pendingDevCommCleanup == devComm)
+    comm->pendingDevCommCleanup = nullptr;
   free(devComm);
   return flagcxSuccess;
 }

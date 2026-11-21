@@ -20,12 +20,17 @@ struct flagcxDevNetAdaptor {
   flagcxResult_t (*registerWindow)(flagcxComm_t, flagcxDevComm_t,
                                    flagcxWindow_t);
   // Check local references and quiesce device work before any rank releases
-  // its registration. This phase must not release resources.
+  // its registration. Error/abort requires collective NIC retirement first.
+  // This phase must not release resources.
   flagcxResult_t (*prepareWindowDeregister)(flagcxWindow_t);
   flagcxResult_t (*deregisterWindow)(flagcxWindow_t);
   // Binding a local DevMem view must never exchange peer metadata.
   flagcxResult_t (*bindDevMem)(flagcxWindow_t, flagcxDevMem_t, size_t, void *);
   flagcxResult_t (*unbindDevMem)(flagcxDevMem_t);
+  flagcxResult_t (*pollError)(flagcxDevComm_t);
+  flagcxResult_t (*abortComm)(flagcxDevComm_t);
+  // Collective GPU/NIC quiesce; retains MRs until every rank has retired QPs.
+  flagcxResult_t (*prepareCommDestroy)(flagcxDevComm_t);
 };
 
 // Supplied by the single GDA implementation selected at build time.

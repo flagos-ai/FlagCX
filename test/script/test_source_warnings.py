@@ -354,6 +354,34 @@ int main() {
 }
 """)
 
+    def test_inter_alltoall_verifiers_preserve_round_and_peer_scope(self):
+        source = (ROOT / "test/unittest/device_api/test_device_api_inter.cpp").read_text()
+        helpers = (function(source, "verifyAlltoAll") + "\n" +
+                   function(source, "verifyInterAlltoAll"))
+        self.compile_run(r"""
+#include <cstddef>
+#include <cmath>
+#include <cassert>
+""" + helpers + r"""
+int main() {
+  float payload[] = {100, 101, 102, 1100, 1101, 1102,
+                     2100, 2101, 2102, 3100, 3101, 3102};
+  assert(verifyAlltoAll(payload, 3, 4, 1));
+  assert(verifyInterAlltoAll(payload, 3, 4, 1, 2));
+  payload[0] = -1; // Local peers are excluded from the inter-only check.
+  assert(!verifyAlltoAll(payload, 3, 4, 1));
+  assert(verifyInterAlltoAll(payload, 3, 4, 1, 2));
+  payload[0] = 100;
+  payload[6] = -1;
+  assert(!verifyInterAlltoAll(payload, 3, 4, 1, 2));
+  payload[6] = 2100;
+  for (float &value : payload) value += 7 * 17;
+  assert(verifyAlltoAll(payload, 3, 4, 1, 7));
+  assert(!verifyAlltoAll(payload, 3, 4, 1));
+  assert(!verifyAlltoAll(payload, 3, 4, 1, 6));
+}
+""")
+
     def test_device_comm_copy_initializes_net_contexts_and_rolls_back(self):
         source = (ROOT / "flagcx/adaptor/device_api/default_dev_api_backend.cc").read_text()
         self.compile_run(r"""
@@ -362,12 +390,15 @@ int main() {
 #include <cstring>
 #include <cassert>
 #include <type_traits>
-enum flagcxResult_t { flagcxSuccess, flagcxInvalidArgument, flagcxUnhandledDeviceError };
+enum flagcxResult_t {
+  flagcxSuccess, flagcxInvalidArgument, flagcxUnhandledDeviceError,
+  flagcxInvalidUsage
+};
 enum { flagcxMemDevice, flagcxMemcpyHostToDevice };
 struct flagcxDevCommInternal {
   pthread_mutex_t cachedPtrMutex;
   void *cachedDevicePtr, *cachedNetContextsPtr, *cachedGridBarrierPtr;
-  int contexts;
+  int contexts, gdaDraining;
 };
 using flagcxDevComm_t = flagcxDevCommInternal *;
 struct flagcxDevComm {
@@ -449,6 +480,13 @@ int main() {
       assert(constructCalls == (di.contexts ? 1 : 0));
       void *cached[3] = {di.cachedDevicePtr, di.cachedNetContextsPtr,
                          di.cachedGridBarrierPtr};
+      di.gdaDraining = 1;
+      device = reinterpret_cast<void *>(1);
+      assert(defaultDevApiCommGetDevicePtr(&di, &device) == flagcxInvalidUsage);
+      assert(device == nullptr && allocationCount == calls);
+      assert(constructCalls == (di.contexts ? 1 : 0));
+      assert(di.cachedDevicePtr == cached[0] && di.cachedNetContextsPtr == cached[1] &&
+             di.cachedGridBarrierPtr == cached[2]);
       for (int i = 0; i < 3; ++i) {
         if (cached[i]) adaptor.deviceFree(cached[i], flagcxMemDevice, nullptr);
       }
@@ -459,6 +497,17 @@ int main() {
     assert(liveCount == 0);
     pthread_mutex_destroy(&di.cachedPtrMutex);
   }
+  flagcxDevCommInternal draining = {};
+  draining.contexts = 2;
+  draining.gdaDraining = 1;
+  pthread_mutex_init(&draining.cachedPtrMutex, nullptr);
+  allocationCount = constructCalls = 0;
+  void *device = reinterpret_cast<void *>(1);
+  assert(defaultDevApiCommGetDevicePtr(&draining, &device) == flagcxInvalidUsage);
+  assert(device == nullptr && allocationCount == 0 && constructCalls == 0);
+  assert(!draining.cachedDevicePtr && !draining.cachedNetContextsPtr &&
+         !draining.cachedGridBarrierPtr && liveCount == 0);
+  pthread_mutex_destroy(&draining.cachedPtrMutex);
 }
 """)
 

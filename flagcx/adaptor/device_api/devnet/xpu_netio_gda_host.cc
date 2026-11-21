@@ -84,6 +84,7 @@ struct WindowOwner {
   xpu_netio_remote_region_t *deviceRegions = nullptr;
   flagcxXpuNetioDeviceWindow *deviceView = nullptr;
   size_t bytes = 0;
+  bool retiring = false;
   WindowOwner *orphanNext = nullptr;
 };
 
@@ -95,18 +96,75 @@ struct CommOwner {
   std::vector<xpu_netio_qp_t *> qps;
   xpu_netio_device_handle_t published{};
   bool publishAttempted = false;
+  bool draining = false;
+  bool nicQuiesced = false; // Collective QP retirement, not GPU completion.
   WindowOwner *signals = nullptr;
+  void *atomicResults = nullptr;
+  xpu_netio_mr_t *atomicResultsMr = nullptr;
   WindowOwner *orphanWindows = nullptr;
   flagcxXpuNetioDeviceContext *deviceView = nullptr;
   uint32_t *errorFlag = nullptr;
+  // GPU writes word 0; Host writes word 1. No cross-agent atomic RMW needed.
+  uint32_t *hostControl = nullptr;
+  uint32_t *deviceControl = nullptr;
+  flagcxResult_t asyncError = flagcxSuccess;
   unsigned capabilities = 0;
   unsigned liveWindows = 0;
   xpu_netio_caps_t caps{};
 };
 
+flagcxResult_t pollOwnerError(CommOwner *owner) {
+  flagcxResult_t first = __atomic_load_n(&owner->asyncError, __ATOMIC_ACQUIRE);
+  if (first != flagcxSuccess)
+    return first;
+  const auto remember = [&](flagcxResult_t status) {
+    if (status != flagcxSuccess) {
+      flagcxResult_t expected = flagcxSuccess;
+      __atomic_compare_exchange_n(&owner->asyncError, &expected, status, false,
+                                  __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    }
+    return __atomic_load_n(&owner->asyncError, __ATOMIC_ACQUIRE);
+  };
+  xpu_netio_error_info_t info{};
+  xpu_netio_error_info_init(&info);
+  flagcxResult_t query =
+      result(xpu_netio_query_error(&owner->published, &info));
+  if (query != flagcxSuccess)
+    return remember(query);
+  if (info.category != XPU_NETIO_SUCCESS)
+    return remember(result(info.category));
+  if (owner->hostControl != nullptr) {
+    const uint32_t deviceStatus =
+        __atomic_load_n(owner->hostControl, __ATOMIC_ACQUIRE);
+    if (deviceStatus != 0)
+      return remember(result(static_cast<xpu_netio_status_t>(deviceStatus)));
+    if (__atomic_load_n(owner->hostControl + 1, __ATOMIC_ACQUIRE) != 0)
+      return remember(result(XPU_NETIO_ABORTED));
+  }
+  return remember(flagcxSuccess);
+}
+
+flagcxResult_t windowReleaseReady(WindowOwner *window) {
+  CommOwner *owner = window->comm;
+  // A timed-out GPU wait can leave NIC WQEs alive. Only the collective
+  // DevComm retirement makes release safe despite a latched error/abort.
+  if (owner->nicQuiesced)
+    return flagcxSuccess;
+  if (owner->draining)
+    return flagcxInvalidUsage;
+  // Failed setup has never exposed a runnable DevComm, so there can be no
+  // submitted GDA WQE. Its retained Windows still need rollback retries.
+  if (owner->comm != nullptr &&
+      (owner->comm->devNetCommHandle == nullptr ||
+       owner->comm->devNetCommHandle->gdaHostOwner != owner))
+    return flagcxSuccess;
+  return pollOwnerError(owner);
+}
+
 flagcxResult_t releaseWindow(WindowOwner *owner) {
   if (owner == nullptr)
     return flagcxSuccess;
+  owner->retiring = true;
   if (owner->deviceView != nullptr) {
     FLAGCXCHECK(
         deviceAdaptor->deviceFree(owner->deviceView, flagcxMemDevice, nullptr));
@@ -147,15 +205,18 @@ flagcxResult_t releaseComm(CommOwner *owner) {
     FLAGCXCHECK(releaseWindow(owner->signals));
     owner->signals = nullptr;
   }
+  if (owner->atomicResultsMr != nullptr)
+    FLAGCXCHECK(
+        result(xpu_netio_deregister_memory_retryable(&owner->atomicResultsMr)));
+  if (owner->atomicResults != nullptr) {
+    FLAGCXCHECK(deviceAdaptor->deviceFree(owner->atomicResults, flagcxMemDevice,
+                                          nullptr));
+    owner->atomicResults = nullptr;
+  }
   if (owner->deviceView != nullptr) {
     FLAGCXCHECK(
         deviceAdaptor->deviceFree(owner->deviceView, flagcxMemDevice, nullptr));
     owner->deviceView = nullptr;
-  }
-  if (owner->errorFlag != nullptr) {
-    FLAGCXCHECK(
-        deviceAdaptor->deviceFree(owner->errorFlag, flagcxMemDevice, nullptr));
-    owner->errorFlag = nullptr;
   }
   if (owner->publishAttempted && owner->context != nullptr) {
     FLAGCXCHECK(result(
@@ -170,13 +231,18 @@ flagcxResult_t releaseComm(CommOwner *owner) {
     FLAGCXCHECK(result(xpu_netio_destroy_context_retryable(&owner->context)));
   if (owner->device != nullptr)
     FLAGCXCHECK(result(xpu_netio_close_device_retryable(&owner->device)));
+  if (owner->hostControl != nullptr) {
+    FLAGCXCHECK(
+        deviceAdaptor->deviceFree(owner->hostControl, flagcxMemHost, nullptr));
+    owner->hostControl = owner->deviceControl = owner->errorFlag = nullptr;
+  }
   delete owner;
   return flagcxSuccess;
 }
 
 flagcxResult_t registerRegion(flagcxComm_t comm, CommOwner *owner,
-                              void *address, size_t bytes,
-                              WindowOwner **output) {
+                              void *address, size_t bytes, WindowOwner **output,
+                              bool remoteAtomic = false) {
   *output = nullptr;
   WindowOwner *window = new (std::nothrow) WindowOwner;
   flagcxResult_t allocation =
@@ -209,6 +275,8 @@ flagcxResult_t registerRegion(flagcxComm_t comm, CommOwner *owner,
     attr.gpu_platform_id = runtime.platformId;
   attr.access_bits =
       XPU_NETIO_MR_ACCESS_LOCAL_WRITE | XPU_NETIO_MR_ACCESS_REMOTE_WRITE;
+  if (remoteAtomic)
+    attr.access_bits |= XPU_NETIO_MR_ACCESS_REMOTE_ATOMIC;
   attr.flags = XPU_NETIO_MR_FLAG_STRICT_ORDERING;
   local = result(
       xpu_netio_register_memory_retryable(owner->context, &attr, &window->mr));
@@ -289,12 +357,17 @@ unsigned operationCapabilities(const xpu_netio_caps_t &caps) {
   if ((caps.operation_bits & (XPU_NETIO_OP_FLUSH | XPU_NETIO_OP_FLUSH_ASYNC)) ==
       (XPU_NETIO_OP_FLUSH | XPU_NETIO_OP_FLUSH_ASYNC))
     supported |= DefaultNetGdaFlush;
-  // This adapter implements a single-writer Barrier slot using inline writes.
-  // It does not implement the public multi-writer SignalInc/Add contract.
+  // Barrier slots use native RC 64-bit Fetch-and-Add, with a local return MR.
+  // Public SignalInc/Add and Put(Signal) reuse this native atomic path.
   if ((supported & (DefaultNetGdaPutValue | DefaultNetGdaFlush)) ==
           (DefaultNetGdaPutValue | DefaultNetGdaFlush) &&
-      (caps.ordering_bits & XPU_NETIO_ORDERED_TRANSPORT))
-    supported |= DefaultNetGdaBarrier;
+      (caps.ordering_bits & XPU_NETIO_ORDERED_TRANSPORT) &&
+      (caps.operation_bits & XPU_NETIO_OP_ATOMIC) &&
+      (caps.atomic_bits & XPU_NETIO_ATOMIC_FETCH_ADD_64) &&
+      (caps.memory_bits & XPU_NETIO_MEMORY_REMOTE_ATOMIC) &&
+      (caps.completion_bits & XPU_NETIO_COMPLETION_ATOMIC_FETCH_RESULT))
+    supported |= DefaultNetGdaBarrier | DefaultNetGdaSignal |
+                 DefaultNetGdaSignalCompletion;
   return supported;
 }
 
@@ -335,7 +408,8 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
     requiredOperations |= DefaultNetGdaSignal | DefaultNetGdaSignalCompletion;
   if (reqs->interCounterCount > 0)
     requiredOperations |= DefaultNetGdaCounterCompletion;
-  const unsigned implemented = kAllToAllCapabilities;
+  const unsigned implemented = kAllToAllCapabilities | DefaultNetGdaSignal |
+                               DefaultNetGdaSignalCompletion;
   flagcxResult_t support =
       stage(comm, (requiredOperations & ~implemented) != 0 ? flagcxNotSupported
                                                            : flagcxSuccess);
@@ -461,15 +535,17 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
   attr.endpoints_per_context = comm->nranks;
   attr.required_operation_bits = XPU_NETIO_OP_WRITE | XPU_NETIO_OP_WRITE_ASYNC |
                                  XPU_NETIO_OP_INLINE | XPU_NETIO_OP_FLUSH |
-                                 XPU_NETIO_OP_FLUSH_ASYNC;
+                                 XPU_NETIO_OP_FLUSH_ASYNC | XPU_NETIO_OP_ATOMIC;
+  attr.required_atomic_bits = XPU_NETIO_ATOMIC_FETCH_ADD_64;
   attr.required_ordering_bits = XPU_NETIO_ORDERED_TRANSPORT |
                                 XPU_NETIO_ORDER_SOURCE_REUSE |
                                 XPU_NETIO_ORDER_SYSTEM_FENCE;
-  attr.required_memory_bits = runtime.memoryCapability |
-                              XPU_NETIO_MEMORY_REMOTE_WRITE |
-                              XPU_NETIO_MEMORY_STRICT_ORDERING;
+  attr.required_memory_bits =
+      runtime.memoryCapability | XPU_NETIO_MEMORY_REMOTE_WRITE |
+      XPU_NETIO_MEMORY_REMOTE_ATOMIC | XPU_NETIO_MEMORY_STRICT_ORDERING;
   attr.required_completion_bits = XPU_NETIO_COMPLETION_LOCAL_SEND |
                                   XPU_NETIO_COMPLETION_ASYNC_REQUEST |
+                                  XPU_NETIO_COMPLETION_ATOMIC_FETCH_RESULT |
                                   XPU_NETIO_COMPLETION_TIMEOUT_WAIT;
   attr.required_posting_bits = XPU_NETIO_POST_WAIT_CONTROL;
   attr.required_routing_bits =
@@ -577,23 +653,59 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
   FLAGCXCHECK(registerRegion(comm, owner, devComm->signalBuffer,
                              static_cast<size_t>(devComm->signalCount) *
                                  devComm->contextCount * sizeof(uint64_t),
-                             &owner->signals));
-  local =
-      deviceAdaptor->deviceMalloc(reinterpret_cast<void **>(&owner->errorFlag),
-                                  sizeof(uint32_t), flagcxMemDevice, nullptr);
-  if (local == flagcxSuccess)
-    local = deviceAdaptor->deviceMemset(owner->errorFlag, 0, sizeof(uint32_t),
-                                        flagcxMemDevice, nullptr);
+                             &owner->signals, true));
+  // One return slot per (signal index, destination rank). Slots remain alive
+  // until all device work is drained and the owning DevComm is destroyed.
+  const size_t signalCount = static_cast<size_t>(devComm->signalCount);
+  const size_t nranks = static_cast<size_t>(comm->nranks);
+  local = signalCount <= SIZE_MAX / sizeof(uint64_t) / nranks
+              ? flagcxSuccess
+              : flagcxInvalidArgument;
+  FLAGCXCHECK(stage(comm, local));
+  const size_t resultBytes = signalCount * nranks * sizeof(uint64_t);
+  local = deviceAdaptor->deviceMalloc(&owner->atomicResults, resultBytes,
+                                      flagcxMemDevice, nullptr);
+  FLAGCXCHECK(stage(comm, local));
+  xpu_netio_mr_attr_t resultAttr{};
+  xpu_netio_mr_attr_init(&resultAttr);
+  resultAttr.address = owner->atomicResults;
+  resultAttr.length = resultBytes;
+  resultAttr.memory_type = runtime.memoryType;
+  if (runtime.memoryType == XPU_NETIO_MEMORY_TYPE_XPU)
+    resultAttr.gpu_platform_id = runtime.platformId;
+  resultAttr.access_bits = XPU_NETIO_MR_ACCESS_LOCAL_WRITE;
+  resultAttr.flags = XPU_NETIO_MR_FLAG_STRICT_ORDERING;
+  local = result(xpu_netio_register_memory_retryable(
+      owner->context, &resultAttr, &owner->atomicResultsMr));
+  FLAGCXCHECK(stage(comm, local));
+  xpu_netio_local_region_t atomicResults{};
+  local = result(
+      xpu_netio_get_local_region(owner->atomicResultsMr, &atomicResults));
+  FLAGCXCHECK(stage(comm, local));
+  local = deviceAdaptor->hostGetDevicePointer != nullptr
+              ? deviceAdaptor->deviceMalloc(
+                    reinterpret_cast<void **>(&owner->hostControl),
+                    2 * sizeof(uint32_t), flagcxMemHost, nullptr)
+              : flagcxNotSupported;
+  if (local == flagcxSuccess) {
+    owner->hostControl[0] = owner->hostControl[1] = 0;
+    local = deviceAdaptor->hostGetDevicePointer(
+        reinterpret_cast<void **>(&owner->deviceControl), owner->hostControl);
+    owner->errorFlag = owner->deviceControl;
+  }
   flagcxXpuNetioDeviceContext view{};
   view.contexts = owner->published.device_contexts;
   view.signalRemote = owner->signals->deviceRegions;
   view.signalLocal = owner->signals->local;
+  view.atomicResults = atomicResults;
   view.signalBuffer = devComm->signalBuffer;
   view.errorFlag = owner->errorFlag;
+  view.abortFlag = owner->deviceControl ? owner->deviceControl + 1 : nullptr;
   view.timeoutNs = kTimeoutNs;
   view.rank = comm->rank;
   view.nranks = comm->nranks;
   view.signalCount = devComm->signalCount;
+  view.userSignalCount = devComm->barrierSignalBase;
   if (local == flagcxSuccess)
     local = deviceAdaptor->deviceMalloc(
         reinterpret_cast<void **>(&owner->deviceView), sizeof(view),
@@ -662,6 +774,58 @@ flagcxResult_t destroyComm(flagcxDevComm_t devComm) {
   return flagcxSuccess;
 }
 
+flagcxResult_t prepareCommDestroy(flagcxDevComm_t devComm) {
+  if (devComm == nullptr || devComm->gdaHostOwner == nullptr)
+    return flagcxInvalidArgument;
+  CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
+  // Each sender drains its GPU work and local NIC completions. No rank may
+  // release MRs until all senders finish this phase. Callers stop submissions.
+  devComm->gdaDraining = 1;
+  owner->draining = true;
+  // Revoke host publication before any fallible drain. Device snapshots keep
+  // their allocations until all QPs retire, but cannot be obtained again if
+  // this attempt fails before detachOwnedWindows reaches them.
+  for (flagcxWindow_t window = owner->comm->devNetWindows; window != nullptr;
+       window = window->devNetNext) {
+    WindowOwner *registration =
+        static_cast<WindowOwner *>(window->gdaWindowOwner);
+    if (registration != nullptr && registration->comm == owner) {
+      registration->retiring = true;
+      window->gdaDeviceView = nullptr;
+    }
+  }
+  flagcxResult_t common =
+      stage(owner->comm, deviceAdaptor->deviceSynchronize());
+  if (common == flagcxSuccess) {
+    // Stop NIC access as well as GPU work: a timed-out request may still have
+    // an outstanding WQE. Keep every MR alive until all ranks retire their
+    // publications and native QPs. Retryable calls retain failed ownership.
+    flagcxResult_t local = flagcxSuccess;
+    if (owner->publishAttempted && owner->context != nullptr) {
+      local = result(
+          xpu_netio_unpublish_qps_retryable(owner->context, &owner->published));
+      if (local == flagcxSuccess)
+        owner->publishAttempted = false;
+    }
+    for (size_t i = 0; i < owner->qps.size() && local == flagcxSuccess; ++i)
+      if (owner->qps[i] != nullptr)
+        local = result(xpu_netio_destroy_qp_retryable(&owner->qps[i]));
+    common = stage(owner->comm, local);
+  }
+  if (common == flagcxSuccess) {
+    owner->nicQuiesced = true;
+    devComm->gdaQuiesced = 1;
+  }
+  if (common != flagcxSuccess) {
+    flagcxResult_t expected = flagcxSuccess;
+    __atomic_compare_exchange_n(&owner->asyncError, &expected, common, false,
+                                __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    if (owner->hostControl != nullptr)
+      __atomic_store_n(owner->hostControl + 1, 1u, __ATOMIC_RELEASE);
+  }
+  return common;
+}
+
 flagcxResult_t registerWindow(flagcxComm_t comm, flagcxDevComm_t devComm,
                               flagcxWindow_t hostWindow) {
   if (devComm == nullptr || devComm->gdaProvider == 0)
@@ -682,6 +846,8 @@ flagcxResult_t registerWindow(flagcxComm_t comm, flagcxDevComm_t devComm,
     if (id != hostWindow->devNetRegistrationId)
       return flagcxInvalidUsage;
   CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
+  FLAGCXCHECK(
+      stage(comm, owner->draining ? flagcxInvalidUsage : flagcxSuccess));
   WindowOwner *window = nullptr;
   WindowOwner *previousOrphans = owner->orphanWindows;
   flagcxResult_t registration = registerRegion(
@@ -731,7 +897,12 @@ flagcxResult_t prepareWindowDeregister(flagcxWindow_t hostWindow) {
     return flagcxInvalidUsage;
   if (hostWindow->gdaWindowOwner == nullptr)
     return flagcxSuccess;
-  return deviceAdaptor->deviceSynchronize();
+  WindowOwner *window = static_cast<WindowOwner *>(hostWindow->gdaWindowOwner);
+  FLAGCXCHECK(windowReleaseReady(window));
+  FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
+  // Observe errors raised by the work that just completed before peers
+  // converge readiness and any registration is released.
+  return windowReleaseReady(window);
 }
 
 flagcxResult_t deregisterWindow(flagcxWindow_t hostWindow) {
@@ -741,6 +912,11 @@ flagcxResult_t deregisterWindow(flagcxWindow_t hostWindow) {
     return flagcxInvalidUsage;
   WindowOwner *window = static_cast<WindowOwner *>(hostWindow->gdaWindowOwner);
   CommOwner *owner = window->comm;
+  FLAGCXCHECK(windowReleaseReady(window));
+  // Remove public publication before the first fallible destructive step.
+  // A failed release retains only the residual owner for cleanup retries.
+  window->retiring = true;
+  hostWindow->gdaDeviceView = nullptr;
   FLAGCXCHECK(releaseWindow(window));
   hostWindow->gdaWindowOwner = nullptr;
   hostWindow->gdaDeviceView = nullptr;
@@ -755,6 +931,11 @@ flagcxResult_t bindDevMem(flagcxWindow_t hostWindow, flagcxDevMem_t devMem,
       hostWindow->gdaDeviceView == nullptr ||
       hostWindow->gdaDevMemRefs == UINT_MAX)
     return flagcxInvalidUsage;
+  WindowOwner *window = static_cast<WindowOwner *>(hostWindow->gdaWindowOwner);
+  if (window->retiring || window->comm->draining ||
+      window->deviceView != hostWindow->gdaDeviceView)
+    return flagcxInvalidUsage;
+  FLAGCXCHECK(pollOwnerError(window->comm));
   const uintptr_t base = reinterpret_cast<uintptr_t>(hostWindow->userBase);
   const uintptr_t ptr = reinterpret_cast<uintptr_t>(devMem->rawPtr);
   // Remote offsets are relative to each peer's registered Window. A local
@@ -882,7 +1063,7 @@ static flagcxResult_t detachOwnedWindows(CommOwner *owner) {
 flagcxResult_t queryComm(flagcxDevComm_t devComm, unsigned *capabilities,
                          uint32_t **deviceErrorFlag, uint64_t *maxChunkBytes,
                          unsigned *requiredAlignment) {
-  if (devComm == nullptr || devComm->gdaProvider == 0 ||
+  if (devComm == nullptr || devComm->gdaProvider == 0 || devComm->gdaDraining ||
       devComm->gdaHostOwner == nullptr || capabilities == nullptr ||
       deviceErrorFlag == nullptr || maxChunkBytes == nullptr ||
       requiredAlignment == nullptr)
@@ -902,8 +1083,18 @@ flagcxResult_t clearError(flagcxDevComm_t devComm) {
       devComm->gdaHostOwner == nullptr)
     return flagcxInvalidArgument;
   CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
-  return deviceAdaptor->deviceMemset(owner->errorFlag, 0, sizeof(uint32_t),
-                                     flagcxMemDevice, nullptr);
+  if (devComm->gdaDraining || owner->hostControl == nullptr ||
+      __atomic_load_n(owner->hostControl + 1, __ATOMIC_ACQUIRE) != 0 ||
+      __atomic_load_n(&owner->asyncError, __ATOMIC_ACQUIRE) != flagcxSuccess)
+    return flagcxInvalidUsage;
+  // Do not erase an unpolled timeout: it is also the Window release gate.
+  if (pollOwnerError(owner) != flagcxSuccess)
+    return flagcxInvalidUsage;
+  FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
+  if (pollOwnerError(owner) != flagcxSuccess)
+    return flagcxInvalidUsage;
+  __atomic_store_n(owner->hostControl, 0u, __ATOMIC_RELEASE);
+  return flagcxSuccess;
 }
 
 flagcxResult_t pollError(flagcxDevComm_t devComm) {
@@ -911,16 +1102,27 @@ flagcxResult_t pollError(flagcxDevComm_t devComm) {
       devComm->gdaHostOwner == nullptr)
     return flagcxInvalidArgument;
   CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
-  xpu_netio_error_info_t info{};
-  xpu_netio_error_info_init(&info);
-  FLAGCXCHECK(result(xpu_netio_query_error(&owner->published, &info)));
-  if (info.category != XPU_NETIO_SUCCESS)
-    return result(info.category);
-  uint32_t deviceStatus = 0;
-  FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-      &deviceStatus, owner->errorFlag, sizeof(deviceStatus),
-      flagcxMemcpyDeviceToHost, nullptr, nullptr));
-  return result(static_cast<xpu_netio_status_t>(deviceStatus));
+  flagcxResult_t first = __atomic_load_n(&owner->asyncError, __ATOMIC_ACQUIRE);
+  if (first != flagcxSuccess)
+    return first;
+  if (devComm->gdaDraining)
+    return flagcxInvalidUsage;
+  return pollOwnerError(owner);
+}
+
+flagcxResult_t abortComm(flagcxDevComm_t devComm) {
+  if (devComm == nullptr || devComm->gdaHostOwner == nullptr)
+    return flagcxInvalidArgument;
+  CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
+  if (owner->hostControl == nullptr)
+    return flagcxInvalidUsage;
+  (void)pollError(devComm);
+  __atomic_store_n(owner->hostControl + 1, 1u, __ATOMIC_RELEASE);
+  flagcxResult_t expected = flagcxSuccess;
+  __atomic_compare_exchange_n(&owner->asyncError, &expected,
+                              result(XPU_NETIO_ABORTED), false,
+                              __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+  return flagcxSuccess;
 }
 
 } // namespace XpuNetioGda
@@ -929,4 +1131,5 @@ const flagcxDevNetAdaptor flagcxDevNetGda = {
     XpuNetioGda::createComm,       XpuNetioGda::destroyComm,
     XpuNetioGda::registerWindow,   XpuNetioGda::prepareWindowDeregister,
     XpuNetioGda::deregisterWindow, XpuNetioGda::bindDevMem,
-    XpuNetioGda::unbindDevMem};
+    XpuNetioGda::unbindDevMem,     XpuNetioGda::pollError,
+    XpuNetioGda::abortComm,        XpuNetioGda::prepareCommDestroy};

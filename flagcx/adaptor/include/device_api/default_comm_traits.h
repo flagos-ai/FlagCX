@@ -81,6 +81,14 @@ struct DefaultNetApi<DefaultNetProviderProxy, Operation> {
 // An unavailable provider traps if a malformed context reaches device code.
 template <typename PlatformTag>
 struct DefaultNetGdaProvider {
+  FLAGCX_DEVICE_INLINE_DECORATOR static uint64_t
+  beginBarrierWait(DefaultNetContext) {
+    return 0;
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool
+  continueBarrierWait(DefaultNetContext, uint64_t) {
+    return true;
+  }
   FLAGCX_HOST_DEVICE_INLINE static constexpr bool compiled(unsigned) {
     return false;
   }
@@ -1557,12 +1565,14 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
   uint32_t _ctaIndex;
   uint64_t *_epochBuffer;
   uint64_t _epoch;
+  DefaultNetContext _netContext;
 
   // Default ctor (no-op, for barrier composition)
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier()
       : _coop(), _peerBuffers(nullptr), _nRanks(0), _myRank(0), _nBarriers(0),
-        _ctaIndex(0), _epochBuffer(nullptr), _epoch(0) {}
+        _ctaIndex(0), _epochBuffer(nullptr),
+        _epoch(0), _netContext{DefaultNetProviderProxy, 0, nullptr, 0} {}
 
   // Active ctor
   FLAGCX_DEVICE_INLINE_DECORATOR
@@ -1572,7 +1582,8 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
         _myRank(team.rank), _nBarriers(dc.nBarriers), _ctaIndex(index),
         _epochBuffer(dc.epochBuffer),
         _epoch(Atomic::load(&dc.epochBuffer[index],
-                            flagcxDeviceMemoryOrderAcquire)) {
+                            flagcxDeviceMemoryOrderAcquire)),
+        _netContext(DefaultNetProviderPolicy<P>::makeContext(dc, nullptr, 0)) {
     assert(index < FLAGCX_DEVICE_CTA_COUNT);
   }
 
@@ -1592,6 +1603,8 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
   // wait: thread-striped spin on own inbox slots from each peer
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
+    const uint64_t start =
+        DefaultNetGdaProvider<P>::beginBarrierWait(_netContext);
     for (int i = _coop.threadRank(); i < _nRanks - 1; i += _coop.size()) {
       int peer = 1 + _myRank + i;
       if (peer >= _nRanks)
@@ -1600,14 +1613,20 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
       int iter = 0;
       uint64_t current = Atomic::load(slot, flagcxDeviceMemoryOrderAcquire);
       while (current < _epoch + 1) {
+        if (!DefaultNetGdaProvider<P>::continueBarrierWait(_netContext, start))
+          break;
         Intrin::spinBackoff(iter++);
         current = Atomic::load(slot, flagcxDeviceMemoryOrderAcquire);
       }
     }
-    _epoch += 1;
-    if (_coop.threadRank() == 0) {
-      Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
-                    flagcxDeviceMemoryOrderRelease);
+    // Every thread reaches both CTA synchronizations even when one peer fails.
+    if (_netContext.provider == DefaultNetProviderGda)
+      _coop.sync();
+    if (DefaultNetGdaProvider<P>::continueBarrierWait(_netContext, start)) {
+      _epoch += 1;
+      if (_coop.threadRank() == 0)
+        Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
+                      flagcxDeviceMemoryOrderRelease);
     }
     _coop.sync();
   }
@@ -1735,14 +1754,8 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
       return;
     int nPeers = _nTeamRanks - 1;
     _coop.sync();
-    // The GDA Barrier writes the same monotonically increasing epoch to each
-    // target's source slot. The local source slot is never waited on by self.
-    if (context().provider == DefaultNetProviderGda &&
-        _coop.threadRank() == 0) {
-      const int ownSlot =
-          _contextId * _signalCount + _barrierSignal0 + _teamRank;
-      ++_shadowBuffer[ownSlot];
-    }
+    // Native SignalInc advances the destination slot. Only waitImpl advances
+    // the receiver's expected count; no sender epoch is published.
     _coop.sync();
     // Each thread handles a subset of peers (cooperative distribution)
     for (int i = _coop.threadRank(); i < nPeers; i += _coop.size()) {
