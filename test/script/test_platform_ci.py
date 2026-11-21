@@ -341,8 +341,9 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             ("du", "du_adaptor.h"),
             ("iluvatar", "iluvatar_adaptor.h"),
             ("ppu", "ppu_adaptor.h"),
+            ("musa", "musa_adaptor.h"),
         ):
-            suffix = "hip" if platform == "du" else "cu"
+            suffix = {"du": "hip", "musa": "mu"}.get(platform, "cu")
             for kernel in (f"device_api.{suffix}", f"device_ir.{suffix}"):
                 source = (REPO_ROOT / "test/kernel" / platform / kernel).read_text()
                 self.assertIn(f'#include "{adaptor}"', source)

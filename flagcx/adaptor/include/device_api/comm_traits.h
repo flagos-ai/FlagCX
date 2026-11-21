@@ -164,6 +164,8 @@ struct Barrier;
 #include "iluvatar_comm_traits.h"
 #elif defined(USE_ENFLAME_ADAPTOR)
 #include "enflame_comm_traits.h"
+#elif defined(USE_MUSA_ADAPTOR)
+#include "musa_comm_traits.h"
 #elif defined(USE_ASCEND_ADAPTOR)
 #include "ascend_comm_traits.h"
 #else
