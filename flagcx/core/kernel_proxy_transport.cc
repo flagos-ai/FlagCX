@@ -17,6 +17,7 @@
 #include <sched.h>
 #include <stdlib.h>
 #include <string.h>
+#include "check.h"
 
 static void
 flagcxKernelProxyRequestReset(struct flagcxKernelProxyRequest *request) {
