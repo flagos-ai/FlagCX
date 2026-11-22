@@ -4439,12 +4439,13 @@ void launchKernelDevGetIntraWorldS(const void *devCommPtr, const void *remoteMem
 }
 void launchKernelDevPutSignalWaitIntraWorldS(
     const void *devCommPtr, const void *dstMemPtr, const void *srcMemPtr,
-    int *devResult, size_t bytes, flagcxStream_t stream, unsigned skew) {
+    int *devResult, size_t bytes, flagcxStream_t stream, unsigned skew,
+    int selectedVariant) {
   launchKernelDevPutSignalWaitIntraWorldS(
       (const void FLAGCX_IR_GLOBAL_PTR *)devCommPtr,
       (const void FLAGCX_IR_GLOBAL_PTR *)dstMemPtr,
       (const void FLAGCX_IR_GLOBAL_PTR *)srcMemPtr, devResult, bytes, stream,
-      skew);
+      skew, selectedVariant);
 }
 void launchKernelDevBarrierIntraWorldS(const void *devCommPtr, int *devResult, flagcxStream_t stream) {
   launchKernelDevBarrierIntraWorldS((const void FLAGCX_IR_GLOBAL_PTR *)devCommPtr, devResult, stream);
@@ -4457,12 +4458,13 @@ void launchKernelDevGetInterWorldS(const void *devCommPtr, const void *remoteMem
 }
 void launchKernelDevPutSignalWaitInterWorldS(
     const void *devCommPtr, const void *dstMemPtr, const void *srcMemPtr,
-    int *devResult, size_t bytes, flagcxStream_t stream, unsigned skew) {
+    int *devResult, size_t bytes, flagcxStream_t stream, unsigned skew,
+    int selectedVariant) {
   launchKernelDevPutSignalWaitInterWorldS(
       (const void FLAGCX_IR_GLOBAL_PTR *)devCommPtr,
       (const void FLAGCX_IR_GLOBAL_PTR *)dstMemPtr,
       (const void FLAGCX_IR_GLOBAL_PTR *)srcMemPtr, devResult, bytes, stream,
-      skew);
+      skew, selectedVariant);
 }
 void launchKernelDevBarrierInterWorldS(const void *devCommPtr, int *devResult, flagcxStream_t stream) {
   launchKernelDevBarrierInterWorldS((const void FLAGCX_IR_GLOBAL_PTR *)devCommPtr, devResult, stream);
@@ -4471,23 +4473,23 @@ void launchKernelDevPutRSigIntraWorldS(const void *devCommPtr,
                                        const void *dstMemPtr,
                                        const void *srcMemPtr, int *devResult,
                                        size_t bytes, flagcxStream_t stream,
-                                       unsigned skew) {
+                                       unsigned skew, int selectedVariant) {
   launchKernelDevPutRSigIntraWorldS(
       (const void FLAGCX_IR_GLOBAL_PTR *)devCommPtr,
       (const void FLAGCX_IR_GLOBAL_PTR *)dstMemPtr,
       (const void FLAGCX_IR_GLOBAL_PTR *)srcMemPtr, devResult, bytes, stream,
-      skew);
+      skew, selectedVariant);
 }
 void launchKernelDevPutRSigInterWorldS(const void *devCommPtr,
                                        const void *dstMemPtr,
                                        const void *srcMemPtr, int *devResult,
                                        size_t bytes, flagcxStream_t stream,
-                                       unsigned skew) {
+                                       unsigned skew, int selectedVariant) {
   launchKernelDevPutRSigInterWorldS(
       (const void FLAGCX_IR_GLOBAL_PTR *)devCommPtr,
       (const void FLAGCX_IR_GLOBAL_PTR *)dstMemPtr,
       (const void FLAGCX_IR_GLOBAL_PTR *)srcMemPtr, devResult, bytes, stream,
-      skew);
+      skew, selectedVariant);
 }
 void launchKernelDevPutValueIntraWorldS(const void *devCommPtr, const void *dstMemPtr, int *devResult, size_t bytes, flagcxStream_t stream) {
   launchKernelDevPutValueIntraWorldS((const void FLAGCX_IR_GLOBAL_PTR *)devCommPtr, (const void FLAGCX_IR_GLOBAL_PTR *)dstMemPtr, devResult, bytes, stream);
@@ -4519,23 +4521,23 @@ void launchKernelDevPutCounterIntraWorldS(const void *devCommPtr,
                                           const void *dstMemPtr,
                                           const void *srcMemPtr, int *devResult,
                                           size_t bytes, flagcxStream_t stream,
-                                          unsigned skew) {
+                                          unsigned skew, int selectedVariant) {
   launchKernelDevPutCounterIntraWorldS(
       (const void FLAGCX_IR_GLOBAL_PTR *)devCommPtr,
       (const void FLAGCX_IR_GLOBAL_PTR *)dstMemPtr,
       (const void FLAGCX_IR_GLOBAL_PTR *)srcMemPtr, devResult, bytes, stream,
-      skew);
+      skew, selectedVariant);
 }
 void launchKernelDevPutCounterInterWorldS(const void *devCommPtr,
                                           const void *dstMemPtr,
                                           const void *srcMemPtr, int *devResult,
                                           size_t bytes, flagcxStream_t stream,
-                                          unsigned skew) {
+                                          unsigned skew, int selectedVariant) {
   launchKernelDevPutCounterInterWorldS(
       (const void FLAGCX_IR_GLOBAL_PTR *)devCommPtr,
       (const void FLAGCX_IR_GLOBAL_PTR *)dstMemPtr,
       (const void FLAGCX_IR_GLOBAL_PTR *)srcMemPtr, devResult, bytes, stream,
-      skew);
+      skew, selectedVariant);
 }
 void launchKernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
                                                 int *devResult,

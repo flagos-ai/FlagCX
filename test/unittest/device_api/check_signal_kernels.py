@@ -11,15 +11,77 @@ import subprocess
 import tempfile
 
 
-def definition(source, name):
-    match = re.search(r'\b' + name + r'\s*\([^;{}]*\)\s*\{', source)
-    if not match:
+def definitions(source, name):
+    bodies = []
+    for match in re.finditer(r'\b' + name + r'\s*\([^;{}]*\)\s*\{', source):
+        end, depth = match.end(), 1
+        while depth:
+            depth += (source[end] == '{') - (source[end] == '}')
+            end += 1
+        bodies.append(source[match.start():end])
+    if not bodies:
         raise ValueError(f'missing definition: {name}')
-    end, depth = match.end(), 1
-    while depth:
-        depth += (source[end] == '{') - (source[end] == '}')
-        end += 1
-    return source[match.start():end]
+    return bodies
+
+
+def definition(source, name):
+    return definitions(source, name)[0]
+
+
+def check_iluvatar_bridges(root, cxx, temporary, sanitizer):
+    """Compile both overloads and execute the real bridge/launcher forwarding."""
+    source = (root / 'test/kernel/iluvatar/device_ir.cu').read_text()
+    bodies, calls = [], []
+    names = [f'launchKernelDev{variant}{team}WorldS'
+             for team in ['Intra', 'Inter']
+             for variant in ['PutSignalWait', 'PutRSig', 'PutCounter']]
+    for index, name in enumerate(names):
+        overloads = definitions(source, name)
+        if len(overloads) != 2:
+            raise ValueError(f'{name}: expected AS1 launcher and host bridge')
+        launcher, bridge = overloads
+        kernel = name.replace('launchKernel', 'kernel', 1)
+        signature = definition(source, kernel).split('{', 1)[0]
+        bodies.append('void ' + signature + '{\n'
+                      f'  target = {index};\n'
+                      '  round = selectedVariant; length = bytes;\n'
+                      '  delay = skew; output = result;\n}')
+        # Replace the SDK launch with a recorder call; retain the real AS1
+        # parameter types, generic overload and explicit address-space casts.
+        bodies.append('void ' + re.sub(r'<<<.*?>>>', '', launcher, flags=re.S))
+        bodies.append('void ' + bridge)
+        variants = 3 if 'PutCounter' in name else 2
+        calls.append(f'  Bridge bridge{index} = static_cast<Bridge>(&{name});\n'
+                     f'  for (int v = 0; v < {variants}; ++v) {{\n'
+                     '    target = round = -1;\n'
+                     f'    bridge{index}(nullptr, nullptr, nullptr, &result,\n'
+                     f'                   {1024 + index}, nullptr, {17 + index}, v);\n'
+                     f'    assert(target == {index} && round == v);\n'
+                     f'    assert(length == {1024 + index} && delay == {17 + index});\n'
+                     '    assert(output == &result);\n  }')
+    code = ('#include <cassert>\n#include <cstddef>\n'
+            'using flagcxStream_t = void *;\n'
+            'int target, round; size_t length; unsigned delay; int *output;\n' +
+            '\n\n'.join(bodies) + '\nint main() {\n  int result = 0;\n'
+            '  using Bridge = void (*)(const void *, const void *, const void *,\n'
+            '                          int *, size_t, flagcxStream_t, unsigned, int);\n' +
+            '\n'.join(calls) + '\n}\n')
+    compiler = subprocess.run([cxx, '--version'], capture_output=True,
+                              text=True, check=True).stdout
+    if 'clang' in compiler.lower():
+        code = '#define FLAGCX_IR_GLOBAL_PTR __attribute__((address_space(1)))\n' + code
+    else:
+        # GCC ignores address_space attributes. Preserve overload separation
+        # with an explicitly constructed pointer model instead of erasing AS1.
+        code = re.sub(r'const\s+void\s+FLAGCX_IR_GLOBAL_PTR\s*\*', 'As1Pointer ', code)
+        code = ('struct As1Pointer { explicit As1Pointer(const void *) {} };\n' + code)
+    probe = temporary / 'iluvatar_bridges.cpp'
+    binary = temporary / 'iluvatar_bridges'
+    probe.write_text(code)
+    subprocess.run([cxx, '-std=c++14', '-O1', *sanitizer, str(probe),
+                    '-o', str(binary)], check=True)
+    subprocess.run([str(binary)], check=True, timeout=10)
+    print('actual Iluvatar bridges: PASS (six overload pairs, all variants)', flush=True)
 
 
 def main():
@@ -117,6 +179,7 @@ def main():
         (temporary / 'signal_test_kernels.inc').write_text('\n\n'.join(reference))
         binary = temporary / 'signal_kernel_sim'
         sanitizer = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer'] if args.sanitize else []
+        check_iluvatar_bridges(root, args.cxx, temporary, sanitizer)
         subprocess.run([args.cxx, '-std=c++14', '-pthread', '-O1', *sanitizer,
                         '-I' + str(temporary),
                         '-I' + str(root / 'test/kernel/include'),
