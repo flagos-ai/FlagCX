@@ -370,6 +370,8 @@ const char *ppupcclAdaptorGetErrorString(flagcxResult_t result) {
 }
 
 const char *ppupcclAdaptorGetLastError(flagcxInnerComm_t comm) {
+  if (comm == NULL || comm->base == NULL)
+    return "PPU PCCL communicator has no live native context";
   const ppupcclSymbols *api = NULL;
   if (ppupcclLoadApi(&api) != flagcxSuccess)
     return "PPU PCCL library could not be loaded; consult the initialization "
@@ -393,32 +395,7 @@ ppupcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
       &(*comm)->base, nranks, *(pcclUniqueId *)commId, rank));
 }
 
-flagcxResult_t ppupcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  if (comm == NULL)
-    return flagcxInvalidArgument;
-  const struct ppupcclSymbols *api = NULL;
-  FLAGCXCHECK(ppupcclLoadApi(&api));
-  return ppupcclResultToFlagcx(api->pcclCommFinalize(comm->base));
-}
-
-flagcxResult_t ppupcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  if (comm == NULL)
-    return flagcxInvalidArgument;
-  const struct ppupcclSymbols *api = NULL;
-  FLAGCXCHECK(ppupcclLoadApi(&api));
-  flagcxResult_t result =
-      ppupcclResultToFlagcx(api->pcclCommDestroy(comm->base));
-  if (result != flagcxSuccess)
-    return result;
-  free(comm);
-  return flagcxSuccess;
-}
-
-flagcxResult_t ppupcclAdaptorCommAbort(flagcxInnerComm_t comm) {
-  const struct ppupcclSymbols *api = NULL;
-  FLAGCXCHECK(ppupcclLoadApi(&api));
-  return ppupcclResultToFlagcx(api->pcclCommAbort(comm->base));
-}
+#include "ppu_comm_lifecycle.h"
 
 flagcxResult_t ppupcclAdaptorCommResume(flagcxInnerComm_t comm) {
   return flagcxNotSupported;
@@ -430,6 +407,10 @@ flagcxResult_t ppupcclAdaptorCommSuspend(flagcxInnerComm_t comm) {
 
 flagcxResult_t ppupcclAdaptorCommCount(const flagcxInnerComm_t comm,
                                        int *count) {
+  if (comm == NULL || count == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxInvalidUsage;
   const struct ppupcclSymbols *api = NULL;
   FLAGCXCHECK(ppupcclLoadApi(&api));
   return ppupcclResultToFlagcx(api->pcclCommCount(comm->base, count));
@@ -437,6 +418,10 @@ flagcxResult_t ppupcclAdaptorCommCount(const flagcxInnerComm_t comm,
 
 flagcxResult_t ppupcclAdaptorCommCuDevice(const flagcxInnerComm_t comm,
                                           int *device) {
+  if (comm == NULL || device == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxInvalidUsage;
   const struct ppupcclSymbols *api = NULL;
   FLAGCXCHECK(ppupcclLoadApi(&api));
   return ppupcclResultToFlagcx(api->pcclCommCuDevice(comm->base, device));
@@ -444,23 +429,13 @@ flagcxResult_t ppupcclAdaptorCommCuDevice(const flagcxInnerComm_t comm,
 
 flagcxResult_t ppupcclAdaptorCommUserRank(const flagcxInnerComm_t comm,
                                           int *rank) {
+  if (comm == NULL || rank == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxInvalidUsage;
   const struct ppupcclSymbols *api = NULL;
   FLAGCXCHECK(ppupcclLoadApi(&api));
   return ppupcclResultToFlagcx(api->pcclCommUserRank(comm->base, rank));
-}
-
-flagcxResult_t ppupcclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
-                                               flagcxResult_t *asyncError) {
-  const struct ppupcclSymbols *api = NULL;
-  FLAGCXCHECK(ppupcclLoadApi(&api));
-  if (comm == NULL || asyncError == NULL)
-    return flagcxInvalidArgument;
-  pcclResult_t nativeError = pcclSuccess;
-  const flagcxResult_t result = ppupcclResultToFlagcx(
-      api->pcclCommGetAsyncError(comm->base, &nativeError));
-  if (result == flagcxSuccess)
-    *asyncError = ppupcclResultToFlagcx(nativeError);
-  return result;
 }
 
 flagcxResult_t ppupcclAdaptorMemAlloc(void **ptr, size_t size) {
@@ -782,6 +757,6 @@ struct flagcxCCLAdaptor ppupcclAdaptor = {
     ppupcclAdaptorGroupStart, ppupcclAdaptorGroupEnd,
     // Device API
     ppupcclAdaptorDevCommReqsInit, ppupcclAdaptorDevCommCreate,
-    ppupcclAdaptorDevCommDestroy};
+    ppupcclAdaptorDevCommDestroy, flagcxCclFinalizeWorld};
 
 #endif // USE_PPU_ADAPTOR

@@ -265,6 +265,7 @@ int main() {{
         self.compile_and_run(source + r"""
 int main() {
   flagcxInnerComm comm{};
+  comm.base = reinterpret_cast<pcclComm_t>(uintptr_t(17));
   flagcxStream stream{};
   assert(ppupcclAdaptorAllReduce(nullptr, nullptr, 1, flagcxFloat32,
                                flagcxMax, &comm, &stream) == flagcxSuccess);
@@ -296,12 +297,14 @@ int main() {
 }
 """)
 
-    def test_pccl_lifecycle_retains_wrapper_until_destroy_success(self):
+    def test_pccl_finalize_closes_native_before_local_wrapper_destroy(self):
         source = r"""
 #include "adaptor.h"
+#include "ppu_adaptor.h"
 #include <cassert>
 #include <stdlib.h>
 static int wrapperFrees = 0, finalizeCalls = 0, destroyCalls = 0;
+static pcclResult_t finalizeStatus = pcclSuccess, destroyStatus = pcclSuccess;
 static void releaseWrapper(void *pointer) {
   ++wrapperFrees;
   std::free(pointer);
@@ -316,39 +319,66 @@ static void releaseWrapper(void *pointer) {
 #undef free
 static pcclResult_t finalizeNative(pcclComm_t) {
   ++finalizeCalls;
-  return pcclStatus;
+  return finalizeStatus;
 }
 static pcclResult_t destroyNative(pcclComm_t) {
   ++destroyCalls;
-  return pcclStatus;
+  return destroyStatus;
 }
 int main() {
   assert(ppupcclAdaptorCommFinalize(nullptr) == flagcxInvalidArgument);
   assert(ppupcclAdaptorCommDestroy(nullptr) == flagcxInvalidArgument);
+  assert(ppupcclAdaptorCommAbort(nullptr) == flagcxInvalidArgument);
   assert(ppupcclAdaptorGetVersion(nullptr) == flagcxSuccess);
+  assert(ppupcclAdaptor.finalizeScope == flagcxCclFinalizeWorld);
   ppupcclApi.pcclCommFinalize = finalizeNative;
   ppupcclApi.pcclCommDestroy = destroyNative;
   flagcxInnerComm_t comm = static_cast<flagcxInnerComm_t>(calloc(1, sizeof(*comm)));
   assert(comm != nullptr);
   comm->base = reinterpret_cast<pcclComm_t>(uintptr_t(17));
+  finalizeStatus = pcclRemoteError;
+  assert(ppupcclAdaptorCommFinalize(comm) == flagcxRemoteError);
+  finalizeStatus = pcclInProgress;
+  assert(ppupcclAdaptorCommFinalize(comm) == flagcxInProgress);
+  pcclAsyncStatus = pcclInProgress;
+  flagcxResult_t status = flagcxSuccess;
+  assert(ppupcclAdaptorCommGetAsyncError(comm, &status) == flagcxSuccess);
+  assert(status == flagcxInProgress && destroyCalls == 0);
+  pcclAsyncStatus = pcclSuccess;
   for (pcclResult_t failure : {pcclRemoteError, pcclInProgress}) {
-    pcclStatus = failure;
-    assert(ppupcclAdaptorCommFinalize(comm) == ppupcclResultToFlagcx(failure));
+    destroyStatus = failure;
+    assert(ppupcclAdaptorCommGetAsyncError(comm, &status) == flagcxSuccess);
+    assert(status == ppupcclResultToFlagcx(failure));
     assert(comm->base == reinterpret_cast<pcclComm_t>(uintptr_t(17)));
-    assert(wrapperFrees == 0);
+    assert(wrapperFrees == 0 && finalizeCalls == 2);
   }
-  pcclStatus = pcclSuccess;
+  destroyStatus = pcclSuccess;
+  assert(ppupcclAdaptorCommGetAsyncError(comm, &status) == flagcxSuccess);
+  assert(status == flagcxSuccess && comm->base == nullptr);
+  int metadata = -1;
+  assert(ppupcclAdaptorCommCount(comm, &metadata) == flagcxInvalidUsage);
+  assert(ppupcclAdaptorCommCuDevice(comm, &metadata) == flagcxInvalidUsage);
+  assert(ppupcclAdaptorCommUserRank(comm, &metadata) == flagcxInvalidUsage);
+  assert(metadata == -1);
   assert(ppupcclAdaptorCommFinalize(comm) == flagcxSuccess);
-  assert(wrapperFrees == 0);
-  for (pcclResult_t failure : {pcclRemoteError, pcclInProgress}) {
-    pcclStatus = failure;
-    assert(ppupcclAdaptorCommDestroy(comm) == ppupcclResultToFlagcx(failure));
-    assert(comm->base == reinterpret_cast<pcclComm_t>(uintptr_t(17)));
-    assert(wrapperFrees == 0);
-  }
-  pcclStatus = pcclSuccess;
+  assert(ppupcclAdaptorCommAbort(comm) == flagcxSuccess);
+  assert(ppupcclAdaptorCommGetAsyncError(comm, &status) == flagcxSuccess);
+  assert(status == flagcxSuccess);
   assert(ppupcclAdaptorCommDestroy(comm) == flagcxSuccess);
-  assert(finalizeCalls == 3 && destroyCalls == 3 && wrapperFrees == 1);
+  assert(finalizeCalls == 2 && destroyCalls == 3 && wrapperFrees == 1);
+
+  // Direct native cleanup remains available to initialization rollback.
+  comm = static_cast<flagcxInnerComm_t>(calloc(1, sizeof(*comm)));
+  comm->base = reinterpret_cast<pcclComm_t>(uintptr_t(18));
+  for (pcclResult_t failure : {pcclRemoteError, pcclInProgress}) {
+    destroyStatus = failure;
+    assert(ppupcclAdaptorCommDestroy(comm) == ppupcclResultToFlagcx(failure));
+    assert(comm->base == reinterpret_cast<pcclComm_t>(uintptr_t(18)));
+    assert(wrapperFrees == 1);
+  }
+  destroyStatus = pcclSuccess;
+  assert(ppupcclAdaptorCommDestroy(comm) == flagcxSuccess);
+  assert(finalizeCalls == 2 && destroyCalls == 6 && wrapperFrees == 2);
 }
 """
         self.compile_and_run('#include <initializer_list>\n' + source)

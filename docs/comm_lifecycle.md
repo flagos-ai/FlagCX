@@ -84,6 +84,13 @@ again.
    native Finalize add intra-node agreement only for declared FlagCX IPC groups. Initialization agrees the maximum scope across all
    vendors, so mixed-vendor ranks cannot choose different control protocols.
 
+PPU PCCL also completes native Destroy in this final vendor stage: the deployed
+SDK can still wait for peers after native Finalize. Its C-style close cursor
+retains accepted Finalize progress across polling and Destroy failures. Async
+queries report completion only after native close succeeds. The wrapper remains
+valid with a null base until local Destroy. PPU uses world shutdown agreement;
+no native PCCL close is deferred to rank-local Destroy after normal Finalize.
+
 The CCL v1 plugin layout is unchanged. The latest internal descriptor appends
 its shutdown scope, and upgraded v1 plugins default to world agreement. No
 Finalize callback may free its wrapper. Native SDK errors remain errors; a

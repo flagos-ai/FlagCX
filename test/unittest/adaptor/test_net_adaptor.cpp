@@ -1230,6 +1230,38 @@ TEST(PpuPcclLoading, NativeCommBeforeBarexHostMrRegistration) {
 }
 #endif
 
+#if defined(USE_PPU_ADAPTOR)
+TEST(PpuPcclLoading, FinalizeClosesNativeBeforeWrapperDestroy) {
+  ASSERT_EQ(deviceAdaptor->setDevice(0), flagcxSuccess);
+  auto *ccl = cclAdaptors[flagcxCCLAdaptorDevice];
+  ASSERT_NE(ccl, nullptr);
+  flagcxInnerUniqueId_t id = nullptr;
+  ASSERT_EQ(ccl->getUniqueId(&id), flagcxSuccess);
+  flagcxInnerComm_t comm = nullptr;
+  flagcxResult_t initialized = ccl->commInitRank(&comm, 1, id, 0, nullptr);
+  free(id);
+  struct NativeOwner {
+    flagcxCCLAdaptor *adaptor;
+    flagcxInnerComm_t comm;
+    ~NativeOwner() {
+      if (comm != nullptr)
+        EXPECT_EQ(adaptor->commDestroy(comm), flagcxSuccess);
+    }
+  } owner{ccl, comm};
+  ASSERT_EQ(initialized, flagcxSuccess);
+  ASSERT_NE(comm, nullptr);
+  EXPECT_EQ(ccl->finalizeScope, flagcxCclFinalizeWorld);
+  flagcxResult_t status = ccl->commFinalize(comm);
+  while (status == flagcxInProgress)
+    ASSERT_EQ(ccl->commGetAsyncError(comm, &status), flagcxSuccess);
+  ASSERT_EQ(status, flagcxSuccess);
+  EXPECT_EQ(comm->base, nullptr);
+  EXPECT_EQ(ccl->commFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(ccl->commGetAsyncError(comm, &status), flagcxSuccess);
+  EXPECT_EQ(status, flagcxSuccess);
+}
+#endif
+
 TEST_F(NetAdaptorLoopback, RegisterHostMrAndExportMetadata) {
   SKIP_IF_CALLBACK_NULL(net_, regMr);
   SKIP_IF_CALLBACK_NULL(net_, deregMr);
