@@ -136,12 +136,25 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
               flagcxSuccess);
   }
   ASSERT_EQ(deviceAdaptor->streamSynchronize(owners.streams[0]), flagcxSuccess);
+  flagcxRmaProxyState *rmaProxy = nullptr;
+  uint64_t *doneAllocation = nullptr, *readyAllocation = nullptr;
   if (withRma) {
     ASSERT_NE(owners.comms[0]->heteroComm, nullptr);
-    auto *proxy = owners.comms[0]->heteroComm->rmaProxy;
-    ASSERT_NE(proxy, nullptr);
-    ASSERT_NE(proxy->doneSeqsDev, nullptr);
-    ASSERT_NE(proxy->readySeqsDev, nullptr);
+    rmaProxy = owners.comms[0]->heteroComm->rmaProxy;
+    ASSERT_NE(rmaProxy, nullptr);
+    ASSERT_NE(rmaProxy->worker, nullptr);
+    ASSERT_NE(rmaProxy->doneSeqsCpu, nullptr);
+    ASSERT_NE(rmaProxy->readySeqsCpu, nullptr);
+    doneAllocation = rmaProxy->doneSeqsDev;
+    readyAllocation = rmaProxy->readySeqsDev;
+    // HOST_FUNC may have no device counters, or retain allocations with only
+    // one successful CPU mapping. STREAM_OPS requires both complete mappings.
+    if (rmaProxy->useStreamOps) {
+      ASSERT_NE(doneAllocation, nullptr);
+      ASSERT_NE(readyAllocation, nullptr);
+      ASSERT_TRUE(rmaProxy->doneSeqsCpuMapped);
+      ASSERT_TRUE(rmaProxy->readySeqsCpuMapped);
+    }
     // Complete initialization before B's independent work is blocked.
     ASSERT_EQ(deviceAdaptor->deviceSynchronize(), flagcxSuccess);
   }
@@ -179,10 +192,19 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
       << "Finalize(A) waited for independent work on communicator B";
   if (withRma) {
     auto *proxy = owners.comms[0]->heteroComm->rmaProxy;
+    ASSERT_EQ(proxy, rmaProxy);
     ASSERT_NE(proxy, nullptr);
     EXPECT_TRUE(proxy->stopComplete);
-    EXPECT_NE(proxy->doneSeqsDev, nullptr);
-    EXPECT_NE(proxy->readySeqsDev, nullptr);
+    EXPECT_TRUE(proxy->quiesced);
+    EXPECT_EQ(proxy->worker, nullptr);
+    EXPECT_EQ(proxy->ipcState, nullptr);
+    EXPECT_EQ(proxy->doneSeqsCpu, nullptr);
+    EXPECT_EQ(proxy->readySeqsCpu, nullptr);
+    EXPECT_FALSE(proxy->doneSeqsCpuMapped);
+    EXPECT_FALSE(proxy->readySeqsCpuMapped);
+    // Only local Destroy may free a device allocation that actually exists.
+    EXPECT_EQ(proxy->doneSeqsDev, doneAllocation);
+    EXPECT_EQ(proxy->readySeqsDev, readyAllocation);
   }
   if (withPartialOwners) {
     EXPECT_EQ(owners.comms[0]->activeDevComms, nullptr);
