@@ -74,8 +74,8 @@ static int resolveUniRunnerHierarchicalSlicedARGroupSize(flagcxComm_t comm) {
 
 static flagcxResult_t
 ensureUniRunnerReduceTypeSupported(flagcxDataType_t datatype) {
-#if defined(USE_DU_ADAPTOR)
-  // The DU static executor has no half or bfloat16 reduction specialization.
+#if defined(USE_DU_ADAPTOR) || defined(USE_PPU_ADAPTOR)
+  // These static executors have no half or bfloat16 reduction specialization.
   if (datatype == flagcxFloat16 || datatype == flagcxBfloat16)
     return flagcxNotSupported;
 #endif

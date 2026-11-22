@@ -384,6 +384,55 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  perf-test-experimental-ppu:
+    if: contains(fromJSON(inputs.platforms), 'ppu')
+    name: perf-test-experimental (ppu)
+    needs: load-hardware-container-configs
+    runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.ppu_runs_on) }}
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Check Docker
+        shell: bash
+        run: docker version
+
+      - name: Run perf-test-experimental (ppu) in configured container
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.ppu_docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ppu_ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.ppu_set_env }}
+        run: >-
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
+          ppu perf-test-experimental
+
+      - name: Cleanup perf-test-experimental (ppu) container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-perf-test-experimental-ppu-${{ github.run_attempt }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
   perf-test-ascend:
     if: contains(fromJSON(inputs.platforms), 'ascend')
     name: perf-test (ascend)
@@ -494,6 +543,7 @@ jobs:
       - perf-test-cuda
       - perf-test-metax
       - perf-test-ppu
+      - perf-test-experimental-ppu
       - perf-test-ascend
       - perf-test-kunlunxin
     runs-on: ubuntu-latest
@@ -506,6 +556,7 @@ jobs:
       HYGON_EXPERIMENTAL_RESULT: ${{ needs['perf-test-experimental-hygon'].result }}
       METAX_RESULT: ${{ needs['perf-test-metax'].result }}
       PPU_RESULT: ${{ needs['perf-test-ppu'].result }}
+      PPU_EXPERIMENTAL_RESULT: ${{ needs['perf-test-experimental-ppu'].result }}
       KUNLUNXIN_RESULT: ${{ needs['perf-test-kunlunxin'].result }}
       ASCEND_RESULT: ${{ needs['perf-test-ascend'].result }}
     steps:
@@ -521,7 +572,7 @@ jobs:
           bash .github/scripts/ci/check_platform_workflow.sh
           "$PLATFORMS" "$CONFIG_RESULT" "$CUDA_EXPERIMENTAL_RESULT" "$CUDA_RESULT"
           "$HYGON_RESULT" "$HYGON_EXPERIMENTAL_RESULT" "$METAX_RESULT"
-          "$PPU_RESULT" "$ASCEND_RESULT"
+          "$PPU_RESULT" "$PPU_EXPERIMENTAL_RESULT" "$ASCEND_RESULT"
 
       - name: Validate selected KunlunXin performance job
         env:
