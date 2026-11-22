@@ -28,6 +28,9 @@
 #include "net.h"
 #include "net_test_utils.h"
 #include "onesided.h"
+#if defined(USE_PPU_ADAPTOR)
+#include "ppu_adaptor.h"
+#endif
 
 namespace {
 
