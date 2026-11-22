@@ -2086,11 +2086,23 @@ static inline bool flagcxRmaMrIndexIsValid(flagcxHeteroComm_t comm,
          comm->oneSideHandles != NULL && comm->oneSideHandles[mrIndex] != NULL;
 }
 
-flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
-                               size_t srcOffset, size_t dstOffset, size_t size,
-                               int srcMrIdx, int dstMrIdx, bool streamSyncReady,
-                               uint64_t *assignedSeq, uint64_t orderingKey,
-                               bool independent) {
+// Admission closes as soon as Finalize starts, even if draining later fails.
+// Stream submissions already admitted by their entry point use the private
+// implementations below so their producer work can still reach the proxy.
+static flagcxResult_t flagcxHeteroRmaRequireActive(flagcxHeteroComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->finalizeState.rollbackPending ||
+      __atomic_load_n(&comm->finalizeState.started, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxHeteroPutImpl(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
+                    size_t dstOffset, size_t size, int srcMrIdx, int dstMrIdx,
+                    bool streamSyncReady, uint64_t *assignedSeq,
+                    uint64_t orderingKey, bool independent) {
   if (comm == NULL)
     return flagcxInvalidArgument;
   if (comm->netAdaptor == NULL || comm->netAdaptor->iput == NULL)
@@ -2126,11 +2138,26 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
   return res;
 }
 
+flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
+                               size_t srcOffset, size_t dstOffset, size_t size,
+                               int srcMrIdx, int dstMrIdx, bool streamSyncReady,
+                               uint64_t *assignedSeq, uint64_t orderingKey,
+                               bool independent) {
+  flagcxResult_t admitted = flagcxHeteroRmaRequireActive(comm);
+  if (admitted != flagcxSuccess) {
+    return admitted;
+  }
+  return flagcxHeteroPutImpl(comm, peer, srcOffset, dstOffset, size, srcMrIdx,
+                             dstMrIdx, streamSyncReady, assignedSeq,
+                             orderingKey, independent);
+}
+
 flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
                                     const size_t *srcOffsets,
                                     const size_t *dstOffsets,
                                     const size_t *sizes, const int *srcMrIdxs,
                                     const int *dstMrIdxs, size_t count) {
+  FLAGCXCHECK(flagcxHeteroRmaRequireActive(comm));
   if (count == 0)
     return flagcxSuccess;
   if (comm == NULL || srcOffsets == NULL || dstOffsets == NULL ||
@@ -2209,6 +2236,7 @@ flagcxResult_t flagcxHeteroBatchPutSignal(
     const uint8_t *independent, size_t count, size_t signalOffset,
     uint64_t signalValue, uint64_t releaseOrderingKey, bool releaseIndependent,
     uint64_t *assignedSeq) {
+  FLAGCXCHECK(flagcxHeteroRmaRequireActive(comm));
   if (comm == NULL || count == 0 || srcOffsets == NULL || dstOffsets == NULL ||
       sizes == NULL || srcMrIdxs == NULL || dstMrIdxs == NULL ||
       orderingKeys == NULL || independent == NULL)
@@ -2291,11 +2319,11 @@ flagcxResult_t flagcxHeteroBatchPutSignal(
   return result;
 }
 
-flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
-                               size_t srcOffset, size_t dstOffset, size_t size,
-                               int srcMrIdx, int dstMrIdx, uint64_t orderingKey,
-                               bool independent, flagcxEvent_t streamEvent,
-                               uint64_t *assignedSeq) {
+static flagcxResult_t
+flagcxHeteroGetImpl(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
+                    size_t dstOffset, size_t size, int srcMrIdx, int dstMrIdx,
+                    uint64_t orderingKey, bool independent,
+                    flagcxEvent_t streamEvent, uint64_t *assignedSeq) {
   // Ownership of a non-null event transfers here, including on failure.
   auto reject = [streamEvent](flagcxResult_t result) {
     if (streamEvent != NULL)
@@ -2337,6 +2365,23 @@ flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
   if (res != flagcxSuccess)
     flagcxRmaDescDestroy(desc);
   return res;
+}
+
+flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
+                               size_t srcOffset, size_t dstOffset, size_t size,
+                               int srcMrIdx, int dstMrIdx, uint64_t orderingKey,
+                               bool independent, flagcxEvent_t streamEvent,
+                               uint64_t *assignedSeq) {
+  flagcxResult_t admitted = flagcxHeteroRmaRequireActive(comm);
+  if (admitted != flagcxSuccess) {
+    // Get takes ownership of the supplied event on every return path.
+    if (streamEvent != NULL)
+      deviceAdaptor->eventDestroy(streamEvent);
+    return admitted;
+  }
+  return flagcxHeteroGetImpl(comm, peer, srcOffset, dstOffset, size, srcMrIdx,
+                             dstMrIdx, orderingKey, independent, streamEvent,
+                             assignedSeq);
 }
 
 static flagcxResult_t
@@ -2438,20 +2483,19 @@ flagcxHeteroGetStreamImpl(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
     deviceAdaptor->eventDestroy(readyEvent);
     return res;
   }
-  res = flagcxHeteroGet(comm, peer, srcOffset, dstOffset, size, srcMrIdx,
-                        dstMrIdx, 0, false, readyEvent, &assignedSeq);
+  res = flagcxHeteroGetImpl(comm, peer, srcOffset, dstOffset, size, srcMrIdx,
+                            dstMrIdx, 0, false, readyEvent, &assignedSeq);
   if (res != flagcxSuccess)
     return res;
   return flagcxRmaWaitDone(proxy, peer, assignedSeq, stream);
 }
 
-flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
-                                     size_t srcOffset, size_t dstOffset,
-                                     size_t size, size_t signalOffset,
-                                     int srcMrIdx, int dstMrIdx,
-                                     uint64_t signalValue, bool streamSyncReady,
-                                     uint64_t *assignedSeq,
-                                     uint64_t orderingKey, bool independent) {
+static flagcxResult_t
+flagcxHeteroPutSignalImpl(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
+                          size_t dstOffset, size_t size, size_t signalOffset,
+                          int srcMrIdx, int dstMrIdx, uint64_t signalValue,
+                          bool streamSyncReady, uint64_t *assignedSeq,
+                          uint64_t orderingKey, bool independent) {
   if (comm == NULL)
     return flagcxInvalidArgument;
   if (comm->netAdaptor == NULL || comm->netAdaptor->iputSignal == NULL ||
@@ -2528,6 +2572,22 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
   }
   flagcxRmaReleaseGroupRelease(group); // creator reference
   return res;
+}
+
+flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
+                                     size_t srcOffset, size_t dstOffset,
+                                     size_t size, size_t signalOffset,
+                                     int srcMrIdx, int dstMrIdx,
+                                     uint64_t signalValue, bool streamSyncReady,
+                                     uint64_t *assignedSeq,
+                                     uint64_t orderingKey, bool independent) {
+  flagcxResult_t admitted = flagcxHeteroRmaRequireActive(comm);
+  if (admitted != flagcxSuccess) {
+    return admitted;
+  }
+  return flagcxHeteroPutSignalImpl(
+      comm, peer, srcOffset, dstOffset, size, signalOffset, srcMrIdx, dstMrIdx,
+      signalValue, streamSyncReady, assignedSeq, orderingKey, independent);
 }
 
 flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
@@ -2779,9 +2839,9 @@ static flagcxResult_t flagcxHeteroPutStreamImpl(
   if (stream != NULL && proxy->readySeqsCpu != NULL) {
     // Step 1: Enqueue to proxy (gets real opSeq under mutex, race-free)
     uint64_t assignedSeq = 0;
-    flagcxResult_t res = flagcxHeteroPut(
+    flagcxResult_t res = flagcxHeteroPutImpl(
         comm, peer, srcOffset, dstOffset, size, srcMrIdx, dstMrIdx,
-        /*streamSyncReady=*/true, &assignedSeq);
+        /*streamSyncReady=*/true, &assignedSeq, 0, false);
     if (res != flagcxSuccess)
       return res;
 
@@ -2803,8 +2863,8 @@ static flagcxResult_t flagcxHeteroPutStreamImpl(
     // No stream or no GDR buffers: skip sync (legacy non-stream path)
     uint64_t assignedSeq = 0;
     flagcxResult_t res =
-        flagcxHeteroPut(comm, peer, srcOffset, dstOffset, size, srcMrIdx,
-                        dstMrIdx, false, &assignedSeq);
+        flagcxHeteroPutImpl(comm, peer, srcOffset, dstOffset, size, srcMrIdx,
+                            dstMrIdx, false, &assignedSeq, 0, false);
     if (opSeq != NULL && res == flagcxSuccess)
       *opSeq = assignedSeq;
     return res;
@@ -2898,10 +2958,10 @@ static flagcxResult_t flagcxHeteroPutSignalStreamImpl(
   if (stream != NULL && proxy->readySeqsCpu != NULL) {
     // Step 1: Enqueue to proxy (gets real opSeq under mutex, race-free)
     uint64_t assignedSeq = 0;
-    flagcxResult_t res =
-        flagcxHeteroPutSignal(comm, peer, srcOffset, dstOffset, size,
-                              signalOffset, srcMrIdx, dstMrIdx, signalValue,
-                              /*streamSyncReady=*/true, &assignedSeq);
+    flagcxResult_t res = flagcxHeteroPutSignalImpl(
+        comm, peer, srcOffset, dstOffset, size, signalOffset, srcMrIdx,
+        dstMrIdx, signalValue,
+        /*streamSyncReady=*/true, &assignedSeq, 0, false);
     if (res != flagcxSuccess)
       return res;
 
@@ -2922,9 +2982,9 @@ static flagcxResult_t flagcxHeteroPutSignalStreamImpl(
   } else {
     // No stream or no GDR buffers: skip sync (legacy non-stream path)
     uint64_t assignedSeq = 0;
-    flagcxResult_t res = flagcxHeteroPutSignal(
+    flagcxResult_t res = flagcxHeteroPutSignalImpl(
         comm, peer, srcOffset, dstOffset, size, signalOffset, srcMrIdx,
-        dstMrIdx, signalValue, false, &assignedSeq);
+        dstMrIdx, signalValue, false, &assignedSeq, 0, false);
     if (opSeq != NULL && res == flagcxSuccess)
       *opSeq = assignedSeq;
     return res;

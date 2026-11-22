@@ -924,6 +924,135 @@ TEST_F(RmaSharedTransportFixture, SinglePostBackpressureRetriesSameSequence) {
   EXPECT_EQ(doneSeq_, 1u);
 }
 
+TEST_F(RmaSharedTransportFixture, FailedFinalizeRejectsAllCpuSubmissions) {
+  savedDeviceAdaptor_ = deviceAdaptor;
+  mockDeviceAdaptor_.setDevice = [](int) { return flagcxRemoteError; };
+  deviceAdaptor = &mockDeviceAdaptor_;
+  ASSERT_EQ(flagcxHeteroCommFinalize(&comm_), flagcxRemoteError);
+  EXPECT_EQ(comm_.finalizeState.started, 1);
+  EXPECT_EQ(proxy_.quiesced, 0);
+  const size_t offsets[] = {0}, sizes[] = {8};
+  const int indices[] = {0};
+  const uint64_t keys[] = {7};
+  const uint8_t independent[] = {1};
+  uint64_t assigned = 99;
+  EXPECT_EQ(flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0), flagcxInvalidUsage);
+  EXPECT_EQ(flagcxHeteroGet(&comm_, 0, 0, 0, 8, 0, 0), flagcxInvalidUsage);
+  EXPECT_EQ(flagcxHeteroPutSignal(&comm_, 0, 0, 0, 8, 0, 0, 0, 1),
+            flagcxInvalidUsage);
+  EXPECT_EQ(flagcxHeteroBatchPut(&comm_, 0, offsets, offsets, sizes, indices,
+                                 indices, 1),
+            flagcxInvalidUsage);
+  EXPECT_EQ(flagcxHeteroBatchPutSignal(&comm_, 0, offsets, offsets, sizes,
+                                       indices, indices, keys, independent, 1,
+                                       0, 1, 7, true, &assigned),
+            flagcxInvalidUsage);
+  EXPECT_EQ(assigned, 99u);
+  EXPECT_EQ(pi_, 0u);
+  EXPECT_EQ(opSeq_, 0u);
+  EXPECT_EQ(groupSeq_, 0u);
+  EXPECT_EQ(mockRequestCount, 0);
+  EXPECT_EQ(mockDataPosts, 0);
+  EXPECT_EQ(mockSignalPosts, 0);
+  for (auto *desc : ring_)
+    EXPECT_EQ(desc, nullptr);
+}
+
+TEST_F(RmaSharedTransportFixture, RejectedGetReleasesTransferredEventOnce) {
+  savedDeviceAdaptor_ = deviceAdaptor;
+  static int destroyed;
+  destroyed = 0;
+  mockDeviceAdaptor_.eventDestroy = [](flagcxEvent_t event) {
+    EXPECT_EQ(event, reinterpret_cast<flagcxEvent_t>(&mockIpcEventToken));
+    destroyed++;
+    return flagcxSuccess;
+  };
+  deviceAdaptor = &mockDeviceAdaptor_;
+  comm_.finalizeState.started = 1;
+  EXPECT_EQ(
+      flagcxHeteroGet(&comm_, 0, 0, 0, 8, 0, 0, 0, false,
+                      reinterpret_cast<flagcxEvent_t>(&mockIpcEventToken)),
+      flagcxInvalidUsage);
+  EXPECT_EQ(destroyed, 1);
+  EXPECT_EQ(pi_, 0u);
+}
+
+TEST_F(RmaSharedTransportFixture, AcceptedWorkCompletesAfterAdmissionCloses) {
+  ASSERT_EQ(flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0), flagcxSuccess);
+  comm_.finalizeState.started = 1;
+  EXPECT_EQ(flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0), flagcxInvalidUsage);
+  EXPECT_NE(doneSeq_, opSeq_);
+  Progress();
+  ASSERT_EQ(mockRequestCount, 1);
+  mockRequests[0].done = 1;
+  Progress();
+  EXPECT_EQ(doneSeq_, 1u);
+  EXPECT_EQ(flagcxHeteroDrainProducers(&comm_), flagcxSuccess);
+  EXPECT_EQ(pi_, ci_);
+}
+
+TEST_F(RmaSharedTransportFixture, AdmittedStreamCanPublishAfterFinalizeStarts) {
+  savedDeviceAdaptor_ = deviceAdaptor;
+  static flagcxHeteroComm_t admitting;
+  admitting = &comm_;
+  mockDeviceAdaptor_.streamGetCaptureStatus =
+      [](flagcxStream_t, flagcxStreamCaptureStatus_t *status) {
+        // Finalize starts after the stream API's entry admission check.
+        admitting->finalizeState.started = 1;
+        *status = flagcxStreamCaptureNone;
+        return flagcxSuccess;
+      };
+  mockDeviceAdaptor_.eventCreate = [](flagcxEvent_t *event, flagcxEventType_t) {
+    *event = reinterpret_cast<flagcxEvent_t>(&mockIpcEventToken);
+    return flagcxSuccess;
+  };
+  mockDeviceAdaptor_.eventRecord = [](flagcxEvent_t, flagcxStream_t) {
+    return flagcxSuccess;
+  };
+  mockDeviceAdaptor_.eventQuery = mockDeviceAdaptor_.eventSynchronize =
+      [](flagcxEvent_t) { return flagcxSuccess; };
+  mockDeviceAdaptor_.eventDestroy = mockIpcEventDestroy;
+  deviceAdaptor = &mockDeviceAdaptor_;
+  uint64_t signal = 0;
+  comm_.rmaSignalBase = &signal;
+  comm_.rmaSignalSize = sizeof(signal);
+  proxy_.useStreamOps = 1;
+  proxy_.doneSeqsDev = &signal;
+  mockDeviceAdaptor_.streamWaitValue64 = [](flagcxStream_t, void *, uint64_t,
+                                            int) { return flagcxSuccess; };
+  auto stream = reinterpret_cast<flagcxStream_t>(1);
+  for (int operation = 0; operation < 3; operation++) {
+    SCOPED_TRACE(operation);
+    comm_.finalizeState.started = 0;
+    uint64_t before = opSeq_;
+    flagcxResult_t result;
+    if (operation == 0)
+      result = flagcxHeteroPutStream(&comm_, 0, 0, 0, 8, 0, 0, nullptr, nullptr,
+                                     stream, nullptr);
+    else if (operation == 1)
+      result = flagcxHeteroGetStream(&comm_, 0, 0, 0, 8, 0, 0, nullptr, nullptr,
+                                     stream);
+    else
+      result = flagcxHeteroPutSignalStream(&comm_, 0, 0, 0, 8, 0, 0, 0, 1,
+                                           nullptr, nullptr, stream, nullptr);
+    ASSERT_EQ(result, flagcxSuccess);
+    EXPECT_EQ(comm_.finalizeState.started, 1);
+    EXPECT_GT(opSeq_, before);
+    EXPECT_EQ(proxy_.quiesced, 0);
+    EXPECT_EQ(flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0), flagcxInvalidUsage);
+    // Data completion may enable a separate signal-release request.
+    for (int step = 0; step < 4; step++) {
+      Progress();
+      for (int request = 0; request < mockRequestCount; request++)
+        mockRequests[request].done = 1;
+    }
+    Progress();
+    EXPECT_EQ(doneSeq_, opSeq_);
+  }
+  EXPECT_EQ(flagcxWorkWait(&comm_.submittedWork), flagcxSuccess);
+  EXPECT_EQ(flagcxWorkRelease(&comm_.submittedWork), flagcxSuccess);
+}
+
 TEST_F(RmaSharedTransportFixture, QuiesceRejectsNewSubmissions) {
   flagcxComm outer = {};
   outer.heteroComm = &comm_;

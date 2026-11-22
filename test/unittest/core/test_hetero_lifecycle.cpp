@@ -112,6 +112,61 @@ TEST_F(HeteroLifecycleTest, FinalizeRejectsFurtherTwoSidedSubmission) {
   EXPECT_EQ(flagcxHeteroRecv(nullptr, 0, flagcxChar, 0, owner, nullptr),
             flagcxInvalidUsage);
 }
+TEST_F(HeteroLifecycleTest, FailedDrainKeepsRmaAdmissionClosedUntilRetry) {
+  failDevice = true;
+  ASSERT_EQ(flagcxHeteroCommFinalize(owner), flagcxRemoteError);
+  EXPECT_EQ(owner->finalizeState.started, 1);
+  EXPECT_EQ(owner->finalizeState.phase, flagcxHeteroFinalizeDrain);
+  EXPECT_NE(fifo()->localRecvFifo, nullptr);
+  EXPECT_EQ(fifoFrees, 0);
+  EXPECT_EQ(flagcxHeteroPut(owner, 0, 0, 0, 8, 0, 0), flagcxInvalidUsage);
+  EXPECT_EQ(flagcxHeteroGet(owner, 0, 0, 0, 8, 0, 0), flagcxInvalidUsage);
+  failDevice = false;
+  ASSERT_EQ(flagcxHeteroCommFinalize(owner), flagcxSuccess);
+  EXPECT_EQ(owner->finalizeState.started, 1);
+  EXPECT_EQ(flagcxHeteroPut(owner, 0, 0, 0, 8, 0, 0), flagcxInvalidUsage);
+  EXPECT_EQ(destroy(), flagcxSuccess);
+  EXPECT_EQ(fifoFrees, 1);
+}
+
+TEST_F(HeteroLifecycleTest, FailedCompletionWaitKeepsRmaAdmissionClosed) {
+  static bool failWait;
+  failWait = true;
+  device.streamGetCaptureStatus = [](flagcxStream_t,
+                                     flagcxStreamCaptureStatus_t *status) {
+    *status = flagcxStreamCaptureNone;
+    return flagcxSuccess;
+  };
+  device.eventCreate = [](flagcxEvent_t *event, flagcxEventType_t) {
+    *event = reinterpret_cast<flagcxEvent_t>(1);
+    return flagcxSuccess;
+  };
+  device.eventRecord = [](flagcxEvent_t, flagcxStream_t) {
+    return flagcxSuccess;
+  };
+  device.eventQuery = [](flagcxEvent_t) { return flagcxInProgress; };
+  device.eventSynchronize = [](flagcxEvent_t) {
+    return failWait ? flagcxUnhandledDeviceError : flagcxSuccess;
+  };
+  device.eventDestroy = [](flagcxEvent_t) { return flagcxSuccess; };
+  flagcxWorkRecord *record = nullptr;
+  auto stream = reinterpret_cast<flagcxStream_t>(1);
+  ASSERT_EQ(flagcxWorkPrepare(&owner->submittedWork, stream, 0, &record),
+            flagcxSuccess);
+  ASSERT_EQ(
+      flagcxWorkFinish(record, stream, flagcxSuccess, flagcxWorkHeteroGroup, 0),
+      flagcxSuccess);
+  ASSERT_EQ(flagcxHeteroCommFinalize(owner), flagcxUnhandledDeviceError);
+  EXPECT_EQ(owner->finalizeState.phase, flagcxHeteroFinalizeDrain);
+  EXPECT_EQ(flagcxHeteroPut(owner, 0, 0, 0, 8, 0, 0), flagcxInvalidUsage);
+  EXPECT_EQ(fifoFrees, 0);
+  failWait = false;
+  ASSERT_EQ(flagcxHeteroCommFinalize(owner), flagcxSuccess);
+  EXPECT_EQ(flagcxHeteroPut(owner, 0, 0, 0, 8, 0, 0), flagcxInvalidUsage);
+  EXPECT_EQ(destroy(), flagcxSuccess);
+  EXPECT_EQ(fifoFrees, 1);
+}
+
 TEST_F(HeteroLifecycleTest, DirectDestroyReleasesRegistrationOwnerReferences) {
   void *buffer = (void *)0x880000;
   ASSERT_EQ(globalRegPool.registerBuffer(owner, buffer, 64), flagcxSuccess);
