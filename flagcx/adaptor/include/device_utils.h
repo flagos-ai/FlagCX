@@ -329,10 +329,16 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_HOST_DECORATOR __host__
 #define FLAGCX_DEVICE_DECORATOR __device__
 #define FLAGCX_GLOBAL_DECORATOR __global__
+#if defined(__clang_llvm_bitcode_lib__)
+#define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __attribute__((always_inline))
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
+  __host__ __device__ __attribute__((always_inline))
+#else
 #define FLAGCX_DEVICE_INLINE_DECORATOR                                         \
   __device__ inline __attribute__((always_inline))
 #define FLAGCX_HOST_DEVICE_INLINE                                              \
   __host__ __device__ inline __attribute__((always_inline))
+#endif
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
 // MCCL's proxy GIN publishes GPU/CPU state with this scoped MUSA fence.
 #define FLAGCX_DEVICE_THREAD_FENCE()                                           \
