@@ -2,6 +2,7 @@
 #define FLAGCX_TEST_WORK_COMPLETION_HPP_
 #include "adaptor.h"
 #include "device_event.h"
+#include "launch_kernel.h"
 #include "work_completion.h"
 #include <gtest/gtest.h>
 #include <vector>
@@ -26,15 +27,22 @@ protected:
   int createFailures = 0, recordFailures = 0, waitFailures = 0,
       destroyFailures = 0;
   int nativeDepth = 0, queried = 0;
+  int deviceQueries = 0;
   int partialCreateFailures = 0, wrappersAllocated = 0, wrappersFreed = 0;
   flagcxResult_t captureResult = flagcxSuccess;
   std::vector<WorkTestStream *> nativePending;
   void SetUp() override {
     current = this;
+    flagcxClearStreamValueProbeCache();
     savedDevice = deviceAdaptor;
     device = *savedDevice;
     deviceAdaptor = &device;
     device.setDevice = [](int) { return flagcxSuccess; };
+    device.getDevice = [](int *ordinal) {
+      current->deviceQueries++;
+      *ordinal = 0;
+      return flagcxSuccess;
+    };
     device.streamGetCaptureStatus = [](flagcxStream_t input,
                                        flagcxStreamCaptureStatus_t *output) {
       *output =
@@ -179,6 +187,7 @@ protected:
     EXPECT_EQ(created, destroyed);
     EXPECT_EQ(wrappersAllocated, wrappersFreed);
     EXPECT_EQ(deviceSyncs, 0);
+    flagcxClearStreamValueProbeCache();
     deviceAdaptor = savedDevice;
   }
 };

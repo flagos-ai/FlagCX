@@ -7,10 +7,19 @@ namespace {
 class WorkGroupBoundary : public WorkCompletionTest {
 protected:
   flagcxLaunchFunc_t savedKernel;
+  int launchedJobs = 0;
+  static flagcxResult_t failJob(flagcxAsyncJob *) {
+    static_cast<WorkGroupBoundary *>(current)->launchedJobs++;
+    return flagcxInternalError;
+  }
   void SetUp() override {
     WorkCompletionTest::SetUp();
     savedKernel = deviceAsyncKernel;
     deviceAsyncKernel = nullptr;
+    // These host boundary tests do not submit stream-value work. Do not
+    // inherit real SDK probe callbacks from the platform adaptor.
+    device.streamWaitValue64 = nullptr;
+    device.streamWriteValue64 = nullptr;
     ASSERT_EQ(flagcxGetGroupDepth(), 0);
   }
   void TearDown() override {
@@ -75,7 +84,7 @@ TEST_F(WorkGroupBoundary, FailedLaunchPreservesBoundaryForSafeCleanup) {
   proxy.initialized = 1;
   auto *job = (flagcxAsyncJob *)calloc(1, sizeof(flagcxAsyncJob));
   ASSERT_NE(job, nullptr);
-  job->func = [](flagcxAsyncJob *) { return flagcxInternalError; };
+  job->func = failJob;
   job->destructor = free;
   job->comm = &comm;
   ASSERT_EQ(flagcxHeteroGroupStart(), flagcxSuccess);
@@ -83,6 +92,8 @@ TEST_F(WorkGroupBoundary, FailedLaunchPreservesBoundaryForSafeCleanup) {
   flagcxIntruQueueEnqueue(&flagcxAsyncJobs, job);
   flagcxGroupCommPreconnectHead = &comm;
   EXPECT_EQ(flagcxGroupEndInternal(true), flagcxInternalError);
+  EXPECT_EQ(launchedJobs, 1);
+  EXPECT_EQ(deviceQueries, 0);
   EXPECT_EQ(record->state, flagcxWorkRecorded);
   EXPECT_EQ(flagcxWorkWait(&tracker), flagcxSuccess);
   EXPECT_EQ(recorded, 1);
