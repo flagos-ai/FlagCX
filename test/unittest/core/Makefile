@@ -11,6 +11,17 @@ UNIT_OBJS   := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)
 UNIT_TARGET := $(BINDIR)/core_unit_tests
 UNIT_DEPS   := $(UNIT_OBJS:.o=.d)
 
+# Lifecycle SDK shims and their tests live together in the adaptor suite.
+# Compile only the outer-Comm integration cases into the core executable.
+UNIT_OBJS += $(OBJDIR)/test_ccl_lifecycle.o
+$(OBJDIR)/test_ccl_lifecycle.o: ../adaptor/test_ccl_lifecycle.cpp \
+    $(PROJECT_ROOT)/flagcx/adaptor/ccl/nccl_comm_lifecycle.h \
+    $(PROJECT_ROOT)/flagcx/adaptor/ccl/compat_comm_lifecycle.h \
+    $(PROJECT_ROOT)/flagcx/adaptor/ccl/ppu_comm_lifecycle.h
+	@mkdir -p $(OBJDIR)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) -DFLAGCX_TEST_CCL_LIFECYCLE_CORE \
+	  $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(LOCAL_INCLUDE)
+
 # Host-only v1 plugin verifies cleanup reference ownership through the real loader.
 HANDLE_DEVICE_PLUGIN := $(abspath $(OBJDIR))/libflagcx-handle-device-test.so
 HANDLE_CCL_PLUGIN := $(abspath $(OBJDIR))/libflagcx-handle-owner-test.so

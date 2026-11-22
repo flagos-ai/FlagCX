@@ -1,4 +1,5 @@
 include ../../make.inc
+.DEFAULT_GOAL := all
 
 ifeq ($(USE_PPU), 1)
 # Compile the PCCL/BAREX interoperability case with the native PPU types.
@@ -10,6 +11,11 @@ endif
 UNIT_SRCS   := $(wildcard test_*.cpp)
 UNIT_OBJS   := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)
 UNIT_TARGET := $(BINDIR)/adaptor_unit_tests
+
+$(OBJDIR)/test_ccl_lifecycle.o: \
+    $(PROJECT_ROOT)/flagcx/adaptor/ccl/nccl_comm_lifecycle.h \
+    $(PROJECT_ROOT)/flagcx/adaptor/ccl/compat_comm_lifecycle.h \
+    $(PROJECT_ROOT)/flagcx/adaptor/ccl/ppu_comm_lifecycle.h
 
 # [mpi] tests: coll_*.cpp — requires MPI + GPUs
 MPI_SRCS   := $(wildcard coll_*.cpp)

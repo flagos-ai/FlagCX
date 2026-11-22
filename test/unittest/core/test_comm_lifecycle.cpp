@@ -2,7 +2,6 @@
 #include "comm_lifecycle.h"
 #include "device_api/flagcx_device.h"
 #include "global_comm.h"
-#include "ppu_comm_lifecycle.hpp"
 #include "reg_pool.h"
 #include <atomic>
 #include <chrono>
@@ -78,69 +77,6 @@ TEST(CommLifecycleTest, VendorProgressDoesNotCompleteFlagcxFinalizeEarly) {
   EXPECT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
   EXPECT_EQ(calls, 1);
   EXPECT_EQ(comm.finalizeState.commonPhase, flagcxFinalizeComplete);
-}
-
-namespace {
-struct PpuProviderGuard {
-  flagcxCCLAdaptor *saved = cclAdaptors[flagcxCCLAdaptorDevice];
-  flagcxCCLAdaptor provider = *saved;
-  PpuProviderGuard() {
-    provider.commFinalize = [](flagcxInnerComm_t inner) {
-      return PpuLifecycleShim::ppupcclAdaptorCommFinalize(
-          (PpuLifecycleShim::flagcxInnerComm_t)inner);
-    };
-    provider.commGetAsyncError = [](flagcxInnerComm_t inner,
-                                    flagcxResult_t *status) {
-      return PpuLifecycleShim::ppupcclAdaptorCommGetAsyncError(
-          (PpuLifecycleShim::flagcxInnerComm_t)inner, status);
-    };
-    cclAdaptors[flagcxCCLAdaptorDevice] = &provider;
-  }
-  ~PpuProviderGuard() { cclAdaptors[flagcxCCLAdaptorDevice] = saved; }
-};
-} // namespace
-
-TEST(CommLifecycleTest, PpuAsyncFinalizeWaitsForNativeDestroy) {
-  PpuLifecycleShim::NativeContext native;
-  native.finalizeResult = flagcxInProgress;
-  native.pendingDestroys = 1;
-  PpuLifecycleShim::Wrapper wrapper{&native};
-  PpuProviderGuard guard;
-  flagcxComm comm = {};
-  comm.commType = flagcxCommunicatorHomo;
-  comm.homoComm = (flagcxInnerComm_t)&wrapper;
-  ASSERT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
-  EXPECT_EQ(comm.finalizeState.commonPhase, flagcxFinalizeComplete);
-  EXPECT_EQ(wrapper.base, nullptr);
-  EXPECT_EQ(wrapper.frees, 0);
-  EXPECT_EQ(native.finalizes, 1);
-  EXPECT_EQ(native.queries, 1);
-  EXPECT_EQ(native.destroys, 2);
-  EXPECT_EQ(PpuLifecycleShim::ppupcclAdaptorCommDestroy(&wrapper),
-            flagcxSuccess);
-  EXPECT_EQ(wrapper.frees, 1);
-}
-
-TEST(CommLifecycleTest, PpuFailedCloseResumesThroughOuterAsyncPoll) {
-  PpuLifecycleShim::NativeContext native;
-  native.finalizeResult = flagcxInProgress;
-  native.destroyResult = flagcxRemoteError;
-  PpuLifecycleShim::Wrapper wrapper{&native};
-  PpuProviderGuard guard;
-  flagcxComm comm = {};
-  comm.commType = flagcxCommunicatorHomo;
-  comm.homoComm = (flagcxInnerComm_t)&wrapper;
-  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxRemoteError);
-  EXPECT_NE(comm.finalizeState.commonPhase, flagcxFinalizeComplete);
-  EXPECT_EQ(wrapper.base, &native);
-  native.destroyResult = flagcxSuccess;
-  ASSERT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
-  EXPECT_EQ(wrapper.base, nullptr);
-  EXPECT_EQ(native.finalizes, 1);
-  EXPECT_EQ(native.queries, 1);
-  EXPECT_EQ(native.destroys, 2);
-  EXPECT_EQ(PpuLifecycleShim::ppupcclAdaptorCommDestroy(&wrapper),
-            flagcxSuccess);
 }
 
 namespace {
