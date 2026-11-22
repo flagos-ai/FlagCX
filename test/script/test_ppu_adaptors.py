@@ -736,6 +736,42 @@ int main() {
 }
 """)
 
+    def test_hggc_device_selection_queries_native_state_without_reselection(self):
+        production = (ROOT / "flagcx/adaptor/device/hggc_adaptor.cc").read_text()
+        start = production.index("flagcxResult_t hggcAdaptorSetDevice(int dev)")
+        end = production.index("flagcxResult_t hggcAdaptorGetDevice(", start)
+        source = '#include "ppu_adaptor.h"\n'
+        source += r"""
+static int nativeDevice = 2, queryCalls = 0, selectCalls = 0;
+static hggcError_t queryResult = hggcSuccess, selectResult = hggcSuccess;
+static hggcError_t hggcGetDevice(int *dev) {
+  ++queryCalls; *dev = nativeDevice; return queryResult;
+}
+static hggcError_t hggcSetDevice(int dev) {
+  ++selectCalls;
+  if (selectResult == hggcSuccess) nativeDevice = dev;
+  return selectResult;
+}
+"""
+        source += production[start:end] + r"""
+int main() {
+  assert(hggcAdaptorSetDevice(2) == flagcxSuccess);
+  assert(queryCalls == 1 && selectCalls == 0);
+  assert(hggcAdaptorSetDevice(3) == flagcxSuccess);
+  assert(queryCalls == 2 && selectCalls == 1 && nativeDevice == 3);
+  nativeDevice = 2; // An application can switch devices outside FlagCX.
+  assert(hggcAdaptorSetDevice(3) == flagcxSuccess);
+  assert(selectCalls == 2 && nativeDevice == 3);
+  queryResult = hggcErrorUnknown;
+  assert(hggcAdaptorSetDevice(3) == flagcxSuccess);
+  assert(selectCalls == 3);
+  selectResult = hggcErrorInvalidValue;
+  assert(hggcAdaptorSetDevice(-1) == flagcxUnhandledDeviceError);
+  assert(selectCalls == 4 && nativeDevice == 3);
+}
+"""
+        self.compile_and_run(source)
+
     def test_hggc_capture_query_uses_native_runtime_and_preserves_errors(self):
         production = (ROOT / "flagcx/adaptor/device/hggc_adaptor.cc").read_text()
         start = production.index("static flagcxResult_t\nhggcAdaptorStreamGetCaptureStatus(")

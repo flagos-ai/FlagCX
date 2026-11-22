@@ -12,7 +12,10 @@ static flagcxResult_t ppupcclProgressClose(flagcxInnerComm_t comm,
                                            const ppupcclSymbols *api) {
   flagcxResult_t result;
   if (comm->closePhase == ppupcclCloseOpen) {
+    INFO(FLAGCX_INIT, "Lifecycle PPU comm=%p native-finalize begin", comm);
     result = ppupcclResultToFlagcx(api->pcclCommFinalize(comm->base));
+    INFO(FLAGCX_INIT, "Lifecycle PPU comm=%p native-finalize end result=%d",
+         comm, (int)result);
     if (result == flagcxInProgress)
       comm->closePhase = ppupcclCloseFinalizing;
     else if (result == flagcxSuccess)
@@ -24,8 +27,11 @@ static flagcxResult_t ppupcclProgressClose(flagcxInnerComm_t comm,
   }
   if (comm->closePhase == ppupcclCloseFinalizing) {
     pcclResult_t status = pcclSuccess;
+    INFO(FLAGCX_INIT, "Lifecycle PPU comm=%p native-async-query begin", comm);
     result =
         ppupcclResultToFlagcx(api->pcclCommGetAsyncError(comm->base, &status));
+    INFO(FLAGCX_INIT, "Lifecycle PPU comm=%p native-async-query end result=%d",
+         comm, (int)result);
     if (result != flagcxSuccess)
       return result;
     result = ppupcclResultToFlagcx(status);
@@ -34,7 +40,10 @@ static flagcxResult_t ppupcclProgressClose(flagcxInnerComm_t comm,
     comm->closePhase = ppupcclCloseFinalized;
   }
   if (comm->closePhase == ppupcclCloseFinalized) {
+    INFO(FLAGCX_INIT, "Lifecycle PPU comm=%p native-destroy begin", comm);
     result = ppupcclResultToFlagcx(api->pcclCommDestroy(comm->base));
+    INFO(FLAGCX_INIT, "Lifecycle PPU comm=%p native-destroy end result=%d",
+         comm, (int)result);
     // Retain the native owner on any non-success, just as direct Destroy
     // does. Resume this close instead of restarting native Finalize. Never
     // query a native handle after a successful destructive call.

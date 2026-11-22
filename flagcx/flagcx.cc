@@ -4397,9 +4397,14 @@ flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
   if (!__atomic_compare_exchange_n(&state->running, &expected, 1, false,
                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
     return flagcxInProgress;
+  INFO(FLAGCX_INIT,
+       "Lifecycle comm=%p rank=%d select-device begin valid=%d device=%d", comm,
+       comm->rank, comm->deviceOrdinalValid, comm->deviceOrdinal);
   flagcxResult_t selected = comm->deviceOrdinalValid
                                 ? deviceAdaptor->setDevice(comm->deviceOrdinal)
                                 : flagcxSuccess;
+  INFO(FLAGCX_INIT, "Lifecycle comm=%p rank=%d select-device end result=%d",
+       comm, comm->rank, (int)selected);
   __atomic_store_n(&state->lastResult, flagcxInProgress, __ATOMIC_RELEASE);
   __atomic_store_n(&state->lifecycle, flagcxCommFinalizing, __ATOMIC_RELEASE);
   if (comm->heteroComm != NULL)

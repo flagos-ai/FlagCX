@@ -93,6 +93,12 @@ flagcxResult_t hggcAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t hggcAdaptorSetDevice(int dev) {
+  // Re-selecting an already current device is unnecessary. Query the runtime
+  // rather than caching an ordinal: applications may select devices directly.
+  int current = -1;
+  if (hggcGetDevice(&current) == hggcSuccess && current == dev)
+    return flagcxSuccess;
+  // Preserve the original selection/error path if the query is unavailable.
   HGGCCHECK(hggcSetDevice(dev));
   return flagcxSuccess;
 }
@@ -355,7 +361,11 @@ flagcxResult_t hggcAdaptorEventRecord(flagcxEvent_t event,
 
 flagcxResult_t hggcAdaptorEventSynchronize(flagcxEvent_t event) {
   if (event != NULL) {
-    HGGCCHECK(hggcEventSynchronize(event->base));
+    INFO(FLAGCX_INIT, "Lifecycle PPU event=%p synchronize begin", event);
+    hggcError_t result = hggcEventSynchronize(event->base);
+    INFO(FLAGCX_INIT, "Lifecycle PPU event=%p synchronize end result=%d", event,
+         (int)result);
+    HGGCCHECK(result);
   }
   return flagcxSuccess;
 }

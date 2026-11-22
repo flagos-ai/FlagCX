@@ -422,6 +422,33 @@ if label == os.environ["FAIL_LABEL"]:
         self.assertIn("export FLAGCX_MEM_ENABLE=1", torch_case)
         self.assertIn("export FLAGCX_P2P_TRANSPORT=accl", torch_case)
 
+    def test_host_isolation_diagnostics_precede_callback_watchdog(self):
+        harness = r'''set -euo pipefail
+source "$1"
+flagcx_ci_configure_suite "$2"
+python3 -c 'import json, os; print(json.dumps({k: os.getenv(k) for k in ("FLAGCX_DEBUG_FILE", "FLAGCX_CI_TEST_DIAGNOSTICS_AFTER")}))'
+'''
+        for suite, override, expected in (
+                ("device_api_host", None, "2"),
+                ("device_api_host", "1", "1"),
+                ("adaptor", None, None),
+                ("device_api", None, None)):
+            with self.subTest(suite=suite, override=override):
+                env = {key: value for key, value in os.environ.items()
+                       if key not in ("FLAGCX_DEBUG_FILE", "FLAGCX_CI_TEST_DIAGNOSTICS_AFTER")}
+                env["MPI_HOME"] = "/fake/mpi"
+                if override is not None:
+                    env["FLAGCX_CI_TEST_DIAGNOSTICS_AFTER"] = override
+                result = subprocess.run(
+                    ["bash", "-c", harness, "bash",
+                     str(REPO_ROOT / ".github/scripts/set_env/ppu.sh"), suite],
+                    env=env, text=True, capture_output=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                observed = json.loads(result.stdout)
+                self.assertEqual(observed["FLAGCX_CI_TEST_DIAGNOSTICS_AFTER"], expected)
+                self.assertEqual(observed["FLAGCX_DEBUG_FILE"],
+                                 "/dev/stderr" if suite == "device_api_host" else None)
+
     def test_ppu_jobs_are_present_in_public_workflows(self):
         perf_workflow = (
             REPO_ROOT / ".github/workflows/test.yml"

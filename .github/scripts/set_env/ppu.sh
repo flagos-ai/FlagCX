@@ -101,7 +101,12 @@ flagcx_ci_configure_suite() {
     device_api|device_api_host|device_api_unified_ir)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
-      if [[ "$suite" != device_api_host ]]; then
+      if [[ "$suite" == device_api_host ]]; then
+        # The isolation watchdog releases blocked callbacks after five seconds.
+        # Flush phase logs and collect stacks while that wait is still active.
+        export FLAGCX_DEBUG_FILE=/dev/stderr
+        export FLAGCX_CI_TEST_DIAGNOSTICS_AFTER=${FLAGCX_CI_TEST_DIAGNOSTICS_AFTER:-2}
+      else
         # BAREX has no remote signal atomic for Device API inter tests yet.
         # Keep the normal intra runs; forced-Net intra also needs that atomic.
         FLAGCX_CI_DEVICE_API_INTRA_ONLY=1
