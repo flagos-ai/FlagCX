@@ -11,6 +11,9 @@
 #include "device_api/aclshmem_state_layout.h"
 #include "shmem_adaptor.h"
 
+#include "flagcx_kernel_internal.h"
+#include "global_comm.h"
+
 #include "debug.h"
 
 #include <acl/acl.h>
