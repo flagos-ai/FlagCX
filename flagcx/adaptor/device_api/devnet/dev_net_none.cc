@@ -9,7 +9,8 @@
 namespace {
 flagcxResult_t createComm(flagcxComm_t, flagcxDevComm_t,
                           const flagcxDevCommRequirements *) {
-  return flagcxSuccess;
+  // No GDA context exists for this binding. DefaultBackend owns Proxy setup.
+  return flagcxNotSupported;
 }
 flagcxResult_t commNoop(flagcxDevComm_t) { return flagcxSuccess; }
 flagcxResult_t registerWindow(flagcxComm_t, flagcxDevComm_t, flagcxWindow_t) {

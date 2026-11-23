@@ -54,6 +54,29 @@ __global__ void exercise(flagcxXpuNetioDeviceContext *state,
     net.signal(team, 1, flagcxDevNet_SignalAdd{0, 2}, DeviceAPI::CoopThread{},
                flagcxDevNet_None{}, flagcxDeviceScopeThread,
                flagcxDeviceScopeDevice);
+  } else if (phase >= 8) {
+    // Each peer has its own Window length. The destination is bounded by
+    // peer 1's region, while the source is bounded by this rank's Window.
+    if (phase == 10 || phase == 11 || phase == 15 || phase == 17) {
+      const size_t dstOff = phase == 10   ? 64
+                            : phase == 11 ? 28
+                            : phase == 15 ? SIZE_MAX
+                                          : 0;
+      net.putValue(team, 1, win, dstOff, uint64_t{42},
+                   flagcxDevNet_SignalInc{0}, DeviceAPI::CoopThread{},
+                   flagcxDevNet_None{}, flagcxDeviceScopeThread,
+                   flagcxDeviceScopeDevice);
+    } else {
+      const size_t dstOff = phase == 8    ? 64
+                            : phase == 9  ? 24
+                            : phase == 13 ? 120
+                            : phase == 14 ? SIZE_MAX
+                                          : 0;
+      const size_t srcOff = phase == 12 ? 24 : 0;
+      net.put(team, 1, win, dstOff, win, srcOff, 16, flagcxDevNet_SignalInc{0},
+              flagcxDevNet_None{}, DeviceAPI::CoopThread{}, flagcxDevNet_None{},
+              flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
+    }
   } else {
     net.putValue(team, 1, win, 0, uint64_t{42}, flagcxDevNet_SignalInc{0},
                  DeviceAPI::CoopThread{}, flagcxDevNet_None{},
@@ -136,10 +159,13 @@ int main() {
   state->nranks = 2;
   state->signalCount = 3;
   state->userSignalCount = 1;
-  for (int phase = 0; phase < 8; ++phase) {
+  for (int phase = 0; phase < 18; ++phase) {
     *fatal = *error = 0;
     *observed = 0;
     signals[0] = 2;
+    window->bytes = (phase == 8 || phase == 10 || phase == 12) ? 32 : 128;
+    remote[1].length = (phase == 9 || phase == 11) ? 32 : 128;
+    window->remote = phase >= 16 ? nullptr : remote;
     std::memset(qp, 0, sizeof(*qp));
     std::memset(sq, 0, capacity * sizeof(*sq));
     std::memset(cq, 0, capacity * sizeof(*cq));
@@ -186,6 +212,13 @@ int main() {
       assert(__builtin_bswap64(sq[1].at_seg.swap_add) == 1);
     } else if (phase == 7) {
       assert(*error == XPU_NETIO_PROVIDER_ERROR && qp->sq_rsvd_index == 1);
+    } else if (phase == 8 || phase == 10) {
+      assert(*error == 0 && qp->sq_rsvd_index == 2);
+      assert(__builtin_bswap64(sq[0].rw_rseg.raddr) == remote[1].address + 64);
+      assert((__builtin_bswap32(sq[1].rw_cseg.opmod_idx_opcode) & 0xff) ==
+             0x12);
+    } else if (phase >= 9) {
+      assert(*error == XPU_NETIO_INVALID_ARGUMENT && qp->sq_rsvd_index == 0);
     } else {
       assert(*error == 0 && qp->sq_rsvd_index == 1);
       assert(__builtin_bswap64(sq[0].at_seg.swap_add) == 2);
@@ -197,5 +230,6 @@ int main() {
     assert(cudaFree(p) == cudaSuccess);
   std::puts("MOCK PASS: GDA Put(SignalInc), same-QP Write/FAA, write failure "
             "without signal, Read/WaitSignal, timeout, reserved slot, "
-            "SignalAdd, PutValue(SignalInc); no NIC DMA");
+            "SignalAdd, PutValue(SignalInc), unequal Window lengths and "
+            "source/peer bounds; no NIC DMA");
 }

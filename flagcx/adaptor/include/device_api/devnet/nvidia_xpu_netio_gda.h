@@ -208,10 +208,11 @@ private:
           !std::is_same<LA, flagcxDevNet_None>::value ||
           (signalAction && (signalIdx < 0 || static_cast<uint32_t>(signalIdx) >=
                                                  state.userSignalCount)) ||
-          source == nullptr || target == nullptr || worldPeer < 0 ||
-          static_cast<uint32_t>(worldPeer) >= state.nranks ||
+          source == nullptr || target == nullptr || target->remote == nullptr ||
+          worldPeer < 0 || static_cast<uint32_t>(worldPeer) >= state.nranks ||
           srcOff > source->bytes || bytes > source->bytes - srcOff ||
-          dstOff > target->bytes || bytes > target->bytes - dstOff) {
+          dstOff > target->remote[worldPeer].length ||
+          bytes > target->remote[worldPeer].length - dstOff) {
         fail(state, XPU_NETIO_INVALID_ARGUMENT);
       } else {
         xpu_netio_write_op_t operation{};
@@ -258,10 +259,11 @@ private:
       if ((!std::is_same<RA, flagcxDevNet_None>::value && !signalAction) ||
           (signalAction && (signalIdx < 0 || static_cast<uint32_t>(signalIdx) >=
                                                  state.userSignalCount)) ||
-          target == nullptr || worldPeer < 0 ||
+          target == nullptr || target->remote == nullptr || worldPeer < 0 ||
           static_cast<uint32_t>(worldPeer) >= state.nranks ||
           sizeof(T) > XPU_NETIO_INLINE_VALUE_CAPACITY ||
-          dstOff > target->bytes || sizeof(T) > target->bytes - dstOff) {
+          dstOff > target->remote[worldPeer].length ||
+          sizeof(T) > target->remote[worldPeer].length - dstOff) {
         fail(state, XPU_NETIO_INVALID_ARGUMENT);
       } else {
         xpu_netio_inline_op_t operation{};

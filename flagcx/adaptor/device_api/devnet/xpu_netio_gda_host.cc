@@ -322,8 +322,6 @@ flagcxResult_t registerRegion(flagcxComm_t comm, CommOwner *owner,
     if (local == flagcxSuccess)
       local = result(
           xpu_netio_get_remote_region(window->remote[peer], &regions[peer]));
-    if (local == flagcxSuccess && regions[peer].length < bytes)
-      local = flagcxInvalidArgument;
   }
   if (local == flagcxSuccess) {
     local = deviceAdaptor->deviceMalloc(
