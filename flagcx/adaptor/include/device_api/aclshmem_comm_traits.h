@@ -62,7 +62,10 @@ FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemSetFftsConfig(uint64_t config) {
 #endif
 }
 
-FLAGCX_DEVICE_INLINE_DECORATOR uint64_t aclshmemHostFftsConfig() {
+// Deliberately not FLAGCX_DEVICE_INLINE_DECORATOR: that expands to
+// "[aicore] inline" on BOTH bisheng passes, and a host launcher cannot call
+// an aicore function - the first cut of this helper failed exactly there.
+inline uint64_t aclshmemHostFftsConfig() {
 #if defined(__CCE_IS_AICORE__)
   return 0;
 #else
