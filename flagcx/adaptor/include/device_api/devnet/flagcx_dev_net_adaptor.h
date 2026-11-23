@@ -2,7 +2,7 @@
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * Host-side GDA lifecycle for the DefaultBackend. Exactly one implementation
- * is linked into a GDA-enabled build; device operations remain platform traits.
+ * is linked into every build; device operations remain platform traits.
  ************************************************************************/
 
 #ifndef FLAGCX_DEV_NET_ADAPTOR_H_
@@ -11,10 +11,13 @@
 #include "flagcx_device_api.h"
 
 struct flagcxDevNetAdaptor {
-  // createComm performs capability checks and collective selection before
+  const char *name;
+  bool isGda; // Whether this build provides a GDA candidate.
+
+  // createComm performs capability checks and collective validation before
   // publishing a device context. There is no separate probe lifecycle.
   flagcxResult_t (*createComm)(flagcxComm_t, flagcxDevComm_t,
-                               const flagcxDevCommRequirements *, int);
+                               const flagcxDevCommRequirements *);
   flagcxResult_t (*destroyComm)(flagcxDevComm_t);
   // Registration is collective and belongs to the public Window lifecycle.
   flagcxResult_t (*registerWindow)(flagcxComm_t, flagcxDevComm_t,
@@ -33,7 +36,17 @@ struct flagcxDevNetAdaptor {
   flagcxResult_t (*prepareCommDestroy)(flagcxDevComm_t);
 };
 
-// Supplied by the single GDA implementation selected at build time.
-extern const flagcxDevNetAdaptor flagcxDevNetGda;
+// Supplied by the single DevNet implementation selected at build time.
+extern const flagcxDevNetAdaptor devNetAdaptor;
+
+// Agree whether every rank can attempt the build-selected GDA candidate.
+flagcxResult_t flagcxDevNetConfigure(flagcxComm_t comm, bool wantsNet,
+                                     bool forceOneSidedNet, bool *attemptGda);
+
+// Select GDA only on collective success; a clean unavailable candidate uses
+// Proxy.
+flagcxResult_t
+flagcxDevNetCreateComm(flagcxComm_t comm, flagcxDevComm_t devComm,
+                       const flagcxDevCommRequirements *requirements);
 
 #endif // FLAGCX_DEV_NET_ADAPTOR_H_

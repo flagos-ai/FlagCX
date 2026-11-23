@@ -277,7 +277,7 @@ flagcxInterGdaAlltoAllKernel(flagcxDevMem send, flagcxDevMem recv,
 
   flagcxCoopBlock block;
   flagcxDevNet net(comm, 0);
-  if (!net.isValid() || net.context().provider != DefaultNetProviderGda) {
+  if (!net.isValid() || !net.context().useGda) {
     FLAGCX_DEVICE_TRAP();
     return;
   }
@@ -395,7 +395,7 @@ flagcxInterGdaAlltoAllKernel(flagcxDevMem send, flagcxDevMem recv,
 
 static unsigned interSignalGrid(flagcxDevComm_t comm) {
 #if defined(FLAGCX_USE_XPU_NETIO)
-  if (comm->gdaProvider != 0)
+  if (comm->netUseGda != 0)
     return 1;
 #endif
   return FLAGCX_DEVICE_CTA_COUNT;
@@ -415,10 +415,9 @@ flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
   flagcxDevMem sm(*sendMem), rm(*recvMem);
 
 #if defined(FLAGCX_USE_XPU_NETIO)
-  if (devComm->gdaProvider != 0) {
+  if (devComm->netUseGda)
     return launchKernelNetOneSidedAlltoAll(sendMem, recvMem, count, datatype,
                                            devComm, stream, 0, 0, nullptr);
-  }
 #endif
 
   flagcxInterOneSidedAlltoAllKernel<<<FLAGCX_DEVICE_CTA_COUNT,
@@ -438,8 +437,9 @@ launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
                                 flagcxDevComm_t devComm, flagcxStream_t stream,
                                 int round, size_t requestedChunk,
                                 flagcxNetGdaVisibilityResult *validation) {
-  if (!sendMem || !recvMem || !devComm || !stream || !devComm->gdaProvider ||
-      round < 0 || (validation && datatype != flagcxFloat))
+  if (!sendMem || !recvMem || !devComm || !stream ||
+      !devComm->netUseGda || devComm->gdaDeviceContext == nullptr || round < 0 ||
+      (validation && datatype != flagcxFloat))
     return flagcxInvalidArgument;
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
@@ -1624,7 +1624,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     // GDA uses cumulative indexed counters; ResetSignal is not part of its
     // initial contract. Preserve the existing reset on other Net paths.
 #if defined(FLAGCX_USE_XPU_NETIO)
-    if (net.context().provider != DefaultNetProviderGda)
+    if (!net.context().useGda)
 #endif
       net.resetSignal(0);
     uint64_t s0 = net.readSignal(0);

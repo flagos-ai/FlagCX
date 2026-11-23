@@ -7,11 +7,9 @@
 
 #define FLAGCX_DISABLE_DEV_COMM_CREATE_SIZE_DISPATCH
 #include "device_api/flagcx_device.h"
-#if defined(FLAGCX_USE_GDA)
-#include "device_api/devnet/flagcx_dev_net_adaptor.h"
-#endif
 #include "alloc.h"
 #include "comm.h"
+#include "device_api/devnet/flagcx_dev_net_adaptor.h"
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
 #include "mem_alloc_registry.h"
@@ -234,10 +232,8 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
   if (hetero != nullptr) {
     hetero->devCommHandle = handle;
   }
-#if defined(FLAGCX_USE_GDA)
-  if (handle->gdaProvider != 0)
+  if (handle->netUseGda)
     comm->devNetCommHandle = handle;
-#endif
 
   return flagcxSuccess;
 }
@@ -261,7 +257,6 @@ flagcxDevCommCreateSized(flagcxComm_t comm,
   return flagcxDevCommCreateInternal(comm, reqs, reqsSize, devComm);
 }
 
-#if defined(FLAGCX_USE_GDA)
 flagcxResult_t flagcxCommPrepareGdaDestroy(flagcxComm_t comm) {
   // A failed drain has already revoked publication. Keep finding that owner
   // through the active list (or a standalone destroy's retained cleanup).
@@ -281,9 +276,8 @@ flagcxResult_t flagcxCommPrepareGdaDestroy(flagcxComm_t comm) {
     comm->devNetCommHandle = nullptr;
   // Do not release the DevComm or put it ahead of newer owners in pending
   // cleanup. Stage 2 keeps the original LIFO destruction order.
-  return flagcxDevNetGda.prepareCommDestroy(devComm);
+  return devNetAdaptor.prepareCommDestroy(devComm);
 }
-#endif
 
 extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
                                                flagcxDevComm_t devComm) {
@@ -300,12 +294,10 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     return flagcxInvalidUsage;
   devComm->cleanupStarted = true;
   bool collectiveGdaDrain = false;
-#if defined(FLAGCX_USE_GDA)
   collectiveGdaDrain =
       devComm->gdaHostOwner != nullptr &&
       ((comm != nullptr && comm->devNetCommHandle == devComm) ||
        devComm->gdaDraining);
-#endif
   if (comm != nullptr) {
     flagcxResult_t result =
         flagcxCommDrainSnapshot(comm, &devComm->cleanupWork);
@@ -327,7 +319,6 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
                             comm->heteroComm->devCommHandle == devComm;
   if (wasPublished)
     comm->heteroComm->devCommHandle = devComm->previousActive;
-#if defined(FLAGCX_USE_GDA)
   const bool gdaPublished =
       comm != nullptr && comm->devNetCommHandle == devComm;
   if (gdaPublished)
@@ -336,23 +327,20 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
       (gdaPublished || devComm->gdaDraining)) {
     flagcxResult_t result = devComm->gdaQuiesced
                                 ? flagcxSuccess
-                                : flagcxDevNetGda.prepareCommDestroy(devComm);
+                                : devNetAdaptor.prepareCommDestroy(devComm);
     if (comm != nullptr)
       comm->pendingDevCommCleanup = devComm;
     if (result != flagcxSuccess)
       return result;
   }
-#endif
 
   if (!devComm->backendDestroyed) {
     flagcxResult_t result = devApiBackend->devCommDestroy(comm, devComm);
     if (result != flagcxSuccess) {
       if (wasPublished && !devComm->gdaDraining)
         comm->heteroComm->devCommHandle = devComm;
-#if defined(FLAGCX_USE_GDA)
       if (gdaPublished && !devComm->gdaDraining)
         comm->devNetCommHandle = devComm;
-#endif
       return result;
     }
     devComm->backendDestroyed = true;
@@ -511,12 +499,10 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
     }
   }
 
-#if defined(FLAGCX_USE_GDA)
   if (win != nullptr) {
     handle->gdaWindowNext = win->devMemViews;
     win->devMemViews = handle;
   }
-#endif
   *devMem = handle;
   return flagcxSuccess;
 }
@@ -586,7 +572,6 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
     devMem->backendDestroyed = true;
   }
 
-#if defined(FLAGCX_USE_GDA)
   flagcxWindow_t hostWindow = devMem->boundWindow;
   if (hostWindow != nullptr) {
     flagcxDevMem_t *link = &hostWindow->devMemViews;
@@ -596,7 +581,6 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
       *link = devMem->gdaWindowNext;
     devMem->gdaWindowNext = nullptr;
   }
-#endif
 
   if (devMem->ipcIndex >= 0) {
     if (devMem->ipcIndex >= comm->ipcTableCapacity)

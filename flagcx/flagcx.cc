@@ -8,9 +8,7 @@
 #include "comm.h"
 #include "cost_model.h"
 #include "dev_api_backend.h"
-#if defined(FLAGCX_USE_GDA)
 #include "device_api/devnet/flagcx_dev_net_adaptor.h"
-#endif
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
 #include "flagcx_net.h"
@@ -2838,12 +2836,10 @@ flagcxCommWindowRegisterFresh(flagcxComm_t comm, void *buff, size_t size,
   return flagcxNotSupported;
 }
 
-#if defined(FLAGCX_USE_GDA)
 static flagcxResult_t
 flagcxCommWindowDeregisterTracked(flagcxComm_t comm, flagcxWindow_t win,
                                   flagcxMemAllocator_t allocator,
                                   flagcxSymCleanupMode cleanupMode);
-#endif
 
 // Validate the complete transaction before mode-dependent provider collectives.
 static flagcxResult_t
@@ -2911,21 +2907,11 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
       (reusable->ownerComm != comm || reusable->vendorBase != nullptr ||
        reusable->defaultBase != nullptr))
     local = flagcxInvalidUsage;
+  if (local == flagcxSuccess && comm != nullptr &&
+      comm->nextDevNetWindowId == std::numeric_limits<uint64_t>::max())
+    local = flagcxInvalidUsage;
   FLAGCXCHECK(
       flagcxValidateWindowRegistration(comm, winFlags, allocator, local));
-#if defined(FLAGCX_USE_GDA)
-  // Check before constructing a Window, so overflow cannot strand a newly
-  // allocated resource in an untracked state.
-  flagcxResult_t idStatus =
-      comm->nextDevNetWindowId == std::numeric_limits<uint64_t>::max()
-          ? flagcxInvalidUsage
-          : flagcxSuccess;
-  flagcxResult_t commonIdStatus = flagcxSuccess;
-  FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, idStatus, &commonIdStatus));
-  if (commonIdStatus != flagcxSuccess)
-    return commonIdStatus;
-#endif
-
   flagcxWindow_t created = nullptr;
   flagcxResult_t result = flagcxCommWindowRegisterFresh(
       comm, buff, size, &created, winFlags, allocator);
@@ -2946,7 +2932,6 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     comm->publicWindows = created;
     *win = created;
   }
-#if defined(FLAGCX_USE_GDA)
   if (result == flagcxSuccess) {
     flagcxWindow_t window = *win;
     window->devNetRegistrationId = ++comm->nextDevNetWindowId;
@@ -2956,8 +2941,8 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     comm->devNetWindows = window;
 
     flagcxDevComm_t devComm = comm->devNetCommHandle;
-    if (devComm != nullptr && devComm->gdaProvider != 0) {
-      result = flagcxDevNetGda.registerWindow(comm, devComm, window);
+    if (devComm != nullptr && devComm->gdaDeviceContext != nullptr) {
+      result = devNetAdaptor.registerWindow(comm, devComm, window);
       if (result != flagcxSuccess) {
         flagcxResult_t cleanup = flagcxCommWindowDeregisterTracked(
             comm, window, allocator, flagcxSymCleanupLocal);
@@ -2965,7 +2950,6 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
       }
     }
   }
-#endif
   return result;
 }
 
@@ -3124,7 +3108,6 @@ static flagcxResult_t
 flagcxCommWindowDeregisterTracked(flagcxComm_t comm, flagcxWindow_t win,
                                   flagcxMemAllocator_t allocator,
                                   flagcxSymCleanupMode cleanupMode) {
-#if defined(FLAGCX_USE_GDA)
   if (comm == nullptr && win != nullptr)
     return flagcxInvalidArgument;
   if (win != nullptr) {
@@ -3136,8 +3119,6 @@ flagcxCommWindowDeregisterTracked(flagcxComm_t comm, flagcxWindow_t win,
         comm->ipcTable[win->defaultBase->ipcSlot].refCount != 0)
       return flagcxInvalidUsage;
   }
-#endif
-#if defined(FLAGCX_USE_GDA)
   flagcxWindow_t *link = comm != nullptr ? &comm->devNetWindows : nullptr;
   while (link != nullptr && *link != nullptr && *link != win)
     link = &(*link)->devNetNext;
@@ -3154,7 +3135,7 @@ flagcxCommWindowDeregisterTracked(flagcxComm_t comm, flagcxWindow_t win,
       while (__atomic_load_n(&sym->inSubmit, __ATOMIC_ACQUIRE) != 0)
         sched_yield();
     }
-    flagcxResult_t localReady = flagcxDevNetGda.prepareWindowDeregister(win);
+    flagcxResult_t localReady = devNetAdaptor.prepareWindowDeregister(win);
     flagcxResult_t commonReady = localReady;
     if (cleanupMode == flagcxSymCleanupCollective) {
       FLAGCXCHECK(
@@ -3163,7 +3144,7 @@ flagcxCommWindowDeregisterTracked(flagcxComm_t comm, flagcxWindow_t win,
     if (commonReady != flagcxSuccess)
       return commonReady;
 
-    flagcxResult_t local = flagcxDevNetGda.deregisterWindow(win);
+    flagcxResult_t local = devNetAdaptor.deregisterWindow(win);
     flagcxResult_t common = local;
     if (cleanupMode == flagcxSymCleanupCollective) {
       FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, local, &common));
@@ -3172,10 +3153,8 @@ flagcxCommWindowDeregisterTracked(flagcxComm_t comm, flagcxWindow_t win,
       return common;
     win->gdaRegistrationActive = false;
   }
-#endif
   flagcxResult_t result =
       flagcxCommWindowDeregisterInternal(comm, win, allocator, cleanupMode);
-#if defined(FLAGCX_USE_GDA)
   if (result == flagcxSuccess) {
     for (flagcxDevMem_t view = views; view != nullptr;) {
       flagcxDevMem_t following = view->gdaWindowNext;
@@ -3193,7 +3172,6 @@ flagcxCommWindowDeregisterTracked(flagcxComm_t comm, flagcxWindow_t win,
       win->devMemViews = nullptr;
     }
   }
-#endif
   return result;
 }
 
@@ -4445,7 +4423,6 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
     result = flagcxCommFinalizeStatus(comm, 0x6c01 + phase * 4, local);
     if (result != flagcxSuccess)
       break;
-#if defined(FLAGCX_USE_GDA)
     // Retire GDA collectively before owner cleanup can fail rank-locally.
     // This remains outside localDoneMask so every rank joins a retry.
     if (phase == flagcxFinalizeTransport) {
@@ -4453,7 +4430,6 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
       if (result != flagcxSuccess)
         break;
     }
-#endif
     if (phase == flagcxFinalizeImports && comm->heteroComm != NULL) {
       comm->heteroComm->finalizeState.importsClosedConfirmed = 1;
       comm->heteroComm->finalizeState.phase = flagcxHeteroFinalizeComplete;
@@ -4692,7 +4668,6 @@ static flagcxResult_t flagcxCommPrepareFinalizeStage(flagcxComm_t comm,
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     }
-#if defined(FLAGCX_USE_GDA)
     // Drain any remaining tracked Windows while the CCL adaptor is still live.
     while (comm->devNetWindows != nullptr) {
       cleanupResult = flagcxCommWindowDeregisterTracked(
@@ -4700,7 +4675,6 @@ static flagcxResult_t flagcxCommPrepareFinalizeStage(flagcxComm_t comm,
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     }
-#endif
   }
 
   return flagcxSuccess;
@@ -4750,10 +4724,8 @@ static flagcxResult_t flagcxCommRollbackInit(flagcxComm_t comm) {
     }
     if (common != flagcxSuccess)
       return common;
-#if defined(FLAGCX_USE_GDA)
     if (phase == flagcxFinalizeTransport)
       FLAGCXCHECK(flagcxCommPrepareGdaDestroy(comm));
-#endif
     state->commonPhase = (flagcxFinalizePhase)(phase + 1);
   }
   if (comm->heteroComm != NULL) {
@@ -4876,15 +4848,13 @@ flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {
   if (comm->initRollbackPending || comm->pluginRollbackOnly)
     return flagcxInvalidUsage;
   bool gdaAborted = false;
-#if defined(FLAGCX_USE_GDA)
   flagcxDevComm_t gda = comm->devNetCommHandle != nullptr
                             ? comm->devNetCommHandle
                             : comm->pendingDevCommCleanup;
   if (gda != nullptr && gda->gdaHostOwner != nullptr) {
-    FLAGCXCHECK(flagcxDevNetGda.abortComm(gda));
+    FLAGCXCHECK(devNetAdaptor.abortComm(gda));
     gdaAborted = true;
   }
-#endif
   // GDA cancellation must reach device waits without consuming native owners.
   // Other heterogeneous Abort paths retain their existing unsupported result.
   if (!useHomoComm(comm) || comm->heteroComm != nullptr)
@@ -5057,12 +5027,11 @@ flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
         __atomic_load_n(&comm->finalizeState.lastResult, __ATOMIC_ACQUIRE);
     return flagcxSuccess;
   }
-#if defined(FLAGCX_USE_GDA)
   flagcxDevComm_t gda = comm->devNetCommHandle != nullptr
                             ? comm->devNetCommHandle
                             : comm->pendingDevCommCleanup;
   if (gda != nullptr && gda->gdaHostOwner != nullptr) {
-    flagcxResult_t gdaError = flagcxDevNetGda.pollError(gda);
+    flagcxResult_t gdaError = devNetAdaptor.pollError(gda);
     if (gdaError != flagcxSuccess) {
       *asyncError = gdaError;
       return flagcxSuccess;
@@ -5073,7 +5042,6 @@ flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
       return flagcxSuccess;
     }
   }
-#endif
 
   if (comm->heteroComm != nullptr && (!useHomoComm(comm) || useHeteroComm())) {
     flagcxResult_t result = flagcxSuccess;

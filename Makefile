@@ -337,6 +337,14 @@ LIBSRCFILES:= \
 
 # Platform .mk provides extra sources (device_api backend, shmem adaptor)
 LIBSRCFILES += $(PLATFORM_EXTRA_SRCS)
+LIBSRCFILES += flagcx/adaptor/device_api/devnet/dev_net.cc
+ifeq ($(USE_XPUNETIO),1)
+ifneq ($(USE_NVIDIA),1)
+$(error USE_XPUNETIO=1 currently requires USE_NVIDIA=1)
+endif
+else
+LIBSRCFILES += flagcx/adaptor/device_api/devnet/dev_net_none.cc
+endif
 
 # The legacy and shared implementations export the same public flagcx_p2p.h
 # symbols and therefore must never be linked into one library together.

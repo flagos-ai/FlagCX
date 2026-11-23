@@ -28,7 +28,6 @@ struct flagcxWindow {
   uint32_t devMemRefs;
   flagcxWorkSnapshot cleanupWork;
   bool cleanupStarted;
-#if defined(FLAGCX_USE_GDA)
   uint64_t devNetRegistrationId; // collective registration identity, not handle
                                  // identity
   void *userBase; // canonical Window allocation, not a DevMem subrange
@@ -39,7 +38,6 @@ struct flagcxWindow {
   unsigned gdaDevMemRefs;     // local DevMem views borrowing this registration
   struct flagcxDevMemInternal *devMemViews; // local views of this Window
   struct flagcxWindow *devNetNext;
-#endif
 };
 
 enum flagcxSymWindowState {

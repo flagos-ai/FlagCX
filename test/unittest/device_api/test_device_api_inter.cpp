@@ -143,7 +143,7 @@ static flagcxResult_t synchronizeInterTest(flagcxDeviceHandle_t device,
                                            flagcxDevComm_t comm) {
   FLAGCXCHECK(device->streamSynchronize(stream));
 #if defined(FLAGCX_USE_XPU_NETIO)
-  if (comm->gdaProvider != 0)
+  if (comm->netUseGda != 0)
     return XpuNetioGda::pollError(comm);
 #else
   (void)comm;
@@ -251,12 +251,11 @@ int main(int argc, char *argv[]) {
   reqs.interSignalCount = 3;
   reqs.interCounterCount = 1;
 #if defined(FLAGCX_USE_XPU_NETIO)
-  int netEnabled = 1, netType = -1;
+  int netEnabled = 1;
   // The backend performs the collective configuration validation. Do not
   // return locally on malformed input before peers enter that validation.
   const bool requestGda =
-      flagcxReadDevNetConfig(&netEnabled, &netType) == flagcxSuccess &&
-      netEnabled != 0 && netType == 1;
+      flagcxReadDevNetConfig(&netEnabled) == flagcxSuccess && netEnabled != 0;
   if (requestGda) {
     // The MLX5 adapter supports indexed 64-bit signals on one context.
     // Counters and multiple contexts remain explicit SKIPs.
@@ -275,7 +274,7 @@ int main(int argc, char *argv[]) {
   unsigned requiredAlignment = 1;
 #if defined(FLAGCX_USE_XPU_NETIO)
   size_t gdaChunkBytes = 0;
-  useGda = devComm->gdaProvider != 0;
+  useGda = devComm->netUseGda != 0;
   if (requestGda && !useGda) {
     fprintf(stderr, "Explicit GDA test selected a different Net provider\n");
     MPI_Abort(splitComm, 1);

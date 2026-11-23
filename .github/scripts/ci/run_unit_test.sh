@@ -439,7 +439,6 @@ run_device_api_gda() {
     -x FLAGCX_TEST_WIN_MODE=asymmetric
     -x FLAGCX_P2P_DISABLE=1
     -x FLAGCX_DEVNET_ENABLE=1
-    -x FLAGCX_DEVNET_TYPE=1
     -x LD_LIBRARY_PATH
   )
   if [[ -n "${FLAGCX_XPU_NETIO_PROVIDER:-}" ]]; then

@@ -17,13 +17,11 @@ struct DefaultNetGdaPolicy {
     const void *netDeviceHandle;
   };
   struct CommState {
-    DefaultNetProviderKind netProvider;
-    unsigned netProviderId;
+    bool netUseGda;
     void *gdaDeviceContext;
   };
   struct BarrierState {
-    DefaultNetProviderKind netProvider;
-    unsigned netProviderId;
+    bool netUseGda;
     void *gdaDeviceContext;
   };
 
@@ -47,8 +45,7 @@ struct DefaultNetGdaPolicy {
   FLAGCX_HOST_DEVICE_INLINE static void initComm(Comm &comm,
                                                  const HostComm &host) {
     CommState &state = static_cast<CommState &>(comm);
-    state.netProvider = static_cast<DefaultNetProviderKind>(host.gdaProvider);
-    state.netProviderId = host.gdaProviderId;
+    state.netUseGda = host.netUseGda != 0;
     state.gdaDeviceContext = host.gdaDeviceContext;
   }
 
@@ -56,32 +53,26 @@ struct DefaultNetGdaPolicy {
   FLAGCX_HOST_DEVICE_INLINE static DefaultNetContext
   makeContext(const Comm &comm, void *fifo, int contextId) {
     const CommState &state = static_cast<const CommState &>(comm);
-    return DefaultNetContext{state.netProvider, state.netProviderId,
-                             state.netProvider == DefaultNetProviderProxy
-                                 ? fifo
-                                 : state.gdaDeviceContext,
-                             contextId};
+    return DefaultNetContext{state.netUseGda ? state.gdaDeviceContext : fifo,
+                             contextId, flagcxDevNetResourceSharingDevice,
+                             state.netUseGda};
   }
 
   template <typename Barrier>
   FLAGCX_HOST_DEVICE_INLINE static void initBarrier(Barrier &barrier,
                                                     DefaultNetContext ctx) {
     BarrierState &state = static_cast<BarrierState &>(barrier);
-    state.netProvider = ctx.provider;
-    state.netProviderId = ctx.providerId;
-    state.gdaDeviceContext =
-        ctx.provider == DefaultNetProviderGda ? ctx.handle : nullptr;
+    state.netUseGda = ctx.useGda;
+    state.gdaDeviceContext = ctx.useGda ? ctx.handle : nullptr;
   }
 
   template <typename Barrier>
   FLAGCX_HOST_DEVICE_INLINE static DefaultNetContext
   barrierContext(const Barrier &barrier, void *fifo, int contextId) {
     const BarrierState &state = static_cast<const BarrierState &>(barrier);
-    return DefaultNetContext{state.netProvider, state.netProviderId,
-                             state.netProvider == DefaultNetProviderProxy
-                                 ? fifo
-                                 : state.gdaDeviceContext,
-                             contextId};
+    return DefaultNetContext{state.netUseGda ? state.gdaDeviceContext : fifo,
+                             contextId, flagcxDevNetResourceSharingDevice,
+                             state.netUseGda};
   }
 };
 

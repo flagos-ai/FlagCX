@@ -7,6 +7,7 @@
 #ifndef FLAGCX_NVIDIA_NET_PROVIDER_H_
 #define FLAGCX_NVIDIA_NET_PROVIDER_H_
 
+#if defined(FLAGCX_USE_XPU_NETIO)
 #include "default_net_gda_policy.h"
 
 struct NvidiaPlatform;
@@ -16,7 +17,6 @@ struct NvidiaPlatform;
 template <>
 struct DefaultNetProviderPolicy<NvidiaPlatform> : DefaultNetGdaPolicy {};
 
-#if defined(FLAGCX_USE_XPU_NETIO)
 #include "nvidia_xpu_netio_gda.h"
 #endif
 

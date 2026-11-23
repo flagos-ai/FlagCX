@@ -5,7 +5,8 @@
  ************************************************************************/
 
 #include "device_api/comm_traits.h"
-#include "device_api/devnet/nvidia_net_provider.h"
+#include "device_api/default_platform_traits.h"
+#include "device_api/devnet/default_net_gda_policy.h"
 
 #include <cassert>
 #include <cstdint>
@@ -54,14 +55,13 @@ template <>
 struct PlatformTraits<MockGdaPlatform> : PlatformTraits<DefaultPlatform> {};
 
 template <>
-struct DefaultNetProviderPolicy<MockGdaPlatform>
-    : DefaultNetProviderPolicy<NvidiaPlatform> {};
+struct DefaultNetProviderPolicy<MockGdaPlatform> : DefaultNetGdaPolicy {};
 
 template <>
-struct DefaultNetGdaProvider<MockGdaPlatform> {
-  static constexpr bool compiled(unsigned providerId) {
-    return providerId == 7;
-  }
+struct DefaultNetProvider<MockGdaPlatform> {
+  static constexpr bool isGda = true;
+  static uint64_t beginBarrierWait(DefaultNetContext) { return 0; }
+  static bool continueBarrierWait(DefaultNetContext, uint64_t) { return true; }
 
   static bool supportsBarrierFence(DefaultNetContext,
                                    flagcxDevNetFenceLevel fence) {
@@ -69,25 +69,26 @@ struct DefaultNetGdaProvider<MockGdaPlatform> {
   }
 
   template <typename NetT>
-  static bool isValid(DefaultNetContext ctx, const NetT &) {
-    return ctx.providerId == 7 && ctx.handle != nullptr;
+  static bool isValid(DefaultNetContext ctx, const NetT &, bool = false) {
+    return flagcxDevNetResourceSharingModeValid(ctx.resourceSharingMode) &&
+           ctx.handle != nullptr;
   }
 
   template <typename Operation, typename... Args>
   static auto call(DefaultNetContext ctx, Args &&...args)
-      -> decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
+      -> decltype(DefaultNetProxyApi<Operation>::call(
           ctx, static_cast<Args &&>(args)...)) {
     if (ctx.handle == reinterpret_cast<void *>(0x2000)) {
       assert(mockBarrierCallCount < 8);
       mockBarrierCalls[mockBarrierCallCount++] = {
           ctx.contextId, &typeid(Operation), ctx.resourceSharingMode};
-      typedef decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
+      typedef decltype(DefaultNetProxyApi<Operation>::call(
           ctx, static_cast<Args &&>(args)...)) Result;
       return MockBarrierResult<Result>::get();
     }
     ++mockGdaCalls;
-    return DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
-        ctx, static_cast<Args &&>(args)...);
+    return DefaultNetProxyApi<Operation>::call(ctx,
+                                               static_cast<Args &&>(args)...);
   }
 };
 static_assert(
@@ -174,68 +175,47 @@ struct MockNet {
 
 int main() {
   typedef DeviceAPI::Net Net;
-  typedef DefaultNetProviderPolicy<NvidiaPlatform> Policy;
-  DefaultNetContext ctx{DefaultNetProviderProxy, 0, nullptr, 0};
+  typedef DefaultNetGdaPolicy Policy;
+  DefaultNetContext ctx{};
   MockNet mock;
   DefaultNetContext invalid = ctx;
   invalid.resourceSharingMode =
       static_cast<flagcxDevNetResourceSharingMode_t>(3);
-  assert(!DefaultNetDispatch<NvidiaPlatform>::isValid(invalid, mock, true));
+  assert(!DefaultNetProvider<DefaultPlatform>::isValid(invalid, mock, true));
 
-  DefaultNetDispatch<NvidiaPlatform>::call<Net::PutOp>(ctx, mock);
-  DefaultNetDispatch<NvidiaPlatform>::call<Net::GetOp>(ctx, mock);
-  DefaultNetDispatch<NvidiaPlatform>::call<Net::PutValueOp>(ctx, mock);
-  DefaultNetDispatch<NvidiaPlatform>::call<Net::SignalOp>(ctx, mock);
-  DefaultNetDispatch<NvidiaPlatform>::call<Net::FlushOp>(ctx, mock);
-  DefaultNetDispatch<NvidiaPlatform>::call<Net::WaitSignalOp>(ctx, mock);
-  assert(DefaultNetDispatch<NvidiaPlatform>::call<Net::ReadSignalOp>(
+  DefaultNetProvider<DefaultPlatform>::call<Net::PutOp>(ctx, mock);
+  DefaultNetProvider<DefaultPlatform>::call<Net::GetOp>(ctx, mock);
+  DefaultNetProvider<DefaultPlatform>::call<Net::PutValueOp>(ctx, mock);
+  DefaultNetProvider<DefaultPlatform>::call<Net::SignalOp>(ctx, mock);
+  DefaultNetProvider<DefaultPlatform>::call<Net::FlushOp>(ctx, mock);
+  DefaultNetProvider<DefaultPlatform>::call<Net::WaitSignalOp>(ctx, mock);
+  assert(DefaultNetProvider<DefaultPlatform>::call<Net::ReadSignalOp>(
              ctx, mock) == 42);
-  DefaultNetDispatch<NvidiaPlatform>::call<Net::ResetSignalOp>(ctx, mock);
-  DefaultNetDispatch<NvidiaPlatform>::call<Net::WaitCounterOp>(ctx, mock);
-  assert(DefaultNetDispatch<NvidiaPlatform>::call<Net::ReadCounterOp>(
+  DefaultNetProvider<DefaultPlatform>::call<Net::ResetSignalOp>(ctx, mock);
+  DefaultNetProvider<DefaultPlatform>::call<Net::WaitCounterOp>(ctx, mock);
+  assert(DefaultNetProvider<DefaultPlatform>::call<Net::ReadCounterOp>(
              ctx, mock) == 43);
-  DefaultNetDispatch<NvidiaPlatform>::call<Net::ResetCounterOp>(ctx, mock);
+  DefaultNetProvider<DefaultPlatform>::call<Net::ResetCounterOp>(ctx, mock);
   for (int i = 0; i != 11; ++i)
     assert(mock.calls[i] == 1);
 
-  assert(defaultNetSelectProvider<NvidiaPlatform>(
-             0, DefaultNetGdaRequiredCapabilities, true) ==
-         DefaultNetProviderProxy);
-  assert(defaultNetSelectProvider<NvidiaPlatform>(
-             0, DefaultNetGdaRequiredCapabilities, false) ==
-         DefaultNetProviderProxy);
-  for (unsigned bit = 1; bit <= DefaultNetGdaBarrier; bit <<= 1) {
-    assert(defaultNetSelectProvider<NvidiaPlatform>(
-               0, DefaultNetGdaRequiredCapabilities & ~bit, true) ==
-           DefaultNetProviderProxy);
-  }
-  assert(defaultNetSelectProvider<MockGdaPlatform>(
-             7, DefaultNetGdaRequiredCapabilities, true) ==
-         DefaultNetProviderGda);
-  assert(defaultNetSelectProvider<MockGdaPlatform>(
-             8, DefaultNetGdaRequiredCapabilities, true) ==
-         DefaultNetProviderProxy);
-  const unsigned putBarrier =
-      DefaultNetGdaPut | DefaultNetGdaFlush | DefaultNetGdaBarrier;
-  assert(defaultNetSelectProvider<MockGdaPlatform>(
-             7, putBarrier, putBarrier, true) == DefaultNetProviderGda);
-  assert(defaultNetSelectProvider<MockGdaPlatform>(
-             7, putBarrier & ~DefaultNetGdaBarrier, putBarrier, true) ==
-         DefaultNetProviderProxy);
-  assert(defaultNetSelectProvider<MockGdaPlatform>(
-             7, putBarrier, putBarrier, false) == DefaultNetProviderProxy);
-  DefaultNetContext gdaContext{DefaultNetProviderGda, 7,
-                               reinterpret_cast<void *>(0x1000), 0};
-  assert(DefaultNetGdaProvider<NvidiaPlatform>::supportsBarrierFence(
-      gdaContext, flagcxDevNetFenceLevel::Relaxed));
-  assert(!DefaultNetGdaProvider<NvidiaPlatform>::supportsBarrierFence(
-      gdaContext, flagcxDevNetFenceLevel::Put));
-  DefaultNetDispatch<MockGdaPlatform>::call<Net::PutOp>(gdaContext, mock);
+  static_assert(!DefaultNetProvider<DefaultPlatform>::isGda, "None uses Proxy");
+  static_assert(DefaultNetProvider<MockGdaPlatform>::isGda,
+                "GDA is a type binding");
+  DefaultNetContext gdaContext{reinterpret_cast<void *>(0x1000), 0,
+                               flagcxDevNetResourceSharingDevice, true};
+  DefaultNetProvider<MockGdaPlatform>::call<Net::PutOp>(gdaContext, mock);
   assert(mockGdaCalls == 1 && mock.calls[0] == 2);
+  DefaultNetDispatch<MockGdaPlatform>::call<Net::PutOp>(ctx, mock);
+  assert(mockGdaCalls == 1 && mock.calls[0] == 3);
+  assert(DefaultNetDispatch<MockGdaPlatform>::isValid(ctx, mock, true));
+  assert(!DefaultNetDispatch<DefaultPlatform>::isValid(gdaContext, mock, true));
 
   uint64_t signal = 0, counter = 0, fifo = 0;
   DeviceAPI::Comm proxyComm{};
   proxyComm.contextCount = 1;
+  proxyComm.signalCount = 1;
+  proxyComm.counterCount = 1;
   proxyComm.signalBuffer = &signal;
   proxyComm.counterBuffer = &counter;
   proxyComm.fifoBuffers[0] = &fifo;
@@ -251,12 +231,14 @@ int main() {
   proxyComm.signalBuffer = &signal;
   proxyComm.counterBuffer = nullptr;
   assert(!DeviceAPI::Net(proxyComm, 0).isValid());
+  proxyComm.counterCount = 0;
+  assert(DeviceAPI::Net(proxyComm, 0).isValid());
 
   typedef CommTraits<DefaultBackend<MockGdaPlatform>> MockGdaApi;
   MockGdaApi::Comm gdaComm{};
   gdaComm.contextCount = 1;
-  gdaComm.netProvider = DefaultNetProviderGda;
-  gdaComm.netProviderId = 7;
+
+  gdaComm.netUseGda = true;
   gdaComm.gdaDeviceContext = reinterpret_cast<void *>(0x1000);
   MockGdaApi::Net gdaNet(gdaComm, 0);
   assert(gdaNet.fifoBuffer == nullptr);
@@ -283,8 +265,15 @@ int main() {
   gdaComm.gdaDeviceContext = nullptr;
   assert(!MockGdaApi::Net(gdaComm, 0).isValid());
   gdaComm.gdaDeviceContext = reinterpret_cast<void *>(0x1000);
-  gdaComm.netProviderId = 8;
-  assert(!MockGdaApi::Net(gdaComm, 0).isValid());
+
+  assert(MockGdaApi::Net(gdaComm, 0).isValid());
+  gdaComm.netUseGda = false;
+  gdaComm.fifoBuffers[0] = &fifo;
+  MockGdaApi::Net fallback(gdaComm, 0);
+  assert(!fallback.context().useGda && fallback.context().handle == &fifo);
+  assert(fallback.requireProxyFifo() == flagcxSuccess);
+  gdaComm.netUseGda = true;
+  gdaComm.fifoBuffers[0] = nullptr;
 
   // A strong barrier dispatches only on its bound context. Put drains before
   // signaling; Get drains after all signals have been observed.
@@ -292,8 +281,8 @@ int main() {
   uint64_t barrierShadows[16] = {};
   MockGdaApi::Comm barrierComm{};
   barrierComm.contextCount = 2;
-  barrierComm.netProvider = DefaultNetProviderGda;
-  barrierComm.netProviderId = 7;
+
+  barrierComm.netUseGda = true;
   barrierComm.gdaDeviceContext = reinterpret_cast<void *>(0x2000);
   barrierComm.signalBuffer = barrierSignals;
   barrierComm.shadowBuffer = barrierShadows;
@@ -467,19 +456,16 @@ int main() {
   struct HostWindow : Policy::WindowState {
   } hostWindow;
   struct HostInput {
-    int gdaProvider;
-    unsigned gdaProviderId;
+    int netUseGda;
     void *gdaDeviceContext;
-  } hostInput{0, 0, nullptr};
+  } hostInput{0, nullptr};
   Policy::initComm(hostComm, hostInput);
   Policy::initWindow(hostWindow);
-  assert(hostComm.netProvider == DefaultNetProviderProxy);
-  assert(hostComm.netProviderId == 0);
   assert(hostComm.gdaDeviceContext == nullptr);
   assert(hostWindow.netDeviceHandle == nullptr);
   assert(Policy::makeContext(hostComm, reinterpret_cast<void *>(0x1000), 2)
              .handle == reinterpret_cast<void *>(0x1000));
-  hostInput = {DefaultNetProviderGda, 7, reinterpret_cast<void *>(0x2000)};
+  hostInput = {1, reinterpret_cast<void *>(0x2000)};
   Policy::initComm(hostComm, hostInput);
   assert(Policy::makeContext(hostComm, reinterpret_cast<void *>(0x1000), 2)
              .handle == reinterpret_cast<void *>(0x2000));

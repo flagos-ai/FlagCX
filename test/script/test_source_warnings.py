@@ -14,6 +14,9 @@ CXX = os.environ.get("CXX") or shutil.which("clang++") or shutil.which("g++")
 def function(source, name):
     start = source.index(name + "(")
     start = source.rfind("\n", 0, start) + 1
+    previous = source.rfind("\n", 0, start - 1) + 1
+    if source[previous:start].strip() in ("flagcxResult_t", "static flagcxResult_t"):
+        start = previous
     opening = source.index("{", start)
     depth = 1
     end = opening + 1
@@ -43,6 +46,207 @@ class SourceWarningTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             subprocess.run([str(tmp / "test")], check=True)
+
+    def test_devnet_enable_and_build_binding_agreement(self):
+        utils = (ROOT / "flagcx/service/utils.cc").read_text()
+        common = (ROOT / "flagcx/adaptor/device_api/devnet/dev_net.cc").read_text()
+        config = common[common.index("struct flagcxDevNetConfig {"):
+                        common.index(function(common, "flagcxDevNetCreateComm"))]
+        self.compile_run(r"""
+#include <cassert>
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
+#include <new>
+#include <vector>
+enum flagcxResult_t {
+  flagcxSuccess, flagcxInvalidArgument, flagcxSystemError,
+  flagcxInvalidUsage, flagcxNotSupported
+};
+struct Comm { int nranks, rank; void *bootstrap; };
+typedef Comm *flagcxComm_t;
+struct Adaptor { const char *name; bool isGda; };
+static Adaptor devNetAdaptor = {"Mock GDA", false};
+static int mismatch, gathers;
+const char *flagcxGetEnv(const char *name) { return std::getenv(name); }
+flagcxResult_t flagcxConvergeBootstrapStatus(Comm *, flagcxResult_t local,
+                                            flagcxResult_t *common) {
+  *common = local; return flagcxSuccess;
+}
+flagcxResult_t bootstrapCollAllGather(void *, void *, size_t);
+#define FLAGCXCHECK(call) do { flagcxResult_t r = (call); \
+  if (r != flagcxSuccess) return r; } while (0)
+""" + function(utils, "flagcxReadDevNetInteger") + "\n" +
+            function(utils, "flagcxReadDevNetConfig") + "\n" + config + r"""
+flagcxResult_t bootstrapCollAllGather(void *, void *data, size_t bytes) {
+  assert(bytes == sizeof(flagcxDevNetConfig)); ++gathers;
+  flagcxDevNetConfig *all = static_cast<flagcxDevNetConfig *>(data);
+  all[1] = all[0];
+  switch (mismatch) {
+    case 1: all[1].enabled ^= 1; break;
+    case 2: all[1].gda ^= 1; break;
+    case 3: all[1].wantsNet ^= 1; break;
+    case 4: all[1].forceOneSidedNet ^= 1; break;
+    case 5: all[1].valid = 0; break;
+    case 6: all[1].binding[0] ^= 1; break;
+  }
+  return flagcxSuccess;
+}
+int main() {
+  Comm comm = {1, 0, nullptr};
+  bool enabled = false;
+  for (int binding = 0; binding != 2; ++binding) {
+    devNetAdaptor.isGda = binding != 0;
+    unsetenv("FLAGCX_DEVNET_ENABLE");
+    assert(flagcxDevNetConfigure(&comm, true, true, &enabled) == flagcxSuccess);
+    assert(enabled == (binding != 0) && gathers == 0);
+    setenv("FLAGCX_DEVNET_ENABLE", "0", 1);
+    assert(flagcxDevNetConfigure(&comm, false, false, &enabled) == flagcxSuccess);
+    assert(!enabled);
+    assert(flagcxDevNetConfigure(&comm, true, false, &enabled) == flagcxSuccess);
+    assert(!enabled);
+    for (const char *text : {"-1", "2", "garbage", "1x"}) {
+      setenv("FLAGCX_DEVNET_ENABLE", text, 1);
+      assert(flagcxDevNetConfigure(&comm, true, false, &enabled) == flagcxInvalidArgument);
+    }
+  }
+  setenv("FLAGCX_DEVNET_ENABLE", "1", 1);
+  comm.nranks = 2;
+  for (mismatch = 0; mismatch != 7; ++mismatch) {
+    flagcxResult_t expected = mismatch == 0 || mismatch == 2 || mismatch == 6
+                                 ? flagcxSuccess : mismatch == 5
+                                 ? flagcxInvalidArgument : flagcxInvalidUsage;
+    assert(flagcxDevNetConfigure(&comm, true, true, &enabled) == expected);
+    if (expected == flagcxSuccess) assert(enabled == (mismatch == 0));
+  }
+  assert(gathers == 7);
+}
+""")
+
+    def test_gda_creation_fallback_requires_collective_cleanup(self):
+        source = (ROOT / "flagcx/adaptor/device_api/devnet/dev_net.cc").read_text()
+        self.compile_run(r"""
+#include <cassert>
+#include <initializer_list>
+#include <vector>
+enum flagcxResult_t {
+  flagcxSuccess, flagcxInvalidArgument, flagcxSystemError, flagcxInvalidUsage,
+  flagcxNotSupported, flagcxInternalError, flagcxRemoteError,
+  flagcxUnhandledDeviceError
+};
+struct Comm {};
+typedef Comm *flagcxComm_t;
+struct DevComm {
+  int netUseGda;
+  void *gdaHostOwner, *gdaDeviceContext;
+};
+typedef DevComm *flagcxDevComm_t;
+struct flagcxDevCommRequirements {};
+static flagcxResult_t createResult, destroyResult;
+static bool retainOwner, missingContext;
+static int destroys;
+static unsigned convergenceRound;
+static std::vector<flagcxResult_t> peer;
+flagcxResult_t create(Comm *, DevComm *dev,
+                      const flagcxDevCommRequirements *) {
+  if (createResult == flagcxSuccess || retainOwner) {
+    dev->gdaHostOwner = dev;
+    if (!missingContext) dev->gdaDeviceContext = dev;
+  }
+  return createResult;
+}
+flagcxResult_t destroy(DevComm *dev) {
+  ++destroys;
+  if (destroyResult == flagcxSuccess)
+    dev->gdaHostOwner = dev->gdaDeviceContext = nullptr;
+  return destroyResult;
+}
+struct Adaptor {
+  const char *name;
+  flagcxResult_t (*createComm)(Comm *, DevComm *, const flagcxDevCommRequirements *);
+  flagcxResult_t (*destroyComm)(DevComm *);
+};
+static Adaptor devNetAdaptor = {"Mock GDA", create, destroy};
+flagcxResult_t flagcxConvergeBootstrapStatus(Comm *, flagcxResult_t local,
+                                            flagcxResult_t *common) {
+  assert(convergenceRound < peer.size());
+  *common = local != flagcxSuccess ? local : peer[convergenceRound];
+  ++convergenceRound;
+  return flagcxSuccess;
+}
+#define FLAGCXCHECK(call) do { flagcxResult_t r = (call); \
+  if (r != flagcxSuccess) return r; } while (0)
+#define INFO(...) ((void)0)
+""" + function(source, "flagcxDevNetCreateComm") + r"""
+int main() {
+  Comm comm;
+  flagcxDevCommRequirements req;
+  auto run = [&](flagcxResult_t result, std::initializer_list<flagcxResult_t> peers,
+                 flagcxResult_t expected, bool useGda) {
+    createResult = result; peer = peers; convergenceRound = 0; destroys = 0;
+    DevComm dev = {};
+    assert(flagcxDevNetCreateComm(&comm, &dev, &req) == expected);
+    assert((dev.netUseGda != 0) == useGda);
+    assert(convergenceRound == peer.size());
+    return dev;
+  };
+  destroyResult = flagcxSuccess;
+  run(flagcxSuccess, {flagcxSuccess, flagcxSuccess}, flagcxSuccess, true);
+  // Clean capability, device, and resource failures select Proxy.
+  for (auto failure : {flagcxNotSupported, flagcxSystemError, flagcxRemoteError,
+                       flagcxUnhandledDeviceError})
+    run(failure, {failure, flagcxSuccess}, flagcxSuccess, false);
+  // Local resources or a peer's retained owner must prevent fallback.
+  retainOwner = true;
+  DevComm dev = run(flagcxNotSupported, {flagcxNotSupported, flagcxSuccess},
+                    flagcxNotSupported, false);
+  assert(dev.gdaHostOwner != nullptr);
+  retainOwner = false;
+  run(flagcxNotSupported, {flagcxNotSupported, flagcxRemoteError},
+      flagcxRemoteError, false);
+  run(flagcxInvalidArgument, {flagcxSuccess, flagcxSuccess},
+      flagcxInvalidArgument, false);
+  // A broken publication contract is an error, never a successful fallback.
+  missingContext = true;
+  dev = run(flagcxSuccess, {flagcxSuccess, flagcxSuccess, flagcxSuccess},
+            flagcxInternalError, false);
+  assert(destroys == 1 && dev.gdaHostOwner == nullptr);
+  missingContext = false;
+  destroyResult = flagcxRemoteError;
+  dev = run(flagcxSuccess, {flagcxSuccess, flagcxInternalError, flagcxSuccess},
+            flagcxRemoteError, false);
+  assert(destroys == 1 && dev.gdaHostOwner != nullptr);
+}
+""")
+
+    def test_gda_signal_storage_without_barrier_channels(self):
+        source = (ROOT / "flagcx/adaptor/device_api/devnet/xpu_netio_gda_host.cc").read_text()
+        start = source.index("    const bool barrierStorageValid =")
+        end = source.index("    if ((owner->caps.operation_bits", start)
+        self.compile_run(r"""
+#include <cassert>
+#include <climits>
+#include <cstdint>
+struct DevComm {
+  int interBarrierCount, nTeamRanks, barrierSignalBase, signalCount;
+};
+bool valid(const DevComm *devComm) {
+""" + source[start:end] + r"""
+  return barrierStorageValid;
+}
+int main() {
+  DevComm dev = {0, 0, 2, 2};
+  assert(valid(&dev)); // Two indexed user signals, no Barrier storage.
+  dev.interBarrierCount = 1;
+  assert(!valid(&dev));
+  dev.nTeamRanks = 4; dev.signalCount = 6;
+  assert(valid(&dev));
+  dev.signalCount = 5; assert(!valid(&dev));
+  dev.interBarrierCount = -1; assert(!valid(&dev));
+  dev = {INT_MAX, INT_MAX, 0, INT_MAX}; assert(!valid(&dev));
+  dev = {0, 1, -1, 1}; assert(!valid(&dev));
+}
+""")
 
     def test_gda_destroy_retries_keep_collectives_before_local_cleanup(self):
         lifecycle = (ROOT / "flagcx/adaptor/flagcx_device.cc").read_text()
@@ -124,11 +328,9 @@ flagcxResult_t prepare(DevComm *dev) {
   if (common == flagcxSuccess) dev->gdaQuiesced = 1;
   return common;
 }
-#if defined(FLAGCX_USE_GDA)
 struct Adaptor { flagcxResult_t (*prepareCommDestroy)(DevComm *); };
-static Adaptor flagcxDevNetGda = {prepare};
+static Adaptor devNetAdaptor = {prepare};
 """ + function(lifecycle, "flagcxCommPrepareGdaDestroy") + r"""
-#endif
 flagcxResult_t flagcxCommPrepareDestroyStage(Comm *comm, int stage) {
   if (stage != 2) return flagcxSuccess;
   int rank = comm->rank;
@@ -163,11 +365,7 @@ flagcxResult_t destroy(Comm *comm) {
   return flagcxSuccess;
 }
 int main() {
-#if defined(FLAGCX_USE_GDA)
   const int firstScenario = 0;
-#else
-  const int firstScenario = 5;
-#endif
   for (scenario = firstScenario; scenario != 6; ++scenario) {
     Rendezvous exchange; rendezvous = &exchange;
     DevComm gda[2] = {}, proxy[2] = {};
@@ -221,16 +419,16 @@ int main() {
   }
 }
 """
-        self.compile_run(program, flags=("-DFLAGCX_USE_GDA",))
         self.compile_run(program)
 
     def test_unified_net_forwarding_preserves_context_coop_and_flush_guards(self):
         source = (ROOT / "bindings/ir/flagcx_device_unified_ir_impl.h").read_text()
         backend = (ROOT / "flagcx/adaptor/device_api/default_dev_api_backend.cc").read_text()
         traits = (ROOT / "flagcx/adaptor/include/device_api/default_comm_traits.h").read_text()
-        proxy = backend.index("  if (devComm->gdaProvider == 0 && comm->heteroComm != nullptr &&")
-        readiness = backend[backend.rfind("#if defined(FLAGCX_USE_GDA)", 0, proxy):
-                            backend.index("  if (devComm->gdaProvider == 0 && oneSidedRequested && forceOneSidedNet &&", proxy)]
+        proxy = backend.index("  if (!devComm->netUseGda && comm->heteroComm != nullptr &&")
+
+        readiness = backend[backend.index("  // GDA readiness comes from its published device context") :
+                            backend.index("  if (!devComm->netUseGda && oneSidedRequested && forceOneSidedNet &&", proxy)]
         copy_ready = next(line for line in traits.splitlines()
                           if "dc.netOneSidedReady = di.netOneSidedReady;" in line)
         utils = (ROOT / "flagcx/adaptor/include/device_utils.h").read_text()
@@ -265,7 +463,7 @@ struct Registration { void *fullSendComms; };
 struct Hetero { int oneSideHandleCount; Registration *oneSideHandles[1]; };
 struct HostComm { Hetero *heteroComm; };
 struct HostDevComm {
-  int gdaProvider, contextCount, netOneSidedReady;
+  int contextCount, netOneSidedReady, netUseGda;
   void *gdaDeviceContext, *fifoBuffers[2];
 };
 flagcxResult_t publishReadiness(HostComm *comm, HostDevComm *devComm) {
@@ -326,8 +524,8 @@ int main() {
   Hetero hetero = {1, {&registration}};
   HostComm hostComm = {&hetero};
   HostDevComm host = {}; host.contextCount = 1;
-#if defined(FLAGCX_USE_GDA)
-  host.gdaProvider = 1; host.gdaDeviceContext = handle;
+#if TEST_GDA_BINDING
+  host.netUseGda = 1; host.gdaDeviceContext = handle;
   hostComm.heteroComm = nullptr; // GDA has no Proxy mesh or FIFO.
 #else
   host.fifoBuffers[0] = handle;
@@ -375,9 +573,9 @@ int main() {
     int expected = (missing == 0) * FLAGCX_DEVICE_HAS_NET_TRANSPORT;
     assert(calls == before + expected && syncs == beforeSync + 2 * expected);
   }
-#if defined(FLAGCX_USE_GDA)
+#if TEST_GDA_BINDING
   for (int missing = 0; missing != 2; ++missing) {
-    host = {}; host.gdaProvider = 1;
+    host = {}; host.netUseGda = 1;
     host.gdaDeviceContext = missing == 0 ? nullptr : handle;
     host.contextCount = missing == 0 ? 1 : 0;
     assert(publishReadiness(&hostComm, &host) == flagcxInternalError);
@@ -392,7 +590,7 @@ int main() {
                 self.compile_run(harness + macros + bodies + main, flags=(
                     f"-DFLAGCX_DEVICE_REQUIRES_LOCAL_NET_DESCRIPTOR={local}",
                     f"-DFLAGCX_DEVICE_HAS_NET_TRANSPORT={transport}",
-                ) + (("-DFLAGCX_USE_GDA",) if gda else ()))
+                ) + (f"-DTEST_GDA_BINDING={gda}",))
 
     def test_unified_barrier_dispatch_preserves_split_operations_and_parameters(self):
         source = (ROOT / "bindings/ir/flagcx_device_unified_ir_impl.h").read_text()

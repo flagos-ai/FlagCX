@@ -64,8 +64,10 @@ protected:
     comm.rank = 0;
     comm.nranks = 2;
     comm.devNetCommHandle = &dev;
-    dev.gdaProvider = 1;
+
+    dev.netUseGda = 1;
     dev.gdaHostOwner = &owner;
+    dev.gdaDeviceContext = &owner;
     owner.comm = &comm;
     owner.hostControl = owner.deviceControl = control;
     owner.errorFlag = control;
@@ -107,8 +109,9 @@ protected:
     o->signals = new XpuNetioGda::WindowOwner;
     o->signals->comm = o;
     o->signals->mr = reinterpret_cast<xpu_netio_mr_t *>(0x4000);
-    d->gdaProvider = 1;
+
     d->gdaHostOwner = o;
+    d->netUseGda = 1;
     d->gdaDeviceContext = o->deviceView;
     comm.devNetCommHandle = d;
     return d;

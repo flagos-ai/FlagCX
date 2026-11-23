@@ -24,19 +24,6 @@ static_assert(
 static_assert(std::is_same<Ops, NvidiaTraits::CoopOps>::value, "CoopOps alias");
 static_assert(std::is_same<DeviceAPI::Clock, NvidiaTraits::Clock>::value,
               "Clock alias");
-static_assert(defaultNetSelectProvider<NvidiaPlatform>(
-                  0, DefaultNetGdaRequiredCapabilities, true) ==
-                  DefaultNetProviderProxy,
-              "GDA implementation must be compiled before selection");
-static_assert(defaultNetSelectProvider<NvidiaPlatform>(
-                  0, DefaultNetGdaRequiredCapabilities & ~DefaultNetGdaGet,
-                  true) == DefaultNetProviderProxy,
-              "incomplete GDA operations must select Proxy");
-static_assert(defaultNetSelectProvider<NvidiaPlatform>(
-                  0, DefaultNetGdaRequiredCapabilities, false) ==
-                  DefaultNetProviderProxy,
-              "missing GDA resources must select Proxy");
-
 // Compile every NVIDIA default Net dispatch entry and the Inter Barrier
 // path without requiring an NIC in this single-GPU test executable.
 FLAGCX_GLOBAL_DECORATOR void

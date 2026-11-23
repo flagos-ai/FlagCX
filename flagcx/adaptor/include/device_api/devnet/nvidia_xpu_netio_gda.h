@@ -19,7 +19,7 @@
 #include <type_traits>
 
 template <>
-struct DefaultNetGdaProvider<NvidiaPlatform> {
+struct DefaultNetProvider<NvidiaPlatform> {
   using Api = CommTraits<DefaultBackend<NvidiaPlatform>>;
   using Net = typename Api::Net;
   using Team = typename Api::Team;
@@ -27,10 +27,7 @@ struct DefaultNetGdaProvider<NvidiaPlatform> {
   using Atomic = typename PlatformTraits<NvidiaPlatform>::Atomic;
   using Clock = typename PlatformTraits<NvidiaPlatform>::Clock;
 
-  FLAGCX_HOST_DEVICE_INLINE static constexpr bool
-  compiled(unsigned providerId) {
-    return providerId == 1;
-  }
+  static constexpr bool isGda = true;
 
   // The r4 MLX5 profile has no target-visibility or strong-signal guarantee.
   // Only arrival synchronization may be selected by this adapter.
@@ -41,13 +38,13 @@ struct DefaultNetGdaProvider<NvidiaPlatform> {
 
   FLAGCX_DEVICE_INLINE_DECORATOR static uint64_t
   beginBarrierWait(DefaultNetContext ctx) {
-    return ctx.provider == DefaultNetProviderGda ? Clock::now() : 0;
+    return ctx.handle != nullptr ? Clock::now() : 0;
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR static bool
   continueBarrierWait(DefaultNetContext ctx, uint64_t start) {
 #if defined(__CUDACC__)
-    if (ctx.provider != DefaultNetProviderGda)
+    if (ctx.handle == nullptr)
       return true;
     const auto &state = view(ctx);
     if (!ready(state))
@@ -61,24 +58,26 @@ struct DefaultNetGdaProvider<NvidiaPlatform> {
   }
 
   template <typename NetT>
-  FLAGCX_DEVICE_INLINE_DECORATOR static bool isValid(DefaultNetContext ctx,
-                                                     const NetT &) {
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool
+  isValid(DefaultNetContext ctx, const NetT &, bool = false) {
 #if defined(__CUDA_ARCH__)
     const auto *view =
         static_cast<const flagcxXpuNetioDeviceContext *>(ctx.handle);
-    return compiled(ctx.providerId) && ctx.contextId == 0 && view != nullptr &&
-           view->contexts != nullptr && view->signalRemote != nullptr &&
-           view->signalBuffer != nullptr && view->errorFlag != nullptr &&
-           view->atomicResults.address != 0 && view->rank < view->nranks;
+    return flagcxDevNetResourceSharingModeValid(ctx.resourceSharingMode) &&
+           ctx.contextId == 0 && view != nullptr && view->contexts != nullptr &&
+           view->signalRemote != nullptr && view->signalBuffer != nullptr &&
+           view->errorFlag != nullptr && view->atomicResults.address != 0 &&
+           view->rank < view->nranks;
 #else
-    return compiled(ctx.providerId) && ctx.handle != nullptr;
+    return flagcxDevNetResourceSharingModeValid(ctx.resourceSharingMode) &&
+           ctx.handle != nullptr;
 #endif
   }
 
   template <typename Operation, typename... Args>
   FLAGCX_DEVICE_INLINE_DECORATOR static auto call(DefaultNetContext ctx,
                                                   Args &&...args)
-      -> decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
+      -> decltype(DefaultNetProxyApi<Operation>::call(
           ctx, static_cast<Args &&>(args)...)) {
 #if defined(__CUDACC__)
     if constexpr (std::is_same<Operation, typename Net::PutOp>::value)
@@ -96,12 +95,12 @@ struct DefaultNetGdaProvider<NvidiaPlatform> {
                                     typename Net::ReadSignalOp>::value)
       return readSignal(ctx, static_cast<Args &&>(args)...);
     else {
-      typedef decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
+      typedef decltype(DefaultNetProxyApi<Operation>::call(
           ctx, static_cast<Args &&>(args)...)) Result;
       return Unsupported<Result>::run();
     }
 #else
-    typedef decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
+    typedef decltype(DefaultNetProxyApi<Operation>::call(
         ctx, static_cast<Args &&>(args)...)) Result;
     return Unsupported<Result>::run();
 #endif
@@ -456,7 +455,7 @@ private:
 };
 
 template <>
-struct DefaultNetGdaProvider<NvidiaPlatform>::Unsupported<void> {
+struct DefaultNetProvider<NvidiaPlatform>::Unsupported<void> {
   FLAGCX_DEVICE_INLINE_DECORATOR static void run() { FLAGCX_DEVICE_TRAP(); }
 };
 

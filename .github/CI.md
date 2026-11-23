@@ -199,10 +199,11 @@ cases, while the weekly coverage workflow runs them.
 
 CUDA also enables the `device_api_gda` suite. It builds with
 `USE_NVIDIA=1 USE_XPUNETIO=1 COMPILE_KERNEL=1`, runs the host lifecycle tests,
-and reuses `test_device_api_inter` with `FLAGCX_DEVNET_ENABLE=1` and
-`FLAGCX_DEVNET_TYPE=1`. The test requires an actual GDA DevComm and executes
-the supported inter cases, including Inter/World Barriers and repeated K14
-AlltoAll. Unsupported signal, counter, get, and multiple-context cases are
+and reuses `test_device_api_inter` with `FLAGCX_DEVNET_ENABLE=1`. Applications
+may fall back to Proxy after clean GDA initialization failure, but this suite
+requires an actual GDA DevComm. It executes the supported inter cases, including
+Inter/World Barriers and repeated K14
+AlltoAll. Unsupported counter, get, VA-signal and multiple-context cases are
 reported as SKIP; implementing their public contracts and enabling their
 cases in this same suite remains a TODO. A run with no aligned AlltoAll case
 fails rather than passing through skips.

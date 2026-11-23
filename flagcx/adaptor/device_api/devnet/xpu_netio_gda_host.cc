@@ -29,7 +29,6 @@
 namespace XpuNetioGda {
 namespace {
 
-static constexpr unsigned kProviderId = 1;
 static constexpr uint64_t kTimeoutNs = UINT64_C(30000000000);
 // Context 0's per-peer QPs may be used concurrently by multiple CTAs.
 static constexpr uint64_t kRequiredSharing = XPU_NETIO_SHARING_GPU;
@@ -373,7 +372,6 @@ unsigned operationCapabilities(const xpu_netio_caps_t &caps) {
 
 struct Candidate {
   xpu_netio_abi_header_t provider;
-  int32_t netType;
   uint32_t required;
   uint32_t capabilities;
   uint32_t reserved;
@@ -393,17 +391,13 @@ bool sameProvider(const xpu_netio_abi_header_t &a,
 } // namespace
 
 flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
-                                 const flagcxDevCommRequirements *reqs,
-                                 int netType) {
+                                 const flagcxDevCommRequirements *reqs) {
   if (comm == nullptr || devComm == nullptr || reqs == nullptr)
     return flagcxInvalidArgument;
   FLAGCXCHECK(stage(comm, comm->devNetCommHandle == nullptr
                               ? flagcxSuccess
                               : flagcxInvalidUsage));
-  if (netType != -1 && netType != 1)
-    return flagcxInvalidArgument;
-  unsigned requiredOperations =
-      netType == 1 ? kAllToAllCapabilities : DefaultNetGdaRequiredCapabilities;
+  unsigned requiredOperations = kAllToAllCapabilities;
   if (reqs->interSignalCount > 0)
     requiredOperations |= DefaultNetGdaSignal | DefaultNetGdaSignalCompletion;
   if (reqs->interCounterCount > 0)
@@ -477,7 +471,8 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
     // World uses the same Inter phase followed by intra-node synchronization.
     // Validate signed bounds before subtracting or widening the slot counts.
     const bool barrierStorageValid =
-        devComm->nTeamRanks > 0 && devComm->interBarrierCount > 0 &&
+        devComm->interBarrierCount >= 0 &&
+        (devComm->interBarrierCount == 0 || devComm->nTeamRanks > 0) &&
         devComm->barrierSignalBase >= 0 &&
         devComm->signalCount >= devComm->barrierSignalBase &&
         static_cast<uint64_t>(devComm->nTeamRanks) *
@@ -496,11 +491,6 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
         comm->nranks >
             INT_MAX / static_cast<int>(sizeof(xpu_netio_connect_blob_t)))
       local = flagcxNotSupported;
-    if (local == flagcxSuccess &&
-        defaultNetSelectProvider<typename DeviceAPI::Platform>(
-            kProviderId, owner->capabilities, requiredOperations, true) !=
-            DefaultNetProviderGda)
-      local = flagcxNotSupported;
   }
   flagcxResult_t common = stage(comm, local);
   if (common != flagcxSuccess)
@@ -508,7 +498,6 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
 
   Candidate candidate{};
   candidate.provider = owner->ops->hdr;
-  candidate.netType = netType;
   candidate.required = requiredOperations;
   candidate.capabilities = owner->capabilities;
   std::vector<Candidate> candidates;
@@ -516,7 +505,6 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
   for (const Candidate &peer : candidates)
     if (!sameProvider(peer.provider, candidate.provider) ||
         peer.required != candidate.required ||
-        peer.netType != candidate.netType ||
         (peer.capabilities & requiredOperations) != requiredOperations)
       return flagcxNotSupported;
 
@@ -718,8 +706,6 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
   if (common != flagcxSuccess)
     return common;
 
-  devComm->gdaProvider = 1;
-  devComm->gdaProviderId = kProviderId;
   devComm->gdaDeviceContext = owner->deviceView;
   return flagcxSuccess;
 }
@@ -729,17 +715,17 @@ static flagcxResult_t registerExistingWindows(flagcxComm_t comm,
 static flagcxResult_t detachOwnedWindows(CommOwner *owner);
 
 flagcxResult_t createComm(flagcxComm_t comm, flagcxDevComm_t devComm,
-                          const flagcxDevCommRequirements *reqs, int netType) {
+                          const flagcxDevCommRequirements *reqs) {
   if (comm == nullptr || devComm == nullptr || reqs == nullptr)
     return flagcxInvalidArgument;
-  flagcxResult_t status = createCommAttempt(comm, devComm, reqs, netType);
-  if (status == flagcxSuccess && devComm->gdaProvider != 0)
+  flagcxResult_t status = createCommAttempt(comm, devComm, reqs);
+  if (status == flagcxSuccess && devComm->gdaDeviceContext != nullptr)
     status = registerExistingWindows(comm, devComm);
   if (status == flagcxSuccess)
     return status;
 
   // A failed allocation can leave an owner on only some ranks. Every rank
-  // must converge after local cleanup before AUTO may choose Proxy.
+  // must converge after local cleanup before reporting the creation error.
   CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
   flagcxResult_t cleanup =
       owner != nullptr ? detachOwnedWindows(owner) : flagcxSuccess;
@@ -748,16 +734,11 @@ flagcxResult_t createComm(flagcxComm_t comm, flagcxDevComm_t devComm,
   if (cleanup == flagcxSuccess) {
     devComm->gdaHostOwner = nullptr;
     devComm->gdaDeviceContext = nullptr;
-    devComm->gdaProvider = 0;
-    devComm->gdaProviderId = 0;
   }
   flagcxResult_t commonCleanup = stage(comm, cleanup);
   if (commonCleanup != flagcxSuccess)
     return commonCleanup;
 
-  if (netType == -1 && status != flagcxInvalidUsage &&
-      status != flagcxInvalidArgument)
-    return flagcxSuccess;
   return status;
 }
 
@@ -769,8 +750,7 @@ flagcxResult_t destroyComm(flagcxDevComm_t devComm) {
   FLAGCXCHECK(releaseComm(owner));
   devComm->gdaHostOwner = nullptr;
   devComm->gdaDeviceContext = nullptr;
-  devComm->gdaProvider = 0;
-  devComm->gdaProviderId = 0;
+
   return flagcxSuccess;
 }
 
@@ -828,7 +808,7 @@ flagcxResult_t prepareCommDestroy(flagcxDevComm_t devComm) {
 
 flagcxResult_t registerWindow(flagcxComm_t comm, flagcxDevComm_t devComm,
                               flagcxWindow_t hostWindow) {
-  if (devComm == nullptr || devComm->gdaProvider == 0)
+  if (devComm == nullptr || devComm->gdaDeviceContext == nullptr)
     return flagcxSuccess;
   if (comm == nullptr)
     return flagcxInvalidArgument;
@@ -1063,10 +1043,10 @@ static flagcxResult_t detachOwnedWindows(CommOwner *owner) {
 flagcxResult_t queryComm(flagcxDevComm_t devComm, unsigned *capabilities,
                          uint32_t **deviceErrorFlag, uint64_t *maxChunkBytes,
                          unsigned *requiredAlignment) {
-  if (devComm == nullptr || devComm->gdaProvider == 0 || devComm->gdaDraining ||
-      devComm->gdaHostOwner == nullptr || capabilities == nullptr ||
-      deviceErrorFlag == nullptr || maxChunkBytes == nullptr ||
-      requiredAlignment == nullptr)
+  if (devComm == nullptr || devComm->gdaDeviceContext == nullptr ||
+      devComm->gdaDraining || devComm->gdaHostOwner == nullptr ||
+      capabilities == nullptr || deviceErrorFlag == nullptr ||
+      maxChunkBytes == nullptr || requiredAlignment == nullptr)
     return flagcxInvalidArgument;
   const CommOwner *owner =
       static_cast<const CommOwner *>(devComm->gdaHostOwner);
@@ -1079,7 +1059,7 @@ flagcxResult_t queryComm(flagcxDevComm_t devComm, unsigned *capabilities,
 }
 
 flagcxResult_t clearError(flagcxDevComm_t devComm) {
-  if (devComm == nullptr || devComm->gdaProvider == 0 ||
+  if (devComm == nullptr || devComm->gdaDeviceContext == nullptr ||
       devComm->gdaHostOwner == nullptr)
     return flagcxInvalidArgument;
   CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
@@ -1098,7 +1078,7 @@ flagcxResult_t clearError(flagcxDevComm_t devComm) {
 }
 
 flagcxResult_t pollError(flagcxDevComm_t devComm) {
-  if (devComm == nullptr || devComm->gdaProvider == 0 ||
+  if (devComm == nullptr || devComm->gdaDeviceContext == nullptr ||
       devComm->gdaHostOwner == nullptr)
     return flagcxInvalidArgument;
   CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
@@ -1127,9 +1107,15 @@ flagcxResult_t abortComm(flagcxDevComm_t devComm) {
 
 } // namespace XpuNetioGda
 
-const flagcxDevNetAdaptor flagcxDevNetGda = {
-    XpuNetioGda::createComm,       XpuNetioGda::destroyComm,
-    XpuNetioGda::registerWindow,   XpuNetioGda::prepareWindowDeregister,
-    XpuNetioGda::deregisterWindow, XpuNetioGda::bindDevMem,
-    XpuNetioGda::unbindDevMem,     XpuNetioGda::pollError,
-    XpuNetioGda::abortComm,        XpuNetioGda::prepareCommDestroy};
+const flagcxDevNetAdaptor devNetAdaptor = {"XPUNetIO",
+                                           true,
+                                           XpuNetioGda::createComm,
+                                           XpuNetioGda::destroyComm,
+                                           XpuNetioGda::registerWindow,
+                                           XpuNetioGda::prepareWindowDeregister,
+                                           XpuNetioGda::deregisterWindow,
+                                           XpuNetioGda::bindDevMem,
+                                           XpuNetioGda::unbindDevMem,
+                                           XpuNetioGda::pollError,
+                                           XpuNetioGda::abortComm,
+                                           XpuNetioGda::prepareCommDestroy};

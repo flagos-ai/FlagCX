@@ -118,7 +118,7 @@ endif
 # compiled by xpu-clang, not g++. Pass only the allocator choice needed by the
 # provenance assertions.
 UNIT_CXXFLAGS := $(filter-out -DCOMPILE_KERNEL -fgpu-rdc,$(CXXFLAGS))
-UNIT_CXXFLAGS += $(filter -DFLAGCX_USE_GDA -DFLAGCX_USE_XPU_NETIO,$(HOST_ADAPTOR_DEFINE))
+UNIT_CXXFLAGS += $(filter -DFLAGCX_USE_XPU_NETIO,$(HOST_ADAPTOR_DEFINE))
 UNIT_INCLUDES := $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) \
                  -I$(PROJECT_ROOT)/flagcx/adaptor/device_api
 ifneq ($(filter -DFLAGCX_USE_XPU_NETIO,$(HOST_ADAPTOR_DEFINE)),)
@@ -472,10 +472,10 @@ ifeq ($(USE_XPUNETIO)$(KERNEL_PLATFORM),1nvidia)
 run-mpi-gda: $(BINDIR)/test_device_api_inter
 	$(MPIRUN) $(MPI_ROOT_ARGS) \
 		-n $(GDA_RANKS_PER_NODE) $(INTER_ENV) $(GDA_NODE0_ENV) \
-		$(MPI_ENV_FLAG) FLAGCX_DEVNET_ENABLE=1 $(MPI_ENV_FLAG) FLAGCX_DEVNET_TYPE=1 \
+		$(MPI_ENV_FLAG) FLAGCX_DEVNET_ENABLE=1 \
 		$(BINDIR)/test_device_api_inter $(GDA_TEST_ARGS) \
 		: -n $(GDA_RANKS_PER_NODE) $(INTER_ENV) $(GDA_NODE1_ENV) \
-		$(MPI_ENV_FLAG) FLAGCX_DEVNET_ENABLE=1 $(MPI_ENV_FLAG) FLAGCX_DEVNET_TYPE=1 \
+		$(MPI_ENV_FLAG) FLAGCX_DEVNET_ENABLE=1 \
 		$(BINDIR)/test_device_api_inter $(GDA_TEST_ARGS)
 else
 run-mpi-gda:

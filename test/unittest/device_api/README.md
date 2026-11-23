@@ -34,7 +34,11 @@ and 64 AlltoAll iterations. Override `GDA_NODE0_ENV`, `GDA_NODE1_ENV`,
 `GDA_RANKS_PER_NODE` and `GDA_TEST_ARGS` for another topology or message range.
 Logical nodes on one host do not constitute a physical multi-node test.
 
-The selected DevComm must use GDA. K14 invokes the existing
+The build supplies XPUNetIO as its sole GDA candidate. DevComm creation may
+fall back collectively to Proxy if GDA is unavailable and cleanup succeeds.
+`FLAGCX_DEVNET_ENABLE=0` skips GDA and uses Proxy; `FLAGCX_DEVNET_TYPE` is no
+longer used. This GDA test requires a valid GDA DevComm and fails if Proxy was
+selected, so a fallback cannot count as a successful GDA test. K14 invokes the existing
 `flagcxInterGdaAlltoAllKernel` through `launchKernelNetOneSidedAlltoAll`; no
 standalone GDA AlltoAll program is required. Each remote chunk uses
 `put(SignalInc)`, then the receiver waits for its cumulative indexed signal.

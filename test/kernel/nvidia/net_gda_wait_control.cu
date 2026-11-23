@@ -31,8 +31,8 @@ __global__ void waitKernel(flagcxXpuNetioDeviceContext *state, uint64_t **peers,
   comm.barrierPeers = peers;
   comm.epochBuffer = epoch;
   comm.nBarriers = 1;
-  comm.netProvider = DefaultNetProviderGda;
-  comm.netProviderId = 1;
+
+  comm.netUseGda = true;
   comm.gdaDeviceContext = state;
   PT::CoopBlock block;
   if (block.threadRank() == 0)

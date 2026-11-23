@@ -27,11 +27,6 @@
 
 // Default Net contract shared by every platform using DefaultBackend.
 // A platform adapter supplies GDA resources and operation implementations.
-enum DefaultNetProviderKind {
-  DefaultNetProviderProxy = 0,
-  DefaultNetProviderGda = 1
-};
-
 enum DefaultNetGdaCapability {
   DefaultNetGdaPut = 1u << 0,
   DefaultNetGdaGet = 1u << 1,
@@ -43,32 +38,24 @@ enum DefaultNetGdaCapability {
   DefaultNetGdaBarrier = 1u << 7,
 };
 
-static constexpr unsigned DefaultNetGdaRequiredCapabilities =
-    DefaultNetGdaPut | DefaultNetGdaGet | DefaultNetGdaPutValue |
-    DefaultNetGdaSignal | DefaultNetGdaFlush | DefaultNetGdaSignalCompletion |
-    DefaultNetGdaCounterCompletion | DefaultNetGdaBarrier;
-
+// The GDA implementation is fixed by the build; a DevComm selects Proxy or GDA.
 struct DefaultNetContext {
-  DefaultNetProviderKind provider;
-  unsigned providerId; // Platform-defined GDA implementation; zero for Proxy.
   void *handle;
   int contextId;
+  bool useGda;
   flagcxDevNetResourceSharingMode_t resourceSharingMode;
 
   FLAGCX_HOST_DEVICE_INLINE constexpr DefaultNetContext(
-      DefaultNetProviderKind provider = DefaultNetProviderProxy,
-      unsigned providerId = 0, void *handle = nullptr, int contextId = 0,
+      void *handle = nullptr, int contextId = 0,
       flagcxDevNetResourceSharingMode_t sharingMode =
-          flagcxDevNetResourceSharingDevice)
-      : provider(provider), providerId(providerId), handle(handle),
-        contextId(contextId), resourceSharingMode(sharingMode) {}
+          flagcxDevNetResourceSharingDevice,
+      bool useGda = false)
+      : handle(handle), contextId(contextId), useGda(useGda),
+        resourceSharingMode(sharingMode) {}
 };
 
-template <DefaultNetProviderKind Provider, typename Operation>
-struct DefaultNetApi;
-
 template <typename Operation>
-struct DefaultNetApi<DefaultNetProviderProxy, Operation> {
+struct DefaultNetProxyApi {
   template <typename... Args>
   FLAGCX_DEVICE_INLINE_DECORATOR static auto call(DefaultNetContext ctx,
                                                   Args &&...args)
@@ -77,10 +64,12 @@ struct DefaultNetApi<DefaultNetProviderProxy, Operation> {
   }
 };
 
-// Each platform may specialize this for its compiled GDA implementations.
-// An unavailable provider traps if a malformed context reaches device code.
+// None binding: reuse the existing FIFO implementation. A platform may
+// specialize this when its build links a GDA adaptor and matching device code.
 template <typename PlatformTag>
-struct DefaultNetGdaProvider {
+struct DefaultNetProvider {
+  static constexpr bool isGda = false;
+
   FLAGCX_DEVICE_INLINE_DECORATOR static uint64_t
   beginBarrierWait(DefaultNetContext) {
     return 0;
@@ -89,57 +78,75 @@ struct DefaultNetGdaProvider {
   continueBarrierWait(DefaultNetContext, uint64_t) {
     return true;
   }
-  FLAGCX_HOST_DEVICE_INLINE static constexpr bool compiled(unsigned) {
-    return false;
-  }
-
-  // A GDA specialization must opt in only after it can provide the requested
-  // completion guarantee for the bound context.
   FLAGCX_DEVICE_INLINE_DECORATOR static bool
   supportsBarrierFence(DefaultNetContext, flagcxDevNetFenceLevel fence) {
-    return fence == flagcxDevNetFenceLevel::Relaxed;
+    return flagcxDevNetFenceValid(fence);
   }
-
-  // A platform implementation validates the resources referenced by this
-  // context. The default rejects GDA until such an implementation exists.
   template <typename NetT>
-  FLAGCX_DEVICE_INLINE_DECORATOR static bool isValid(DefaultNetContext,
-                                                     const NetT &) {
-    return false;
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool
+  isValid(DefaultNetContext ctx, const NetT &, bool proxyReady) {
+    return flagcxDevNetResourceSharingModeValid(ctx.resourceSharingMode) &&
+           proxyReady;
   }
-
   template <typename Operation, typename... Args>
   FLAGCX_DEVICE_INLINE_DECORATOR static auto call(DefaultNetContext ctx,
                                                   Args &&...args)
-      -> decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
+      -> decltype(DefaultNetProxyApi<Operation>::call(
           ctx, static_cast<Args &&>(args)...)) {
-    FLAGCX_DEVICE_TRAP();
+    if (!flagcxDevNetResourceSharingModeValid(ctx.resourceSharingMode))
+      FLAGCX_DEVICE_TRAP();
+    return DefaultNetProxyApi<Operation>::call(ctx,
+                                               static_cast<Args &&>(args)...);
   }
 };
 
-// Host chooses a provider before publishing the Comm device view. Capability
-// bits cover the complete one-sided and Inter Barrier operation contract.
+// Runtime selection is limited to Proxy vs the single compiled GDA candidate.
 template <typename PlatformTag>
-FLAGCX_HOST_DEVICE_INLINE constexpr DefaultNetProviderKind
-defaultNetSelectProvider(unsigned providerId, unsigned gdaCapabilities,
-                         unsigned requiredCapabilities, bool resourcesReady) {
-  return DefaultNetGdaProvider<PlatformTag>::compiled(providerId) &&
-                 resourcesReady &&
-                 (gdaCapabilities & requiredCapabilities) ==
-                     requiredCapabilities
-             ? DefaultNetProviderGda
-             : DefaultNetProviderProxy;
-}
-
-// Preserve the original full-Net selection rule for existing callers.
-template <typename PlatformTag>
-FLAGCX_HOST_DEVICE_INLINE constexpr DefaultNetProviderKind
-defaultNetSelectProvider(unsigned providerId, unsigned gdaCapabilities,
-                         bool resourcesReady) {
-  return defaultNetSelectProvider<PlatformTag>(
-      providerId, gdaCapabilities, DefaultNetGdaRequiredCapabilities,
-      resourcesReady);
-}
+struct DefaultNetDispatch {
+  template <typename NetT>
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool
+  isValid(DefaultNetContext ctx, const NetT &net, bool proxyReady) {
+    if (!flagcxDevNetResourceSharingModeValid(ctx.resourceSharingMode))
+      return false;
+    return ctx.useGda
+               ? DefaultNetProvider<PlatformTag>::isGda &&
+                     ctx.handle != nullptr &&
+                     DefaultNetProvider<PlatformTag>::isValid(ctx, net, false)
+               : proxyReady;
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR static uint64_t
+  beginBarrierWait(DefaultNetContext ctx) {
+    return ctx.useGda ? DefaultNetProvider<PlatformTag>::beginBarrierWait(ctx)
+                      : 0;
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool
+  continueBarrierWait(DefaultNetContext ctx, uint64_t start) {
+    return !ctx.useGda ||
+           DefaultNetProvider<PlatformTag>::continueBarrierWait(ctx, start);
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool
+  supportsBarrierFence(DefaultNetContext ctx, flagcxDevNetFenceLevel fence) {
+    return ctx.useGda ? DefaultNetProvider<PlatformTag>::supportsBarrierFence(
+                            ctx, fence)
+                      : flagcxDevNetFenceValid(fence);
+  }
+  template <typename Operation, typename... Args>
+  FLAGCX_DEVICE_INLINE_DECORATOR static auto call(DefaultNetContext ctx,
+                                                  Args &&...args)
+      -> decltype(DefaultNetProxyApi<Operation>::call(
+          ctx, static_cast<Args &&>(args)...)) {
+    if (!flagcxDevNetResourceSharingModeValid(ctx.resourceSharingMode))
+      FLAGCX_DEVICE_TRAP();
+    if (ctx.useGda) {
+      if (!DefaultNetProvider<PlatformTag>::isGda || ctx.handle == nullptr)
+        FLAGCX_DEVICE_TRAP();
+      return DefaultNetProvider<PlatformTag>::template call<Operation>(
+          ctx, static_cast<Args &&>(args)...);
+    }
+    return DefaultNetProxyApi<Operation>::call(ctx,
+                                               static_cast<Args &&>(args)...);
+  }
+};
 
 template <typename PlatformTag>
 struct DefaultNetProviderPolicy {
@@ -161,7 +168,7 @@ struct DefaultNetProviderPolicy {
   template <typename Comm>
   FLAGCX_HOST_DEVICE_INLINE static DefaultNetContext
   makeContext(const Comm &, void *fifo, int contextId) {
-    return DefaultNetContext{DefaultNetProviderProxy, 0, fifo, contextId};
+    return DefaultNetContext{fifo, contextId};
   }
 
   template <typename Barrier>
@@ -171,51 +178,7 @@ struct DefaultNetProviderPolicy {
   template <typename Barrier>
   FLAGCX_HOST_DEVICE_INLINE static DefaultNetContext
   barrierContext(const Barrier &, void *fifo, int contextId) {
-    return DefaultNetContext{DefaultNetProviderProxy, 0, fifo, contextId};
-  }
-};
-
-// The same runtime dispatch applies to every DefaultBackend platform. A
-// platform-specific GDA provider handles only its own native implementation.
-template <typename PlatformTag>
-struct DefaultNetDispatch {
-  template <typename NetT>
-  FLAGCX_DEVICE_INLINE_DECORATOR static bool
-  isValid(DefaultNetContext ctx, const NetT &net, bool proxyReady) {
-    if (!flagcxDevNetResourceSharingModeValid(ctx.resourceSharingMode))
-      return false;
-    switch (ctx.provider) {
-      case DefaultNetProviderProxy:
-        return proxyReady;
-      case DefaultNetProviderGda:
-        return DefaultNetGdaProvider<PlatformTag>::compiled(ctx.providerId) &&
-               ctx.handle != nullptr &&
-               DefaultNetGdaProvider<PlatformTag>::isValid(ctx, net);
-      default:
-        return false;
-    }
-  }
-
-  template <typename Op, typename... Args>
-  FLAGCX_DEVICE_INLINE_DECORATOR static auto call(DefaultNetContext ctx,
-                                                  Args &&...args)
-      -> decltype(DefaultNetApi<DefaultNetProviderProxy, Op>::call(
-          ctx, static_cast<Args &&>(args)...)) {
-    if (!flagcxDevNetResourceSharingModeValid(ctx.resourceSharingMode))
-      FLAGCX_DEVICE_TRAP();
-    switch (ctx.provider) {
-      case DefaultNetProviderProxy:
-        return DefaultNetApi<DefaultNetProviderProxy, Op>::call(
-            ctx, static_cast<Args &&>(args)...);
-      case DefaultNetProviderGda:
-        if (!DefaultNetGdaProvider<PlatformTag>::compiled(ctx.providerId) ||
-            ctx.handle == nullptr)
-          FLAGCX_DEVICE_TRAP();
-        return DefaultNetGdaProvider<PlatformTag>::template call<Op>(
-            ctx, static_cast<Args &&>(args)...);
-      default:
-        FLAGCX_DEVICE_TRAP();
-    }
+    return DefaultNetContext{fifo, contextId};
   }
 };
 
@@ -888,9 +851,10 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
-      const bool proxyReady = _dc.getCompletionSignalBuffer() != nullptr &&
-                              _dc.getCompletionCounterBuffer() != nullptr &&
-                              fifoBuffer != nullptr;
+      const bool proxyReady =
+          (signalCount == 0 || _dc.getCompletionSignalBuffer() != nullptr) &&
+          (counterCount == 0 || _dc.getCompletionCounterBuffer() != nullptr) &&
+          fifoBuffer != nullptr;
       return DefaultNetDispatch<PlatformTag>::isValid(context(), *this,
                                                       proxyReady);
     }
@@ -965,7 +929,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     // A DevComm selects one Net backend. Two-sided operations belong only to
     // Proxy; GDA does not silently submit them through the Proxy FIFO.
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t requireProxyFifo() const {
-      if (context().provider != DefaultNetProviderProxy)
+      if (context().useGda)
         return flagcxNotSupported;
       return fifoBuffer != nullptr ? flagcxSuccess : flagcxInvalidUsage;
     }
@@ -1571,8 +1535,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier()
       : _coop(), _peerBuffers(nullptr), _nRanks(0), _myRank(0), _nBarriers(0),
-        _ctaIndex(0), _epochBuffer(nullptr),
-        _epoch(0), _netContext{DefaultNetProviderProxy, 0, nullptr, 0} {}
+        _ctaIndex(0), _epochBuffer(nullptr), _epoch(0), _netContext{} {}
 
   // Active ctor
   FLAGCX_DEVICE_INLINE_DECORATOR
@@ -1603,8 +1566,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
   // wait: thread-striped spin on own inbox slots from each peer
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    const uint64_t start =
-        DefaultNetGdaProvider<P>::beginBarrierWait(_netContext);
+    const uint64_t start = DefaultNetDispatch<P>::beginBarrierWait(_netContext);
     for (int i = _coop.threadRank(); i < _nRanks - 1; i += _coop.size()) {
       int peer = 1 + _myRank + i;
       if (peer >= _nRanks)
@@ -1613,16 +1575,16 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
       int iter = 0;
       uint64_t current = Atomic::load(slot, flagcxDeviceMemoryOrderAcquire);
       while (current < _epoch + 1) {
-        if (!DefaultNetGdaProvider<P>::continueBarrierWait(_netContext, start))
+        if (!DefaultNetDispatch<P>::continueBarrierWait(_netContext, start))
           break;
         Intrin::spinBackoff(iter++);
         current = Atomic::load(slot, flagcxDeviceMemoryOrderAcquire);
       }
     }
     // Every thread reaches both CTA synchronizations even when one peer fails.
-    if (_netContext.provider == DefaultNetProviderGda)
+    if (_netContext.useGda)
       _coop.sync();
-    if (DefaultNetGdaProvider<P>::continueBarrierWait(_netContext, start)) {
+    if (DefaultNetDispatch<P>::continueBarrierWait(_netContext, start)) {
       _epoch += 1;
       if (_coop.threadRank() == 0)
         Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
@@ -1675,8 +1637,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
         _shadowBuffer(nullptr), _signalCount(0), _contextId(0), _teamRank(0),
         _nTeamRanks(0), _barrierSignal0(0), _stride(0), _localRank(0),
         _sharingMode(flagcxDevNetResourceSharingDevice) {
-    DefaultNetProviderPolicy<P>::initBarrier(
-        *this, DefaultNetContext{DefaultNetProviderProxy, 0, nullptr, 0});
+    DefaultNetProviderPolicy<P>::initBarrier(*this, DefaultNetContext{});
   }
 
   // Active ctor
@@ -1826,8 +1787,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     if (!flagcxDevNetFenceValid(fence))
       FLAGCX_DEVICE_TRAP();
-    if (context().provider == DefaultNetProviderGda &&
-        !DefaultNetGdaProvider<P>::supportsBarrierFence(context(), fence))
+    if (!DefaultNetDispatch<P>::supportsBarrierFence(context(), fence))
       FLAGCX_DEVICE_TRAP();
     arriveImpl(order, fence);
     waitImpl(order, fence);

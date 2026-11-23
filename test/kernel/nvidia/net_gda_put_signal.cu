@@ -25,8 +25,8 @@ __global__ void exercise(flagcxXpuNetioDeviceContext *state,
   comm.signalCount = 3;
   comm.barrierSignalBase = 1;
   comm.signalBuffer = state->signalBuffer;
-  comm.netProvider = DefaultNetProviderGda;
-  comm.netProviderId = 1;
+
+  comm.netUseGda = true;
   comm.gdaDeviceContext = state;
   DeviceAPI::Net net(comm, 0);
   DeviceAPI::Window win{};

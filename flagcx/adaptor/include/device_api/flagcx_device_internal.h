@@ -138,10 +138,9 @@ struct flagcxDevCommInternal {
   int netPutValueReady;
   int useP2pSignals;
 
-  // One-sided provider selection. Populated by a GDA-enabled DefaultBackend;
+  // GDA resources populated by the build-selected DefaultBackend adaptor;
   // two-sided FIFO ownership remains with heteroComm.
-  int gdaProvider;
-  unsigned gdaProviderId;
+  int netUseGda; // Final path selected collectively before publication.
   void *gdaDeviceContext;
   void *gdaHostOwner;
   int gdaDraining; // Cleanup-only: no new device views may be published.
