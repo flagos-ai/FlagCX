@@ -593,6 +593,13 @@ run_suite() {
           --case DeviceAdaptorTest.HostRegisterUnregister \
           "$gpu_result_xml" || unit_status=$?
       fi
+      if ((unit_status == 0)) && [[ "$platform_name" == mthreads ]]; then
+        python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+          --case DeviceAdaptorTest.StreamWaitEvent \
+          --case DeviceAdaptorTest.StreamWaitWriteValue64 \
+          --case GdrFlushPolicyTest.ActivePlatformUsesDocumentedDefault \
+          "$gpu_result_xml" || unit_status=$?
+      fi
 
       if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
         # IBUC is another implementation of the net-adaptor contract, not an
@@ -646,17 +653,30 @@ run_suite() {
         else
           ipc_filter+="-$ipc_exclude"
         fi
-        flagcx_ci_report_skipped_suite "$SUITE/IPC GDR cases" \
-          "GDR allocation is unavailable; excluded cases: $ipc_exclude"
+        echo "Applying configured adaptor IPC exclusions: $ipc_exclude"
         ipc_mpi_env+=" -x GTEST_FILTER=$ipc_filter"
       fi
-      if [[ "$platform_name" == ascend ]]; then
+      local ipc_xml_dir=""
+      if [[ "$platform_name" == ascend || "$platform_name" == mthreads ]]; then
         ipc_mpi_env="$ipc_mpi_env -x FLAGCX_CI_REQUIRE_IPC=1"
+      fi
+      if [[ "$platform_name" == mthreads ]]; then
+        ipc_xml_dir=$(mktemp -d "$suite_dir/build/ipc-required.XXXXXX")
       fi
       FLAGCX_CI_MPI_LABEL="$SUITE IPC MPI tests" \
         make -C "$suite_dir" run-mpi "${args[@]}" \
-        MPIRUN="$MPI_RUNNER" MPI_NP=2 \
+        MPIRUN="$MPI_RUNNER" MPI_NP=2 MPI_XML_DIR="$ipc_xml_dir" \
         MPI_ENV="$ipc_mpi_env" || ipc_status=$?
+      if ((ipc_status == 0)) && [[ "$platform_name" == mthreads ]]; then
+        python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+          --case IpcMemHandleMpiTest.CrossProcessLifecycle \
+          --case IpcMemHandleMpiTest.CrossGpuImportedMappingRead \
+          --case IpcMemHandleMpiTest.CrossGpuImportedMappingWrite \
+          --case IpcMemHandleMpiTest.CrossGpuImportedGdrMappingReadAsync \
+          --case IpcMemHandleMpiTest.CrossGpuBidirectionalGdrMappingsWriteAsync \
+          --case IpcMemHandleMpiTest.CrossGpuLargeGdrSubrangesWriteAsync \
+          "$ipc_xml_dir/rank-0.xml" "$ipc_xml_dir/rank-1.xml" || ipc_status=$?
+      fi
 
       # Exercise the real IBRC connection handshake with asymmetric rank-local
       # settings. Both peers must report the same terminal error, cleanup must
@@ -796,6 +816,8 @@ run_suite() {
       rma_platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
       if [[ "$rma_platform_name" == iluvatar ]]; then
         ipc_xml_dir=$(mktemp -d "$suite_dir/build/rma-pr2.XXXXXX")
+      elif [[ "$rma_platform_name" == mthreads ]]; then
+        ipc_xml_dir=$(mktemp -d "$suite_dir/build/rma-ipc-required.XXXXXX")
       fi
       FLAGCX_CI_TEST_LABEL="rma unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
@@ -816,6 +838,15 @@ run_suite() {
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
           --case RmaTest.GetAsyncOffsets \
           --case RmaTest.IpcGetSameStreamCompletion \
+          "$ipc_xml_dir/rank-0.xml" "$ipc_xml_dir/rank-1.xml" || ipc_status=$?
+      fi
+      if ((ipc_status == 0)) && [[ "$rma_platform_name" == mthreads ]] &&
+         flagcx_ci_phase_supported rma-ipc-mpi; then
+        python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+          --case RmaTest.GetAsyncOffsets \
+          --case RmaTest.IpcGetSameStreamCompletion \
+          --case RmaTest.IpcResolvedPeerPointerSupportsDirectCopy \
+          --case RmaTest.IpcPutWithoutNetworkMr \
           "$ipc_xml_dir/rank-0.xml" "$ipc_xml_dir/rank-1.xml" || ipc_status=$?
       fi
       if flagcx_ci_require_rdma "$SUITE"; then
@@ -908,13 +939,24 @@ run_suite() {
         fi
         if ((run_visibility != 0)) &&
            [[ "$platform_name" != "hygon" && "$platform_name" != "ascend" ]]; then
+          local visibility_xml_dir=""
+          if [[ "$platform_name" == mthreads ]]; then
+            visibility_xml_dir=$(mktemp -d "$suite_dir/build/rma-visibility-required.XXXXXX")
+          fi
           FLAGCX_CI_REQUIRE_GTEST_PASS=1 \
             FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary" \
             make -C "$suite_dir" run-mpi-net "${args[@]}" \
             MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
+            NET_XML_DIR="$visibility_xml_dir" \
             RMA_VMM_ENABLE=0 \
             RMA_PLATFORM_ENV="$base_rma_platform_env ${visibility_common_env[*]} -x FLAGCX_DMABUF_ENABLE=0" || \
             visibility_status=$?
+          if ((visibility_status == 0)) && [[ "$platform_name" == mthreads ]]; then
+            python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+              --case RmaTest.DirectConsumerReadVisibility \
+              --case RmaTest.DirectConsumerWriteVisibility \
+              "$visibility_xml_dir/rank-0.xml" "$visibility_xml_dir/rank-1.xml" || visibility_status=$?
+          fi
         fi
 
         if ((run_visibility != 0)) && [[ "$platform_name" == "cuda" ]]; then

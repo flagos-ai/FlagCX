@@ -31,13 +31,7 @@ export LD_LIBRARY_PATH="/usr/local/musa/lib:/usr/local/musa/lib64:/usr/local/lib
 export FLAGCX_SOCKET_IFNAME="${FLAGCX_SOCKET_IFNAME:-^lo,docker,br-,veth}"
 FLAGCX_CI_IGNORE_TEST=$(cat <<'JSON'
 {
-  "gtest": [
-    {
-      "suite": "adaptor",
-      "tests": ["DeviceAdaptorTest.StreamWaitEvent"],
-      "reason": "StreamWaitEvent currently fails on MUSA"
-    }
-  ],
+  "gtest": [],
   "phases": [
     {
       "suite": "symmem",
@@ -73,10 +67,6 @@ export FLAGCX_CI_GPU_MR_POLICY=gpu-mr-required
 # the suite transcript also captures direct runner invocations.
 export FLAGCX_CI_TEST_DIAGNOSTICS_AFTER=120
 export FLAGCX_CI_MPI_DIAGNOSTICS_AFTER=120
-# StreamWaitEvent currently fails on MUSA; keep the remaining device adaptor
-# checks active while the backend issue is tracked.
-export FLAGCX_CI_DEVICE_GTEST_FILTER='-*.*StreamWaitEvent'
-
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_MUSA=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_MUSA=1)
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=0

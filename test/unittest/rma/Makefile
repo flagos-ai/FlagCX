@@ -8,6 +8,11 @@ IPC_TEST_CMD = $(MPI_TARGET)
 ifneq ($(strip $(IPC_XML_DIR)),)
 IPC_TEST_CMD = bash $(PROJECT_ROOT)/.github/scripts/ci/run_gtest_rank_xml.sh $(IPC_XML_DIR) $(MPI_TARGET)
 endif
+NET_XML_DIR ?=
+NET_TEST_CMD = $(MPI_TARGET)
+ifneq ($(strip $(NET_XML_DIR)),)
+NET_TEST_CMD = bash $(PROJECT_ROOT)/.github/scripts/ci/run_gtest_rank_xml.sh $(NET_XML_DIR) $(MPI_TARGET)
+endif
 
 # Local include directory for RMA test fixtures
 LOCAL_INCLUDE := -I$(abspath include) \
@@ -105,7 +110,7 @@ run-mpi-ipc: $(MPI_TARGET)
 	@$(MPIRUN) --allow-run-as-root -np 2 $(IPC_ENV) $(IPC_TEST_CMD) --gtest_filter=$(IPC_FILTER)
 
 run-mpi-net: $(MPI_TARGET)
-	@$(MPIRUN) --allow-run-as-root -np 2 $(NET_ENV) -x GTEST_FILTER=$(NET_FILTER) $(MPI_TARGET)
+	@$(MPIRUN) --allow-run-as-root -np 2 $(NET_ENV) -x GTEST_FILTER=$(NET_FILTER) $(NET_TEST_CMD)
 
 run-mpi: run-mpi-ipc run-mpi-net
 
