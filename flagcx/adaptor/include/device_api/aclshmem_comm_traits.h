@@ -34,6 +34,7 @@
 
 #if defined(__CCE_IS_AICORE__)
 #include "gm2gm/shmem_device_cc.h"
+#include "gm2gm/engine/shmem_device_mte.hpp"
 #else
 #include "host/data_plane/shmem_host_p2p_sync.h"
 #endif
@@ -137,6 +138,18 @@ aclshmemGetMem(FLAGCX_ACLSHMEM_GM void *dst, FLAGCX_ACLSHMEM_GM void *src,
 FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemQuiet() {
 #if defined(__CCE_IS_AICORE__)
   aclshmem_quiet();
+  // mte_put_nbi deliberately skips the MTE3 wait on its last (only, for the
+  // 4B/8B transfers here) chunk - "Last PIPE Sync Should be done outside" -
+  // and the PipeBarrier inside quiet() does not retire that ub2gm. Measured
+  // at np=2: a 4B barrier ticket was lost outright (S16 hang), and a batch
+  // of 8B putValues surfaced ~200ms after the kernel (S18B late). Large
+  // puts never failed because their loop carries an explicit MTE3_MTE2
+  // wait. Close the vendor's own event pair with the same sync id so quiet
+  // returns only after the outstanding ub2gm has completed.
+  FLAGCX_ACLSHMEM_GM aclshmem_device_host_state_t *st = aclshmemi_get_state();
+  AscendC::TEventID mteSyncId = (AscendC::TEventID)st->mte_config.sync_id;
+  AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(mteSyncId);
+  AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(mteSyncId);
 #endif
 }
 
