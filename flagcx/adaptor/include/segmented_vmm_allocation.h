@@ -141,6 +141,29 @@ public:
     return result;
   }
 
+  // Query the whole tracked VA reservation, even for an interior pointer.
+  // The device ordinal lets a provider restore the owning context for free.
+  static flagcxResult_t addressRange(const void *ptr, void **base, size_t *size,
+                                     int *device = NULL) {
+    if (ptr == NULL || base == NULL || size == NULL)
+      return flagcxInvalidArgument;
+    *base = NULL;
+    *size = 0;
+    const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+    std::lock_guard<std::mutex> lock(mutex());
+    for (const auto &entry : allocations()) {
+      const uintptr_t start = reinterpret_cast<uintptr_t>(entry.first);
+      if (address < start || address - start >= entry.second.size)
+        continue;
+      *base = entry.first;
+      *size = entry.second.size;
+      if (device != NULL)
+        *device = entry.second.device;
+      return entry.second.pendingCleanup ? flagcxInvalidUsage : flagcxSuccess;
+    }
+    return flagcxNotSupported;
+  }
+
   static flagcxResult_t retryPending(int device) {
     std::lock_guard<std::mutex> lock(mutex());
     for (typename std::unordered_map<void *, Allocation>::iterator it =

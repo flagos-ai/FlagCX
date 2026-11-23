@@ -220,13 +220,14 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     void *flatBasePtr; // Flat VA base (SYMMETRIC mode, nullable)
     size_t allocSize;  // Per-rank allocation size (SYMMETRIC mode)
     FLAGCX_DEVICE_GLOBAL_PTR const SymPeerLayout *symPeerLayouts;
-    void *mcBasePtr;    // Multicast base (nullable, SYMMETRIC mode only)
-    void **ipcBasePtrs; // IPC peer pointers (ASYMMETRIC mode, nullable)
-    int intraRank;      // Local rank index
-    int intraSize;      // Number of local ranks (bounds for ipcBasePtrs)
-    uintptr_t mrBase;   // MR base VA (inter-node, orthogonal to mode)
-    int mrIndex;        // MR table index (-1 if none)
-    void *rawPtr;       // Raw pointer fallback (for getLocalPointer)
+    void *mcBasePtr;      // Multicast base (nullable, SYMMETRIC mode only)
+    void **ipcBasePtrs;   // IPC peer pointers (ASYMMETRIC mode, nullable)
+    size_t ipcViewOffset; // Displacement of this DevMem within the IPC Window
+    int intraRank;        // Local rank index
+    int intraSize;        // Number of local ranks (bounds for ipcBasePtrs)
+    uintptr_t mrBase;     // MR base VA (inter-node, orthogonal to mode)
+    int mrIndex;          // MR table index (-1 if none)
+    void *rawPtr;         // Raw pointer fallback (for getLocalPointer)
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *getSegmentedPointer(size_t offset,
                                                              int index) const {
@@ -251,7 +252,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
           return nullptr; // Not a local peer — fall through to Net
         if (ipcBasePtrs[index] == nullptr)
           return nullptr;
-        return (char *)ipcBasePtrs[index] + offset;
+        return (char *)ipcBasePtrs[index] + ipcViewOffset + offset;
       }
       return nullptr;
     }
@@ -277,7 +278,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         return (char *)flatBasePtr + (size_t)intraRank * allocSize + offset;
       } else if (ipcBasePtrs && intraRank >= 0 && intraRank < intraSize &&
                  ipcBasePtrs[intraRank])
-        return (char *)ipcBasePtrs[intraRank] + offset;
+        return (char *)ipcBasePtrs[intraRank] + ipcViewOffset + offset;
       return (char *)rawPtr + offset;
     }
 
@@ -289,7 +290,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         return (char *)flatBasePtr + (size_t)peer * allocSize + offset;
       } else if (ipcBasePtrs && peer >= 0 && peer < intraSize &&
                  ipcBasePtrs[peer])
-        return (char *)ipcBasePtrs[peer] + offset;
+        return (char *)ipcBasePtrs[peer] + ipcViewOffset + offset;
       return nullptr;
     }
 
@@ -340,6 +341,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
                           int ipcIndex_, void **ipcDevPeerPtrs_) {
       DefaultNetProviderPolicy<PlatformTag>::initWindow(*this);
       rawPtr = rawPtr_;
+      ipcViewOffset = 0;
       intraRank = intraRank_;
       intraSize = intraSize_;
       mrBase = mrBase_;
@@ -362,6 +364,11 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         symPeerLayouts = nullptr;
         mcBasePtr = nullptr;
         ipcBasePtrs = (ipcIndex_ >= 0) ? ipcDevPeerPtrs_ : nullptr;
+        if (ipcBasePtrs && d && d->localBase && rawPtr_ &&
+            reinterpret_cast<uintptr_t>(rawPtr_) >=
+                reinterpret_cast<uintptr_t>(d->localBase))
+          ipcViewOffset = reinterpret_cast<uintptr_t>(rawPtr_) -
+                          reinterpret_cast<uintptr_t>(d->localBase);
       }
     }
 #endif // FLAGCX_DEVICE_COMPILE

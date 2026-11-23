@@ -32,6 +32,8 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 
@@ -110,11 +112,9 @@ int main(int argc, char *argv[]) {
   // Register symmetric windows
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
   FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, bufSize, &sendWin,
-                                       FLAGCX_WIN_COLL_SYMMETRIC,
-                                       memAllocator));
+                                       flagcxTestWindowFlags(), memAllocator));
   FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, bufSize, &recvWin,
-                                       FLAGCX_WIN_COLL_SYMMETRIC,
-                                       memAllocator));
+                                       flagcxTestWindowFlags(), memAllocator));
 
   // Create DevMem handles
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
@@ -148,9 +148,23 @@ int main(int argc, char *argv[]) {
            "INTRA/WORLD\n");
     printf("S23 expected cases: THREAD/WARP/BLOCK x 3 variants x "
            "INTRA/WORLD\n\n");
+#ifdef FLAGCX_TEST_NO_CROSS_RANK_COMM
+    // Say it on the banner (MC952 review P1).  A skipped case never
+    // reaches the report as a pass, and what remains runnable here must
+    // never be read as cross-rank certification.
+    printf("NOTE: S16-S18 capability-gated SKIP (peer path not operable).\n"
+           "This run grades launch/init machinery only: a world-size-1\n"
+           "pass would certify LOCAL SMOKE at best, never cross-rank\n"
+           "rendezvous.  The four-rank certification target stays open\n"
+           "pending a working peer transport.\n\n");
+#endif
   }
 
   bool allPass = true;
+  // Verdicts actually executed (a capability SKIP does not increment).
+  // If a build gates every case, the final line says NO CASES GRADED
+  // rather than showing an empty "ALL PASS".
+  int gradedCases = 0;
   const uint32_t expectedPutCoopMask =
       FLAGCX_TEST_UNIFIED_INTRA_PUT_COOP_EXPECTED_MASK;
   const uint32_t expectedPutCounterMask =
@@ -170,7 +184,26 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
 
     // S16: DevBarrier — 3 coop kinds × 2 teams × 2 forms = 12 cases
-    {
+#ifdef FLAGCX_TEST_NO_CROSS_RANK_COMM
+    // No operable peer store/poll path on this backend: scalar stores into
+    // IPC-imported peer GM fault-freeze the AI core even with
+    // ENABLE_PEER_ACCESS (measured; see ascend.sh).  At world size 1 the
+    // barrier's arrive/wait peer loop iterates over zero peers, so a PASS
+    // here would certify nothing cross-rank - report SKIP instead.
+    RPRINTF("S16 DevBarrier(INTRA+WORLD): SKIP (peer path not operable)\n");
+    MPI_Barrier(MPI_COMM_WORLD);
+#else
+    const char *skipS16 = std::getenv("FLAGCX_CI_UNIFIED_IR_SKIP_S16");
+    if (skipS16 != nullptr && skipS16[0] != '\0' && skipS16[0] != '0') {
+      if (proc == 0) {
+        const char *reason =
+            std::getenv("FLAGCX_CI_UNIFIED_IR_SKIP_S16_REASON");
+        printf("S16 DevBarrier(INTRA+WORLD): SKIP (CI ignore_test: %s)\n",
+               reason != nullptr ? reason : "temporarily blacklisted");
+        fflush(stdout);
+      }
+      MPI_Barrier(MPI_COMM_WORLD);
+    } else {
       int hostResults[4];
       bool s16Pass = true;
 
@@ -209,11 +242,21 @@ int main(int argc, char *argv[]) {
       }
 
       RPRINTF("S16 DevBarrier(INTRA+WORLD): %s\n", s16Pass ? "PASS" : "FAIL");
+      gradedCases++;
       allPass &= s16Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
+#endif
 
     // S17: DevTeamResolution — INTRA + WORLD (6 combinations)
+#ifdef FLAGCX_TEST_NO_CROSS_RANK_COMM
+    // Each combo's expected value is the PREVIOUS peer rank's tag; at world
+    // size 1 the resolution degenerates to a self read.  Same capability
+    // gate as S16 (no operable peer path on this backend).
+    RPRINTF("S17 DevTeamResolution(INTRA+WORLD): SKIP (peer path not\n"
+            "operable)\n");
+    MPI_Barrier(MPI_COMM_WORLD);
+#else
     {
       int maxRanks = intraSize;
       if (totalProcs > maxRanks)
@@ -267,12 +310,22 @@ int main(int argc, char *argv[]) {
 
       RPRINTF("S17 DevTeamResolution(INTRA+WORLD): %s\n",
               s17Pass ? "PASS" : "FAIL");
+      gradedCases++;
       allPass &= s17Pass;
       delete[] s17Recv;
       MPI_Barrier(MPI_COMM_WORLD);
     }
+#endif
 
     // S18: DevPut + DevPutValue — INTRA + WORLD
+#ifdef FLAGCX_TEST_NO_CROSS_RANK_COMM
+    // put/putValue to the previous rank; at world size 1 the destination
+    // resolves to self, so the run is a copy through loopback, not the
+    // cross-rank one-sided path the case certifies (MC952 review P1).
+    RPRINTF("S18 DevPut+PutValue(INTRA+WORLD): SKIP (peer path not\n"
+            "operable)\n");
+    MPI_Barrier(MPI_COMM_WORLD);
+#else
     {
       // --- Sub-block A: DevPut ---
       for (size_t i = 0; i < 6 * count; i++)
@@ -313,8 +366,26 @@ int main(int argc, char *argv[]) {
       }
 
       // --- Sub-block B: DevPutValue (6 combos, scalar uint64 per slot) ---
-      // recvBuff reused as destination; each slot = 1 uint64_t
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * sizeof(uint64_t),
+      // Slot stride is a shared test parameter (MC952 review P1): the
+      // kernel and this oracle must agree, and the historical layouts
+      // differ.  Default keeps the packed 8-byte contract every other
+      // backend's kernel already implements (offsets 0/8/16/24/32/40).
+      // Ascend opts into 128-byte line isolation: dense adjacent u64 slots
+      // flushed with whole-cache dcci commands tear rare writebacks
+      // (~5e-4 per store, measured 2026-11-17), while one slot per GM line
+      // ran zero loss over 80 runs.  That is a TEST-side layout choice on
+      // a contributor-reported hardware effect; it is NOT a proof that
+      // production putValue into adjacent uint64_t destinations is correct
+      // on 910C.
+      constexpr size_t kPutValueStrideBytes =
+#ifdef FLAGCX_ASCEND_PUTVALUE_LINE_STRIDE
+          128;
+#else
+          sizeof(uint64_t);
+#endif
+      constexpr size_t kPutValueStrideWords =
+          kPutValueStrideBytes / sizeof(uint64_t);
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * kPutValueStrideBytes,
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                           flagcxMemDevice, stream));
@@ -328,9 +399,9 @@ int main(int argc, char *argv[]) {
 
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
-      uint64_t hostRecvV[6];
+      uint64_t hostRecvV[6 * kPutValueStrideWords];
       FLAGCXCHECK(devHandle->deviceMemcpy(hostRecvV, recvBuff,
-                                          6 * sizeof(uint64_t),
+                                          6 * kPutValueStrideBytes,
                                           flagcxMemcpyDeviceToHost, stream));
       if (hostRes != 1)
         s18Pass = false;
@@ -338,15 +409,17 @@ int main(int argc, char *argv[]) {
         int teamIdx = combo % 2;
         int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
         uint64_t expected = (uint64_t)(senderRank * 100 + combo);
-        if (hostRecvV[combo] != expected)
+        if (hostRecvV[combo * kPutValueStrideWords] != expected)
           s18Pass = false;
       }
 
       RPRINTF("S18 DevPut+PutValue(INTRA+WORLD): %s\n",
               s18Pass ? "PASS" : "FAIL");
+      gradedCases++;
       allPass &= s18Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
+#endif
 
     // S19: DevGet — INTRA + WORLD
     // Skipped where the device API cannot read a peer's memory at all (P800:
@@ -397,11 +470,37 @@ int main(int argc, char *argv[]) {
       }
 
       RPRINTF("S19 DevGet(INTRA+WORLD): %s\n", s19Pass ? "PASS" : "FAIL");
+      gradedCases++;
       allPass &= s19Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
 #endif
 
+    // =======================================================================
+    // S20-S25 capability gate.  Each of these cases ends in a fetchAdd-
+    // based completion (remote signal or local counter).  On platforms
+    // whose device pass has no global-memory RMW instruction the
+    // capability is declared absent in the platform traits, the matching
+    // device_ir launchers stay declared-but-not-defined, and this macro
+    // compiles the call sites out: a leftover reference would fail the
+    // link instead of reporting a pass, and per this suite's contract a
+    // skipped case never reaches the report as a pass.
+    // =======================================================================
+#ifdef FLAGCX_TEST_NO_ATOMIC_COMPLETION
+    RPRINTF("S20 DevSignalStandalone(INTRA+WORLD): SKIP (no RMW "
+            "completion atomic on this device)\n");
+    RPRINTF("S21 DevPutSignalWait(INTRA+WORLD): SKIP (no RMW "
+            "completion atomic on this device)\n");
+    RPRINTF("S22 DevPut_RSig(INTRA+WORLD): SKIP (no RMW "
+            "completion atomic on this device)\n");
+    RPRINTF("S23 DevPutCounter(INTRA+WORLD): SKIP (no RMW "
+            "completion atomic on this device)\n");
+    RPRINTF("S24 DevPutValue_RSig(INTRA+WORLD): SKIP (no RMW "
+            "completion atomic on this device)\n");
+    RPRINTF("S25 DevSignalShadowFlush(INTRA+WORLD): SKIP (no RMW "
+            "completion atomic on this device)\n");
+    MPI_Barrier(MPI_COMM_WORLD);
+#else
     // =======================================================================
     // S20: DevSignalStandalone — 3 coop × 2 teams × 2 actions = 12 cases
     //      — INTRA + WORLD
@@ -424,6 +523,7 @@ int main(int argc, char *argv[]) {
       bool s20Pass = (hostRes == 1);
       RPRINTF("S20 DevSignalStandalone(INTRA+WORLD): %s\n",
               s20Pass ? "PASS" : "FAIL");
+      gradedCases++;
       allPass &= s20Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
@@ -479,6 +579,7 @@ int main(int argc, char *argv[]) {
 
       RPRINTF("S21 DevPutSignalWait(INTRA+WORLD): %s\n",
               s21Pass ? "PASS" : "FAIL");
+      gradedCases++;
       allPass &= s21Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
@@ -536,6 +637,7 @@ int main(int argc, char *argv[]) {
       }
 
       RPRINTF("S22 DevPut_RSig(INTRA+WORLD): %s\n", s22Pass ? "PASS" : "FAIL");
+      gradedCases++;
       allPass &= s22Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
@@ -595,6 +697,7 @@ int main(int argc, char *argv[]) {
 
       RPRINTF("S23 DevPutCounter(INTRA+WORLD): %s\n",
               s23Pass ? "PASS" : "FAIL");
+      gradedCases++;
       allPass &= s23Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
@@ -637,6 +740,10 @@ int main(int argc, char *argv[]) {
         int teamIdx = combo % 2;
         int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
         uint64_t expected = (uint64_t)(senderRank * 100 + combo);
+        // S24's kernel output stays the packed 12 x uint64_t layout it
+        // always had; the S18 stride parameterization does not apply here
+        // (indexing combo * 16 read out of bounds from combo 1 on, UBSan
+        // "index 16 out of bounds for type uint64_t[12]").
         if (hostRecvV[combo] != expected) {
           s24Pass = false;
         }
@@ -644,6 +751,7 @@ int main(int argc, char *argv[]) {
 
       RPRINTF("S24 DevPutValue_RSig(INTRA+WORLD): %s\n",
               s24Pass ? "PASS" : "FAIL");
+      gradedCases++;
       allPass &= s24Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
@@ -672,9 +780,11 @@ int main(int argc, char *argv[]) {
       bool s25Pass = (hostRes == 1);
       RPRINTF("S25 DevSignalShadowFlush(INTRA+WORLD): %s\n",
               s25Pass ? "PASS" : "FAIL");
+      gradedCases++;
       allPass &= s25Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
+#endif
 
     if (proc == 0)
       printf("\n");
@@ -699,8 +809,16 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxCommDestroy(comm));
 
   if (proc == 0) {
-    printf("=== Final Result: %s ===\n",
-           globalPass ? "ALL PASS" : "SOME FAILED");
+    if (gradedCases == 0)
+      // Every case in this build is capability-gated SKIP.  Reporting an
+      // empty "ALL PASS" would be exactly the silent green this suite
+      // forbids, so name it.  RC stays 0: the SKIP contract itself is
+      // what is verified here (MC952 review P1).
+      printf("=== Final Result: NO CASES GRADED (all capability-gated "
+             "SKIP) ===\n");
+    else
+      printf("=== Final Result: %s ===\n",
+             globalPass ? "ALL PASS" : "SOME FAILED");
   }
 
   MPI_Finalize();

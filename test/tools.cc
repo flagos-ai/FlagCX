@@ -95,7 +95,7 @@ double parsesize(const char *value) {
   double size;
   char sizeLit;
 
-  int count = sscanf(value, "%lf %1s", &size, &sizeLit);
+  int count = sscanf(value, "%lf %c", &size, &sizeLit);
 
   switch (count) {
     case 2:
@@ -126,7 +126,7 @@ double parsesize(const char *value) {
   return size * units;
 }
 
-parser::parser(int argc, char **argv) {
+parser::parser(int argc, char **argv, int defaultLocalRegister) {
   minBytes = 1ULL * 1024 * 1024;
   maxBytes = 1ULL * 1024 * 1024 * 1024;
   stepFactor = 2;
@@ -135,7 +135,7 @@ parser::parser(int argc, char **argv) {
   printBuffer = 0;
   root = -1;
   splitMask = 0;
-  localRegister = 0;
+  localRegister = defaultLocalRegister;
   verifyData = 1;
   datatype = flagcxFloat32;
   redOp = flagcxSum;

@@ -429,8 +429,8 @@ TEST(SymWindowStruct, SymWindowStructLayout) {
 // ---------------------------------------------------------------------------
 
 TEST(SymWindowStruct, WindowFlagConstants) {
-  EXPECT_EQ(FLAGCX_WIN_DEFAULT, 0x00);
-  EXPECT_EQ(FLAGCX_WIN_COLL_SYMMETRIC, 0x01);
+  EXPECT_EQ(FLAGCX_WIN_ASYMMETRIC, 0x00);
+  EXPECT_EQ(FLAGCX_WIN_SYMMETRIC, 0x01);
 }
 
 TEST(SymWindowStruct, LegacyIpcRequiresNonVmmAllocationWithoutFlatMapping) {

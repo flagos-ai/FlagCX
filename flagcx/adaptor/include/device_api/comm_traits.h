@@ -152,6 +152,8 @@ struct Barrier;
 // Vendor specializations + DeviceAPI selection
 #if defined(USE_NVIDIA_ADAPTOR)
 #include "nvidia_comm_traits.h"
+#elif defined(USE_PPU_ADAPTOR)
+#include "ppu_comm_traits.h"
 #elif defined(USE_DU_ADAPTOR)
 #include "du_comm_traits.h"
 #elif defined(USE_SUNRISE_ADAPTOR)
@@ -162,6 +164,8 @@ struct Barrier;
 #include "iluvatar_comm_traits.h"
 #elif defined(USE_ENFLAME_ADAPTOR)
 #include "enflame_comm_traits.h"
+#elif defined(USE_ASCEND_ADAPTOR)
+#include "ascend_comm_traits.h"
 #else
 #include "default_comm_traits.h"
 using DeviceAPI = CommTraits<DefaultBackend<DefaultPlatform>>;

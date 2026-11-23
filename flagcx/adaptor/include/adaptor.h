@@ -42,7 +42,7 @@ extern struct flagcxCCLAdaptor rcclAdaptor;
 extern struct flagcxCCLAdaptor tcclAdaptor;
 extern struct flagcxCCLAdaptor ecclAdaptor;
 extern struct flagcxCCLAdaptor pcclAdaptor;
-extern struct flagcxCCLAdaptor ppuncclAdaptor;
+extern struct flagcxCCLAdaptor ppupcclAdaptor;
 extern struct flagcxCCLAdaptor *cclAdaptors[];
 
 extern struct flagcxDeviceAdaptor cudaAdaptor;
@@ -57,7 +57,7 @@ extern struct flagcxDeviceAdaptor hipAdaptor;
 extern struct flagcxDeviceAdaptor tsmicroAdaptor;
 extern struct flagcxDeviceAdaptor topsAdaptor;
 extern struct flagcxDeviceAdaptor ptpuAdaptor;
-extern struct flagcxDeviceAdaptor ppucudaAdaptor;
+extern struct flagcxDeviceAdaptor hggcAdaptor;
 extern struct flagcxDeviceAdaptor *deviceAdaptor;
 
 extern struct flagcxNetAdaptor *netAdaptor;

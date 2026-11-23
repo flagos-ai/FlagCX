@@ -13,9 +13,8 @@
 /* Opaque handle to flagcxInnerComm */
 typedef struct flagcxInnerComm *flagcxInnerComm_t;
 
-// IPC peer pointer table entry — owned by comm, referenced by devMem.
-// Cleanup deferred to flagcxCommDestroy.
-// to avoid cudaFree implicit device synchronization deadlock.
+// IPC peer pointer table entry — owned by a local registration or a DevMem
+// reference. Communicator destroy closes any leftover entry.
 #define FLAGCX_MAX_IPC_ENTRIES 16
 
 struct flagcxIpcTableEntry {
@@ -26,40 +25,9 @@ struct flagcxIpcTableEntry {
   void *basePtr;           // own user-buffer pointer
   size_t size;
   size_t refCount;
-  uint64_t bindingGeneration;
-  bool inUse; // true while a devMem references this entry
-};
-
-// Deferred IPC entry — moved from ipcTable when a slot is released at runtime.
-// Actual ipcMemHandleClose + deviceFree happens at comm destroy.
-struct flagcxDeferredIpcEntry {
-  void **hostPeerPtrs;
-  void **hostPeerBasePtrs;
-  void **devPeerPtrs;
-  int nPeers;
-  void *basePtr;
-  struct flagcxDeferredIpcEntry *next;
-};
-
-#define FLAGCX_MAX_DEFERRED_FREES 32
-struct flagcxDeferredFree {
-  void *ptr;
-  int memType;
-  struct flagcxDeferredFree *next;
-};
-
-// Deferred DevComm buffer handle — buffers that cannot be freed immediately
-// in flagcxDevCommDestroy because peers may still hold IPC mappings to them.
-// Drained at flagcxCommDestroy time.
-struct flagcxDevCommBufferHandle {
-  void *localBarrierFlags;     // flagcxMemDevice — peers write via IPC
-  void *epochBuffer;           // flagcxMemDevice
-  void *signalBuffer;          // flagcxMemHost or flagcxMemDevice (GDR)
-  void *shadowBuffer;          // flagcxMemDevice
-  void *counterBuffer;         // flagcxMemHost
-  void *putValueStagingBuffer; // flagcxMemHost
-  int signalHostEnable; // mirrors flagcxParamSignalHostEnable() at alloc time
-  struct flagcxDevCommBufferHandle *next; // intrusive queue link
+  bool inUse;     // true only for a fully prepared mapping; partial resources
+                  // reserve the slot
+  bool ownerHeld; // local Window, DevComm, or signal registration owns the slot
 };
 
 /* Opaque handle to flagcxHeteroComm */
@@ -71,10 +39,35 @@ typedef enum {
   flagcxCommunicatorHybrid = 2 // Hybrid Communicator
 } flagcxCommunicatorType_t;
 
+// Whether the user selected the hetero execution path, even on homo hardware.
+bool useHeteroComm();
+
+enum flagcxInternalBufferKind {
+  flagcxInternalBufferDevice,
+  flagcxInternalBufferHost,
+  flagcxInternalBufferGdr,
+  flagcxInternalBufferCcl
+};
+
+// One record per allocation, including buffers whose creation rolled back.
+// Device views borrow these pointers; only CommDestroy frees the allocation.
+struct flagcxInternalBuffer {
+  void *pointer;
+  flagcxInternalBufferKind kind;
+  flagcxInternalBuffer *next;
+};
+
+flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
+                                             size_t size,
+                                             flagcxInternalBufferKind kind);
+flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm);
+
 struct flagcxComm {
   // TODO: adjust code format
-  // 0: active, 1: backend stopped, 2: homo comms destroyed,
-  // 3: hetero resources prepared, 4: deferred allocations drained.
+  // 0: active, 1: locally quiescent, 2: transport cleanup completed,
+  // 3: local owners destroyed, 4: homo comms destroyed,
+  // 5: hetero resources prepared, 6: IPC imports closed,
+  // 7: peer closure acknowledged; remaining buffer frees are local.
   // Failures before final host-state release resume at the last completed
   // stage.
   int destroyPhase;
@@ -123,33 +116,19 @@ struct flagcxComm {
     int recvCluster;
   } * c2cSchedule; // C2C schedule for pairing send/recv operations
 
-  // IPC peer pointer table — deferred cleanup
-  struct flagcxIpcTableEntry ipcTable[FLAGCX_MAX_IPC_ENTRIES];
-  uint64_t ipcTableGeneration;
+  // IPC peer pointer table — entries are released by their local owners
+  struct flagcxIpcTableEntry ipcTableInline[FLAGCX_MAX_IPC_ENTRIES];
+  struct flagcxIpcTableEntry *ipcTable = ipcTableInline;
+  int ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
 
-  // Deferred IPC entry queue — IPC resources moved here when slots are released
-  // at runtime; actual ipcMemHandleClose + deviceFree deferred to comm destroy.
-  flagcxIntruQueue<struct flagcxDeferredIpcEntry, &flagcxDeferredIpcEntry::next>
-      deferredIpcQueue;
+  flagcxInternalBuffer *internalBuffers = nullptr;
+  // Set by collective creation, including ranks where allocation later fails.
+  bool internalBuffersNeedPeerClose = false;
 
-  // Deferred DevComm buffer queue — buffers stashed here during
-  // flagcxDevCommDestroy, drained at flagcxCommDestroy.
-  flagcxIntruQueue<struct flagcxDevCommBufferHandle,
-                   &flagcxDevCommBufferHandle::next>
-      deferredBufferQueue;
-  size_t deferredBufferCount;
-
-  // Retired host handles retain cached device allocations until comm destroy.
-  // The handles themselves are the list nodes, so retirement cannot run out
-  // of queue entries or require another host allocation.
-  flagcxDevComm_t deferredDevComms;
-  flagcxDevMem_t deferredDevMems;
-  // Deferred device/host-pinned memory free list. The inline array covers the
-  // common case; excess entries are appended to the dynamic overflow queue.
-  struct flagcxDeferredFree deferredFrees[FLAGCX_MAX_DEFERRED_FREES];
-  int deferredFreeCount;
-  struct flagcxDeferredFree *deferredFreeOverflowHead;
-  struct flagcxDeferredFree *deferredFreeOverflowTail;
+  flagcxWindow_t publicWindows; // includes empty reusable public handles
+  flagcxDevMem_t activeDevMems;
+  int devCommCount; // active device communicators, also the newest ID
+  flagcxDevComm_t activeDevComms;
 
   // Custom op state (NULL = not enabled)
   struct flagcxDevCommState *devCommState;

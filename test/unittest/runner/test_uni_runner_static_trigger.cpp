@@ -5,6 +5,12 @@
 
 #include <gtest/gtest.h>
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "dev_api_backend.h"
+#include "device_api/flagcx_device.h"
+#include "global_comm.h"
+#include "onesided.h"
 #include "uni_runner_impl.h"
 
 namespace {
@@ -780,3 +786,300 @@ TEST(UniRunnerStaticIpcTrigger, ValidatesConfigAndStorageBoundaries) {
                   nullptr));
   }
 }
+
+// Exercise retained failed bindings through the real lifecycle and IPC table.
+
+namespace {
+flagcxDevApiBackend *readySavedBackend = nullptr;
+bool failReadyCreate = false;
+bool failReadyFree = false;
+int readyViewCreates = 0;
+bool failRingInitialization = false;
+bool failReadyCopy = false;
+bool failOnlyProgressFree = false;
+void *blockedPeerArray = nullptr;
+void *lastPeerArray = nullptr;
+flagcxResult_t readyMalloc(void **pointer, size_t bytes, flagcxMemType_t,
+                           flagcxStream_t) {
+  *pointer = calloc(1, bytes);
+  return *pointer != nullptr ? flagcxSuccess : flagcxSystemError;
+}
+flagcxResult_t readyFree(void *pointer, flagcxMemType_t, flagcxStream_t) {
+  if (failReadyFree &&
+      (blockedPeerArray == nullptr || pointer == blockedPeerArray))
+    return flagcxRemoteError;
+  free(pointer);
+  return flagcxSuccess;
+}
+flagcxResult_t readyCopy(void *dst, void *src, size_t bytes, flagcxMemcpyType_t,
+                         flagcxStream_t, void *) {
+  if (failReadyCopy)
+    return flagcxSystemError;
+  memcpy(dst, src, bytes);
+  return flagcxSuccess;
+}
+flagcxResult_t readyMemset(void *pointer, int value, size_t bytes,
+                           flagcxMemType_t, flagcxStream_t) {
+  if (failRingInitialization && readyViewCreates == 2) {
+    failRingInitialization = false;
+    failReadyFree = true;
+    blockedPeerArray = failOnlyProgressFree ? lastPeerArray : nullptr;
+    return flagcxSystemError;
+  }
+  memset(pointer, value, bytes);
+  return flagcxSuccess;
+}
+flagcxResult_t readySync() { return flagcxSuccess; }
+flagcxResult_t readyCreateHandle(flagcxIpcMemHandle_t *handle, size_t *bytes) {
+  *bytes = sizeof(void *);
+  *handle = reinterpret_cast<flagcxIpcMemHandle_t>(calloc(1, *bytes));
+  return *handle != nullptr ? flagcxSuccess : flagcxSystemError;
+}
+flagcxResult_t readyGetHandle(flagcxIpcMemHandle_t handle, void *pointer) {
+  memcpy(handle, &pointer, sizeof(pointer));
+  return flagcxSuccess;
+}
+flagcxResult_t readyFreeHandle(flagcxIpcMemHandle_t handle) {
+  free(handle);
+  return flagcxSuccess;
+}
+flagcxResult_t failReadyViewCreate(flagcxComm_t comm, void *pointer,
+                                   size_t bytes, flagcxWindow_t window,
+                                   flagcxDevMem_t view) {
+  ++readyViewCreates;
+  flagcxResult_t result =
+      readySavedBackend->devMemCreate(comm, pointer, bytes, window, view);
+  if (result == flagcxSuccess && view->ipcIndex >= 0)
+    lastPeerArray = comm->ipcTable[view->ipcIndex].devPeerPtrs;
+  if (result == flagcxSuccess && failReadyCreate) {
+    failReadyCreate = false;
+    failReadyFree = true;
+    return flagcxSystemError;
+  }
+  return result;
+}
+
+class UniRunnerIpcRetryTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    if (strcmp(devApiBackend->name, "default") != 0)
+      GTEST_SKIP() << "requires the default backend";
+    savedDevice = deviceAdaptor;
+    device = *deviceAdaptor;
+    device.deviceMalloc = readyMalloc;
+    device.deviceFree = readyFree;
+    device.deviceMemcpy = readyCopy;
+    device.deviceMemset = readyMemset;
+    device.deviceSynchronize = readySync;
+    device.getAddressRange = nullptr;
+    device.ipcMemHandleCreate = readyCreateHandle;
+    device.ipcMemHandleGet = readyGetHandle;
+    device.ipcMemHandleFree = readyFreeHandle;
+    deviceAdaptor = &device;
+    readySavedBackend = devApiBackend;
+    backend = *devApiBackend;
+    backend.devMemCreate = failReadyViewCreate;
+    devApiBackend = &backend;
+    failReadyCreate = true;
+    failReadyFree = false;
+    readyViewCreates = 0;
+    failRingInitialization = failReadyCopy = false;
+    failOnlyProgressFree = false;
+    blockedPeerArray = lastPeerArray = nullptr;
+    coll.nranks = 1;
+    bootstrap.mode = FLAGCX_BOOTSTRAP_COLL;
+    bootstrap.coll = &coll;
+    comm.bootstrap = &bootstrap;
+    comm.nranks = comm.localRanks = 1;
+    comm.localRankToRank = &localRank;
+    runner.ipcOwner = &comm;
+  }
+  void TearDown() override {
+    if (savedDevice == nullptr)
+      return;
+    failReadyFree = failReadyCopy = false;
+    EXPECT_EQ(cleanupUniRunnerPersistentState(&runner), flagcxSuccess);
+    EXPECT_EQ(flagcxCommCleanupIpcTable(&comm), flagcxSuccess);
+    comm.destroyPhase = 7;
+    EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
+    devApiBackend = readySavedBackend;
+    deviceAdaptor = savedDevice;
+  }
+  void checkRingRecovery(bool partialCleanup) {
+    failReadyCreate = false;
+    failRingInitialization = true;
+    failOnlyProgressFree = partialCleanup;
+    // Match the request metadata established by normal ring DAG initialization.
+    runner.ipcRingChannels = 1;
+    runner.ipcRingSimpleBufferBytes = 64;
+    EXPECT_EQ(ensureUniRunnerIpcRingResources(&runner, &comm, 1, 64),
+              flagcxRemoteError);
+    ASSERT_TRUE(runner.ipcRingCleanupPending);
+    ASSERT_NE(runner.ipcRingProgressMem, nullptr);
+    EXPECT_TRUE(runner.ipcRingProgressMem->backendDestroyed);
+    EXPECT_EQ(runner.ipcRingProgressMem->window, nullptr);
+    if (partialCleanup) {
+      EXPECT_EQ(runner.ipcRingScratchMem, nullptr);
+    } else {
+      ASSERT_NE(runner.ipcRingScratchMem, nullptr);
+      EXPECT_TRUE(runner.ipcRingScratchMem->backendDestroyed);
+      EXPECT_EQ(runner.ipcRingScratchMem->window, nullptr);
+    }
+    void *oldScratch = runner.ipcRingScratchBuffer;
+    void *oldProgress = runner.ipcRingProgressBuffer;
+    EXPECT_EQ(readyViewCreates, 2);
+    EXPECT_EQ(ensureUniRunnerIpcRingResources(&runner, &comm, 1, 64),
+              flagcxRemoteError);
+    EXPECT_TRUE(runner.ipcRingCleanupPending);
+    EXPECT_EQ(readyViewCreates, 2);
+    failReadyFree = false;
+    ASSERT_EQ(ensureUniRunnerIpcRingResources(&runner, &comm, 1, 64),
+              flagcxSuccess);
+    EXPECT_FALSE(runner.ipcRingCleanupPending);
+    ASSERT_NE(runner.ipcRingScratchMem, nullptr);
+    ASSERT_NE(runner.ipcRingProgressMem, nullptr);
+    EXPECT_FALSE(runner.ipcRingScratchMem->backendDestroyed);
+    EXPECT_FALSE(runner.ipcRingProgressMem->backendDestroyed);
+    EXPECT_NE(runner.ipcRingScratchMem->window, nullptr);
+    EXPECT_NE(runner.ipcRingProgressMem->window, nullptr);
+    EXPECT_NE(runner.ipcRingScratchBuffer, oldScratch);
+    EXPECT_NE(runner.ipcRingProgressBuffer, oldProgress);
+    EXPECT_EQ(readyViewCreates, 4);
+    size_t exporters = 0;
+    for (auto *record = comm.internalBuffers; record; record = record->next)
+      ++exporters;
+    EXPECT_EQ(exporters, 4u);
+    ASSERT_EQ(ensureUniRunnerIpcRingResources(&runner, &comm, 1, 64),
+              flagcxSuccess);
+    EXPECT_EQ(readyViewCreates, 4); // Fully initialized storage is reusable.
+  }
+  flagcxDeviceAdaptor *savedDevice = nullptr;
+  flagcxDeviceAdaptor device = {};
+  flagcxDevApiBackend backend = {};
+  bootstrapCollState coll = {};
+  bootstrapState bootstrap = {};
+  flagcxComm comm = {};
+  flagcxUniRunnerState runner = {};
+  int localRank = 0;
+};
+
+TEST_F(UniRunnerIpcRetryTest, PendingCleanupCannotBeReusedAsReadyStorage) {
+  EXPECT_EQ(ensureUniRunnerIpcReadyStorage(&runner, &comm, 4),
+            flagcxRemoteError);
+  ASSERT_TRUE(runner.ipcReadyCleanupPending);
+  ASSERT_NE(runner.ipcReadyMem, nullptr);
+  EXPECT_TRUE(runner.ipcReadyMem->backendDestroyed);
+  EXPECT_EQ(runner.ipcReadyMem->window, nullptr);
+  void *oldBuffer = runner.ipcReadyBuffer;
+  EXPECT_EQ(readyViewCreates, 1);
+  EXPECT_EQ(ensureUniRunnerIpcReadyStorage(&runner, &comm, 4),
+            flagcxRemoteError);
+  EXPECT_TRUE(runner.ipcReadyCleanupPending);
+  EXPECT_EQ(readyViewCreates, 1);
+  failReadyFree = false;
+  ASSERT_EQ(ensureUniRunnerIpcReadyStorage(&runner, &comm, 4), flagcxSuccess);
+  EXPECT_FALSE(runner.ipcReadyCleanupPending);
+  ASSERT_NE(runner.ipcReadyMem, nullptr);
+  EXPECT_FALSE(runner.ipcReadyMem->backendDestroyed);
+  EXPECT_NE(runner.ipcReadyMem->window, nullptr);
+  EXPECT_NE(runner.ipcReadyBuffer, oldBuffer);
+  EXPECT_EQ(readyViewCreates, 2);
+  size_t exporters = 0;
+  for (auto *record = comm.internalBuffers; record; record = record->next)
+    ++exporters;
+  EXPECT_EQ(exporters, 2u); // Both buffers remain owned by Comm.
+}
+TEST_F(UniRunnerIpcRetryTest, RingRetriesBothPartiallyDestroyedBindings) {
+  checkRingRecovery(false);
+}
+
+TEST_F(UniRunnerIpcRetryTest, RingRetriesAfterOnlyOneBindingClosed) {
+  checkRingRecovery(true);
+}
+
+TEST_F(UniRunnerIpcRetryTest, PartialReadyBuildRetainsOrphanWithoutDeviceView) {
+  failReadyCreate = false;
+  failReadyCopy = failReadyFree = true;
+  EXPECT_EQ(ensureUniRunnerIpcReadyStorage(&runner, &comm, 4),
+            flagcxRemoteError);
+  ASSERT_TRUE(runner.ipcReadyCleanupPending);
+  EXPECT_EQ(runner.ipcReadyMem, nullptr);
+  ASSERT_NE(runner.ipcReadyBuffer, nullptr);
+  EXPECT_FALSE(comm.ipcTable[0].inUse);
+  EXPECT_EQ(comm.ipcTable[0].basePtr, runner.ipcReadyBuffer);
+  EXPECT_EQ(readyViewCreates, 0);
+  EXPECT_EQ(ensureUniRunnerIpcReadyStorage(&runner, &comm, 4),
+            flagcxRemoteError);
+  failReadyCopy = failReadyFree = false;
+  ASSERT_EQ(ensureUniRunnerIpcReadyStorage(&runner, &comm, 4), flagcxSuccess);
+  EXPECT_FALSE(runner.ipcReadyCleanupPending);
+  EXPECT_EQ(readyViewCreates, 1);
+}
+
+TEST_F(UniRunnerIpcRetryTest, PartialRingBuildRetainsOrphanWithoutDeviceView) {
+  failReadyCreate = false;
+  failReadyCopy = failReadyFree = true;
+  EXPECT_EQ(ensureUniRunnerIpcRingResources(&runner, &comm, 1, 64),
+            flagcxRemoteError);
+  ASSERT_TRUE(runner.ipcRingCleanupPending);
+  EXPECT_EQ(runner.ipcRingScratchMem, nullptr);
+  ASSERT_NE(runner.ipcRingScratchBuffer, nullptr);
+  EXPECT_FALSE(comm.ipcTable[0].inUse);
+  EXPECT_EQ(comm.ipcTable[0].basePtr, runner.ipcRingScratchBuffer);
+  EXPECT_EQ(ensureUniRunnerIpcRingResources(&runner, &comm, 1, 64),
+            flagcxRemoteError);
+  failReadyCopy = failReadyFree = false;
+  ASSERT_EQ(ensureUniRunnerIpcRingResources(&runner, &comm, 1, 64),
+            flagcxSuccess);
+  EXPECT_FALSE(runner.ipcRingCleanupPending);
+  EXPECT_EQ(readyViewCreates, 2);
+}
+
+TEST_F(UniRunnerIpcRetryTest, PartialBarrierBuildStaysOwnedByFailedDevComm) {
+  failReadyCopy = failReadyFree = true;
+  flagcxDevCommRequirements reqs = {};
+  reqs.intraBarrierCount = 1;
+  flagcxDevComm_t view = nullptr;
+  EXPECT_EQ(flagcxDevCommCreate(&comm, &reqs, &view), flagcxRemoteError);
+  EXPECT_EQ(view, nullptr);
+  ASSERT_NE(comm.pendingDevCommCleanup, nullptr);
+  int slot = comm.pendingDevCommCleanup->barrierIpcIndex;
+  ASSERT_GE(slot, 0);
+  EXPECT_FALSE(comm.ipcTable[slot].inUse);
+  EXPECT_TRUE(comm.ipcTable[slot].ownerHeld);
+  EXPECT_EQ(flagcxDevCommRetryPendingCleanup(&comm), flagcxRemoteError);
+  failReadyCopy = failReadyFree = false;
+  EXPECT_EQ(flagcxDevCommRetryPendingCleanup(&comm), flagcxSuccess);
+  EXPECT_EQ(comm.pendingDevCommCleanup, nullptr);
+  EXPECT_EQ(comm.ipcTable[slot].basePtr, nullptr);
+  ASSERT_NE(comm.internalBuffers, nullptr); // Exporter remains Comm-owned.
+}
+
+TEST_F(UniRunnerIpcRetryTest, CommDestroyRetriesPartialSlotBeforeExporterFree) {
+  flagcxComm_t owned = nullptr;
+  ASSERT_EQ(flagcxCalloc(&owned, 1), flagcxSuccess);
+  owned->commType = flagcxCommunicatorHomo;
+  owned->ipcTable = owned->ipcTableInline;
+  owned->ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
+  owned->bootstrap = &bootstrap;
+  owned->nranks = owned->localRanks = 1;
+  owned->localRankToRank = &localRank;
+  void *buffer = nullptr;
+  ASSERT_EQ(flagcxCommAllocInternalBuffer(owned, &buffer, 64,
+                                          flagcxInternalBufferDevice),
+            flagcxSuccess);
+  failReadyCopy = failReadyFree = true;
+  auto failed = buildIpcPeerPointers(owned, buffer, 64);
+  ASSERT_EQ(failed.cleanupStatus, flagcxRemoteError);
+  ASSERT_GE(failed.slot, 0);
+  // Bootstrap/local-rank storage belongs to the fixture, not this heap Comm.
+  owned->bootstrap = nullptr;
+  owned->localRankToRank = nullptr;
+  EXPECT_EQ(flagcxCommDestroy(owned), flagcxRemoteError);
+  EXPECT_EQ(owned->internalBuffers->pointer, buffer);
+  EXPECT_NE(owned->ipcTable[failed.slot].devPeerPtrs, nullptr);
+  failReadyCopy = failReadyFree = false;
+  EXPECT_EQ(flagcxCommDestroy(owned), flagcxSuccess);
+}
+
+} // namespace

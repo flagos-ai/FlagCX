@@ -7,9 +7,13 @@ FLAGCX_CI_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
 
 export MPI_HOME=${MPI_HOME:-/usr/local/openmpi}
+export FLAGCX_ADAPTOR=iluvatar
 
 export PATH="$MPI_HOME/bin:/usr/local/corex/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/local/corex/lib64:$MPI_HOME/lib:${LD_LIBRARY_PATH:-}"
+
+FLAGCX_CI_IGNORE_TEST='{}'
+export FLAGCX_CI_IGNORE_TEST
 
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_ILUVATAR=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_ILUVATAR=1)
@@ -18,9 +22,6 @@ FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=2
 FLAGCX_CI_RUNNER_NP=4
 FLAGCX_CI_PXN_VISIBLE_DEVICES=0,3,4,7
-# Temporarily disable VMM-only scenarios until the IXCUDA VMM/LSA callbacks
-# are implemented. Keep IPC, NET fallback and route-capability checks enabled.
-export FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
 export NP=4
 
 FLAGCX_CI_NODE1_MPI_ARGS=(
@@ -42,6 +43,13 @@ flagcx_ci_configure_suite() {
   case "$suite" in
     adaptor)
       export FLAGCX_VMM_ENABLE=0
+      ;;
+    symmem)
+      export FLAGCX_DMABUF_ENABLE=0
+      FLAGCX_CI_SYMMEM_MPI_ARGS=(
+        -x FLAGCX_CI_SYMMEM_VA_ONLY=1
+        -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=va
+      )
       ;;
     runner)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)

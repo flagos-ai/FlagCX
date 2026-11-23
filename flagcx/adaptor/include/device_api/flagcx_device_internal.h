@@ -54,9 +54,8 @@ struct flagcxDevCommInternal {
                           // epochs]
   int nBarriers;          // = FLAGCX_DEVICE_CTA_COUNT (needed in kernel)
   // Host-side cleanup bookkeeping (not passed to kernel)
-  bool localBarrierFlagsDeviceAllocated; // true only when localBarrierFlags is
-                                         // owned device memory, not an SHM
-                                         // device-visible alias
+  bool localBarrierFlagsDeviceAllocated; // Comm-owned allocation when true;
+                                         // otherwise an SHM device alias
   int barrierIpcIndex;  // index into comm->ipcTable (-1 if no IPC barrier)
   int *localRankToRank; // intra-node rank mapping (for IPC exchange)
   int nLocalRanks;
@@ -84,6 +83,9 @@ struct flagcxDevCommInternal {
   // ---- One-sided Default layer (set if signals, counters, or Inter barriers
   // are requested)
   // ----
+  // Exporter allocations below belong to Comm; SHM aliases retain their SHM
+  // handle ownership. DevCommDestroy closes imports and drops borrowed
+  // pointers.
   uint64_t *signalBuffer;      // GPU-visible network signal words
   uint64_t *localSignalBuffer; // GPU-visible local signal words (host SHM mode)
   void *signalHostBuffer; // CPU mapping of both local and network signal planes
@@ -143,6 +145,8 @@ struct flagcxDevCommInternal {
   // ---- Vendor device comm (set if adaptor->devCommCreate succeeds, else NULL)
   // ----
   flagcxInnerDevComm_t devComm; // Typed vendor handle (per-adaptor struct)
+  int devCommId; // 1-based stack ID within the outer communicator
+  struct flagcxDevCommInternal *previousActive;
 
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr;      // Lazily allocated by flagcxDevCommGetDevicePtr
@@ -150,7 +154,7 @@ struct flagcxDevCommInternal {
   void *cachedGridBarrierPtr; // Device memory for grid sync state (2 x uint32)
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr and
                                   // cachedNetContextsPtr
-  struct flagcxDevCommInternal *deferredNext; // Host-only deferred-free link
+  bool backendDestroyed; // Retry cached frees without calling backend twice
 };
 
 // The first nRanks slots preserve the existing host-RMA PutValue layout
@@ -170,10 +174,11 @@ static inline bool flagcxPutValueStagingLayout(int nRanks, int contextCount,
   const size_t hostSlots = (size_t)nRanks;
   const size_t contexts = (size_t)contextCount;
   const size_t slots = (size_t)slotsPerContext;
-  if (contexts != 0 && slots > (SIZE_MAX - hostSlots) / contexts)
+  const size_t maxSize = (size_t)-1;
+  if (contexts != 0 && slots > (maxSize - hostSlots) / contexts)
     return false;
   const size_t allSlots = hostSlots + contexts * slots;
-  if (allSlots > SIZE_MAX / sizeof(uint64_t))
+  if (allSlots > maxSize / sizeof(uint64_t))
     return false;
 
   *kernelBaseSlot = hostSlots;
@@ -191,14 +196,21 @@ flagcxKernelPutValueStagingOffset(const struct flagcxDevCommInternal *devComm,
       stagingSlot >= devComm->putValueStagingSlotCount)
     return false;
 
-  const size_t slot =
-      devComm->putValueStagingKernelBaseSlot +
-      (size_t)contextId * (size_t)devComm->putValueStagingSlotCount +
-      (size_t)stagingSlot;
-  if (slot >= devComm->putValueStagingTotalSlotCount ||
-      slot > UINT64_MAX / sizeof(uint64_t))
+  // The returned byte offset is uint64_t even on a 32-bit device ABI.
+  // Bound the multiply/add before computing it, rather than comparing a
+  // possibly wrapped size_t against a wider integer limit afterwards.
+  const uint64_t maxSlot = UINT64_MAX / sizeof(uint64_t);
+  const uint64_t base = devComm->putValueStagingKernelBaseSlot;
+  const uint64_t index = (uint64_t)stagingSlot;
+  const uint64_t context = (uint64_t)contextId;
+  const uint64_t slots = (uint64_t)devComm->putValueStagingSlotCount;
+  if (base > maxSlot || index > maxSlot - base ||
+      (context != 0 && slots > (maxSlot - base - index) / context))
     return false;
-  *offset = (uint64_t)slot * sizeof(uint64_t);
+  const uint64_t slot = base + context * slots + index;
+  if (slot >= devComm->putValueStagingTotalSlotCount)
+    return false;
+  *offset = slot * sizeof(uint64_t);
   return true;
 }
 
@@ -214,22 +226,6 @@ flagcxKernelPutValueStagingOffset(const struct flagcxDevCommInternal *devComm,
 //   ASYMMETRIC + ipcBasePtrs → IPC peer pointers available
 //   window != nullptr        → Window available (Vendor or default)
 // ============================================================
-// Host-only resources attached to a Window after communicator creation. The
-// callback must leave the resource owned by this node when it returns an error
-// so communicator teardown can retry it.
-struct flagcxDevMemDeferredResource {
-  void *resource;
-  flagcxResult_t (*release)(void *resource);
-  struct flagcxDevMemDeferredResource *next;
-};
-
-struct flagcxUniRunnerIpcBinding {
-  int slot;
-  uint64_t generation;
-  size_t boundSize;
-  bool ownsTableReference;
-};
-
 struct flagcxDevMemInternal {
   // ---- Baseline (always set) ----
   void *rawPtr; // = buff parameter
@@ -241,8 +237,7 @@ struct flagcxDevMemInternal {
   flagcxMemAllocator_t allocator;
   flagcxMemAllocBackend_t allocBackend;
   bool hasWindow; // true if any window layer is available (basic or symmetric)
-  bool isSymmetric; // true only for FLAGCX_WIN_COLL_SYMMETRIC (enables
-                    // one-sided)
+  bool isSymmetric; // true for the SYMMETRIC mode or a SHMEM symmetric heap
 
   // ---- Per-comm MR layer (set by flagcxDevMemCreate from handle table) ----
   int mrIndex; // index into heteroComm->oneSideHandles (-1 if not registered)
@@ -251,29 +246,31 @@ struct flagcxDevMemInternal {
   // ---- IPC layer (ipcIndex >= 0 when IPC exchange succeeds) ----
   int ipcIndex;  // index into comm->ipcTable (-1 if no IPC)
   int intraRank; // this rank's local rank index (for IPC local pointer)
-  // Allocated only by the uniRunner IPC Ring AllReduce DevMem entry point.
-  struct flagcxUniRunnerIpcBinding *uniRunnerIpc;
+  // The internal owner (UniRunner or custom-op) explicitly tears down this
+  // view.
+  bool runnerOwned;
 
   // ---- Window layer (opaque pointer to DeviceAPI::Window) ----
   void *window;    // Points to vendor Window or defaultDeviceImpl::Window
                    // (fallback)
   void *winHandle; // Host-side handle for cleanup
+  flagcxWindow_t boundWindow; // prevents deregistration while this view exists
   void *segmentedPeerLayouts; // Device array owned by default Device API
 
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr; // Lazily allocated by flagcxDevMemGetDevicePtr
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr
-  struct flagcxDevMemDeferredResource *deferredResources; // Host-only ownership
-  struct flagcxDevMemInternal *deferredNext; // Host-only deferred-free link
+  bool backendDestroyed; // Retry cached frees without calling backend twice
+  struct flagcxDevMemInternal *activeNext;
 };
 #ifndef FLAGCX_DEV_MEM_T_DEFINED
 #define FLAGCX_DEV_MEM_T_DEFINED
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 #endif
 
-// Internal entry point: ordinary Device API callers use flagcxDevMemCreate.
-flagcxResult_t flagcxUniRunnerIpcDevMemCreate(flagcxComm_t comm, void *buff,
-                                              size_t size,
-                                              flagcxDevMem_t *devMem);
+// Collective internal Window registration followed by a local DevMem view.
+flagcxResult_t flagcxIpcWindowRegisterAndDevMemCreate(flagcxComm_t comm,
+                                                      void *buff, size_t size,
+                                                      flagcxDevMem_t *devMem);
 
 #endif // FLAGCX_DEVICE_API_INTERNAL_H_
