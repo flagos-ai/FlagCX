@@ -1,0 +1,12 @@
+ascend/shmem: barrier the FFTS config write before the first transfer
+
+The vendor installs AscendC::PipeBarrier<PIPE_ALL> between
+util_set_ffts_config and the first aclshmem call (barrier_all_kernel.cpp
+:19-21); we skipped it. Measured without it at np=2: S18B combo 0 lands as 0
+on rank 0 in 4 of 15 sizes while combos 1-5 always arrive, i.e. the first
+transfer of the kernel is occasionally issued before the config takes
+effect and silently does nothing. pipe_barrier(PIPE_ALL) is the bare
+intrinsic the toolkit already exposes to this translation unit, so no
+AscendC headers are needed.
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>

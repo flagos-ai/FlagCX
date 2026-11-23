@@ -57,6 +57,12 @@ struct AclshmemBackend {};
 FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemSetFftsConfig(uint64_t config) {
 #if defined(__CCE_IS_AICORE__)
   util_set_ffts_config(config);
+  // The vendor puts the same barrier between the FFTS config write and the
+  // first aclshmem call (barrier_all_kernel.cpp:19-21). Without it the first
+  // transfer of a kernel is occasionally issued before the config takes
+  // effect and silently does nothing: measured at np=2 as S18B combo 0
+  // landing as 0 on rank 0, 4 of 15 sizes, while combos 1-5 always arrived.
+  pipe_barrier(PIPE_ALL);
 #else
   (void)config;
 #endif
