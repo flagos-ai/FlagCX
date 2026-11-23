@@ -40,24 +40,14 @@ FLAGCX_CI_IGNORE_TEST=$(cat <<'JSON'
   ],
   "phases": [
     {
-      "suite": "p2p",
-      "name": "p2p-write-mpi",
-      "reason": "MUSA GPU buffer classification and registration for P2P WRITE MPI are unavailable in the Mthreads CI image"
+      "suite": "symmem",
+      "name": "vmm-local-and-remote-without-net",
+      "reason": "MUSA does not implement SymMem VMM allocation and mapping; ordinary IPC is tested"
     },
     {
-      "suite": "rma",
-      "name": "rma-ipc-mpi",
-      "reason": "MUSA IPC handle creation is unavailable in the Mthreads CI image, so RMA symmetric data windows cannot be registered"
-    },
-    {
-      "suite": "rma",
-      "name": "gdr-visibility",
-      "reason": "MUSA has no validated immediate-consumer GDR visibility contract in the Mthreads CI image"
-    },
-    {
-      "suite": "runner",
-      "name": "runner-heterogeneous",
-      "reason": "MUSA hybrid runner collectives currently return incorrect data; default and forced-NET runner phases remain enabled"
+      "suite": "symmem",
+      "name": "vmm-net-data",
+      "reason": "MUSA advertises neither DMA-BUF nor VA registration for VMM allocations; ordinary NET and the VMM rejection contract are tested"
     }
   ]
 }
@@ -72,20 +62,13 @@ if [[ ${#FLAGCX_CI_MUSA_DEVICE_IDS[@]} -ne 4 ]]; then
   return 1 2>/dev/null || exit 1
 fi
 export MUSA_VISIBLE_DEVICES=$FLAGCX_CI_MUSA_DEVICES
-# The current MUSA backend has no test kernel target or unified IR platform
+# The current MUSA backend has no Device API kernel target or unified IR platform
 # implementation. Keep both suites visible in CI and report this gap.
 FLAGCX_CI_UNIFIED_IR_SUPPORTED=0
 FLAGCX_CI_DEVICE_API_SUPPORTED=0
-# SHCA/IBRC on this image does not advertise GPU memory registration. Preserve
-# adaptor coverage while reporting GPU-MR-specific cases as capability skips.
-export FLAGCX_CI_GPU_MR_POLICY=gpu-mr-optional
-# MUSA IPC handle creation and GPU buffer registration are unavailable in the
-# current CI image. Keep NET and host coverage active, and record these paths
-# before skipping them in the shared runner.
-export FLAGCX_CI_P2P_MPI_SUPPORTED=0
-export FLAGCX_CI_RMA_IPC_SUPPORTED=0
-export FLAGCX_CI_RMA_VISIBILITY_SUPPORTED=0
-export FLAGCX_CI_RUNNER_HYBRID_SUPPORTED=0
+# Require GPU MR now that RDMA support is being revalidated. Unsupported
+# registration must fail the check rather than pass as a capability skip.
+export FLAGCX_CI_GPU_MR_POLICY=gpu-mr-required
 # Every wrapped unit/MPI invocation retains a delayed process-stack snapshot;
 # the suite transcript also captures direct runner invocations.
 export FLAGCX_CI_TEST_DIAGNOSTICS_AFTER=120
@@ -119,12 +102,12 @@ flagcx_ci_skip_suite() {
   local suite=$1
   if [[ "$suite" == device_api &&
         "$FLAGCX_CI_DEVICE_API_SUPPORTED" == 0 ]]; then
-    echo "Skipping device_api: MUSA test kernel target is unavailable"
+    echo "Skipping device_api: MUSA Device API test kernel target is unavailable"
     return 0
   fi
   if [[ "$suite" == device_api_unified_ir &&
         "$FLAGCX_CI_UNIFIED_IR_SUPPORTED" == 0 ]]; then
-    echo "Skipping device_api_unified_ir: MUSA test kernel target and unified IR backend are unavailable"
+    echo "Skipping device_api_unified_ir: MUSA Device API test kernel target and unified IR backend are unavailable"
     return 0
   fi
   return 1
@@ -174,20 +157,4 @@ flagcx_ci_validate_rdma() {
   flagcx_ci_validate_rdma_static Mthreads "$suite" \
     "/sys/class/infiniband/*" || return
   echo "Mthreads RDMA selection: FLAGCX_IB_HCA=$FLAGCX_IB_HCA"
-}
-
-flagcx_ci_run_suite_override() {
-  local suite=$1
-  local suite_dir=$2
-  shift 2
-  local -a args=("$@")
-
-  if [[ "$suite" == symmem ]]; then
-    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    FLAGCX_CI_TEST_LABEL="symmem host unit tests" \
-      "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
-    return
-  fi
-
-  FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
 }

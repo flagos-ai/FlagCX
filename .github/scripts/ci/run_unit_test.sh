@@ -856,10 +856,11 @@ run_suite() {
             # consumer kernel is built for this platform.
             ;;
           mthreads)
-            run_visibility=0
-            flagcx_ci_record_capability_skip \
-              "rma-gdr-visibility" \
-              "Mthreads MUSA direct-consumer RMA visibility is unavailable; observed ipcMemHandleCreate/data-window setup failure"
+            # READ uses the provider's completion/flush contract. MUSA's
+            # stream wait does not yet acquire incoming remote WRITEs.
+            expected_read_required=0
+            expected_write_required=1
+            expected_write=unsupported
             ;;
           ascend)
             # The existing immediate-consumer cases are deliberately outside
@@ -907,7 +908,8 @@ run_suite() {
         fi
         if ((run_visibility != 0)) &&
            [[ "$platform_name" != "hygon" && "$platform_name" != "ascend" ]]; then
-          FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary" \
+          FLAGCX_CI_REQUIRE_GTEST_PASS=1 \
+            FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary" \
             make -C "$suite_dir" run-mpi-net "${args[@]}" \
             MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
             RMA_VMM_ENABLE=0 \

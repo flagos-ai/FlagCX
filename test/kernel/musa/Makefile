@@ -23,8 +23,11 @@ KERNEL_NAMES := device_api device_ir
 KERNEL_OBJECTS := $(addprefix $(OBJDIR)/,$(addsuffix .o,$(KERNEL_NAMES)))
 DEVICE_OBJECTS := $(addprefix $(OBJDIR)/,$(addsuffix .device.o,$(KERNEL_NAMES)))
 DEVICE_IMAGES := $(addprefix $(OBJDIR)/,$(addsuffix .mubin,$(KERNEL_NAMES)))
+MUSA_TEST_CXX_ISYSTEM ?= $(shell $(CXX) -E -x c++ -v /dev/null 2>&1 >/dev/null | \
+	sed -n 's|^ \(/[^ ]*include/[^ ]*c++[^ ]*\)$$|-isystem \1|p')
 
-.PHONY: all clean device_api.o device_ir.o dlink.o dlink_api.o dlink_ir.o
+.PHONY: all clean device_api.o device_ir.o dlink.o dlink_api.o dlink_ir.o \
+	gdr_visibility.o
 
 all: $(KERNEL_OBJECTS)
 
@@ -55,8 +58,20 @@ $(KERNEL_OBJECTS): $(OBJDIR)/%.o: %.$(DEVICE_FILE_EXTENSION) $(OBJDIR)/%.mubin M
 dlink.o dlink_api.o dlink_ir.o: all
 	@echo "MUSA device images are linked and embedded in device_api.o/device_ir.o"
 
+gdr_visibility.o: $(OBJDIR)/gdr_visibility.o
+
+$(OBJDIR)/gdr_visibility.o: gdr_visibility.mu \
+	../include/gdr_visibility_test.h ../include/gdr_visibility_test_kernel.cuh
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling gdr_visibility.mu (MUSA)"
+	@$(DEVICE_HOME)/bin/mcc -std=c++17 -O2 -c -fPIC $< -o $@ \
+		$(MUSA_TEST_CXX_ISYSTEM) \
+		$(FLAGCX_INCLUDES) -I$(PROJECT_ROOT)/test/kernel/include \
+		$(CCL_INCLUDE) $(DEVICE_INCLUDE) $(ADAPTOR_DEFINE)
+
 clean:
 	$(RM) $(KERNEL_OBJECTS) $(DEVICE_OBJECTS) $(DEVICE_IMAGES) \
-		$(KERNEL_OBJECTS:.o=.d) $(DEVICE_OBJECTS:.o=.d)
+		$(KERNEL_OBJECTS:.o=.d) $(DEVICE_OBJECTS:.o=.d) \
+		$(OBJDIR)/gdr_visibility.o
 
 -include $(KERNEL_OBJECTS:.o=.d) $(DEVICE_OBJECTS:.o=.d)

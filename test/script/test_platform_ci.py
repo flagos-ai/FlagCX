@@ -1556,7 +1556,46 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn("FLAGCX_CI_MUSA_DEVICES", mthreads_env)
         self.assertIn("FLAGCX_CI_DEVICE_GTEST_FILTER", mthreads_env)
         self.assertIn("mthreads-gmi", mthreads_env)
-        self.assertIn('"$suite" == symmem', mthreads_env)
+        self.assertNotIn("flagcx_ci_run_suite_override", mthreads_env)
+
+    def test_mthreads_rma_empty_visibility_is_failure(self):
+        source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        run_suite = source[
+            source.index("run_suite() {") :
+            source.index("\nrun_supplemental_unit_tests() {")
+        ]
+        phase_helper = "flagcx_ci_phase_supported() {" + source.split(
+            "flagcx_ci_phase_supported() {", 1
+        )[1].split("\n}", 1)[0] + "\n}\n"
+        with tempfile.TemporaryDirectory() as directory:
+            harness = phase_helper + run_suite + r'''
+SUITE=rma
+SET_ENV_SCRIPT=mthreads.sh
+PROJECT_ROOT=$1
+FLAGCX_CI_TEST_MAKE_ARGS=(USE_MUSA=1)
+FLAGCX_CI_IGNORE_TEST='{}'
+TEST_RUNNER=run_test
+MPI_RUNNER="$PROJECT_ROOT/.github/scripts/ci/run_with_timeout.sh"
+run_test() { "$@"; }
+flagcx_ci_require_rdma() { return 0; }
+make() {
+  if [[ "${FLAGCX_CI_MPI_LABEL:-}" == "rma GDR visibility ordinary" ]]; then
+    "$MPI_RUNNER" bash -c 'printf "[  PASSED  ] 0 tests.\n"'
+  fi
+}
+run_suite
+'''
+            result = subprocess.run(
+                ["bash", "-euc", harness, "bash", str(REPO_ROOT)],
+                cwd=REPO_ROOT,
+                env={**os.environ, "BASH_ENV": "",
+                     "FLAGCX_CI_TEST_MAX_ATTEMPTS": "1",
+                     "FLAGCX_CI_LOG_DIR": directory},
+                text=True, capture_output=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("without a passing GTest case", result.stderr)
+            self.assertIn("visibility=1", result.stderr)
 
     def test_symmem_runs_required_local_and_network_vmm_matrix(self):
         unit_runner = (
