@@ -14,6 +14,8 @@ paths_watch:
   - flagcx/adaptor/include/device_api/metax_*.h
   - bindings/ir/metax/**/*
   - test/kernel/maca/**/*
+  - test/diagnostics/metax_alloc_memops.*
+  - test/script/test_metax_alloc_memops.py
   - flagcx/adaptor/ccl/mccl_adaptor.cc
   - flagcx/adaptor/include/metax_adaptor.h
   - flagcx/adaptor/tuner/mccl_tuner.cc

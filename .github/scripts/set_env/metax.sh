@@ -68,6 +68,18 @@ flagcx_ci_configure_suite() {
 flagcx_ci_prepare() {
   local suite=$1
   echo "Preparing MetaX environment for CI workload: $suite"
+  if [[ "$suite" == adaptor ]]; then
+    # Run before RDMA preflight/build/GTest failures can hide the allocation
+    # matrix. Each native case has its own process and deadline. Diagnostic
+    # failures are retained in the uploaded logs; ordinary tests still run.
+    local probe_dir="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}/metax-alloc-memops"
+    local probe_status=0
+    python3 "$PROJECT_ROOT/test/diagnostics/metax_alloc_memops.py" \
+      --sdk "${MACA_PATH:-/opt/maca}" --output-dir "$probe_dir" || probe_status=$?
+    if [[ "$probe_status" != 0 ]]; then
+      echo "::warning title=MetaX allocation diagnostic::exit=$probe_status; see metax-alloc-memops/summary.md and results.json in attempt logs"
+    fi
+  fi
   command -v mpirun
   command -v mxcc
 
