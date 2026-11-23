@@ -51,8 +51,58 @@ static flagcxResult_t ncclCommFinalize(NativeContext *native) {
 static flagcxResult_t ncclCommDestroy(NativeContext *native) {
   return CclLifecycleShim::destroyNative(native);
 }
+#define FLAGCX_NCCL_FINALIZE ncclAdaptorCommFinalize
+#define FLAGCX_NCCL_DESTROY ncclAdaptorCommDestroy
 #include "../../../flagcx/adaptor/ccl/nccl_comm_lifecycle.h"
 } // namespace NcclLifecycleShim
+
+namespace RcclLifecycleShim {
+using CclLifecycleShim::flagcxInnerComm_t;
+using CclLifecycleShim::free;
+using NcclLifecycleShim::ncclCommDestroy;
+using NcclLifecycleShim::ncclCommFinalize;
+#define FLAGCX_NCCL_FINALIZE rcclAdaptorCommFinalize
+#define FLAGCX_NCCL_DESTROY rcclAdaptorCommDestroy
+#include "../../../flagcx/adaptor/ccl/nccl_comm_lifecycle.h"
+} // namespace RcclLifecycleShim
+
+namespace DuLifecycleShim {
+using CclLifecycleShim::flagcxInnerComm_t;
+using CclLifecycleShim::free;
+using NcclLifecycleShim::ncclCommDestroy;
+using NcclLifecycleShim::ncclCommFinalize;
+#define FLAGCX_NCCL_FINALIZE durcclAdaptorCommFinalize
+#define FLAGCX_NCCL_DESTROY durcclAdaptorCommDestroy
+#include "../../../flagcx/adaptor/ccl/nccl_comm_lifecycle.h"
+} // namespace DuLifecycleShim
+
+namespace IluvatarLifecycleShim {
+using CclLifecycleShim::flagcxInnerComm_t;
+using CclLifecycleShim::free;
+using NcclLifecycleShim::ncclCommDestroy;
+using NcclLifecycleShim::ncclCommFinalize;
+#define FLAGCX_NCCL_FINALIZE ixncclAdaptorCommFinalize
+#define FLAGCX_NCCL_DESTROY ixncclAdaptorCommDestroy
+#include "../../../flagcx/adaptor/ccl/nccl_comm_lifecycle.h"
+} // namespace IluvatarLifecycleShim
+
+namespace {
+struct NativeLifecycleOps {
+  const char *name;
+  flagcxResult_t (*finalize)(CclLifecycleShim::flagcxInnerComm_t);
+  flagcxResult_t (*destroy)(CclLifecycleShim::flagcxInnerComm_t);
+};
+const NativeLifecycleOps nativeLifecycleOps[] = {
+    {"NCCL", NcclLifecycleShim::ncclAdaptorCommFinalize,
+     NcclLifecycleShim::ncclAdaptorCommDestroy},
+    {"RCCL", RcclLifecycleShim::rcclAdaptorCommFinalize,
+     RcclLifecycleShim::rcclAdaptorCommDestroy},
+    {"DU", DuLifecycleShim::durcclAdaptorCommFinalize,
+     DuLifecycleShim::durcclAdaptorCommDestroy},
+    {"Iluvatar", IluvatarLifecycleShim::ixncclAdaptorCommFinalize,
+     IluvatarLifecycleShim::ixncclAdaptorCommDestroy},
+};
+} // namespace
 
 namespace HcclLifecycleShim {
 using CclLifecycleShim::flagcxInnerComm_t;
@@ -169,7 +219,71 @@ struct PpuProviderGuard {
   }
   ~PpuProviderGuard() { cclAdaptors[flagcxCCLAdaptorDevice] = saved; }
 };
+
+const NativeLifecycleOps *activeNativeLifecycleOps;
+struct NativeDestroyProviderGuard {
+  flagcxCCLAdaptor *saved = cclAdaptors[flagcxCCLAdaptorDevice];
+  flagcxCCLAdaptor provider = *saved;
+  NativeDestroyProviderGuard(const NativeLifecycleOps *ops) {
+    activeNativeLifecycleOps = ops;
+    provider.commDestroy = [](flagcxInnerComm_t inner) {
+      return activeNativeLifecycleOps->destroy(
+          (CclLifecycleShim::flagcxInnerComm_t)inner);
+    };
+    provider.commFinalize = [](flagcxInnerComm_t) {
+      ADD_FAILURE() << "local Destroy must not repeat Finalize";
+      return flagcxInternalError;
+    };
+    cclAdaptors[flagcxCCLAdaptorDevice] = &provider;
+  }
+  ~NativeDestroyProviderGuard() {
+    cclAdaptors[flagcxCCLAdaptorDevice] = saved;
+    activeNativeLifecycleOps = nullptr;
+  }
+};
 } // namespace
+
+TEST(CommLifecycleTest, NativeDestroyRetryKeepsAliasesAndSkipsReleasedPrefix) {
+  for (const auto &ops : nativeLifecycleOps) {
+    SCOPED_TRACE(ops.name);
+    NativeDestroyProviderGuard guard(&ops);
+    CclLifecycleShim::NativeContext firstNative, secondNative;
+    CclLifecycleShim::Wrapper first{&firstNative}, second{&secondNative};
+    auto *comm = (flagcxComm_t)calloc(1, sizeof(flagcxComm));
+    comm->commType = flagcxCommunicatorHomo;
+    comm->finalizeState.lifecycle = flagcxCommFinalized;
+    comm->finalizeState.commonPhase = flagcxFinalizeComplete;
+    comm->homoComm = (flagcxInnerComm_t)&first;
+    comm->homoInterComm = comm->tunerInnerComm = (flagcxInnerComm_t)&second;
+    secondNative.pendingDestroys = 1;
+
+    EXPECT_EQ(flagcxCommDestroy(comm), flagcxInProgress);
+    EXPECT_EQ(comm->destroyPhase, flagcxDestroyVendors);
+    EXPECT_EQ(comm->homoComm, nullptr);
+    EXPECT_EQ(first.frees, 1);
+    EXPECT_EQ(firstNative.destroyCalls, 1);
+    EXPECT_EQ(comm->homoInterComm, (flagcxInnerComm_t)&second);
+    EXPECT_EQ(comm->tunerInnerComm, (flagcxInnerComm_t)&second);
+    EXPECT_EQ(second.base, &secondNative);
+    EXPECT_EQ(second.frees, 0);
+
+    secondNative.destroyResult = flagcxRemoteError;
+    EXPECT_EQ(flagcxCommDestroy(comm), flagcxRemoteError);
+    EXPECT_EQ(comm->destroyPhase, flagcxDestroyVendors);
+    EXPECT_EQ(comm->homoInterComm, (flagcxInnerComm_t)&second);
+    EXPECT_EQ(comm->tunerInnerComm, (flagcxInnerComm_t)&second);
+    EXPECT_EQ(second.base, &secondNative);
+    EXPECT_EQ(second.frees, 0);
+
+    secondNative.destroyResult = flagcxSuccess;
+    EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+    EXPECT_EQ(firstNative.destroyCalls, 1);
+    EXPECT_EQ(first.frees, 1);
+    EXPECT_EQ(secondNative.destroyCalls, 3);
+    EXPECT_EQ(second.frees, 1);
+    EXPECT_EQ(firstNative.finalizeCalls + secondNative.finalizeCalls, 0);
+  }
+}
 
 TEST(CommLifecycleTest, PpuAsyncFinalizeRetainsNativeUntilDestroy) {
   PpuLifecycleShim::NativeContext native;
@@ -255,18 +369,27 @@ TEST(CclLifecycleTest, NcclFinalizeErrorAndProgressRetainWrapper) {
   EXPECT_EQ(wrapper.frees, 1);
 }
 
-TEST(CclLifecycleTest, NcclDestroyFailureRetainsWrapperForRetry) {
-  using namespace NcclLifecycleShim;
-  NativeContext context = {};
-  Wrapper wrapper = {&context, 0};
-  ASSERT_EQ(ncclAdaptorCommFinalize(&wrapper), flagcxSuccess);
-  context.destroyResult = flagcxRemoteError;
-  EXPECT_EQ(ncclAdaptorCommDestroy(&wrapper), flagcxRemoteError);
-  EXPECT_EQ(wrapper.frees, 0);
-  context.destroyResult = flagcxSuccess;
-  EXPECT_EQ(ncclAdaptorCommDestroy(&wrapper), flagcxSuccess);
-  EXPECT_EQ(context.destroyCalls, 2);
-  EXPECT_EQ(wrapper.frees, 1);
+TEST(CclLifecycleTest, NativeDestroyPendingAndErrorRetainWrapperForRetry) {
+  for (const auto &ops : nativeLifecycleOps) {
+    SCOPED_TRACE(ops.name);
+    CclLifecycleShim::NativeContext native;
+    CclLifecycleShim::Wrapper wrapper{&native};
+    EXPECT_EQ(ops.destroy(nullptr), flagcxInvalidArgument);
+    EXPECT_EQ(ops.finalize(&wrapper), flagcxSuccess);
+    native.pendingDestroys = 1;
+    EXPECT_EQ(ops.destroy(&wrapper), flagcxInProgress);
+    EXPECT_EQ(wrapper.base, &native);
+    EXPECT_EQ(wrapper.frees, 0);
+    native.destroyResult = flagcxRemoteError;
+    EXPECT_EQ(ops.destroy(&wrapper), flagcxRemoteError);
+    EXPECT_EQ(wrapper.base, &native);
+    EXPECT_EQ(wrapper.frees, 0);
+    native.destroyResult = flagcxSuccess;
+    EXPECT_EQ(ops.destroy(&wrapper), flagcxSuccess);
+    EXPECT_EQ(native.destroyCalls, 3);
+    EXPECT_EQ(wrapper.frees, 1);
+    EXPECT_EQ(native.finalizeCalls, 1);
+  }
 }
 
 TEST(CclLifecycleTest, UnsupportedNativeFinalizeClosesOnceAndRetainsWrapper) {

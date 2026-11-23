@@ -120,6 +120,8 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
   return flagcxSuccess;
 }
 
+#define FLAGCX_NCCL_FINALIZE ncclAdaptorCommFinalize
+#define FLAGCX_NCCL_DESTROY ncclAdaptorCommDestroy
 #include "nccl_comm_lifecycle.h"
 
 flagcxResult_t ncclAdaptorCommAbort(flagcxInnerComm_t comm) {

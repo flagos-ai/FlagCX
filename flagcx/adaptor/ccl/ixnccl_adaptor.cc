@@ -45,17 +45,9 @@ ixncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                           *(ncclUniqueId *)commId, rank);
 }
 
-flagcxResult_t ixncclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)ncclCommFinalize(comm->base);
-}
-
-flagcxResult_t ixncclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  if (comm == NULL)
-    return flagcxInvalidArgument;
-  FLAGCXCHECK((flagcxResult_t)ncclCommDestroy(comm->base));
-  free(comm);
-  return flagcxSuccess;
-}
+#define FLAGCX_NCCL_FINALIZE ixncclAdaptorCommFinalize
+#define FLAGCX_NCCL_DESTROY ixncclAdaptorCommDestroy
+#include "nccl_comm_lifecycle.h"
 
 flagcxResult_t ixncclAdaptorCommAbort(flagcxInnerComm_t comm) {
   return (flagcxResult_t)ncclCommAbort(comm->base);

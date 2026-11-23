@@ -34,10 +34,10 @@ ifneq ($(strip $(MPI_XML_DIR)),)
 MPI_TEST_CMD = bash $(PROJECT_ROOT)/.github/scripts/ci/run_gtest_rank_xml.sh $(MPI_XML_DIR) $(MPI_TARGET)
 endif
 
-.PHONY: all clean run-unit run-mpi run compile-sunrise
+.PHONY: all clean run-unit run-mpi run compile-sunrise compile-platform-traits
 
 ALL_TARGETS :=
-ALL_TARGETS += compile-sunrise $(HOST_MPI_TARGET)
+ALL_TARGETS += compile-sunrise compile-platform-traits $(HOST_MPI_TARGET)
 ifneq ($(UNIT_SRCS),)
 ALL_TARGETS += $(UNIT_TARGET)
 endif
@@ -70,7 +70,7 @@ $(OBJDIR)/coll_%.o: coll_%.cpp
 clean:
 	@rm -rf $(BUILDDIR)
 
-run-unit: compile-sunrise $(UNIT_TARGET)
+run-unit: compile-sunrise compile-platform-traits $(UNIT_TARGET)
 	@$(UNIT_TARGET)
 
 run-mpi: $(MPI_TARGET)
@@ -87,6 +87,30 @@ compile-sunrise:
 	  -DUSE_SUNRISE_ADAPTOR -DFLAGCX_COMM_TRAITS_DEFAULT \
 	  -Ifixtures/sunrise_sdk $(FLAGCX_INCLUDES) \
 	  -fsyntax-only $(PROJECT_ROOT)/flagcx/adaptor/device/ptpu_adaptor.cc
+
+# Host selection must bind the communication backend to the same platform as
+# PlatformTraits, even without a vendor Device API SDK or a device compiler.
+# Only opaque host stream aliases are stubbed, in an isolated build directory;
+# this gate checks header/type composition, not SDK ABI or device intrinsics.
+compile-platform-traits:
+	@mkdir -p $(OBJDIR)/traits-sdk/tops
+	@printf '%s\n' '#pragma once' 'typedef void *musaStream_t;' > $(OBJDIR)/traits-sdk/musa_runtime.h
+	@printf '%s\n' '#pragma once' 'typedef void *topsStream_t;' > $(OBJDIR)/traits-sdk/tops/tops_runtime.h
+	@set -e; for binding in ASCEND:AscendPlatform MUSA:MusaPlatform ENFLAME:EnflamePlatform; do \
+	  platform=$${binding%%:*}; expected=$${binding#*:}; \
+	  echo "Checking $$platform host Device API selection"; \
+	  printf '%s\n' \
+	    '#include "device_api/flagcx_device.h"' \
+	    '#include "device_api/completion_word.h"' \
+	    '#include <type_traits>' \
+	    'static_assert(std::is_same<DeviceAPI, CommTraits<DefaultBackend<FLAGCX_TEST_PLATFORM>>>::value, "wrong Device API platform");' \
+	    'static_assert(std::is_same<flagcxCompletionWord_t, DeviceAPI::CompletionWord>::value, "wrong FIFO control word");' \
+	    'flagcxCompletionWord_t *control(uint64_t *p) { return flagcxFifoControlPtr(p, flagcxFifoIdxProduced); }' \
+	    | $(CXX) $(filter-out -DUSE_%_ADAPTOR -DCOMPILE_KERNEL% -DFLAGCX_COMM_TRAITS_% -DFLAGCX_ENFLAME_DEVICE_API,$(CXXFLAGS)) \
+	      -DUSE_$${platform}_ADAPTOR -DFLAGCX_COMM_TRAITS_DEFAULT \
+	      -DFLAGCX_TEST_PLATFORM=$$expected -I$(OBJDIR)/traits-sdk $(FLAGCX_INCLUDES) \
+	      -x c++ -fsyntax-only -; \
+	done
 
 $(HOST_MPI_OBJ): $(PROJECT_ROOT)/flagcx/adaptor/ccl/mpi_adaptor.cc $(PROJECT_ROOT)/flagcx/adaptor/ccl/mpi_staging_cleanup.h $(PROJECT_ROOT)/flagcx/adaptor/ccl/host_comm_lifecycle.h
 	@mkdir -p $(dir $@)

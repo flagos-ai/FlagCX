@@ -1,21 +1,19 @@
-#ifndef FLAGCX_NCCL_COMM_LIFECYCLE_H_
-#define FLAGCX_NCCL_COMM_LIFECYCLE_H_
-
-// Kept separate so host tests can exercise these exact adaptor functions with
-// native API shims. Finalize must retain the wrapper for deregistration, async
-// queries and the eventual Destroy, including native in-progress completion.
-flagcxResult_t ncclAdaptorCommFinalize(flagcxInnerComm_t comm) {
+// Instantiated by NCCL-compatible adaptors and the host lifecycle shims.
+// Finalize retains the wrapper; only a completed native Destroy releases it.
+flagcxResult_t FLAGCX_NCCL_FINALIZE(flagcxInnerComm_t comm) {
   if (comm == NULL)
     return flagcxInvalidArgument;
   return (flagcxResult_t)ncclCommFinalize(comm->base);
 }
 
-flagcxResult_t ncclAdaptorCommDestroy(flagcxInnerComm_t comm) {
+flagcxResult_t FLAGCX_NCCL_DESTROY(flagcxInnerComm_t comm) {
   if (comm == NULL)
     return flagcxInvalidArgument;
-  FLAGCXCHECK((flagcxResult_t)ncclCommDestroy(comm->base));
+  flagcxResult_t result = (flagcxResult_t)ncclCommDestroy(comm->base);
+  if (result != flagcxSuccess)
+    return result;
   free(comm);
   return flagcxSuccess;
 }
-
-#endif
+#undef FLAGCX_NCCL_FINALIZE
+#undef FLAGCX_NCCL_DESTROY
