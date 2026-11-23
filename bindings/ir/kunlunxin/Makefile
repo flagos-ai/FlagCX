@@ -37,6 +37,7 @@ KLX_PUBLIC_SYMBOLS := \
 	flagcxDevCommGetIntraRank \
 	flagcxDevCommGetIntraSize \
 	flagcxGetIntraPointerC \
+	flagcxGetIntraPointerWithAccessC \
 	flagcxIntraBarrierArriveS \
 	flagcxIntraBarrierWaitS \
 	flagcxIntraBarrierSyncS \
@@ -157,6 +158,10 @@ check_public_symbols: $(LLVM_IR_FILE)
 	done; \
 	if ! grep -Eq "^[[:space:]]*define .*@flagcxGetIntraPointerC\\(.*i64.*i32" $(LLVM_IR_FILE); then \
 		echo "flagcxGetIntraPointerC offset must be i64"; \
+		missing=1; \
+	fi; \
+	if ! grep -Eq "^[[:space:]]*define (hidden )?ptr addrspace\\(1\\) @flagcxGetIntraPointerWithAccessC\\(ptr addrspace\\(1\\)[^,]*, i64[^,]*, i32[^,]*, i32[^)]*\\)" $(LLVM_IR_FILE); then \
+		echo "Invalid FlagCX Device IR ABI: flagcxGetIntraPointerWithAccessC"; \
 		missing=1; \
 	fi; \
 	test $$missing -eq 0
