@@ -1554,6 +1554,8 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             REPO_ROOT / ".github/scripts/set_env/mthreads.sh"
         ).read_text()
         self.assertIn("FLAGCX_CI_MUSA_DEVICES", mthreads_env)
+        self.assertIn("musa::atomic_ref", mthreads_env)
+        self.assertIn("FLAGCX_CI_DEVICE_API_SUPPORTED=0", mthreads_env)
         self.assertNotIn("StreamWaitEvent", mthreads_env)
         self.assertIn("mthreads-gmi", mthreads_env)
         self.assertNotIn("flagcx_ci_run_suite_override", mthreads_env)

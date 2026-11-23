@@ -56,10 +56,11 @@ if [[ ${#FLAGCX_CI_MUSA_DEVICE_IDS[@]} -ne 4 ]]; then
   return 1 2>/dev/null || exit 1
 fi
 export MUSA_VISIBLE_DEVICES=$FLAGCX_CI_MUSA_DEVICES
-# The current MUSA backend has no Device API kernel target or unified IR platform
-# implementation. Keep both suites visible in CI and report this gap.
-FLAGCX_CI_UNIFIED_IR_SUPPORTED=0
+# The MUSA 4.3.6 CI image lacks musa::atomic_ref required by the Device API
+# backend added upstream. Re-enable these suites when the SDK image is updated.
 FLAGCX_CI_DEVICE_API_SUPPORTED=0
+FLAGCX_CI_UNIFIED_IR_SUPPORTED=0
+FLAGCX_CI_DEVICE_API_SKIP_REASON="MUSA 4.3.6 SDK lacks musa::atomic_ref required by the Device API kernels"
 # Require GPU MR now that RDMA support is being revalidated. Unsupported
 # registration must fail the check rather than pass as a capability skip.
 export FLAGCX_CI_GPU_MR_POLICY=gpu-mr-required
@@ -92,12 +93,12 @@ flagcx_ci_skip_suite() {
   local suite=$1
   if [[ "$suite" == device_api &&
         "$FLAGCX_CI_DEVICE_API_SUPPORTED" == 0 ]]; then
-    echo "Skipping device_api: MUSA Device API test kernel target is unavailable"
+    echo "Skipping device_api: $FLAGCX_CI_DEVICE_API_SKIP_REASON"
     return 0
   fi
   if [[ "$suite" == device_api_unified_ir &&
         "$FLAGCX_CI_UNIFIED_IR_SUPPORTED" == 0 ]]; then
-    echo "Skipping device_api_unified_ir: MUSA Device API test kernel target and unified IR backend are unavailable"
+    echo "Skipping device_api_unified_ir: $FLAGCX_CI_DEVICE_API_SKIP_REASON"
     return 0
   fi
   return 1

@@ -4,6 +4,9 @@
 MUSA_KERNEL_INCLUDES := $(foreach dir,$(INCLUDEDIR),-I$(dir)) \
         -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) \
         -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(SHCA_INCLUDE_FLAG)
+MUSA_HOST_CXX_INCLUDES ?= $(shell $(CXX) -E -x c++ -v /dev/null 2>&1 >/dev/null | \
+	sed -n 's|^ \(/[^ ]*include/[^ ]*c++[^ ]*\)$$|-isystem \1|p')
+MUSA_KERNEL_INCLUDES += $(MUSA_HOST_CXX_INCLUDES)
 MUSA_KERNEL_DEFINES := $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) \
         $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_FLAG)
 

@@ -136,7 +136,7 @@ if declare -F flagcx_ci_skip_suite >/dev/null &&
   if [[ "$SUITE" == device_api || "$SUITE" == device_api_unified_ir ]]; then
     flagcx_ci_record_capability_skip \
       "device-api-$SUITE" \
-      "Mthreads MUSA test kernel target is unavailable; device API workload cannot build"
+      "${FLAGCX_CI_DEVICE_API_SKIP_REASON:-Mthreads MUSA device API kernel target is unavailable}"
   fi
   if [[ "${FLAGCX_CI_COVERAGE:-0}" == 1 ]]; then
     export FLAGCX_CI_COVERAGE_SKIP_REASON="platform configuration marks suite unsupported"
@@ -887,9 +887,9 @@ run_suite() {
             # consumer kernel is built for this platform.
             ;;
           mthreads)
-            # READ uses the provider's completion/flush contract. MUSA's
-            # stream wait does not yet acquire incoming remote WRITEs.
-            expected_read_required=0
+            # The MUSA adaptor requires an acquire for both NIC-written data
+            # consumed by the GPU and GPU-written data consumed by the NIC.
+            expected_read_required=1
             expected_write_required=1
             expected_write=unsupported
             ;;

@@ -64,7 +64,7 @@ $(OBJDIR)/gdr_visibility.o: gdr_visibility.mu \
 	../include/gdr_visibility_test.h ../include/gdr_visibility_test_kernel.cuh
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling gdr_visibility.mu (MUSA)"
-	@$(DEVICE_HOME)/bin/mcc -std=c++17 -O2 -c -fPIC $< -o $@ \
+	@$(DEVICE_COMPILER) -std=c++17 -O2 -c -fPIC $< -o $@ \
 		$(MUSA_TEST_CXX_ISYSTEM) \
 		$(FLAGCX_INCLUDES) -I$(PROJECT_ROOT)/test/kernel/include \
 		$(CCL_INCLUDE) $(DEVICE_INCLUDE) $(ADAPTOR_DEFINE)
