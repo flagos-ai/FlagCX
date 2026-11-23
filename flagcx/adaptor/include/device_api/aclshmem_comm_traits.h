@@ -660,8 +660,29 @@ struct CommTraits<AclshmemBackend> {
       aclshmemGmStore32(sent, ticket);
       // dst is this PE's slot at the same offset; cann-shmem translates it
       // to the peer's copy.
-      aclshmemPutMemNbi((FLAGCX_ACLSHMEM_GM void *)(base + _dc.rank),
-                        (FLAGCX_ACLSHMEM_GM void *)sent, 4u, pe);
+      FLAGCX_ACLSHMEM_GM void *dst = (FLAGCX_ACLSHMEM_GM void *)(base + _dc.rank);
+      aclshmemPutMemNbi(dst, (FLAGCX_ACLSHMEM_GM void *)sent, 4u, pe);
+      // A posted 4B put can be dropped outright (measured as the np=2 S16
+      // barrier-ticket hang). The ticket is the absolute count, so a
+      // re-issue carries the same meaning; poll the peer mapping - the
+      // lossless direction - and re-put until this exact ticket is there.
+      // The poll also serialises consecutive signals on one slot, which
+      // keeps the 5-in-a-row S25 increments from landing out of order.
+      // shortcut: a finite retry budget - a link that keeps dropping stays
+      // silent; the transport reports no per-write completion.
+      FLAGCX_ACLSHMEM_GM volatile uint32_t *remote = aclshmemPeerWord(
+          (FLAGCX_ACLSHMEM_GM uint32_t *)dst, pe);
+      for (int attempt = 0; attempt < 3; ++attempt) {
+        int spins = 0;
+        while (aclshmemGmLoad32(remote) != ticket && spins < 32) {
+          Intrin::spinBackoff(spins < 16 ? spins : 16);
+          ++spins;
+        }
+        if (aclshmemGmLoad32(remote) == ticket)
+          return;
+        aclshmemPutMemNbi(dst, (FLAGCX_ACLSHMEM_GM void *)sent, 4u, pe);
+        aclshmemQuiet();
+      }
     }
 
     // Data must be in the peer's GM before any ticket: flush this core's

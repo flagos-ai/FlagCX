@@ -153,7 +153,8 @@ endif
 # in test/kernel/ascend/device_api.asc and the switches that compile out the
 # cases this hardware cannot satisfy (peer memory, coop groups, the block
 # barrier).  test_device_ir_unified_intra is the Device IR suite: its
-# launchers live in test/kernel/ascend/device_ir.asc (S16-S18), which is
+# launchers live in test/kernel/ascend/device_ir.asc (S16-S25; the net half
+# only under USE_SHMEM=1), which is
 # build-gated by the in--c device link - an undefined trap reference fails
 # the object, not the test.  The unified INTER product stays out of scope:
 # it drives the one-sided net path, which this platform declares absent
@@ -161,15 +162,17 @@ endif
 # NO_REMOTE_READ compiles the S19 call sites out in the IPC build (read-back
 # of peer GM is not a measured path there; the reference file itself states
 # the same rule for P800); the shmem build keeps S19, whose transport is
-# cann-shmem's MTE get.  NO_ATOMIC_COMPLETION compiles S20-S25 out: 2201 exposes
-# no global-memory RMW that survives this pass (u32 fetchAdd is refused
-# even under a target-feature spelling, and the plain-u64 loads/stores
-# bound first are the dcci pair, not an add), so the completion-based
-# cases have no implementation to exercise - and their launchers remain
-# declared-but-not-defined, which turns any resurrected call site into a
-# link failure instead of a reportable pass.  Each switch names its reason
-# at the site it guards; the point is that a skipped case never reaches
-# the report as a pass.
+# cann-shmem's MTE get.  NO_ATOMIC_COMPLETION compiles S20-S25 out of the
+# IPC build: 2201 exposes no global-memory RMW that survives this pass (u32
+# fetchAdd is refused even under a target-feature spelling, and the
+# plain-u64 loads/stores bound first are the dcci pair, not an add), so the
+# completion-based cases have no implementation to exercise - and their
+# launchers remain declared-but-not-defined, which turns any resurrected
+# call site into a link failure instead of a reportable pass.  The shmem
+# backend needs no RMW (per-source tickets + a single-writer local counter;
+# aclshmem_comm_traits.h), so S20-S25 are graded there.  Each switch names
+# its reason at the site it guards; the point is that a skipped case never
+# reaches the report as a pass.
 ifeq ($(KERNEL_PLATFORM), ascend)
   ASCEND_IR_TARGETS  := $(BINDIR)/test_device_ir_unified_intra
   ASCEND_API_TARGETS := $(BINDIR)/test_device_api_intra
@@ -183,7 +186,6 @@ ifeq ($(KERNEL_PLATFORM), ascend)
   API_TARGETS     := $(ASCEND_API_TARGETS)
   CXXFLAGS += -DFLAGCX_TEST_NO_COOP_GROUPS -DFLAGCX_TEST_NO_PEER_POINTER \
               -DFLAGCX_TEST_NO_INTRA_BARRIER \
-              -DFLAGCX_TEST_NO_ATOMIC_COMPLETION \
               -DFLAGCX_ASCEND_PUTVALUE_LINE_STRIDE
   # NO_CROSS_RANK_COMM skips S16-S18 outright: the measured peer-store
   # fault freeze (ascend.sh) makes cross-rank rendezvous inoperable, and
@@ -194,11 +196,12 @@ ifeq ($(KERNEL_PLATFORM), ascend)
   # kernel writes; every other platform keeps the packed 8-byte default).
   ifeq ($(USE_SHMEM),1)
     # cann-shmem supplies the cross-rank transport (MTE puts, MTE gets and
-    # local polling) that the peer-VA path cannot: S16-S19 are runnable
-    # again.  Everything else this platform lacks is unchanged.
+    # local polling) that the peer-VA path cannot: S16-S25 are runnable.
+    # Everything else this platform lacks is unchanged.
   else
     CXXFLAGS += -DFLAGCX_TEST_NO_CROSS_RANK_COMM \
-                -DFLAGCX_TEST_NO_REMOTE_READ
+                -DFLAGCX_TEST_NO_REMOTE_READ \
+                -DFLAGCX_TEST_NO_ATOMIC_COMPLETION
   endif
 endif
 
