@@ -23,3 +23,6 @@ plugin/*/*.egg-info
 .vscode
 # Ignore gtest recorder output file
 Recorder.out
+
+# Keep acceptance artifacts separate from the source delivery.
+test/unittest/device_api/all-results-*/
