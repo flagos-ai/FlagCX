@@ -1,6 +1,7 @@
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -34,6 +35,171 @@ def load_platform_ignore_config(platform):
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("g++") or shutil.which("clang++"), "C++ compiler required")
+    def test_eccl_callbacks_with_runtime_only_and_device_api_sdks(self):
+        # Compile the actual adaptor. The runtime-only SDK deliberately has no
+        # eccl_device.h and no declarations for the optional ECCL entry points.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tops").mkdir()
+            (root / "tops/tops_runtime.h").write_text(r'''
+#pragma once
+#include <cstdlib>
+typedef void *topsStream_t;
+typedef void *topsEvent_t;
+struct topsIpcMemHandle_t { char bytes[64]; };
+struct topsDeviceProp_t {};
+enum { topsSuccess = 0 };
+static int topsAllocCalls = 0, topsFreeCalls = 0;
+inline int topsMalloc(void **ptr, size_t bytes) {
+  ++topsAllocCalls; *ptr = malloc(bytes); return 0;
+}
+inline int topsFree(void *ptr) { ++topsFreeCalls; free(ptr); return 0; }
+''')
+            (root / "adaptor.h").write_text('#include "flagcx_ccl_adaptor.h"\n')
+            (root / "alloc.h").write_text(r'''
+#include <cstdlib>
+#include "flagcx.h"
+#define FLAGCXCHECK(call) do { flagcxResult_t r = (call); if (r != flagcxSuccess) return r; } while (0)
+template <typename T> flagcxResult_t flagcxCalloc(T **ptr, size_t count) {
+  *ptr = (T *)calloc(count, sizeof(T));
+  return *ptr ? flagcxSuccess : flagcxSystemError;
+}
+''')
+            (root / "comm.h").write_text('#define FLAGCX_DEVICE_CTA_COUNT 36\n')
+            base_sdk = r'''
+#pragma once
+#include <cstddef>
+typedef void *ecclComm_t;
+typedef int ecclDataType_t;
+typedef int ecclRedOp_t;
+typedef int ecclResult_t;
+struct ecclUniqueId { char bytes[128]; };
+enum { ecclInvalidUsage = 5 };
+static int nativeResult = 0, nativeDestroyCalls = 0;
+inline const char *ecclGetErrorString(ecclResult_t) { return "stub"; }
+inline const char *ecclGetLastError(ecclComm_t) { return "stub"; }
+inline int ecclCommDestroy(ecclComm_t) { ++nativeDestroyCalls; return nativeResult; }
+'''
+            # These ordinary collective APIs are not exercised by this test.
+            for name in (
+                "GetVersion", "GetUniqueId", "CommInitRank", "CommAbort", "CommCount",
+                "CommDevice", "CommUserRank", "CommGetAsyncError", "Reduce", "Gather",
+                "Scatter", "Broadcast", "AllReduce", "ReduceScatter", "AllGather",
+                "Alltoall", "AlltoAllv", "Send", "Recv", "GroupStart", "GroupEnd",
+            ):
+                base_sdk += f'template <typename... T> int eccl{name}(T...) {{ return 0; }}\n'
+            (root / "eccl.h").write_text(base_sdk)
+            optional_sdk = r'''
+#pragma once
+#include "eccl.h"
+#include <cstdlib>
+struct ecclDevComm_t { int id; };
+typedef void *ecclWindow_t;
+struct ecclCommProperties_t { bool deviceApiSupport, multimemSupport; };
+#define ECCL_COMM_PROPERTIES_INITIALIZER {true, true}
+struct ecclDevCommRequirements_t {
+  int barrierCount, lsaBarrierCount, lsaLLA2ABlockCount, lsaLLA2ASlotCount;
+  int ginContextCount, railGinBarrierCount, ginCounterCount, ginConnectionType;
+};
+#define ECCL_DEV_COMM_REQUIREMENTS_INITIALIZER {}
+enum { ECCL_GIN_CONNECTION_FULL = 2 };
+static ecclDevCommRequirements_t seenReqs;
+static int ecclAllocCalls = 0, ecclFreeCalls = 0;
+inline int ecclMemAlloc(void **ptr, size_t bytes) {
+  ++ecclAllocCalls; *ptr = malloc(bytes); return nativeResult;
+}
+inline int ecclMemFree(void *ptr) { ++ecclFreeCalls; free(ptr); return nativeResult; }
+inline int ecclCommQueryProperties(ecclComm_t, ecclCommProperties_t *) { return nativeResult; }
+inline int ecclCommWindowRegister(ecclComm_t, void *ptr, size_t, ecclWindow_t *win, int) {
+  if (!nativeResult) *win = ptr; return nativeResult;
+}
+inline int ecclCommWindowDeregister(ecclComm_t, ecclWindow_t) { return nativeResult; }
+inline int ecclDevCommCreate(ecclComm_t, ecclDevCommRequirements_t *reqs, ecclDevComm_t *comm) {
+  seenReqs = *reqs; if (!nativeResult) comm->id = 42; return nativeResult;
+}
+inline int ecclDevCommDestroy(ecclComm_t, ecclDevComm_t *) { return nativeResult; }
+'''
+            source = root / "check.cc"
+            source.write_text('#include "' + str(REPO_ROOT / "flagcx/adaptor/ccl/eccl_adaptor.cc") + '"\n' + r'''
+#include <cassert>
+int main() {
+  auto *api = &ecclAdaptor;
+  assert(api->finalizeScope == flagcxCclFinalizeWorld);
+  assert(api->devCommReqsInit && api->devCommCreate && api->devCommDestroy);
+  auto *comm = (flagcxInnerComm_t)calloc(1, sizeof(flagcxInnerComm));
+  comm->base = (ecclComm_t)1;
+  void *buffer = nullptr;
+  assert(api->memAlloc(&buffer, 64) == flagcxSuccess);
+  assert(buffer != nullptr);
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  flagcxInnerDevComm_t dev = nullptr;
+  flagcxInnerWindow_t win = nullptr;
+#ifdef FLAGCX_ENFLAME_DEVICE_API
+  assert(ecclAllocCalls == 1 && topsAllocCalls == 0);
+  nativeResult = flagcxRemoteError;
+  assert(api->devCommReqsInit(comm, &reqs) == flagcxRemoteError);
+  assert(api->devCommCreate(comm, &reqs, &dev) == flagcxRemoteError && !dev);
+  assert(api->commWindowRegister(comm, buffer, 64, &win, 0) == flagcxRemoteError && !win);
+  nativeResult = 0;
+  assert(api->devCommReqsInit(comm, &reqs) == flagcxSuccess);
+  assert(reqs.intraBarrierCount == 36 && reqs.intraMulticast);
+  reqs.barrierCount = 1; reqs.intraLLA2ABlockCount = 2; reqs.intraLLA2ASlotCount = 3;
+  reqs.interContextCount = 4; reqs.interBarrierCount = 5; reqs.interCounterCount = 6;
+  assert(api->devCommCreate(comm, &reqs, &dev) == flagcxSuccess && dev);
+  assert(seenReqs.barrierCount == 1 && seenReqs.lsaBarrierCount == 36);
+  assert(seenReqs.lsaLLA2ABlockCount == 2 && seenReqs.lsaLLA2ASlotCount == 3);
+  assert(seenReqs.ginContextCount == 4 && seenReqs.railGinBarrierCount == 5);
+  assert(seenReqs.ginCounterCount == 6 && seenReqs.ginConnectionType == ECCL_GIN_CONNECTION_FULL);
+  assert(api->commWindowRegister(comm, buffer, 64, &win, 7) == flagcxSuccess);
+  nativeResult = flagcxRemoteError;
+  assert(api->devCommDestroy(comm, dev) == flagcxRemoteError && dev->base.id == 42);
+  assert(api->commWindowDeregister(comm, win) == flagcxRemoteError);
+  assert(win->base == buffer && win->winFlags == 7);
+  nativeResult = 0;
+  assert(api->devCommDestroy(comm, dev) == flagcxSuccess);
+  assert(api->commWindowDeregister(comm, win) == flagcxSuccess);
+#else
+  assert(topsAllocCalls == 1);
+  assert(api->devCommReqsInit(comm, &reqs) == flagcxNotSupported);
+  assert(api->devCommCreate(comm, &reqs, &dev) == flagcxNotSupported && !dev);
+  assert(api->commWindowRegister(comm, buffer, 64, &win, 0) == flagcxNotSupported && !win);
+  flagcxInnerDevComm dummyDev = {};
+  flagcxInnerWindow dummyWin = {};
+  dev = &dummyDev; win = &dummyWin;
+  assert(api->devCommCreate(comm, &reqs, &dev) == flagcxNotSupported && dev == &dummyDev);
+  assert(api->commWindowRegister(comm, buffer, 64, &win, 0) == flagcxNotSupported && win == &dummyWin);
+  assert(api->devCommDestroy(comm, &dummyDev) == flagcxNotSupported);
+  assert(api->commWindowDeregister(comm, &dummyWin) == flagcxNotSupported);
+#endif
+  assert(api->memFree(buffer) == flagcxSuccess);
+#ifdef FLAGCX_ENFLAME_DEVICE_API
+  assert(ecclFreeCalls == 1 && topsFreeCalls == 0);
+#else
+  assert(topsFreeCalls == 1);
+#endif
+  nativeResult = flagcxRemoteError;
+  assert(api->commFinalize(comm) == flagcxRemoteError && comm->base);
+  nativeResult = 0;
+  assert(api->commFinalize(comm) == flagcxSuccess && !comm->base);
+  assert(api->commDestroy(comm) == flagcxSuccess && nativeDestroyCalls == 2);
+}
+''')
+            compiler = shutil.which("g++") or shutil.which("clang++")
+            for device_api in (False, True):
+                with self.subTest(device_api=device_api):
+                    if device_api:
+                        (root / "eccl_device.h").write_text(optional_sdk)
+                    executable = root / "check"
+                    command = [compiler, "-std=c++11", "-DUSE_ENFLAME_ADAPTOR",
+                               f"-I{root}", f"-I{REPO_ROOT / 'flagcx/adaptor/include'}",
+                               f"-I{REPO_ROOT / 'flagcx/include'}", str(source), "-o", str(executable)]
+                    if device_api:
+                        command.append("-DFLAGCX_ENFLAME_DEVICE_API")
+                    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    subprocess.run([str(executable)], check=True, capture_output=True, timeout=10)
+
     def test_device_api_unit_runs_preserve_death_style_and_non_vmm_process(self):
         source = (REPO_ROOT / "test/unittest/device_api/Makefile").read_text()
         start = source.index("run-unit: unit\n")
@@ -335,9 +501,9 @@ path.write_text('<testsuites><testsuite name="FlagCXCollTest">'
                 else:
                     self.assertFalse(steps[checkout]["with"]["submodules"])
 
-    def test_all_hardware_platforms_are_enabled(self):
+    def test_all_hardware_platforms_remain_registered(self):
         self.assertEqual(
-            ENABLED_PLATFORMS,
+            list(PLATFORM_REGISTRY),
             ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "mthreads", "ppu", "ascend", "enflame"],
         )
 
@@ -3307,6 +3473,15 @@ mock_mpi_runner() {
 flagcx_ci_phase_supported() { return 0; }
 # The PXN launcher uses env; keep the mock shell function callable through it.
 env() { "$@"; }
+# This harness checks orchestration. The preflight script's MPI/XML contract
+# is covered separately; do not launch real MPI from this simulated runner.
+bash() {
+  if [[ "$1" == "$PROJECT_ROOT/test/script/runner_fused_preflight_test.sh" ]]; then
+    echo PREFLIGHT
+    return 0
+  fi
+  command bash "$@"
+}
 run_suite
 '''
         for platform, rdma in (("enflame", "0"), ("enflame", "1"),
@@ -3328,6 +3503,7 @@ run_suite
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("UNIT", result.stdout)
+                self.assertEqual(result.stdout.splitlines().count("PREFLIGHT"), 1)
                 commands = {
                     line.split("|", 2)[1]: line.split("|", 2)[2]
                     for line in result.stdout.splitlines()
@@ -3377,18 +3553,27 @@ MPI_RUNNER=mock_mpi_runner
 mock_test_runner() { return "$UNIT_STATUS"; }
 mock_mpi_runner() { return "$DEFAULT_STATUS"; }
 flagcx_ci_phase_supported() { return 0; }
+bash() {
+  if [[ "$1" == "$PROJECT_ROOT/test/script/runner_fused_preflight_test.sh" ]]; then
+    echo PREFLIGHT
+    return "$PREFLIGHT_STATUS"
+  fi
+  command bash "$@"
+}
 set +e
 run_suite
 status=$?
 printf 'suite_status=%s\n' "$status"
 '''
-        for unit_status, default_status, expected in (
-            (0, 0, 0),
-            (23, 0, 1),
-            (0, 24, 1),
+        for unit_status, default_status, preflight_status, expected in (
+            (0, 0, 0, 0),
+            (23, 0, 0, 1),
+            (0, 24, 0, 1),
+            (0, 0, 25, 1),
         ):
             with self.subTest(
-                unit_status=unit_status, default_status=default_status
+                unit_status=unit_status, default_status=default_status,
+                preflight_status=preflight_status,
             ):
                 result = subprocess.run(
                     [os.environ.get("BASH", "bash"), "-euc", harness],
@@ -3399,6 +3584,7 @@ printf 'suite_status=%s\n' "$status"
                         "PROJECT_ROOT_FOR_TEST": str(REPO_ROOT),
                         "UNIT_STATUS": str(unit_status),
                         "DEFAULT_STATUS": str(default_status),
+                        "PREFLIGHT_STATUS": str(preflight_status),
                     },
                     text=True,
                     capture_output=True,
@@ -3406,6 +3592,9 @@ printf 'suite_status=%s\n' "$status"
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f"suite_status={expected}", result.stdout)
+                self.assertEqual(result.stdout.splitlines().count("PREFLIGHT"), 1)
+                if preflight_status:
+                    self.assertIn(f"fused_preflight={preflight_status}", result.stderr)
                 if expected:
                     self.assertIn("Runner failures:", result.stderr)
                 else:

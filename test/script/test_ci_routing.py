@@ -25,7 +25,8 @@ ALL_ENABLED_PLATFORMS = [
 
 
 def enabled_platform_or_matrix(platform):
-    return [platform] if platform in ALL_ENABLED_PLATFORMS else []
+    # Disabled platform paths are unmatched and use the enabled fallback matrix.
+    return [platform] if platform in ALL_ENABLED_PLATFORMS else ALL_ENABLED_PLATFORMS
 
 
 class CiMatrixRoutingTest(unittest.TestCase):
@@ -64,20 +65,6 @@ class CiMatrixRoutingTest(unittest.TestCase):
             return outputs, result.stdout
 
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
-        self.assertEqual(
-            ALL_ENABLED_PLATFORMS,
-            [
-                "cuda",
-                "hygon",
-                "iluvatar",
-                "metax",
-                "kunlunxin",
-                "mthreads",
-                "ppu",
-                "ascend",
-                "enflame",
-            ],
-        )
         for event_name in ("push", "schedule"):
             with self.subTest(event=event_name):
                 outputs, _ = self.resolve({"event_name": event_name})

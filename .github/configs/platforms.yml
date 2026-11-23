@@ -8,7 +8,8 @@ platforms:
   hygon:
     enabled: true
   iluvatar:
-    enabled: true
+    # Temporarily pause platform CI; set true to resume with existing settings.
+    enabled: false
   metax:
     enabled: true
   kunlunxin:

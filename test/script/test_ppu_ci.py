@@ -74,46 +74,79 @@ run_suite
                                          platform == 'ppu')
 
     def test_runner_uses_builtin_kernels_for_all_operations_and_preserves_failures(self):
+        source = (REPO_ROOT / '.github/scripts/ci/run_unit_test.sh').read_text()
+        filter_setup = source[source.index('ignore_filter=$(python3 '):
+                              source.index('\nif declare -F flagcx_ci_skip_suite')]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             fake = root / "runner"
             fake.write_text(r"""#!/usr/bin/env python3
-import json, os, sys
+import fnmatch, json, os, sys
 
 args = sys.argv[1:]
 label = os.environ.get("FLAGCX_CI_MPI_LABEL", os.environ.get("FLAGCX_CI_TEST_LABEL"))
 assert os.environ["PCCL_ENABLE_EXT_KERNEL"] == "0"
-assert os.environ["GTEST_FILTER"] == "*-CoverageSupplemental.*"
+effective_filter = os.environ["GTEST_FILTER"]
 if args[0] != "make":
     exports = dict(arg.split("=", 1) for i, arg in enumerate(args)
                    if i > 0 and args[i - 1] == "-x")
     assert exports["PCCL_ENABLE_EXT_KERNEL"] == "0"
     assert "./build/bin/runner_mpi_tests" in args
     if label == "runner PPU PXN four-rank":
-        assert args[-1] == "--gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll:FlagCXCollTest.FinalizeThenRankLocalDestroy"
+        assert args[-1].startswith("--gtest_filter=")
+        effective_filter = args[-1].split("=", 1)[1]
     else:
         assert not any("gtest_filter" in arg for arg in args)
+positive, _, negative = effective_filter.partition("-")
+assert "AlreadyExcluded.*" in negative.split(":")
+assert ("CoverageSupplemental.*" in negative.split(":")) == (os.environ["FLAGCX_CI_COVERAGE"] != "1")
+def selected(name):
+    return (any(fnmatch.fnmatchcase(name, pattern) for pattern in positive.split(":"))
+            and not any(fnmatch.fnmatchcase(name, pattern) for pattern in negative.split(":")))
+assert selected("FlagCXCollTest.FinalizeThenRankLocalDestroy") == (os.environ["RESTORE_LIFECYCLE"] == "1")
+for name in ("FlagCXCollTest.SendRecv", "FlagCXCollTest.AllReduce", "FlagCXCollTest.AlltoAll"):
+    assert selected(name), (name, effective_filter)
+assert not selected("AlreadyExcluded.Example")
+if args[0] == "make":
+    assert selected("CoverageSupplemental.Example") == (os.environ["FLAGCX_CI_COVERAGE"] == "1")
 with open(os.environ["CALL_LOG"], "a") as out:
     out.write(json.dumps({"label": label, "args": args}) + "\n")
 if label == os.environ["FAIL_LABEL"]:
     sys.exit(139)
 """)
             fake.chmod(0o755)
-            for failure in ("none", "runner unit tests", "runner default",
-                            "runner PPU PXN four-rank"):
-                with self.subTest(failure=failure):
+            scenarios = [(failure, False, False) for failure in (
+                "none", "runner unit tests", "runner default",
+                "runner BAREX heterogeneous", "runner BAREX forced NET",
+                "runner PPU PXN four-rank")]
+            scenarios += [("none", True, False), ("none", False, True)]
+            for failure, restore, coverage in scenarios:
+                with self.subTest(failure=failure, restore=restore, coverage=coverage):
                     calls = root / (failure.replace(" ", "-") + ".jsonl")
+                    calls.write_text("")
                     env = dict(os.environ, TEST_RUNNER=str(fake), MPI_RUNNER=str(fake),
                                CALL_LOG=str(calls), FAIL_LABEL=failure,
                                MPI_HOME=str(root / "mpi-home"), PROJECT_ROOT=str(REPO_ROOT),
                                FLAGCX_CI_ENABLE_PXN="1", PCCL_ENABLE_EXT_KERNEL="1",
-                               NCCL_ENABLE_EXT_KERNEL="1", GTEST_FILTER="FlagCXCollTest.AllReduce")
+                               NCCL_ENABLE_EXT_KERNEL="1", GTEST_FILTER="*-AlreadyExcluded.*",
+                               RESTORE_LIFECYCLE=str(int(restore)),
+                               FLAGCX_CI_COVERAGE=str(int(coverage)))
+                    harness = '''source "$1"
+if [[ "$RESTORE_LIFECYCLE" == 1 ]]; then
+  FLAGCX_CI_IGNORE_TEST=$(python3 -c 'import json, os
+config = json.loads(os.environ["FLAGCX_CI_IGNORE_TEST"])
+config["gtest"] = [entry for entry in config["gtest"] if entry["suite"] != "runner"]
+print(json.dumps(config))')
+  export FLAGCX_CI_IGNORE_TEST
+fi
+SUITE=runner
+''' + filter_setup + '''
+flagcx_ci_run_suite_override runner "$2" USE_PPU=1 USE_ACCL_BAREX=1
+'''
                     result = subprocess.run([
-                        "bash", "-euc",
-                        'source "$1"; flagcx_ci_run_suite_override runner "$2" '
-                        'USE_PPU=1 USE_ACCL_BAREX=1',
+                        "bash", "-euc", harness,
                         "bash", str(REPO_ROOT / ".github/scripts/set_env/ppu.sh"), str(root),
-                    ], env=env, text=True, capture_output=True)
+                    ], env=env, text=True, capture_output=True, timeout=15)
                     self.assertEqual(result.returncode, 0 if failure == "none" else 1,
                                      result.stdout + result.stderr)
                     invoked = [json.loads(line) for line in calls.read_text().splitlines()]
@@ -124,6 +157,28 @@ if label == os.environ["FAIL_LABEL"]:
                     ])
                     self.assertEqual([case["args"][1] for case in invoked[1:]],
                                      ["4", "4", "4", "4"])
+                    self.assertEqual(
+                        "SKIPPED runner/FlagCXCollTest.FinalizeThenRankLocalDestroy" in result.stdout,
+                        not restore,
+                    )
+                    if not restore:
+                        self.assertIn("pcclCommDestroy", result.stdout)
+
+    def test_rank_local_destroy_exclusion_is_ppu_only(self):
+        for platform in ("ppu", "cuda", "hygon", "iluvatar", "metax", "ascend", "kunlunxin", "mthreads", "enflame"):
+            with self.subTest(platform=platform):
+                result = subprocess.run([
+                    "bash", "-euc",
+                    'source "$1"; python3 "$2" gtest runner',
+                    "bash", str(REPO_ROOT / f".github/scripts/set_env/{platform}.sh"),
+                    str(REPO_ROOT / ".github/scripts/ci/ignore_test.py"),
+                ], env={**os.environ, "MPI_HOME": "/fake/mpi"},
+                    text=True, capture_output=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    "FlagCXCollTest.FinalizeThenRankLocalDestroy" in result.stdout.strip().split(":"),
+                    platform == "ppu",
+                )
 
     def test_barex_main_adaptor_exposes_runtime_multichannel_transport(self):
         barex = (

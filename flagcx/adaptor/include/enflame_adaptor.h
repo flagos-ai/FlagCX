@@ -58,6 +58,14 @@ struct flagcxIpcMemHandle {
 
 // Keep optional ECCL SDK declarations behind one compatibility boundary. The
 // adaptor always exposes the same callbacks, including with runtime-only SDKs.
+static inline bool flagcxEcclDeviceApiSupported() {
+#ifdef FLAGCX_ENFLAME_DEVICE_API
+  return true;
+#else
+  return false;
+#endif
+}
+
 static inline flagcxResult_t flagcxEcclMemAlloc(void **ptr, size_t size) {
 #ifdef FLAGCX_ENFLAME_DEVICE_API
   return (flagcxResult_t)ecclMemAlloc(ptr, size);

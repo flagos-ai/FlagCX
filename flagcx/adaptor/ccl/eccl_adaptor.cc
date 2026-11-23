@@ -110,6 +110,8 @@ flagcxResult_t ecclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
                                              size_t size,
                                              flagcxInnerWindow_t *win,
                                              int winFlags) {
+  if (!flagcxEcclDeviceApiSupported())
+    return flagcxNotSupported;
   if (*win == NULL) {
     FLAGCXCHECK(flagcxCalloc(win, 1));
   }
@@ -244,6 +246,8 @@ flagcxResult_t ecclAdaptorDevCommReqsInit(flagcxInnerComm_t comm,
 flagcxResult_t ecclAdaptorDevCommCreate(flagcxInnerComm_t comm,
                                         const flagcxDevCommRequirements *reqs,
                                         flagcxInnerDevComm_t *devComm) {
+  if (!flagcxEcclDeviceApiSupported())
+    return flagcxNotSupported;
   flagcxInnerDevComm_t inner =
       (flagcxInnerDevComm_t)malloc(sizeof(struct flagcxInnerDevComm));
   if (!inner)
