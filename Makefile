@@ -456,6 +456,9 @@ else ifeq ($(USE_ILUVATAR),1)
 else ifeq ($(USE_DU),1)
   DEVICE_BITCODE_DIR := du
   DEVICE_BITCODE_ARCH_ARG := BITCODE_LIB_ARCH=$(DEVICE_BITCODE_ARCH)
+else ifeq ($(USE_PPU),1)
+  DEVICE_BITCODE_DIR := ppu
+  DEVICE_BITCODE_ARCH_ARG := BITCODE_LIB_ARCH=$(DEVICE_BITCODE_ARCH)
 endif
 
 ifneq ($(filter device_bitcode,$(MAKECMDGOALS)),)
