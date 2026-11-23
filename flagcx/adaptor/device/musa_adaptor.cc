@@ -715,6 +715,7 @@ struct flagcxDeviceAdaptor musaAdaptor {
       // A NIC completion alone does not establish GPU visibility. Require
       // the provider's acquire for both incoming WRITE and local GET results.
       FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_DEVICE_MUSA,
 };
 
 #endif // USE_MUSA_ADAPTOR

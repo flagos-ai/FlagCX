@@ -114,8 +114,7 @@ TEST(GdrFlushPolicyTest, ActivePlatformUsesDocumentedDefault) {
     return;
   }
   if (strcmp(deviceAdaptor->name, "MUSA") == 0) {
-    EXPECT_EQ(deviceAdaptor->gdrFlushRequirements,
-              static_cast<uint32_t>(FLAGCX_GDR_WRITE_REQUIRES_FLUSH));
+    EXPECT_EQ(deviceAdaptor->gdrFlushRequirements, conservative);
     return;
   }
   GTEST_SKIP() << "No GDR visibility baseline for " << deviceAdaptor->name;
