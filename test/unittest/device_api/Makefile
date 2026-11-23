@@ -27,8 +27,10 @@ DEVICE_API_OBJ := $(KERNEL_OBJ_DIR)/device_api.o
 DEVICE_IR_OBJ  := $(KERNEL_OBJ_DIR)/device_ir.o
 
 # Device-link objects (only needed for NVSHMEM). KLX selects xccl xshmem with the
-# same USE_SHMEM switch, but its device code is linked into device_api.o.
-ifeq ($(USE_SHMEM)$(KERNEL_PLATFORM), 1klx)
+# same USE_SHMEM switch, but its device code is linked into device_api.o; on
+# Ascend bisheng embeds the device image inside -c (makefiles/ascend.mk:179),
+# so there is no device-link product either.
+ifneq ($(filter 1klx 1ascend,$(USE_SHMEM)$(KERNEL_PLATFORM)),)
 DLINK_API_OBJ :=
 DLINK_IR_OBJ  :=
 else ifeq ($(USE_SHMEM), 1)
