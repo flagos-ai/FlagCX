@@ -544,7 +544,7 @@ static flagcxResult_t validateCommon(const void *input, const void *weight,
   }
 #if !defined(COMPILE_KERNEL_HOST) ||                                           \
     (!defined(USE_NVIDIA_ADAPTOR) && !defined(USE_DU_ADAPTOR) &&               \
-     !defined(USE_PPU_ADAPTOR))
+     !defined(USE_PPU_ADAPTOR) && !defined(USE_MUSA_ADAPTOR))
   return flagcxNotSupported;
 #else
   if (firstDim > UINT32_MAX || n > UINT32_MAX || k > UINT32_MAX) {

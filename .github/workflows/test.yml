@@ -519,7 +519,7 @@ jobs:
 
   perf-test-mthreads:
     if: contains(fromJSON(inputs.platforms), 'mthreads')
-    name: perf-test (mthreads)
+    name: perf-test (musa)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.mthreads_runs_on) }}
     timeout-minutes: 60
@@ -538,7 +538,7 @@ jobs:
         shell: bash
         run: docker version
 
-      - name: Run perf-test (mthreads) in configured container
+      - name: Run perf-test (musa) in configured container
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-perf-${{ github.run_id }}-${{ github.run_attempt }}
@@ -550,7 +550,7 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           mthreads perf
 
-      - name: Cleanup perf-test (mthreads) container
+      - name: Cleanup perf-test (musa) container
         if: always()
         shell: bash
         env:
@@ -562,6 +562,55 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: attempts-perf-test-mthreads-${{ github.run_attempt }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  perf-test-experimental-mthreads:
+    if: contains(fromJSON(inputs.platforms), 'mthreads')
+    name: perf-test-experimental (musa)
+    needs: load-hardware-container-configs
+    runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.mthreads_runs_on) }}
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Check Docker
+        shell: bash
+        run: docker version
+
+      - name: Run perf-test-experimental (musa) in configured container
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.mthreads_docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.mthreads_ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.mthreads_set_env }}
+        run: >-
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
+          mthreads perf-test-experimental
+
+      - name: Cleanup perf-test-experimental (musa) container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-perf-test-experimental-mthreads-${{ github.run_attempt }}
           path: ${{ env.FLAGCX_CI_LOG_DIR }}/
           include-hidden-files: true
           if-no-files-found: ignore
@@ -684,6 +733,7 @@ jobs:
       - perf-test-ascend
       - perf-test-kunlunxin
       - perf-test-mthreads
+      - perf-test-experimental-mthreads
     runs-on: ubuntu-latest
     env:
       ILUVATAR_RESULT: ${{ needs['perf-test-iluvatar'].result }}
@@ -699,6 +749,7 @@ jobs:
       KUNLUNXIN_RESULT: ${{ needs['perf-test-kunlunxin'].result }}
       ASCEND_RESULT: ${{ needs['perf-test-ascend'].result }}
       MTHREADS_RESULT: ${{ needs['perf-test-mthreads'].result }}
+      MTHREADS_EXPERIMENTAL_RESULT: ${{ needs['perf-test-experimental-mthreads'].result }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -726,14 +777,16 @@ jobs:
             [[ "$KUNLUNXIN_RESULT" == success ]] || { echo "KunlunXin performance job ended with: $KUNLUNXIN_RESULT" >&2; exit 1; }
           fi
 
-      - name: Validate selected Mthreads performance job
+      - name: Validate selected Mthreads performance jobs
         env:
           PLATFORMS: ${{ inputs.platforms }}
           CONFIG_RESULT: ${{ needs['load-hardware-container-configs'].result }}
           MTHREADS_RESULT: ${{ needs['perf-test-mthreads'].result }}
+          MTHREADS_EXPERIMENTAL_RESULT: ${{ needs['perf-test-experimental-mthreads'].result }}
         shell: bash
         run: |
           if python3 -c 'import json, os, sys; sys.exit(0 if "mthreads" in json.loads(os.environ["PLATFORMS"]) else 1)'; then
             [[ "$CONFIG_RESULT" == success ]] || { echo "Mthreads configuration loading ended with: $CONFIG_RESULT" >&2; exit 1; }
             [[ "$MTHREADS_RESULT" == success ]] || { echo "Mthreads performance job ended with: $MTHREADS_RESULT" >&2; exit 1; }
+            [[ "$MTHREADS_EXPERIMENTAL_RESULT" == success ]] || { echo "MUSA experimental performance job ended with: $MTHREADS_EXPERIMENTAL_RESULT" >&2; exit 1; }
           fi

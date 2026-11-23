@@ -6,6 +6,11 @@ FLAGCX_CI_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null
 source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
 
+export FLAGCX_ADAPTOR=musa
+export USE_MUSA=1
+export DEVICE_HOME="${DEVICE_HOME:-/usr/local/musa}"
+export CCL_HOME="${CCL_HOME:-$DEVICE_HOME}"
+
 FLAGCX_CI_MPI_BASE_HOME=${MPI_HOME:-/usr/local/mpi}
 if [[ -x /usr/local/openmpi/bin/mpirun ]]; then
   # The local Mthreads CI container ships OpenMPI here, while older images
@@ -26,8 +31,8 @@ else
   export MPI_HOME=$FLAGCX_CI_MPI_BASE_HOME
 fi
 
-export PATH="/usr/local/musa/bin:$MPI_HOME/bin:$PATH"
-export LD_LIBRARY_PATH="/usr/local/musa/lib:/usr/local/musa/lib64:/usr/local/lib:${LD_LIBRARY_PATH:-}"
+export PATH="$DEVICE_HOME/bin:$MPI_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$CCL_HOME/lib:$DEVICE_HOME/lib:$DEVICE_HOME/lib64:$MPI_HOME/lib:/usr/local/lib:${LD_LIBRARY_PATH:-}"
 export FLAGCX_SOCKET_IFNAME="${FLAGCX_SOCKET_IFNAME:-^lo,docker,br-,veth}"
 
 FLAGCX_CI_MUSA_DEVICES=${FLAGCX_CI_MUSA_DEVICES:-0,1,2,3}
@@ -49,8 +54,8 @@ export FLAGCX_CI_GPU_MR_POLICY=gpu-mr-required
 # the suite transcript also captures direct runner invocations.
 export FLAGCX_CI_TEST_DIAGNOSTICS_AFTER=120
 export FLAGCX_CI_MPI_DIAGNOSTICS_AFTER=120
-FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_MUSA=1)
-FLAGCX_CI_TEST_MAKE_ARGS=(USE_MUSA=1)
+FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_MUSA=1 DEVICE_HOME="$DEVICE_HOME" CCL_HOME="$CCL_HOME" MPI_HOME="$MPI_HOME")
+FLAGCX_CI_TEST_MAKE_ARGS=("${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}")
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
 FLAGCX_CI_ENABLE_IBUC=0
 FLAGCX_CI_INTRA_NP=4
@@ -69,6 +74,15 @@ FLAGCX_CI_NODE2_MPI_ARGS=(
   -x NCCL_HOSTID=node1
 )
 export NP=4
+
+# Experimental kernels require a native SDK build; they never use the
+# legacy Device API suite skip as a successful experimental result.
+flagcx_ci_configure_suite() {
+  if [[ "$1" == perf-test-experimental ]]; then
+    FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
+    FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
+  fi
+}
 
 flagcx_ci_skip_suite() {
   local suite=$1
