@@ -43,6 +43,17 @@
 #undef FLAGCX_DEVICE_TRAP
 #define FLAGCX_DEVICE_TRAP() __builtin_unreachable()
 
+// Conservative system-scope publication fence for Atomic::store() below.
+// The MUSA SDK's atomic_ref implementation does not provide a system-scope
+// release that orders earlier payload writes ahead of a header store as seen
+// by the host, so FlagCX inserts an explicit fence instead (see store()).
+// Default 1 (on) for diagnostic acceptance runs. Override from the build
+// command line with -DFLAGCX_MUSA_SYSTEM_RELEASE_FENCE=0 to drop the fence
+// and restore the plain release-store path for throughput runs.
+#ifndef FLAGCX_MUSA_SYSTEM_RELEASE_FENCE
+#define FLAGCX_MUSA_SYSTEM_RELEASE_FENCE 1
+#endif
+
 struct MusaPlatform {};
 
 template <>
@@ -207,6 +218,27 @@ struct PlatformTraits<MusaPlatform> {
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     static FLAGCX_DEVICE_INLINE_DECORATOR void
     store(T *ptr, const T &value, flagcxDeviceMemoryOrder_t order) {
+#if FLAGCX_MUSA_SYSTEM_RELEASE_FENCE
+      // Conservative publication for mapped GPU/CPU control memory, including
+      // FIFO payload followed by a release-store of the valid header.
+      //
+      // Why: on S5000 a release-store alone was observed to not order earlier
+      // payload writes ahead of the header update as seen by the other side,
+      // so insert a system-scope fence before the store to make the release
+      // ordering explicit.
+      //
+      // Cost: one full system fence per release/seq_cst store. Kept opt-out
+      // via FLAGCX_MUSA_SYSTEM_RELEASE_FENCE for performance experiments.
+      if constexpr (Scope == flagcxDeviceScopeSystem) {
+        // Only system-scope memory is shared with the host; device/block
+        // scoped stores do not need cross-side ordering.
+        if (order == flagcxDeviceMemoryOrderRelease ||
+            order == flagcxDeviceMemoryOrderSeqCst)
+          // Only release/seq_cst stores publish data to another agent;
+          // relaxed/acquire stores carry no ordering obligation.
+          Intrin::threadfenceSystem();
+      }
+#endif
       Ref<T, Scope>{*ptr}.store(value, toNativeOrder(order));
     }
 
