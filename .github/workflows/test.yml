@@ -40,6 +40,10 @@ jobs:
       ppu_docker_args: ${{ steps.ppu.outputs.docker_args }}
       ppu_set_env: ${{ steps.ppu.outputs.set_env }}
       ppu_runs_on: ${{ steps.ppu.outputs.runs_on }}
+      mthreads_ci_image: ${{ steps.mthreads.outputs.ci_image }}
+      mthreads_docker_args: ${{ steps.mthreads.outputs.docker_args }}
+      mthreads_set_env: ${{ steps.mthreads.outputs.set_env }}
+      mthreads_runs_on: ${{ steps.mthreads.outputs.runs_on }}
       ascend_ci_image: ${{ steps.ascend.outputs.ci_image }}
       ascend_docker_args: ${{ steps.ascend.outputs.docker_args }}
       ascend_set_env: ${{ steps.ascend.outputs.set_env }}
@@ -73,6 +77,10 @@ jobs:
       - name: Load PPU configuration
         id: ppu
         run: ruby .github/scripts/ci/load_platform_config.rb ppu
+
+      - name: Load Mthreads configuration
+        id: mthreads
+        run: ruby .github/scripts/ci/load_platform_config.rb mthreads
 
       - name: Load Ascend configuration
         id: ascend
@@ -433,6 +441,55 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  perf-test-mthreads:
+    if: contains(fromJSON(inputs.platforms), 'mthreads')
+    name: perf-test (mthreads)
+    needs: load-hardware-container-configs
+    runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.mthreads_runs_on) }}
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Check Docker
+        shell: bash
+        run: docker version
+
+      - name: Run perf-test (mthreads) in configured container
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-perf-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.mthreads_docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.mthreads_ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.mthreads_set_env }}
+        run: >-
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
+          mthreads perf
+
+      - name: Cleanup perf-test (mthreads) container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-perf-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-perf-test-mthreads-${{ github.run_attempt }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
   perf-test-ascend:
     if: contains(fromJSON(inputs.platforms), 'ascend')
     name: perf-test (ascend)
@@ -546,6 +603,7 @@ jobs:
       - perf-test-experimental-ppu
       - perf-test-ascend
       - perf-test-kunlunxin
+      - perf-test-mthreads
     runs-on: ubuntu-latest
     env:
       PLATFORMS: ${{ inputs.platforms }}
@@ -559,6 +617,7 @@ jobs:
       PPU_EXPERIMENTAL_RESULT: ${{ needs['perf-test-experimental-ppu'].result }}
       KUNLUNXIN_RESULT: ${{ needs['perf-test-kunlunxin'].result }}
       ASCEND_RESULT: ${{ needs['perf-test-ascend'].result }}
+      MTHREADS_RESULT: ${{ needs['perf-test-mthreads'].result }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -584,4 +643,16 @@ jobs:
           if python3 -c 'import json, os, sys; sys.exit(0 if "kunlunxin" in json.loads(os.environ["PLATFORMS"]) else 1)'; then
             [[ "$CONFIG_RESULT" == success ]] || { echo "KunlunXin configuration loading ended with: $CONFIG_RESULT" >&2; exit 1; }
             [[ "$KUNLUNXIN_RESULT" == success ]] || { echo "KunlunXin performance job ended with: $KUNLUNXIN_RESULT" >&2; exit 1; }
+          fi
+
+      - name: Validate selected Mthreads performance job
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+          CONFIG_RESULT: ${{ needs['load-hardware-container-configs'].result }}
+          MTHREADS_RESULT: ${{ needs['perf-test-mthreads'].result }}
+        shell: bash
+        run: |
+          if python3 -c 'import json, os, sys; sys.exit(0 if "mthreads" in json.loads(os.environ["PLATFORMS"]) else 1)'; then
+            [[ "$CONFIG_RESULT" == success ]] || { echo "Mthreads configuration loading ended with: $CONFIG_RESULT" >&2; exit 1; }
+            [[ "$MTHREADS_RESULT" == success ]] || { echo "Mthreads performance job ended with: $MTHREADS_RESULT" >&2; exit 1; }
           fi

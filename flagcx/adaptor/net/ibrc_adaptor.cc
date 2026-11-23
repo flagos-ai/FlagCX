@@ -3401,6 +3401,9 @@ bool flagcxIbAdvertisesDeviceMemory(void) {
     case FLAGCX_GDR_DEVICE_ASCEND:
     case FLAGCX_GDR_DEVICE_ILUVATAR:
       return true;
+    case FLAGCX_GDR_DEVICE_MUSA:
+      return access("/sys/kernel/mm/memory_peers/mt_peermem/version", F_OK) ==
+             0;
     case FLAGCX_GDR_DEVICE_CUDA:
       return flagcxIbGdrSupport() == flagcxSuccess;
     default:

@@ -138,7 +138,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
     def test_all_hardware_platforms_are_enabled(self):
         self.assertEqual(
             ENABLED_PLATFORMS,
-            ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "ppu", "ascend", "enflame"],
+            ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "mthreads", "ppu", "ascend", "enflame"],
         )
 
     def test_backend_phase_skips_follow_platform_setup(self):
@@ -368,8 +368,9 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             ("du", "du_adaptor.h"),
             ("iluvatar", "iluvatar_adaptor.h"),
             ("ppu", "ppu_adaptor.h"),
+            ("musa", "musa_adaptor.h"),
         ):
-            suffix = "hip" if platform == "du" else "cu"
+            suffix = {"du": "hip", "musa": "mu"}.get(platform, "cu")
             for kernel in (f"device_api.{suffix}", f"device_ir.{suffix}"):
                 source = (REPO_ROOT / "test/kernel" / platform / kernel).read_text()
                 self.assertIn(f'#include "{adaptor}"', source)
@@ -1228,6 +1229,18 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                 "service",
                 "symmem",
             ],
+            "mthreads": [
+                "adaptor",
+                "core",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
             "ppu": [
                 "adaptor",
                 "core",
@@ -1348,6 +1361,12 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn('"$perf_runner" heterogeneous "$perf_bin"', hygon_handler)
         self.assertIn("metax perf", perf_workflow)
         self.assertIn('run_host_perf_suite.sh" heterogeneous "$perf_bin"', metax_handler)
+        self.assertIn("mthreads perf", perf_workflow)
+        mthreads_handler = (
+            REPO_ROOT / ".github/scripts/ci/run_mthreads_workload.sh"
+        ).read_text()
+        self.assertIn('"$perf_runner" homogeneous "$perf_bin"', mthreads_handler)
+        self.assertIn('"$perf_runner" heterogeneous "$perf_bin"', mthreads_handler)
 
         self.assertIn("hygon torch-api", torch_workflow)
         self.assertIn("unset FLAGCX_SKIP_HETERO", hygon_handler)
@@ -1518,7 +1537,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             self.assertIn(platform, rma_case)
         self.assertIn('platform_name" == "hygon"', rma_case)
         self.assertIn("FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED:-1", rma_case)
-        self.assertIn('platform_name" == "enflame"', rma_case)
+        self.assertIn('$platform_name" != "enflame" ||', rma_case)
 
         du_kernel_makefile = (REPO_ROOT / "test/kernel/du/Makefile").read_text()
         visibility_platform = rma_makefile[
@@ -1538,13 +1557,13 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         )
         self.assertIn('NET_FILTER="RmaTest.GetSmall"', rma_case)
         visibility_start = rma_case.index(
-            "local run_visibility_consumer=1"
+            "if ((run_visibility != 0)) &&"
         )
         visibility_run_condition = rma_case[
-            visibility_start : rma_case.index("FLAGCX_CI_MPI_LABEL=", visibility_start)
+            visibility_start : rma_case.index("local visibility_xml_dir", visibility_start)
         ]
         self.assertIn(
-            '"$platform_name" == "enflame"',
+            '"$platform_name" != "enflame"',
             visibility_run_condition,
         )
         self.assertIn("FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED", visibility_run_condition)
@@ -1629,7 +1648,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn("export FLAGCX_DEBUG_SUBSYS=ALL", unit_runner)
         self.assertIn("export FLAGCX_VMM_ENABLE=0", unit_runner)
 
-        for platform in ("cuda", "metax", "hygon", "ppu"):
+        for platform in ("cuda", "metax", "hygon", "mthreads", "ppu"):
             source = (
                 REPO_ROOT / f".github/scripts/set_env/{platform}.sh"
             ).read_text()
@@ -1647,6 +1666,142 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                 "FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED=0",
                 platform_env,
             )
+
+        mthreads_env = (
+            REPO_ROOT / ".github/scripts/set_env/mthreads.sh"
+        ).read_text()
+        self.assertIn("FLAGCX_CI_MUSA_DEVICES", mthreads_env)
+        self.assertIn("musa::atomic_ref", mthreads_env)
+        self.assertIn("FLAGCX_CI_DEVICE_API_SUPPORTED=0", mthreads_env)
+        self.assertNotIn("StreamWaitEvent", mthreads_env)
+        self.assertIn("mthreads-gmi", mthreads_env)
+        self.assertNotIn("flagcx_ci_run_suite_override", mthreads_env)
+
+    def test_mthreads_rma_empty_visibility_is_failure(self):
+        source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        run_suite = source[
+            source.index("run_suite() {") :
+            source.index("\nrun_supplemental_unit_tests() {")
+        ]
+        phase_helper = "flagcx_ci_phase_supported() {" + source.split(
+            "flagcx_ci_phase_supported() {", 1
+        )[1].split("\n}", 1)[0] + "\n}\n"
+        with tempfile.TemporaryDirectory() as directory:
+            harness = phase_helper + run_suite + r'''
+SUITE=rma
+SET_ENV_SCRIPT=mthreads.sh
+PROJECT_ROOT=$1
+FLAGCX_CI_TEST_MAKE_ARGS=(USE_MUSA=1)
+export FLAGCX_CI_IGNORE_TEST='{}'
+TEST_FIXTURE_ROOT=$2
+mkdir -p "$TEST_FIXTURE_ROOT/build"
+TEST_RUNNER=run_test
+MPI_RUNNER="$PROJECT_ROOT/.github/scripts/ci/run_with_timeout.sh"
+run_test() { "$@"; }
+mktemp() { command mktemp -d "$TEST_FIXTURE_ROOT/build/${2##*/}"; }
+flagcx_ci_require_rdma() { return 0; }
+make() {
+  if [[ "${FLAGCX_CI_MPI_LABEL:-}" == "rma GDR visibility ordinary" ]]; then
+    "$MPI_RUNNER" bash -c 'printf "[  PASSED  ] 0 tests.\n"'
+  fi
+}
+run_suite
+'''
+            result = subprocess.run(
+                ["bash", "-euc", harness, "bash", str(REPO_ROOT), directory],
+                cwd=REPO_ROOT,
+                env={**os.environ, "BASH_ENV": "",
+                     "FLAGCX_CI_TEST_MAX_ATTEMPTS": "1",
+                     "FLAGCX_CI_LOG_DIR": directory},
+                text=True, capture_output=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("without a passing GTest case", result.stderr)
+            self.assertIn("visibility=1", result.stderr)
+
+    def test_mthreads_rma_requires_each_case_on_each_rank(self):
+        source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        run_suite = source[
+            source.index("run_suite() {") :
+            source.index("\nrun_supplemental_unit_tests() {")
+        ]
+        phase_helper = "flagcx_ci_phase_supported() {" + source.split(
+            "flagcx_ci_phase_supported() {", 1
+        )[1].split("\n}", 1)[0] + "\n}\n"
+        harness = phase_helper + run_suite + r'''
+SUITE=rma
+SET_ENV_SCRIPT=mthreads.sh
+PROJECT_ROOT=$1
+TEST_FIXTURE_ROOT=$2
+FLAGCX_CI_TEST_MAKE_ARGS=(USE_MUSA=1)
+export FLAGCX_CI_IGNORE_TEST='{}'
+TEST_RUNNER=run_test
+MPI_RUNNER=/unused
+run_test() { "$@"; }
+mktemp() { command mktemp -d "$TEST_FIXTURE_ROOT/build/${2##*/}"; }
+flagcx_ci_require_rdma() { return 0; }
+make() {
+  local arg result_dir="" phase=""
+  for arg in "$@"; do
+    case "$arg" in
+      IPC_XML_DIR=*) result_dir=${arg#*=}; phase=ipc ;;
+      NET_XML_DIR=*) result_dir=${arg#*=}; phase=visibility ;;
+    esac
+  done
+  if [[ -n "$result_dir" ]]; then
+    cp "$TEST_FIXTURE_ROOT/$phase/"*.xml "$result_dir/"
+  fi
+}
+run_suite
+'''
+        required = {
+            "ipc": ["GetAsyncOffsets", "IpcGetSameStreamCompletion",
+                    "IpcResolvedPeerPointerSupportsDirectCopy",
+                    "IpcPutWithoutNetworkMr"],
+            "visibility": ["DirectConsumerReadVisibility",
+                           "DirectConsumerWriteVisibility"],
+        }
+        for broken_phase, defect in (
+            ("", ""), ("ipc", "skip"), ("visibility", "skip"),
+            ("visibility", "missing_rank"), ("visibility", "missing_case"),
+        ):
+            with self.subTest(phase=broken_phase, defect=defect), \
+                    tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                (base / "build").mkdir()
+                for phase, names in required.items():
+                    (base / phase).mkdir()
+                    for rank in range(2):
+                        broken = phase == broken_phase and rank == 1
+                        if broken and defect == "missing_rank":
+                            continue
+                        cases = []
+                        for name in names:
+                            if broken and defect == "missing_case" and name == names[-1]:
+                                continue
+                            skipped = broken and defect == "skip" and name == names[-1]
+                            result = "skipped" if skipped else "completed"
+                            cases.append(
+                                f'<testcase name="{name}" status="run" result="{result}">'
+                                + ("<skipped/>" if skipped else "") + "</testcase>"
+                            )
+                        (base / phase / f"rank-{rank}.xml").write_text(
+                            '<testsuites><testsuite name="RmaTest">'
+                            + "".join(cases) + "</testsuite></testsuites>"
+                        )
+                result = subprocess.run(
+                    ["bash", "-euc", harness, "bash", str(REPO_ROOT), directory],
+                    cwd=REPO_ROOT, env={**os.environ, "BASH_ENV": ""},
+                    text=True, capture_output=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 1 if broken_phase else 0,
+                                 result.stdout + result.stderr)
+                if broken_phase:
+                    status = "IPC=1" if broken_phase == "ipc" else "visibility=1"
+                    self.assertIn(status, result.stderr)
+                if defect == "skip":
+                    self.assertIn("rank-1.xml", result.stderr)
+                    self.assertIn("skipped or not run", result.stderr)
 
     def test_symmem_runs_required_local_and_network_vmm_matrix(self):
         unit_runner = (

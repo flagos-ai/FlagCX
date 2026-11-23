@@ -20,7 +20,7 @@ struct flagcxEvent {
 };
 
 struct flagcxIpcMemHandle {
-  char *base; // to be implemented
+  musaIpcMemHandle_t base;
 };
 
 #define DEVCHECK(func)                                                         \
