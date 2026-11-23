@@ -265,6 +265,11 @@ run_device_api_host() {
     "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
 }
 
+flagcx_ci_device_api_intra_only() {
+  [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ppu &&
+     "${FLAGCX_CI_DEVICE_API_INTRA_ONLY:-0}" == 1 ]]
+}
+
 run_device_api() {
   local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   local platform_name
@@ -315,6 +320,11 @@ run_device_api() {
     FLAGCX_CI_MPI_LABEL="device IR intra" \
       "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${common_env[@]}" \
       build/bin/test_device_ir_intra "${flags[@]}"
+  fi
+
+  if flagcx_ci_device_api_intra_only; then
+    echo "Skipping PPU Device API inter runs: BAREX remote signal atomic is unavailable"
+    return 0
   fi
 
   if [[ "${FLAGCX_CI_DEVICE_API_INTER:-1}" == 1 ]]; then
@@ -427,6 +437,11 @@ run_device_api_unified_ir() {
     "$MPI_RUNNER" -np "${UNIFIED_IR_NP:-$FLAGCX_CI_INTRA_NP}" --allow-run-as-root "${intra_env[@]}" \
     build/bin/test_device_ir_unified_intra "${intra_flags[@]}"
 
+  if flagcx_ci_device_api_intra_only; then
+    echo "Skipping PPU unified IR inter and forced-Net runs: BAREX remote signal atomic is unavailable"
+    return 0
+  fi
+
   # The inter steps exercise the one-sided NET transport across two logical
   # nodes.  A platform whose Device IR bindings declare the NET arm absent
   # (Ascend: FLAGCX_DEVICE_HAS_NET_TRANSPORT=0) does not even build
@@ -478,8 +493,6 @@ run_suite() {
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
     flagcx_ci_run_suite_override "$SUITE" "$suite_dir" "${args[@]}"
     if [[ "$FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED" == 1 ]]; then
-      flagcx_ci_report_skipped_suite "$SUITE" \
-        "the platform set_env script reported this suite as unrunnable on this image"
       return
     fi
   fi
@@ -671,11 +684,13 @@ run_suite() {
       if [[ "${FLAGCX_P2P_TRANSPORT:-ib}" == "accl" ]]; then
         p2p_mpi_env="-x FLAGCX_P2P_TRANSPORT=accl"
       fi
-      FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
-        FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
-        FLAGCX_CI_TEST_LABEL="p2p unit tests" \
-        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
-        unit_status=$?
+      if flagcx_ci_phase_supported p2p-legacy-unit; then
+        FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+          FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
+          FLAGCX_CI_TEST_LABEL="p2p unit tests" \
+          "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
+          unit_status=$?
+      fi
       if flagcx_ci_phase_supported p2p-write-mpi; then
         FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
           FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \

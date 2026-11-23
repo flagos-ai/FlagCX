@@ -310,7 +310,7 @@ clean:
 	@rm -rf $(BUILDDIR)
 
 run-unit: unit
-	@$(UNIT_TARGET)
+	@GTEST_DEATH_TEST_STYLE=threadsafe $(UNIT_TARGET)
 	@$(DEVICEPTR_ARGS_TARGET)
 ifneq ($(PROVIDER_UNIT_TARGET),)
 	@$(PROVIDER_UNIT_TARGET)

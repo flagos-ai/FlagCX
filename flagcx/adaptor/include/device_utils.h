@@ -44,7 +44,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
     defined(__CCE_IS_AICORE__) ||                                              \
     (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
      defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
-    defined(__TOPSCC__) ||                                                     \
+    defined(__TOPSCC__) || defined(__HGGCCC__) ||                              \
     (defined(USE_ASCEND_ADAPTOR) && defined(FLAGCX_ASCEND_DEVICE_COMPILE))
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
@@ -70,7 +70,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
     defined(__CCE_IS_AICORE__) ||                                              \
     (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
      defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
-    defined(__TOPSCC__)
+    defined(__TOPSCC__) || defined(__HGGCCC__)
 #define FLAGCX_CHECK_DEVICE_CC 1
 #else
 #define FLAGCX_CHECK_DEVICE_CC 0
@@ -361,6 +361,51 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_SIMT_WIDTH 64
 #define FLAGCX_DEVICE_STREAM_PTR hipStream_t *
 
+#elif defined(USE_PPU_ADAPTOR)
+#include <hggc.h>
+#include <hggc_runtime.h>
+
+// HGGC's native driver uses __HGGCCC__; its CUDA-compatible front end can
+// additionally expose __CUDACC__. Neither implies NVIDIA device semantics.
+#if defined(__HGGCCC__) || defined(__CUDACC__)
+#define FLAGCX_PPU_DEVICE_COMPILE 1
+#define FLAGCX_HOST_DECORATOR __host__
+#define FLAGCX_DEVICE_DECORATOR __device__
+#define FLAGCX_GLOBAL_DECORATOR __global__
+#if defined(__clang_llvm_bitcode_lib__)
+#define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __attribute__((always_inline))
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
+  __host__ __device__ __attribute__((always_inline))
+#else
+#define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __forceinline__
+#define FLAGCX_HOST_DEVICE_INLINE __host__ __device__ __forceinline__
+#endif
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
+#define FLAGCX_DEVICE_THREAD_FENCE __threadfence_system
+#define FLAGCX_DEVICE_SYNC_THREADS __syncthreads
+#define FLAGCX_THREAD_IDX_X threadIdx.x
+#define FLAGCX_BLOCK_IDX_X blockIdx.x
+#define FLAGCX_BLOCK_DIM_X blockDim.x
+#define FLAGCX_GRID_DIM_X gridDim.x
+#define FLAGCX_SHARED_DECORATOR __shared__
+#else
+#define FLAGCX_HOST_DECORATOR
+#define FLAGCX_DEVICE_DECORATOR
+#define FLAGCX_GLOBAL_DECORATOR
+#define FLAGCX_DEVICE_INLINE_DECORATOR inline
+#define FLAGCX_HOST_DEVICE_INLINE inline
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR
+#define FLAGCX_DEVICE_THREAD_FENCE() ((void)0)
+#define FLAGCX_DEVICE_SYNC_THREADS() ((void)0)
+#define FLAGCX_THREAD_IDX_X 0
+#define FLAGCX_BLOCK_IDX_X 0
+#define FLAGCX_BLOCK_DIM_X 1
+#define FLAGCX_GRID_DIM_X 1
+#define FLAGCX_SHARED_DECORATOR static
+#endif
+#define FLAGCX_SIMT_WIDTH 32
+#define FLAGCX_DEVICE_STREAM_PTR hggcStream_t *
+
 #elif defined(USE_NVIDIA_ADAPTOR)
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -387,11 +432,11 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_BLOCK_DIM_X blockDim.x
 #define FLAGCX_GRID_DIM_X gridDim.x
 
-// SIMT lockstep width (32 lanes on NVIDIA/CUDA)
+// CUDA-compatible SIMT width (NVIDIA and PPU).
 #define FLAGCX_SIMT_WIDTH 32
 #define FLAGCX_SHARED_DECORATOR __shared__
 #else
-// Host compiler (g++/clang++) on NVIDIA platform — no CUDA qualifiers
+// Host compiler (g++/clang++) on CUDA-compatible platforms.
 #define FLAGCX_HOST_DECORATOR
 #define FLAGCX_DEVICE_DECORATOR
 #define FLAGCX_GLOBAL_DECORATOR

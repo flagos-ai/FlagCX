@@ -24,6 +24,8 @@ class TorchApiEnvironmentTest(unittest.TestCase):
                       echo 29500
                       exit 0
                     fi
+                    [[ -z "${UCX_HOME+x}" ]]
+                    [[ "$LD_LIBRARY_PATH" == /sdk/ucx/lib:/sdk/mpi/lib ]]
                     printf '%s|%s|%s|%s|%s|%s|%s\\n' \\
                       "${FLAGCX_USE_HETERO_COMM-}" \\
                       "${FLAGCX_CLUSTER_SPLIT_LIST-}" \\
@@ -52,6 +54,8 @@ class TorchApiEnvironmentTest(unittest.TestCase):
                     "FLAGCX_P2P_DISABLE": "0",
                     "FLAGCX_TORCH_HETERO_SKIP_OPS": hetero_skip_ops,
                     "FLAGCX_TORCH_SKIP_OPS": "alltoall",
+                    "UCX_HOME": "/sdk/ucx",
+                    "LD_LIBRARY_PATH": "/sdk/ucx/lib:/sdk/mpi/lib",
                     "FLAGCX_CI_IGNORE_TEST": json.dumps(ignore_config or {}),
                 }
             )

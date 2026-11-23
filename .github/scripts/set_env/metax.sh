@@ -30,7 +30,7 @@ FLAGCX_CI_IGNORE_TEST='{
   "perf": {
     "operations": ["allreduce", "reducescatter"],
     "modes": ["homogeneous"],
-    "reason": "Current MetaX perf run has data verification failures; retain remaining operation coverage"
+    "reason": "MetaX AllReduce and ReduceScatter fail FP32 SUM data verification at 128 MiB; pending diagnosis"
   }
 }'
 export FLAGCX_CI_IGNORE_TEST

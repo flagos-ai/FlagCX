@@ -1189,6 +1189,46 @@ TEST(IbOneSidedBatchContractTest,
   EXPECT_EQ(flagcxIbFreeRequest(accepted), flagcxSuccess);
 }
 
+#if defined(USE_PPU_ADAPTOR) && defined(USE_ACCL_BAREX)
+TEST(PpuPcclLoading, NativeCommBeforeBarexHostMrRegistration) {
+  ASSERT_EQ(deviceAdaptor->setDevice(0), flagcxSuccess);
+  auto *ccl = cclAdaptors[flagcxCCLAdaptorDevice];
+  ASSERT_NE(ccl, nullptr);
+  flagcxInnerUniqueId_t id = nullptr;
+  ASSERT_EQ(ccl->getUniqueId(&id), flagcxSuccess);
+  flagcxInnerComm_t nativeComm = nullptr;
+  flagcxResult_t initialized =
+      ccl->commInitRank(&nativeComm, 1, id, 0, nullptr);
+  free(id);
+  ASSERT_EQ(initialized, flagcxSuccess);
+  struct NativeCommGuard {
+    flagcxCCLAdaptor *adaptor;
+    flagcxInnerComm_t comm;
+    ~NativeCommGuard() {
+      EXPECT_EQ(adaptor->commDestroy(comm), flagcxSuccess);
+      free(comm);
+    }
+  } native{ccl, nativeComm};
+
+  // The PPU CI preflight runs this case alone, so PCCL is opened before BAREX
+  // registers its first host MR in this process.
+  auto *net = getNetAdaptor(RDMA);
+  ASSERT_NE(net, nullptr);
+  ASSERT_STREQ(net->name, "BAREX");
+  ASSERT_EQ(net->init(), flagcxSuccess);
+  std::vector<uint8_t> buffer(kBufferSize);
+  void *mr = nullptr;
+  ASSERT_EQ(net->regMr(nullptr, buffer.data(), buffer.size(), FLAGCX_PTR_HOST,
+                       0, &mr),
+            flagcxSuccess);
+  ASSERT_NE(mr, nullptr);
+  flagcxNetMrInfo info = {};
+  EXPECT_EQ(net->getMrInfo(mr, &info), flagcxSuccess);
+  EXPECT_GT(info.nKeys, 0u);
+  EXPECT_EQ(net->deregMr(nullptr, mr), flagcxSuccess);
+}
+#endif
+
 TEST_F(NetAdaptorLoopback, RegisterHostMrAndExportMetadata) {
   SKIP_IF_CALLBACK_NULL(net_, regMr);
   SKIP_IF_CALLBACK_NULL(net_, deregMr);
@@ -1298,8 +1338,9 @@ TEST_F(NetAdaptorLoopback, RegisterDmaBufMr) {
     GTEST_SKIP() << "Selected device adaptor cannot export DMA-BUF memory";
   const bool isIxcuda = strcmp(deviceAdaptor->name, "IXCUDA") == 0;
   ASSERT_EQ(deviceAdaptor->setDevice(gpuDev_), flagcxSuccess);
-  if (isIxcuda)
+  if (isIxcuda) {
     EXPECT_EQ(deviceAdaptor->dmaSupport(nullptr), flagcxInvalidArgument);
+  }
   bool supported = false;
   ASSERT_EQ(deviceAdaptor->dmaSupport(&supported), flagcxSuccess);
   if (!supported)
@@ -1321,14 +1362,18 @@ TEST_F(NetAdaptorLoopback, RegisterDmaBufMr) {
     void *recvMr = nullptr;
     int fd = -1;
     ~Resources() {
-      if (dmaMr != nullptr)
+      if (dmaMr != nullptr) {
         EXPECT_EQ(net->deregMr(sendComm, dmaMr), flagcxSuccess);
-      if (recvMr != nullptr)
+      }
+      if (recvMr != nullptr) {
         EXPECT_EQ(net->deregMr(recvComm, recvMr), flagcxSuccess);
-      if (fd >= 0)
+      }
+      if (fd >= 0) {
         EXPECT_EQ(close(fd), 0);
-      if (buffer != nullptr)
+      }
+      if (buffer != nullptr) {
         EXPECT_EQ(deviceAdaptor->gdrMemFree(buffer, nullptr), flagcxSuccess);
+      }
     }
   } resources{net_, sendComm_, recvComm_};
 

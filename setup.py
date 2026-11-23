@@ -117,7 +117,7 @@ if BuildExtension is not None:
 
             # -- Step 1: Build libflagcx.so, optionally with device bitcode --
             bitcode_arch = os.environ.get("FLAGCX_BITCODE_ARCH", "")
-            if bitcode_arch and adaptor not in ("nvidia", "iluvatar", "du"):
+            if bitcode_arch and adaptor not in ("nvidia", "iluvatar", "du", "ppu"):
                 raise RuntimeError(
                     "FLAGCX_BITCODE_ARCH is set but this build is for the "
                     f"{adaptor} adaptor, which has no bindings/ir Makefile"
@@ -280,7 +280,8 @@ if CppExtension is not None:
         sources=sources,
         include_dirs=include_dirs,
         extra_compile_args={
-            "cxx": [adaptor_flag, torch_flag] + torch_backend_flags
+            "cxx": [adaptor_flag, torch_flag, "-fvisibility=hidden"]
+            + torch_backend_flags
         },
         extra_link_args=[],
         library_dirs=library_dirs,

@@ -299,14 +299,14 @@ flagcxResult_t duhipAdaptorGetPointerType(const void *ptr, int *ptrType) {
   if (err == hipErrorInvalidValue) {
     // Ordinary host allocations are not tracked by the DU runtime. Clear the
     // probe error so it cannot affect a later runtime call.
-    hipGetLastError();
+    (void)hipGetLastError();
     *ptrType = FLAGCX_PTR_HOST;
     return flagcxSuccess;
   }
   if (err != hipSuccess) {
     // Runtime/device errors must not silently turn a GPU pointer into host
     // memory, which would register it through the wrong transport path.
-    hipGetLastError();
+    (void)hipGetLastError();
     return flagcxUnhandledDeviceError;
   }
   *ptrType =
@@ -1264,10 +1264,10 @@ duhipAdaptorSymPhysDescribe(void *ptr, size_t size, void **segmentBundle,
         delete bundle;
         *segmentBundle = NULL;
       } else {
-        hipGetLastError();
+        (void)hipGetLastError();
       }
     } else {
-      hipGetLastError();
+      (void)hipGetLastError();
     }
     return flagcxNotSupported;
   }

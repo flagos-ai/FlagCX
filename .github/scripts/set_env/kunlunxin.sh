@@ -188,7 +188,8 @@ flagcx_ci_run_suite_override() {
   if [[ ( "$suite" == device_api || "$suite" == device_api_unified_ir ) &&
         "${FLAGCX_CI_XPU_TOOLCHAIN_AVAILABLE:-0}" != 1 ]]; then
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    echo "SKIPPED $suite: install or mount the KunlunXin XTDK toolchain to enable this suite"
+    flagcx_ci_report_skipped_suite "$suite" \
+      "install or mount the KunlunXin XTDK toolchain to enable this suite"
   else
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
   fi

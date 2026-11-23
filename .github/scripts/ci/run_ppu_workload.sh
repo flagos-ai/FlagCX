@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 <torch-api|perf>" >&2
+  echo "Usage: $0 <torch-api|perf|perf-test-experimental>" >&2
   exit 2
 fi
 
@@ -74,6 +74,9 @@ case "$workload" in
       -x LD_LIBRARY_PATH -x LD_PRELOAD -x FLAGCX_DEBUG \
       -x FLAGCX_DEBUG_SUBSYS -x FLAGCX_VMM_ENABLE=0 \
       -x FLAGCX_P2P_TRANSPORT=accl -x FLAGCX_IB_DISABLE=0
+    ;;
+  perf-test-experimental)
+    source "$project_root/.github/scripts/ci/run_ppu_perf_experimental.sh"
     ;;
   *)
     echo "Unknown PPU workload: $workload" >&2

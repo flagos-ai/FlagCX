@@ -219,6 +219,47 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                     )
                     self.assertEqual(bool(result.stdout.strip()), should_skip)
 
+    def test_run_override_distinguishes_completion_failure_and_real_skip(self):
+        source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        run = source[source.index("run_suite() {"):
+                     source.index("\nrun_supplemental_unit_tests() {")]
+        report = source[source.index("flagcx_ci_report_skipped_suite() {"):
+                        source.index("\n# A platform can exclude a phase")]
+        platform = (REPO_ROOT / ".github/scripts/set_env/kunlunxin.sh").read_text()
+        skip = platform[platform.index("flagcx_ci_run_suite_override() {"):
+                        platform.index("\nflagcx_ci_validate_rdma() {")]
+        prefix = ("set -euo pipefail\nPROJECT_ROOT=$1\nSUITE=$2\n"
+                  "FLAGCX_CI_TEST_MAKE_ARGS=(TEST_ONLY=1)\n")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for status in (0, 59):
+                with self.subTest(status=status):
+                    hook = ("flagcx_ci_run_suite_override() {\n"
+                            "  FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1\n"
+                            f"  return {status}\n" "}\n")
+                    result = subprocess.run(
+                        ["bash", "-c", prefix + report + run + hook + "run_suite\n",
+                         "bash", str(root), "runner"],
+                        text=True, capture_output=True,
+                        env={**os.environ, "GITHUB_STEP_SUMMARY": str(root / "summary")},
+                    )
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    self.assertNotIn("SKIPPED", result.stdout)
+                    self.assertNotIn("::warning", result.stdout)
+                    self.assertFalse((root / "summary").exists())
+            result = subprocess.run(
+                ["bash", "-c", prefix + report + run + skip + "run_suite\n",
+                 "bash", str(root), "device_api_unified_ir"],
+                text=True, capture_output=True,
+                env={**os.environ, "FLAGCX_CI_XPU_TOOLCHAIN_AVAILABLE": "0",
+                     "GITHUB_STEP_SUMMARY": str(root / "summary")},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("SKIPPED device_api_unified_ir", result.stdout)
+            self.assertIn("install or mount the KunlunXin XTDK", result.stdout)
+            self.assertIn("::warning", result.stdout)
+            self.assertIn("Suite skipped", (root / "summary").read_text())
+
     def test_kunlunxin_device_suite_dependency_gap_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             env_script = Path(temp_dir) / "kunlunxin.sh"
@@ -274,7 +315,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         ).read_text()
         self.assertIn("flagcx_ci_find_xpu_toolchain", env_script)
         self.assertIn("FLAGCX_CI_XPU_TOOLCHAIN_AVAILABLE=0", env_script)
-        self.assertIn("SKIPPED $suite", env_script)
+        self.assertIn('flagcx_ci_report_skipped_suite "$suite"', env_script)
         self.assertIn("FLAGCX_CI_REQUIRE_ADAPTOR_GPU_TESTS", env_script)
         self.assertIn("FLAGCX_CI_REQUIRE_ADAPTOR_GPU_TESTS=1", env_script)
         self.assertIn("FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1", env_script)
@@ -326,6 +367,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             ("nvidia", "nvidia_adaptor.h"),
             ("du", "du_adaptor.h"),
             ("iluvatar", "iluvatar_adaptor.h"),
+            ("ppu", "ppu_adaptor.h"),
         ):
             suffix = "hip" if platform == "du" else "cu"
             for kernel in (f"device_api.{suffix}", f"device_ir.{suffix}"):
@@ -500,6 +542,59 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             self.assertIn("COMPILE_KERNEL=1", configured.stdout)
             self.assertTrue(configured.stdout.endswith(" 0 0"))
 
+    def test_ppu_device_api_build_and_suite_configuration(self):
+        suite_dir = REPO_ROOT / "test/unittest/device_api"
+        build = subprocess.run(
+            [
+                "make", "-n", "-B", "-C", str(suite_dir), "mpi",
+                "USE_PPU=1", "USE_ACCL_BAREX=1", "COMPILE_KERNEL=1",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for target in (
+            "test_device_api_intra", "test_device_api_inter",
+            "test_device_ir_intra", "test_device_ir_inter",
+            "test_device_ir_unified_intra", "test_device_ir_unified_inter",
+        ):
+            self.assertIn(f"/bin/{target}", build.stdout)
+        for source in ("device_api.cu", "device_ir.cu"):
+            self.assertIn(f"test/kernel/ppu {source[:-3]}.o", build.stdout)
+        self.assertIn("-DUSE_PPU_ADAPTOR", build.stdout)
+        self.assertIn("-DFLAGCX_COMM_TRAITS_DEFAULT", build.stdout)
+
+        rma = subprocess.run(
+            [
+                "make", "-n", "-B", "-C",
+                str(REPO_ROOT / "test/unittest/rma"),
+                "USE_PPU=1", "USE_ACCL_BAREX=1",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("test/kernel/ppu gdr_visibility.o", rma.stdout)
+
+        configured = subprocess.run(
+            [
+                "bash", "-c",
+                'source "$1"; flagcx_ci_configure_suite "$2"; '
+                'printf "%s %s %s %s" '
+                '"${FLAGCX_CI_PROJECT_MAKE_ARGS[*]}" '
+                '"${FLAGCX_CI_TEST_MAKE_ARGS[*]}" '
+                '"${CUDA_VISIBLE_DEVICES:-}" '
+                '"${FLAGCX_CI_DEVICE_API_MPI_ARGS[*]-}"',
+                "bash", str(REPO_ROOT / ".github/scripts/set_env/ppu.sh"),
+                "device_api",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("COMPILE_KERNEL=1", configured.stdout)
+        self.assertIn("0,1,2,3 -x CUDA_VISIBLE_DEVICES", configured.stdout)
+
     def test_device_test_targets_require_kernel_mode(self):
         cases = (
             ("test/unittest/device_api", ("all", "mpi", "run"),
@@ -600,6 +695,12 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                 "pull_request", "flagcx/adaptor/ccl/hccl_adaptor.cc"
             ),
             ["ascend"] if "ascend" in all_platforms else all_platforms,
+        )
+        self.assertEqual(
+            self._run_platform_matrix(
+                "pull_request", "flagcx/adaptor/device/hggc_adaptor.cc"
+            ),
+            ["ppu"],
         )
         for changed_files in (
             "flagcx/flagcx.cc",
@@ -1130,6 +1231,9 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             "ppu": [
                 "adaptor",
                 "core",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
                 "p2p",
                 "rma",
                 "runner",
@@ -1328,8 +1432,11 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn("hygon perf-test-experimental", perf_workflow)
         self.assertIn("name: perf-test-experimental (cuda)", perf_workflow)
         self.assertIn("name: perf-test-experimental (hygon)", perf_workflow)
+        self.assertIn("name: perf-test-experimental (ppu)", perf_workflow)
         self.assertIn("HYGON_EXPERIMENTAL_RESULT:", perf_workflow)
+        self.assertIn("PPU_EXPERIMENTAL_RESULT:", perf_workflow)
         self.assertIn('"$HYGON_RESULT" "$HYGON_EXPERIMENTAL_RESULT"', perf_workflow)
+        self.assertIn('"$PPU_RESULT" "$PPU_EXPERIMENTAL_RESULT"', perf_workflow)
         self.assertNotIn("cuda_legacy_perf_runs_on", perf_workflow)
         experimental_perf_job = perf_workflow.split("  perf-test-experimental-cuda:\n", 1)[1].split(
             "\n  perf-test-hygon:", 1
@@ -1344,6 +1451,11 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         )[1].split("\n  perf-test-cuda:", 1)[0]
         self.assertIn("hygon perf-test-experimental", hygon_experimental_job)
         self.assertIn("timeout-minutes: 240", hygon_experimental_job)
+        ppu_experimental_job = perf_workflow.split(
+            "  perf-test-experimental-ppu:\n", 1
+        )[1].split("\n  perf-test-ascend:", 1)[0]
+        self.assertIn("ppu perf-test-experimental", ppu_experimental_job)
+        self.assertIn("timeout-minutes: 240", ppu_experimental_job)
         self.assertNotIn("\n  torch-api-test:\n", torch_workflow)
 
         for platform in ("cuda", "metax", "hygon", "ppu"):
@@ -1357,6 +1469,13 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn(
             'source "$project_root/.github/scripts/ci/run_cuda_perf_experimental.sh"',
             cuda_handler,
+        )
+        ppu_handler = (
+            REPO_ROOT / ".github/scripts/ci/run_ppu_workload.sh"
+        ).read_text()
+        self.assertIn(
+            'source "$project_root/.github/scripts/ci/run_ppu_perf_experimental.sh"',
+            ppu_handler,
         )
 
     def test_experimental_p2p_perf_keeps_write_and_runs_shared_read(self):
@@ -2005,7 +2124,7 @@ run_suite
             "cuda_adaptor.cc",
             "maca_adaptor.cc",
             "duhip_adaptor.cc",
-            "ppu_cuda_adaptor.cc",
+            "hggc_adaptor.cc",
         )
         for filename in adaptor_sources:
             source = (
@@ -2226,7 +2345,7 @@ run_suite
             ("cuda_adaptor.cc", "cudaAdaptorSymMulticastImport"),
             ("maca_adaptor.cc", "macaAdaptorSymMulticastImport"),
             ("duhip_adaptor.cc", "duhipAdaptorSymMulticastImport"),
-            ("ppu_cuda_adaptor.cc", "ppucudaAdaptorSymMulticastImport"),
+            ("hggc_adaptor.cc", "hggcAdaptorSymMulticastImport"),
         ):
             source = (
                 REPO_ROOT / "flagcx/adaptor/device" / filename

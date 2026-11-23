@@ -32,10 +32,12 @@
 #include <unistd.h>
 #endif
 
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR) ||                 \
-    defined(USE_ILUVATAR_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_ILUVATAR_ADAPTOR)
 #include <cuda.h>
 #include <cuda_runtime.h>
+#elif defined(USE_PPU_ADAPTOR)
+#include <hggc.h>
+#include <hggc_runtime.h>
 #elif defined(USE_DU_ADAPTOR)
 #include <hip/hip_runtime.h>
 #elif defined(USE_METAX_ADAPTOR)
@@ -768,8 +770,9 @@ TEST_F(SymMemTest, LocalDeregisterAndReusePublicHandle) {
     EXPECT_EQ(win->defaultBase, nullptr);
   }
   MPI_Barrier(MPI_COMM_WORLD);
-  if (rank != 0)
+  if (rank != 0) {
     ASSERT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+  }
   MPI_Barrier(MPI_COMM_WORLD);
 
   ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff2, size, &win,
@@ -1902,7 +1905,10 @@ TEST_F(SymMemTest, CrossNodeMixedVmmRejectsSymmetricAndRetriesIpc) {
         }
       });
     }
-    result = flagcxCommWindowDeregister(testComm, window);
+    // Keep the destination MR alive while the sender's local deregistration
+    // drains its accepted PUT. Window deregistration is not collective.
+    result =
+        sender ? flagcxCommWindowDeregister(testComm, window) : flagcxSuccess;
     if (watchdog.joinable())
       watchdog.join();
     bool earlyDeregister = false;
@@ -1918,7 +1924,14 @@ TEST_F(SymMemTest, CrossNodeMixedVmmRejectsSymmetricAndRetriesIpc) {
     }
     delayedPut.reset();
     ASSERT_TRUE(allRanksSucceeded(result));
+    if (!sender)
+      result = flagcxCommWindowDeregister(testComm, window);
+    ASSERT_TRUE(allRanksSucceeded(result));
     if (sender) {
+      // Successful cleanup can follow quiescence after a failed transfer.
+      // Check the PUT outcome separately from resource reclamation.
+      EXPECT_EQ(__atomic_load_n(&hetero->rmaProxy->rmaError, __ATOMIC_ACQUIRE),
+                0);
       EXPECT_TRUE(didDeregister);
       EXPECT_TRUE(drainEntered);
       EXPECT_FALSE(timedOut);
@@ -2443,9 +2456,11 @@ TEST_F(SymMemTest, LsaReserveFailureDoesNotPublishWindow) {
       EXPECT_EQ(window->defaultBase->resourcePath, flagcxSymResourceLsa);
     }
   }
-  if (allRanksSucceeded(window != nullptr ? flagcxSuccess : flagcxNotSupported))
+  if (allRanksSucceeded(window != nullptr ? flagcxSuccess
+                                          : flagcxNotSupported)) {
     EXPECT_TRUE(
         allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
+  }
   EXPECT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
   EXPECT_EQ(flagcxMemFree(allocation), flagcxSuccess);
 }
@@ -2784,8 +2799,9 @@ TEST_F(SymMemTest, OrdinaryAllocationUsesIpcWithVmmEnabled) {
     EXPECT_EQ(segments, nullptr);
     EXPECT_EQ(segmentCount, 0);
     EXPECT_EQ(alignment, 0u);
-    if (bundle != nullptr)
+    if (bundle != nullptr) {
       EXPECT_EQ(deviceAdaptor->symPhysFreeSegments(bundle), flagcxSuccess);
+    }
 
     flagcxWindow_t window = nullptr;
     auto originalSymPhysAlloc = deviceAdaptor->symPhysAlloc;
@@ -2832,8 +2848,9 @@ TEST_F(SymMemTest, OrdinaryAllocationDoesNotClaimSegmentedVmm) {
   EXPECT_EQ(segments, nullptr);
   EXPECT_EQ(segmentCount, 0);
   EXPECT_EQ(alignment, 0u);
-  if (bundle != nullptr)
+  if (bundle != nullptr) {
     EXPECT_EQ(deviceAdaptor->symPhysFreeSegments(bundle), flagcxSuccess);
+  }
   EXPECT_EQ(deviceAdaptor->deviceFree(buffer, flagcxMemDevice, nullptr),
             flagcxSuccess);
 }
@@ -2944,8 +2961,55 @@ TEST_F(SymMemTest, UntrackedVmmMappingIsRejected) {
     access.flags = hipMemAccessFlagsProtReadWrite;
     return hipMemSetAccess(mapping.base, granularity, &access, 1) == hipSuccess;
   }();
-#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR) ||               \
-    defined(USE_ILUVATAR_ADAPTOR)
+#elif defined(USE_PPU_ADAPTOR)
+  size_t granularity = 0;
+  struct ScopedMapping {
+    HGmemGenericAllocationHandle handle = 0;
+    HGdeviceptr base = 0;
+    size_t size = 0;
+    bool mapped = false;
+    ~ScopedMapping() {
+      if (mapped)
+        hgMemUnmap(base, size);
+      if (base != 0)
+        hgMemAddressFree(base, size);
+      if (handle != 0)
+        hgMemRelease(handle);
+    }
+  } mapping;
+  const bool setupOk = [&]() -> bool {
+    int hggcDev = 0;
+    if (hggcGetDevice(&hggcDev) != hggcSuccess)
+      return false;
+    HGdevice hgDevice = 0;
+    if (hgDeviceGet(&hgDevice, hggcDev) != HGGC_SUCCESS)
+      return false;
+    HGmemAllocationProp prop = {};
+    prop.type = HG_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = HG_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id = hgDevice;
+    prop.requestedHandleTypes = HG_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+    if (hgMemGetAllocationGranularity(&granularity, &prop,
+                                      HG_MEM_ALLOC_GRANULARITY_RECOMMENDED) !=
+            HGGC_SUCCESS ||
+        granularity == 0)
+      return false;
+    mapping.size = granularity;
+    if (hgMemCreate(&mapping.handle, granularity, &prop, 0) != HGGC_SUCCESS ||
+        hgMemAddressReserve(&mapping.base, granularity, granularity, 0, 0) !=
+            HGGC_SUCCESS ||
+        hgMemMap(mapping.base, granularity, 0, mapping.handle, 0) !=
+            HGGC_SUCCESS)
+      return false;
+    mapping.mapped = true;
+    HGmemAccessDesc access = {};
+    access.location.type = HG_MEM_LOCATION_TYPE_DEVICE;
+    access.location.id = hgDevice;
+    access.flags = HG_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    return hgMemSetAccess(mapping.base, granularity, &access, 1) ==
+           HGGC_SUCCESS;
+  }();
+#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_ILUVATAR_ADAPTOR)
   size_t granularity = 0;
   struct ScopedMapping {
     CUmemGenericAllocationHandle handle = 0;
@@ -3034,8 +3098,9 @@ TEST_F(SymMemTest, UntrackedVmmMappingIsRejected) {
   EXPECT_EQ(window, nullptr);
   ASSERT_NE(comm->heteroComm, nullptr);
   EXPECT_EQ(comm->heteroComm->symWindows, nullptr);
-  if (minimum == maximum && window != nullptr)
+  if (minimum == maximum && window != nullptr) {
     EXPECT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+  }
 }
 #elif defined(USE_ILUVATAR_ADAPTOR)
 TEST_F(SymMemTest, UntrackedVmmMappingIsRejected) {
@@ -3075,8 +3140,9 @@ TEST_F(SymMemTest, DuMultiSegmentDisabledPreservesSingleVmm) {
   int minimum = 0;
   int maximum = 0;
   allRankResultRange(result, &minimum, &maximum);
-  if (allocation != nullptr)
+  if (allocation != nullptr) {
     EXPECT_EQ(flagcxMemFree(allocation), flagcxSuccess);
+  }
   ASSERT_EQ(minimum, static_cast<int>(flagcxNotSupported));
   ASSERT_EQ(maximum, static_cast<int>(flagcxNotSupported));
   ASSERT_EQ(allocation, nullptr);
@@ -3303,8 +3369,9 @@ struct ScopedRollbackBackend {
 struct ScopedRollbackBootstrap {
   bootstrapState *state = nullptr;
   ~ScopedRollbackBootstrap() {
-    if (state != nullptr)
+    if (state != nullptr) {
       EXPECT_EQ(bootstrapClose(state), flagcxSuccess);
+    }
   }
 };
 struct ScopedRollbackAdaptor {
@@ -3337,8 +3404,9 @@ struct ScopedRollbackResources {
       comm->publicWindows = window->nextOwned;
       free(window);
     }
-    if (buffer != nullptr)
+    if (buffer != nullptr) {
       EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
+    }
   }
 };
 } // namespace
@@ -3479,8 +3547,9 @@ protected:
     rollbackFailCopy = rollbackFailClose = rollbackFailArrayFree = false;
     ASSERT_EQ(retry(), flagcxSuccess);
     EXPECT_EQ(hetero.pendingSymCleanup, nullptr);
-    if (window != nullptr)
+    if (window != nullptr) {
       EXPECT_EQ(window->defaultBase, nullptr);
+    }
     EXPECT_EQ(rollbackClosedImports, nranks - 1);
     EXPECT_EQ(rollbackFreedArrays, 1);
     ASSERT_EQ(flagcxCommCleanupIpcTable(&testComm), flagcxSuccess);
@@ -3544,9 +3613,10 @@ protected:
     EXPECT_EQ(rejectedView, nullptr);
 
     // A failing local retry requires no matching call from any other rank.
-    if (rank == 1)
+    if (rank == 1) {
       EXPECT_EQ(flagcxCommWindowDeregister(&testComm, window),
                 flagcxRemoteError);
+    }
     MPI_Barrier(MPI_COMM_WORLD);
     rollbackFailClose = rollbackFailArrayFree = false;
     ASSERT_TRUE(
@@ -3919,8 +3989,9 @@ TEST_F(SymWindowRollback, PartialBuildFailureConvergesCleanupBeforeContinuing) {
     EXPECT_TRUE(testComm.ipcTable[failed.slot].ownerHeld);
   }
   rollbackFailCopy = rollbackFailClose = false;
-  if (failed.slot >= 0)
+  if (failed.slot >= 0) {
     ASSERT_EQ(releaseIpcTableSlot(&testComm, failed.slot), flagcxSuccess);
+  }
   MPI_Barrier(MPI_COMM_WORLD);
   auto next = flagcxCommWindowRegisterIpcInternal(&testComm, resources.buffer,
                                                   64, false);
@@ -3960,8 +4031,9 @@ TEST_F(SymWindowRollback, PartialWindowBuildRetainsLeaseUntilLocalRetry) {
   }
   rollbackFailOpenAt = -1;
   rollbackFailClose = false;
-  if (window != nullptr)
+  if (window != nullptr) {
     ASSERT_EQ(flagcxCommWindowDeregister(&testComm, window), flagcxSuccess);
+  }
   MPI_Barrier(MPI_COMM_WORLD);
   ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
       &testComm, resources.buffer, 64, &window, FLAGCX_WIN_ASYMMETRIC)));
