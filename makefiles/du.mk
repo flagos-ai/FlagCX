@@ -18,7 +18,7 @@ DEVICE_NEEDS_DLINK := 0
 
 CCL_HOME    ?= $(HIP_PATH)
 CCL_LIB     := $(CCL_HOME)/lib
-CCL_INCLUDE := $(CCL_HOME)/include/rccl
+CCL_INCLUDE := $(CCL_HOME)/include
 CCL_LINK    := -lrccl
 ADAPTOR_FLAG := -DUSE_DU_ADAPTOR -D__HIP_PLATFORM_AMD__
 

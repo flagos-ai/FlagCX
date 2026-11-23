@@ -28,8 +28,7 @@ case "$workload" in
       USE_METAX=1 MPI_HOME="$MPI_HOME" CCL_HOME=/opt/maca
 
     export FLAGCX_CI_PERF_PLATFORM=MetaX
-    # Diagnose the remaining cases while AllReduce and ReduceScatter fail data verification.
-    export FLAGCX_CI_PERF_SKIP_OPERATIONS="allreduce reducescatter"
+    # Collect all operation results while preserving a failing suite status.
     export FLAGCX_CI_PERF_CONTINUE_ON_FAILURE=1
     perf_bin="$project_root/test/perf/host_api/build/bin"
     perf_result=0
@@ -47,7 +46,17 @@ case "$workload" in
     export FLAGCX_DEBUG=INFO
     export FLAGCX_DEBUG_SUBSYS=ALL
     export USE_METAX=1
-    export PYTHON_BIN=python3
+    export PATH="/flagos/bin:$PATH"
+    export PYTHON_BIN=/flagos/bin/python3
+
+    "$PYTHON_BIN" - <<'PY'
+import sys
+import torch
+
+print(f"MetaX Torch environment: Python={sys.executable}", flush=True)
+print(f"MetaX Torch environment: torch={torch.__version__}", flush=True)
+print(f"MetaX Torch environment: torch_path={torch.__file__}", flush=True)
+PY
 
     make -C "$project_root" --jobs="$(nproc)" USE_METAX=1
     "$PYTHON_BIN" -m pip install --break-system-packages 'setuptools_scm>=8'

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 <core|adaptor|device_api_host|p2p|rma|runner|service|symmem>" >&2
+  echo "Usage: $0 <core|adaptor|device_api|device_api_host|p2p|rma|runner|service|symmem>" >&2
   exit 2
 fi
 

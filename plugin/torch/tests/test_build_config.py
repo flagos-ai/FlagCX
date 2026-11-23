@@ -21,6 +21,7 @@ BACKEND_ENV_VARS = {
     "FLAGOS_LIBRARY_DIR",
     "ASCEND_HOME_PATH",
     "DEVICE_HOME",
+    "CCL_HOME",
 }
 
 
@@ -194,15 +195,35 @@ class TorchBackendConfigTest(unittest.TestCase):
         self.assertEqual(
             config,
             (
-                ["/usr/local/cuda/include"],
-                ["/usr/local/cuda/lib64"],
-                ["cuda", "cudart", "c10_cuda", "torch_cuda"],
+                ["/usr/local/PPU_SDK/include", "/usr/local/PPU_SDK/CUDA_SDK/include"],
+                ["/usr/local/PPU_SDK/lib", "/usr/local/PPU_SDK/CUDA_SDK/lib64"],
+                ["hggc_wrapper", "hg_wrapper", "cuda", "cudart", "c10_cuda", "torch_cuda"],
             ),
         )
         self.assertIn(
             'elif adaptor_flag == "-DUSE_PPU_ADAPTOR":', BUILD_CONFIG_SOURCE
         )
         self.assertEqual(build_config.ADAPTOR_TO_MAKE_FLAG["ppu"], "USE_PPU")
+
+    def test_ppu_paths_use_device_home_and_ccl_home(self):
+        with self.clean_environment(DEVICE_HOME="/opt/ppu", CCL_HOME="/opt/pccl"):
+            includes, libraries, _ = build_config.get_device_config(
+                build_config.ADAPTOR_MAP["ppu"]
+            )
+        self.assertEqual(includes, ["/opt/ppu/include", "/opt/ppu/CUDA_SDK/include",
+                                    "/opt/pccl/include"])
+        self.assertEqual(libraries, ["/opt/ppu/lib", "/opt/ppu/CUDA_SDK/lib64",
+                                     "/opt/pccl/lib"])
+
+    def test_ppu_device_home_override_preserves_default_ccl_home(self):
+        with self.clean_environment(DEVICE_HOME="/opt/ppu"):
+            includes, libraries, _ = build_config.get_device_config(
+                build_config.ADAPTOR_MAP["ppu"]
+            )
+        self.assertEqual(includes, ["/opt/ppu/include", "/opt/ppu/CUDA_SDK/include",
+                                    "/usr/local/PPU_SDK/include"])
+        self.assertEqual(libraries, ["/opt/ppu/lib", "/opt/ppu/CUDA_SDK/lib64",
+                                     "/usr/local/PPU_SDK/lib"])
 
 
 if __name__ == "__main__":

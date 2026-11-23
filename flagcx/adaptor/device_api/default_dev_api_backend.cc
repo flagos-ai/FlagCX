@@ -1352,7 +1352,17 @@ static flagcxResult_t defaultDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
   }
   hostCopy._gridBarrierState = (unsigned int *)gridSyncPtr;
 
-  // Step 2: Copy flagcxDevComm to device
+  // Allocate the net array before copying the communicator so its pointer is
+  // initialized without computing an offset into a non-standard-layout type.
+  if (hostCopy._contextCount > 0 && flagcxDevNetSizeOf() > 0) {
+    size_t netArraySize = hostCopy._contextCount * flagcxDevNetSizeOf();
+    FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&netDevPtr, netArraySize,
+                                                flagcxMemDevice, NULL),
+                    res, fail);
+    hostCopy._netContexts = netDevPtr;
+  }
+
+  // Step 2: Copy the fully initialized flagcxDevComm to device.
   FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&dPtr, sizeof(flagcxDevComm),
                                               flagcxMemDevice, NULL),
                   res, fail);
@@ -1361,19 +1371,10 @@ static flagcxResult_t defaultDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
                                   flagcxMemcpyHostToDevice, NULL, NULL),
       res, fail);
 
-  // Step 3: Allocate + construct net array on device
-  if (hostCopy._contextCount > 0 && flagcxDevNetSizeOf() > 0) {
-    size_t netArraySize = hostCopy._contextCount * flagcxDevNetSizeOf();
-    FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&netDevPtr, netArraySize,
-                                                flagcxMemDevice, NULL),
-                    res, fail);
+  // Step 3: Construct net contexts using the initialized device communicator.
+  if (netDevPtr != nullptr) {
     flagcxDevNetLaunchConstruct(netDevPtr, dPtr, hostCopy._contextCount,
                                 nullptr);
-    void *netCtxField = (char *)dPtr + offsetof(flagcxDevComm, _netContexts);
-    FLAGCXCHECKGOTO(
-        deviceAdaptor->deviceMemcpy(netCtxField, &netDevPtr, sizeof(void *),
-                                    flagcxMemcpyHostToDevice, NULL, NULL),
-        res, fail);
     FLAGCXCHECKGOTO(deviceAdaptor->deviceSynchronize(), res, fail);
   }
 

@@ -174,10 +174,11 @@ static inline bool flagcxPutValueStagingLayout(int nRanks, int contextCount,
   const size_t hostSlots = (size_t)nRanks;
   const size_t contexts = (size_t)contextCount;
   const size_t slots = (size_t)slotsPerContext;
-  if (contexts != 0 && slots > (SIZE_MAX - hostSlots) / contexts)
+  const size_t maxSize = (size_t)-1;
+  if (contexts != 0 && slots > (maxSize - hostSlots) / contexts)
     return false;
   const size_t allSlots = hostSlots + contexts * slots;
-  if (allSlots > SIZE_MAX / sizeof(uint64_t))
+  if (allSlots > maxSize / sizeof(uint64_t))
     return false;
 
   *kernelBaseSlot = hostSlots;
@@ -195,14 +196,21 @@ flagcxKernelPutValueStagingOffset(const struct flagcxDevCommInternal *devComm,
       stagingSlot >= devComm->putValueStagingSlotCount)
     return false;
 
-  const size_t slot =
-      devComm->putValueStagingKernelBaseSlot +
-      (size_t)contextId * (size_t)devComm->putValueStagingSlotCount +
-      (size_t)stagingSlot;
-  if (slot >= devComm->putValueStagingTotalSlotCount ||
-      slot > UINT64_MAX / sizeof(uint64_t))
+  // The returned byte offset is uint64_t even on a 32-bit device ABI.
+  // Bound the multiply/add before computing it, rather than comparing a
+  // possibly wrapped size_t against a wider integer limit afterwards.
+  const uint64_t maxSlot = UINT64_MAX / sizeof(uint64_t);
+  const uint64_t base = devComm->putValueStagingKernelBaseSlot;
+  const uint64_t index = (uint64_t)stagingSlot;
+  const uint64_t context = (uint64_t)contextId;
+  const uint64_t slots = (uint64_t)devComm->putValueStagingSlotCount;
+  if (base > maxSlot || index > maxSlot - base ||
+      (context != 0 && slots > (maxSlot - base - index) / context))
     return false;
-  *offset = (uint64_t)slot * sizeof(uint64_t);
+  const uint64_t slot = base + context * slots + index;
+  if (slot >= devComm->putValueStagingTotalSlotCount)
+    return false;
+  *offset = slot * sizeof(uint64_t);
   return true;
 }
 

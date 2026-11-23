@@ -1,6 +1,6 @@
 #pragma once
 
-// Compiled once by the selected CUDA or DU device translation unit.
+// Compiled once by the selected platform device translation unit.
 #include "debug.h"
 #include "device.h"
 #include "device_api/flagcx_device.h"
@@ -26,6 +26,49 @@
 #define cudaLaunchKernel hipLaunchKernel
 #define cudaError_t hipError_t
 #define cudaSuccess hipSuccess
+#elif defined(USE_PPU_ADAPTOR)
+#include <hggc_ad.h>
+
+#define cudaGetDevice hggcGetDevice
+#define cudaDeviceGetAttribute hggcDeviceGetAttribute
+#define cudaDevAttrCooperativeLaunch hggcDevAttrCooperativeLaunch
+#define cudaDevAttrConcurrentKernels hggcDevAttrConcurrentKernels
+#define cudaDevAttrMultiProcessorCount hggcDevAttrMultiProcessorCount
+#define cudaDevAttrMaxThreadsPerBlock hggcDevAttrMaxThreadsPerBlock
+#define cudaOccupancyMaxActiveBlocksPerMultiprocessor                          \
+  hggcOccupancyMaxActiveBlocksPerMultiprocessor
+#define cudaLaunchKernel hggcLaunchKernel
+#define cudaError_t hggcError_t
+#define cudaSuccess hggcSuccess
+
+static hggcError_t flagcxPpuLaunchCooperativeKernel(const void *kernel,
+                                                    dim3 grid, dim3 block,
+                                                    void **args,
+                                                    size_t sharedMem,
+                                                    hggcStream_t stream) {
+  HGfunction function;
+  hggcError_t result = hggcGetFuncBySymbol(&function, kernel);
+  if (result != hggcSuccess)
+    return result;
+
+  HGlaunchAttributeAD cooperative{};
+  cooperative.id = HGAD_LAUNCH_ATTRIBUTE_COOPERATIVE;
+  cooperative.value.cooperative = 1;
+  HGlaunchConfigAD config = {grid.x,
+                             grid.y,
+                             grid.z,
+                             block.x,
+                             block.y,
+                             block.z,
+                             static_cast<unsigned int>(sharedMem),
+                             stream,
+                             &cooperative,
+                             1};
+  return static_cast<hggcError_t>(
+      hgLaunchKernelExAD(&config, function, args, nullptr));
+}
+
+#define cudaLaunchCooperativeKernel flagcxPpuLaunchCooperativeKernel
 #endif
 
 #include <limits>
@@ -1886,7 +1929,8 @@ getStaticKernelMaxExecutorBlocks(const void *kernel, const char *kernelName,
     return flagcxInvalidArgument;
   }
 
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
+    defined(USE_PPU_ADAPTOR)
   int device = -1;
   int cooperativeLaunch = 0;
   int concurrentKernels = 0;
@@ -1983,7 +2027,8 @@ flagcxResult_t flagcxLaunchStaticReduceKernel(
     return flagcxInvalidArgument;
   }
 
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
+    defined(USE_PPU_ADAPTOR)
   uint64_t *words = static_cast<uint64_t *>(redFifoDeviceBuffer);
   flagcxReduceTrigger *triggers =
       reinterpret_cast<flagcxReduceTrigger *>(words + flagcxFifoIdxData);
@@ -2050,7 +2095,8 @@ flagcxResult_t flagcxLaunchStaticCollectiveKernel(
     return flagcxInvalidArgument;
   }
 
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
+    defined(USE_PPU_ADAPTOR)
   uint64_t *redWords = static_cast<uint64_t *>(redFifoDeviceBuffer);
   uint64_t *ipcWords = static_cast<uint64_t *>(ipcFifoDeviceBuffer);
   flagcxReduceTrigger *redTriggers =
@@ -2135,7 +2181,8 @@ flagcxResult_t flagcxLaunchStaticRingDagKernel(
           uint64_t(1) + static_cast<uint64_t>(ipcControl->localRanks)) {
     return flagcxInvalidArgument;
   }
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
+    defined(USE_PPU_ADAPTOR)
   flagcxDevMem scratch(*scratchMem);
   flagcxDevMem progress(*progressMem);
   flagcxDevMem ready(*readyMem);
@@ -2176,7 +2223,8 @@ flagcxLaunchStaticIpcRecoveryKernel(flagcxDevMem_t readyMem,
     return flagcxInvalidArgument;
   }
 
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
+    defined(USE_PPU_ADAPTOR)
   flagcxDevMem ready(*readyMem);
   flagcxStaticIpcControl control = *ipcControl;
   void *args[] = {&ready, &control};

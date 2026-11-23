@@ -162,6 +162,7 @@ int main(int argc, char *argv[]) {
     int hostS1[4];
     FLAGCXCHECK(devHandle->deviceMemcpy(hostS1, devResults, 4 * sizeof(int),
                                         flagcxMemcpyDeviceToHost, stream));
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     bool s1Pass = (hostS1[0] == proc) && (hostS1[1] == totalProcs) &&
                   (hostS1[2] == proc) && (hostS1[3] == totalProcs);
@@ -180,6 +181,7 @@ int main(int argc, char *argv[]) {
     int hostS2[3];
     FLAGCXCHECK(devHandle->deviceMemcpy(hostS2, devResults, 3 * sizeof(int),
                                         flagcxMemcpyDeviceToHost, stream));
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     bool s2Pass = (hostS2[0] == 1) && (hostS2[1] == 1) && (hostS2[2] == 1);
     RPRINTF("S2  CoopGroups(Scalar): %s\n", s2Pass ? "PASS" : "FAIL");
@@ -197,6 +199,7 @@ int main(int argc, char *argv[]) {
     int hostS3[2];
     FLAGCXCHECK(devHandle->deviceMemcpy(hostS3, devResults, 2 * sizeof(int),
                                         flagcxMemcpyDeviceToHost, stream));
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     bool s3Pass = (hostS3[1] == proc);
     RPRINTF("S3  TeamQueries(Scalar): %s\n", s3Pass ? "PASS" : "FAIL");
@@ -222,6 +225,7 @@ int main(int argc, char *argv[]) {
     int hostS4 = 0;
     FLAGCXCHECK(devHandle->deviceMemcpy(&hostS4, devResults, sizeof(int),
                                         flagcxMemcpyDeviceToHost, stream));
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     bool s4Pass = (hostS4 == 1);
     RPRINTF("S4  LocalPointer(Scalar): %s\n", s4Pass ? "PASS" : "FAIL");
@@ -246,6 +250,7 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, devOutput,
                                         count * sizeof(float),
                                         flagcxMemcpyDeviceToHost, stream));
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     bool s5Pass = true;
     for (size_t i = 0; i < count; i++) {
@@ -279,6 +284,7 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, devOutput,
                                         count * sizeof(float),
                                         flagcxMemcpyDeviceToHost, stream));
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     bool s6Pass = true;
     for (size_t i = 0; i < count; i++) {
@@ -374,6 +380,7 @@ int main(int argc, char *argv[]) {
 
     FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, regBuff, count * sizeof(float),
                                         flagcxMemcpyDeviceToHost, stream));
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     // AllReduce sum: expected = sum(1..N) = N*(N+1)/2
     float expectedS10 = (float)(totalProcs * (totalProcs + 1) / 2);

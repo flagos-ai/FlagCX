@@ -452,8 +452,9 @@ protected:
 
   void TearDown() override {
     probe_.requestDone.store(1, std::memory_order_release);
-    if (comm_.rmaProxy != nullptr)
+    if (comm_.rmaProxy != nullptr) {
       EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyStop(&comm_));
+    }
     delete comm_.workerPool;
     comm_.workerPool = nullptr;
     activeRmaWorkerProbe = nullptr;

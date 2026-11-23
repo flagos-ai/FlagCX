@@ -160,4 +160,62 @@ TEST(SegmentedVmmAllocation, SplitsDeviceOperationsAtPhysicalBoundaries) {
   EXPECT_EQ(flagcxSuccess, Allocation::freeAllocation(ptr, &freed));
   EXPECT_TRUE(freed);
 }
+
+TEST(SegmentedVmmAllocation, InteriorRangeReportsWholeReservationAndDevice) {
+  using Allocation = flagcxSegmentedVmmAllocation<FakeVmmOps>;
+  FakeVmmOps::failMap = FakeVmmOps::failUnmap = false;
+  void *ptr = nullptr;
+  ASSERT_EQ(Allocation::allocate(&ptr, 16384, 4096, 4096, 0), flagcxSuccess);
+  void *base = nullptr;
+  size_t bytes = 0;
+  int device = -1;
+  EXPECT_EQ(Allocation::addressRange(static_cast<char *>(ptr) + 8193, &base,
+                                     &bytes, &device),
+            flagcxSuccess);
+  EXPECT_EQ(base, ptr);
+  EXPECT_EQ(bytes, 16384u);
+  EXPECT_EQ(device, 0);
+  EXPECT_EQ(
+      Allocation::addressRange(static_cast<char *>(ptr) + 16384, &base, &bytes),
+      flagcxNotSupported);
+  EXPECT_EQ(base, nullptr);
+  EXPECT_EQ(bytes, 0u);
+  bool found = false;
+  EXPECT_EQ(Allocation::freeAllocation(ptr, &found), flagcxSuccess);
+  EXPECT_TRUE(found);
+  EXPECT_EQ(Allocation::addressRange(ptr, &base, &bytes), flagcxNotSupported);
+}
+
+TEST(SegmentedVmmAllocation, DescriptionBorrowsOriginalHandlesLikeCuda) {
+  using Allocation = flagcxSegmentedVmmAllocation<FakeVmmOps>;
+  using Mapper = flagcxSegmentedVmmMap<FakeVmmOps>;
+  FakeVmmOps::maps = FakeVmmOps::unmaps = FakeVmmOps::releases =
+      FakeVmmOps::frees = 0;
+  FakeVmmOps::failMap = FakeVmmOps::failUnmap = false;
+  void *ptr = nullptr;
+  ASSERT_EQ(Allocation::allocate(&ptr, 8192, 4096, 4096, 0), flagcxSuccess);
+  auto *bundle = new Mapper::Bundle();
+  size_t offset = 0;
+  bool found = false;
+  ASSERT_EQ(Allocation::describe(ptr, 8192, bundle, &offset, &found),
+            flagcxSuccess);
+  ASSERT_TRUE(found);
+  ASSERT_EQ(bundle->handles.size(), 2u);
+  EXPECT_EQ(bundle->handles[0], 100);
+  EXPECT_EQ(bundle->handles[1], 101);
+  EXPECT_EQ(bundle->handleOwned, (std::vector<unsigned char>{0, 0}));
+  for (int repeat = 0; repeat < 3; ++repeat) {
+    int fd = -1;
+    EXPECT_EQ(Mapper::exportSegment(bundle, 0, &fd), flagcxSuccess);
+    EXPECT_EQ(fd, 9);
+  }
+  EXPECT_EQ(Mapper::freeBundle(bundle), flagcxSuccess);
+  EXPECT_EQ(FakeVmmOps::releases, 0);
+  int count = 0;
+  EXPECT_EQ(Allocation::segmentCount(ptr, 8192, &count), flagcxSuccess);
+  EXPECT_EQ(count, 2);
+  EXPECT_EQ(Allocation::freeAllocation(ptr, &found), flagcxSuccess);
+  EXPECT_TRUE(found);
+  EXPECT_EQ(FakeVmmOps::releases, 2);
+}
 } // namespace
