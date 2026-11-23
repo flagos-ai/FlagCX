@@ -47,10 +47,16 @@ end.compact
 platform_names = platforms.map { |entry| entry.fetch("platform") }
 abort "No enabled platform configs found in #{config_dir}" if platforms.empty?
 
+# MUSA is the backend name used by existing PR labels; Mthreads is the
+# canonical hardware configuration name.
+canonical_platform = ->(name) { name == "musa" ? "mthreads" : name }
+
 selection = nil
 active = true
 event_name = context.fetch("event_name")
-labels = Array(context["labels"]).map(&:to_s)
+labels = Array(context["labels"]).map(&:to_s).map do |label|
+  label.start_with?("platform:") ? "platform:#{canonical_platform.call(label.delete_prefix('platform:'))}" : label
+end
 files = Array(context["files"]).map(&:to_s)
 
 match_paths = lambda do |patterns, paths|
@@ -83,7 +89,7 @@ select_paths = lambda do
 end
 
 parse_selection = lambda do |value|
-  requested = value.to_s.split(",").map(&:strip).reject(&:empty?)
+  requested = value.to_s.split(",").map(&:strip).reject(&:empty?).map(&canonical_platform)
   requested = ["all"] if requested.empty?
   unknown = requested.reject { |name| name == "all" || platform_names.include?(name) }
   abort "Unknown platform selection: #{unknown.join(', ')}" unless unknown.empty?

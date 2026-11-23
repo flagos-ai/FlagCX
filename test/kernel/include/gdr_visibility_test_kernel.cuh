@@ -14,6 +14,8 @@
 #include "du_adaptor.h"
 #elif defined(USE_PPU_ADAPTOR)
 #include "ppu_adaptor.h"
+#elif defined(USE_MUSA_ADAPTOR)
+#include "musa_adaptor.h"
 #else
 #error "GDR visibility consumer requires a supported device adaptor"
 #endif

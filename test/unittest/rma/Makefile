@@ -1,10 +1,17 @@
 include ../../make.inc
 
+.DEFAULT_GOAL := all
+
 MPIRUN ?= mpirun
 IPC_XML_DIR ?=
 IPC_TEST_CMD = $(MPI_TARGET)
 ifneq ($(strip $(IPC_XML_DIR)),)
 IPC_TEST_CMD = bash $(PROJECT_ROOT)/.github/scripts/ci/run_gtest_rank_xml.sh $(IPC_XML_DIR) $(MPI_TARGET)
+endif
+NET_XML_DIR ?=
+NET_TEST_CMD = $(MPI_TARGET)
+ifneq ($(strip $(NET_XML_DIR)),)
+NET_TEST_CMD = bash $(PROJECT_ROOT)/.github/scripts/ci/run_gtest_rank_xml.sh $(NET_XML_DIR) $(MPI_TARGET)
 endif
 
 # Local include directory for RMA test fixtures
@@ -22,9 +29,14 @@ MPI_SRCS   := $(wildcard coll_*.cpp) rma_test.cpp main_mpi.cpp
 MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/rma_mpi_tests
 
-# CUDA, Iluvatar, MetaX, and PPU run the immediate device-consumer visibility test.
+ifeq ($(USE_MUSA),1)
+# mcc emits device registration calls from the standalone consumer object.
+DEVICE_LINK += -lmusart
+endif
+
+# CUDA, Iluvatar, MetaX, MUSA, and PPU run the device-consumer visibility test.
 # DU keeps its existing RMA correctness coverage without a separate test kernel.
-VISIBILITY_PLATFORM := $(filter 1,$(USE_NVIDIA) $(USE_ILUVATAR) $(USE_METAX) $(USE_PPU))
+VISIBILITY_PLATFORM := $(filter 1,$(USE_NVIDIA) $(USE_ILUVATAR) $(USE_METAX) $(USE_MUSA) $(USE_PPU))
 ifneq ($(strip $(VISIBILITY_PLATFORM)),)
 CXXFLAGS += -DFLAGCX_TEST_GDR_VISIBILITY_CONSUMER
 GDR_VISIBILITY_BUILD_DIR := $(abspath $(BUILDDIR))/kernel/$(KERNEL_PLATFORM)
@@ -98,7 +110,7 @@ run-mpi-ipc: $(MPI_TARGET)
 	@$(MPIRUN) --allow-run-as-root -np 2 $(IPC_ENV) $(IPC_TEST_CMD) --gtest_filter=$(IPC_FILTER)
 
 run-mpi-net: $(MPI_TARGET)
-	@$(MPIRUN) --allow-run-as-root -np 2 $(NET_ENV) -x GTEST_FILTER=$(NET_FILTER) $(MPI_TARGET)
+	@$(MPIRUN) --allow-run-as-root -np 2 $(NET_ENV) -x GTEST_FILTER=$(NET_FILTER) $(NET_TEST_CMD)
 
 run-mpi: run-mpi-ipc run-mpi-net
 

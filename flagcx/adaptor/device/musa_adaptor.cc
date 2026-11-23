@@ -501,9 +501,13 @@ flagcxResult_t musaAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
       reinterpret_cast<MUdeviceptr>(addr), static_cast<muuint64_t>(value),
       MU_STREAM_WRITE_VALUE_DEFAULT));
 }
-flagcxResult_t musaAdaptorEventElapsedTime(float *, flagcxEvent_t,
-                                           flagcxEvent_t) {
-  return flagcxNotSupported;
+flagcxResult_t musaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
+                                           flagcxEvent_t end) {
+  if (ms == NULL || start == NULL || end == NULL) {
+    return flagcxInvalidArgument;
+  }
+  DEVCHECK(musaEventElapsedTime(ms, start->base, end->base));
+  return flagcxSuccess;
 }
 
 flagcxResult_t musaAdaptorHostRegister(void *ptr, size_t bytes) {
@@ -711,6 +715,7 @@ struct flagcxDeviceAdaptor musaAdaptor {
       // A NIC completion alone does not establish GPU visibility. Require
       // the provider's acquire for both incoming WRITE and local GET results.
       FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_DEVICE_MUSA,
 };
 
 #endif // USE_MUSA_ADAPTOR
