@@ -174,10 +174,10 @@ endif
 # This keeps generic g++ test translation units backend-neutral.
 ifeq ($(USE_SHMEM), 1)
 # cann-shmem's device headers live one level down and include each other as
-# "gm2gm/engine/...", so the device tree must be on the search path too; the
-# inline bodies they pull in sit under src/device on the installed tree.
+# "gm2gm/engine/..." (rooted at src/device) and "host_device/..." (rooted at
+# src), so both source roots go on the search path on the installed tree.
 SHMEM_INCLUDE := -I$(SHMEM_HOME)/include -I$(SHMEM_HOME)/include/device \
-	-I$(SHMEM_HOME)/src/device
+	-I$(SHMEM_HOME)/src/device -I$(SHMEM_HOME)/src
 CXXFLAGS += -DFLAGCX_TEST_ALLOCATOR_SHMEM
 else
 SHMEM_INCLUDE :=
