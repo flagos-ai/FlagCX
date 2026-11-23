@@ -153,6 +153,20 @@ FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemQuiet() {
 #endif
 }
 
+// The peer's address of one symmetric word: reads are the lossless direction
+// (see the barrier design comment below), so both the barrier wait and the
+// putValue read-back go through here.
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_ACLSHMEM_GM volatile uint32_t *
+aclshmemPeerWord(FLAGCX_ACLSHMEM_GM uint32_t *local, int pe) {
+#if defined(__CCE_IS_AICORE__)
+  return (FLAGCX_ACLSHMEM_GM volatile uint32_t *)aclshmem_ptr(
+      (FLAGCX_ACLSHMEM_GM void *)local, pe);
+#else
+  (void)pe;
+  return local;
+#endif
+}
+
 FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxAclshmemRequireRelaxedFence(flagcxDevNetFenceLevel fence) {
   if (fence != flagcxDevNetFenceLevel::Relaxed)
@@ -385,11 +399,39 @@ struct CommTraits<AclshmemBackend> {
         uint64_t v = (uint64_t)value;
         aclshmemGmStore32(scratch, (uint32_t)v);
         aclshmemGmStore32(scratch + 1, (uint32_t)(v >> 32));
-        aclshmemPutMemNbi((FLAGCX_ACLSHMEM_GM char *)dst.symBase + dstOff,
-                          (FLAGCX_ACLSHMEM_GM void *)scratch, 8u, pe);
+        FLAGCX_ACLSHMEM_GM char *dstPtr =
+            (FLAGCX_ACLSHMEM_GM char *)dst.symBase + dstOff;
+        aclshmemPutMemNbi(dstPtr, (FLAGCX_ACLSHMEM_GM void *)scratch, 8u, pe);
         // The scratch word is reused by the next call: the transfer must
         // have read it before it can be overwritten.
         aclshmemQuiet();
+        // A posted 8B put can be dropped outright and the peer's copy can
+        // surface only much later; neither is visible from the sender
+        // without a read-back, and putValue is the primitive both measured
+        // as S18B's lost combo 0. The destination lives in the symmetric
+        // heap, so poll the peer mapping (the one lossless direction) and
+        // re-issue the same bytes until they are there.
+        // shortcut: a finite retry budget - a link that keeps dropping
+        // stays silent; the transport reports no per-write completion.
+        FLAGCX_ACLSHMEM_GM volatile uint32_t *remoteWord =
+            aclshmemPeerWord((FLAGCX_ACLSHMEM_GM uint32_t *)dstPtr, pe);
+        for (int attempt = 0; attempt < 3; ++attempt) {
+          uint32_t lo = aclshmemGmLoad32(remoteWord);
+          uint32_t hi = aclshmemGmLoad32(remoteWord + 1);
+          int spins = 0;
+          while ((lo != (uint32_t)v || hi != (uint32_t)(v >> 32)) &&
+                 spins < 32) {
+            Intrin::spinBackoff(spins < 16 ? spins : 16);
+            ++spins;
+            lo = aclshmemGmLoad32(remoteWord);
+            hi = aclshmemGmLoad32(remoteWord + 1);
+          }
+          if (lo == (uint32_t)v && hi == (uint32_t)(v >> 32))
+            break;
+          aclshmemPutMemNbi(dstPtr, (FLAGCX_ACLSHMEM_GM void *)scratch, 8u,
+                            pe);
+          aclshmemQuiet();
+        }
         remoteActionImpl(pe, ra);
       }
       coop.sync();
@@ -670,10 +712,10 @@ struct CommTraits<AclshmemBackend> {
 //   [0]                 this PE's local generation
 //   [1 + teamRank]      generation this PE published for itself
 // A member's slot is written only by that member, so a wait is a plain
-// scan of the team members' slots (read from the owner's own memory).  One
-// generation counter per kind means two
-// barrier *indices* of the same kind must not be in flight concurrently -
-// the IR suite uses its four indices sequentially (see device_ir.asc).
+// scan of the team members' slots, read from the owner's own memory.  One
+// generation counter per kind means two barrier *indices* of the same kind
+// must not be in flight concurrently - the IR suite uses its four indices
+// sequentially (see device_ir.asc).
 // ============================================================
 // Tickets are pulled, never pushed.  A posted MTE put can be dropped; at
 // np=2 a 4B barrier ticket was lost after its sender had already passed the
@@ -682,16 +724,6 @@ struct CommTraits<AclshmemBackend> {
 // barrier has the same shape this file now uses: each PE stores its
 // generation in its own slot with a local store and peers poll that slot
 // through aclshmem_ptr(), a read being the one direction that cannot lose.
-FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_ACLSHMEM_GM volatile uint32_t *
-aclshmemPeerWord(FLAGCX_ACLSHMEM_GM uint32_t *local, int pe) {
-#if defined(__CCE_IS_AICORE__)
-  return (FLAGCX_ACLSHMEM_GM volatile uint32_t *)aclshmem_ptr(
-      (FLAGCX_ACLSHMEM_GM void *)local, pe);
-#else
-  (void)pe;
-  return local;
-#endif
-}
 
 template <typename Coop>
 struct Barrier<AclshmemBackend, flagcxTeamTagIntra, Coop> {
