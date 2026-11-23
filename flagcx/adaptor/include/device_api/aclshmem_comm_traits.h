@@ -34,6 +34,7 @@
 
 #if defined(__CCE_IS_AICORE__)
 #include "gm2gm/shmem_device_cc.h"
+#include "gm2gm/engine/shmemi_device_sdma.h"
 #else
 #include "host/data_plane/shmem_host_p2p_sync.h"
 #endif
@@ -134,9 +135,19 @@ aclshmemGetMem(FLAGCX_ACLSHMEM_GM void *dst, FLAGCX_ACLSHMEM_GM void *src,
 #endif
 }
 
+// The vendor's quiet only drains the transports its host-precomputed mask
+// names, and measured on 910C at np=2 that leaves the SDMA queue running:
+// six 8B puts were still queued when the kernel retired, arrived ~200ms
+// later, and the oldest was lost because the batch had been waiting for the
+// next doorbell rather than being drained.  Drain QP 0 explicitly instead --
+// it is the single queue every SDMA put of this rank uses.
 FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemQuiet() {
 #if defined(__CCE_IS_AICORE__)
   aclshmem_quiet();
+  FLAGCX_ACLSHMEM_GM aclshmem_device_host_state_t *st = aclshmemi_get_state();
+  aclshmemx_sdma_quiet(
+      reinterpret_cast<__ubuf__ char *>(st->sdma_config.aclshmem_ub),
+      st->sdma_config.ub_size, st->sdma_config.sync_id);
 #endif
 }
 
@@ -704,6 +715,9 @@ struct Barrier<AclshmemBackend, flagcxTeamTagIntra, Coop> {
                         (FLAGCX_ACLSHMEM_GM void *)(_state + 1 + _teamRank),
                         4u, _base + m * _stride);
     }
+    // The ticket has to leave this core now: a posted put that waits for the
+    // next doorbell leaves the peer polling its slot forever.
+    aclshmemQuiet();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -769,6 +783,9 @@ struct Barrier<AclshmemBackend, flagcxTeamTagInter, Coop> {
                         (FLAGCX_ACLSHMEM_GM void *)(_state + 1 + _teamRank),
                         4u, _base + m * _stride);
     }
+    // The ticket has to leave this core now: a posted put that waits for the
+    // next doorbell leaves the peer polling its slot forever.
+    aclshmemQuiet();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -856,6 +873,9 @@ struct Barrier<AclshmemBackend, flagcxTeamTagWorld, Coop> {
                         (FLAGCX_ACLSHMEM_GM void *)(_state + 1 + _teamRank),
                         4u, _base + m * _stride);
     }
+    // The ticket has to leave this core now: a posted put that waits for the
+    // next doorbell leaves the peer polling its slot forever.
+    aclshmemQuiet();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
