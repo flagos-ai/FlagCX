@@ -122,12 +122,6 @@ flagcx_ci_record_capability_skip() {
     echo
     echo "Call stack: no live workload remained when this capability skip was recorded."
     echo "For timeout/hang cases, run_with_timeout.sh stores pre-timeout /proc stacks and gdb backtraces."
-    if [[ "${SET_ENV_SCRIPT##*/}" == "mthreads.sh" &&
-          -f "$PROJECT_ROOT/.github/configs/mthreads-known-issues.md" ]]; then
-      echo
-      echo "Known issue record:"
-      sed -n '1,240p' "$PROJECT_ROOT/.github/configs/mthreads-known-issues.md"
-    fi
   } > "$skip_dir/$safe_label.log"
   echo "Capability skip recorded: $skip_dir/$safe_label.log"
 }
