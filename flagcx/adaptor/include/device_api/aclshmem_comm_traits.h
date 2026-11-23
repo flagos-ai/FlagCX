@@ -661,6 +661,25 @@ struct CommTraits<AclshmemBackend> {
 // barrier *indices* of the same kind must not be in flight concurrently -
 // the IR suite uses its four indices sequentially (see device_ir.asc).
 // ============================================================
+// A ticket put can be dropped: measured at np=2 as the first put of a kernel
+// failing to land (S18B combo 0 left at the sentinel, S16 wait spinning
+// forever).  The ticket is a monotonic generation, so resending it is
+// idempotent; the waits below retransmit the whole ticket set every 4096
+// idle polls, which turns a dropped put into a bounded delay instead of a
+// hang.
+FLAGCX_DEVICE_INLINE_DECORATOR void
+aclshmemBarrierResendTicket(FLAGCX_ACLSHMEM_GM uint32_t *state, int base,
+                            int teamSize, int teamRank, int stride) {
+  for (int m = 0; m < teamSize; ++m) {
+    if (m == teamRank)
+      continue;
+    aclshmemPutMemNbi((FLAGCX_ACLSHMEM_GM void *)(state + 1 + teamRank),
+                      (FLAGCX_ACLSHMEM_GM void *)(state + 1 + teamRank), 4u,
+                      base + m * stride);
+  }
+  aclshmemQuiet();
+}
+
 template <typename Coop>
 struct Barrier<AclshmemBackend, flagcxTeamTagIntra, Coop> {
   using Intrin = PlatformTraits<AscendPlatform>::Intrin;
@@ -716,8 +735,14 @@ struct Barrier<AclshmemBackend, flagcxTeamTagIntra, Coop> {
     uint32_t gen = aclshmemGmLoad32(_state);
     for (int m = 0; m < _teamSize; ++m) {
       int iter = 0;
-      while (aclshmemGmLoad32(_state + 1 + m) < gen)
-        Intrin::spinBackoff(iter++);
+      while (aclshmemGmLoad32(_state + 1 + m) < gen) {
+        // Capped backoff keeps the resend cadence bounded however long the
+        // wait runs.
+        Intrin::spinBackoff(iter < 1000 ? iter : 1000);
+        if ((++iter & 0xFFF) == 0)
+          aclshmemBarrierResendTicket(_state, _base, _teamSize, _teamRank,
+                                      _stride);
+      }
     }
   }
 
@@ -786,8 +811,14 @@ struct Barrier<AclshmemBackend, flagcxTeamTagInter, Coop> {
     uint32_t gen = aclshmemGmLoad32(_state);
     for (int m = 0; m < _teamSize; ++m) {
       int iter = 0;
-      while (aclshmemGmLoad32(_state + 1 + m) < gen)
-        Intrin::spinBackoff(iter++);
+      while (aclshmemGmLoad32(_state + 1 + m) < gen) {
+        // Capped backoff keeps the resend cadence bounded however long the
+        // wait runs.
+        Intrin::spinBackoff(iter < 1000 ? iter : 1000);
+        if ((++iter & 0xFFF) == 0)
+          aclshmemBarrierResendTicket(_state, _base, _teamSize, _teamRank,
+                                      _stride);
+      }
     }
   }
 
@@ -876,8 +907,14 @@ struct Barrier<AclshmemBackend, flagcxTeamTagWorld, Coop> {
     uint32_t gen = aclshmemGmLoad32(_state);
     for (int m = 0; m < _teamSize; ++m) {
       int iter = 0;
-      while (aclshmemGmLoad32(_state + 1 + m) < gen)
-        Intrin::spinBackoff(iter++);
+      while (aclshmemGmLoad32(_state + 1 + m) < gen) {
+        // Capped backoff keeps the resend cadence bounded however long the
+        // wait runs.
+        Intrin::spinBackoff(iter < 1000 ? iter : 1000);
+        if ((++iter & 0xFFF) == 0)
+          aclshmemBarrierResendTicket(_state, _base, _teamSize, _teamRank,
+                                      _stride);
+      }
     }
   }
 
