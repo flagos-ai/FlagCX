@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import yaml
 
@@ -64,12 +65,28 @@ sys.exit(19 if kind == os.environ.get("FAIL_MODE") else 0)
                         expected.append("heterogeneous")
                     self.assertEqual(calls, expected)
 
-    def test_config_and_public_workflows_consume_musa(self):
+    def load_mthreads_config(self):
         result = subprocess.run(
             ["ruby", str(CI / "load_platform_config.rb"), "mthreads"],
+            # Read JSON on stdout without writing to the enclosing Actions step.
+            env={k: v for k, v in os.environ.items() if k != "GITHUB_OUTPUT"},
             cwd=ROOT, capture_output=True, text=True, check=True,
         )
-        config = json.loads(result.stdout)
+        return json.loads(result.stdout)
+
+    def test_config_load_ignores_inherited_github_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "github-output"
+            sentinel = "existing_step_output=preserve\n"
+            output.write_text(sentinel)
+            with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+                config = self.load_mthreads_config()
+                self.assertEqual(os.environ["GITHUB_OUTPUT"], str(output))
+            self.assertEqual(config["set_env"], ".github/scripts/set_env/mthreads.sh")
+            self.assertEqual(output.read_text(), sentinel)
+
+    def test_config_and_public_workflows_consume_musa(self):
+        config = self.load_mthreads_config()
         self.assertEqual(config["set_env"], ".github/scripts/set_env/mthreads.sh")
         self.assertEqual(json.loads(config["runs_on"]), ["mt-8g-cicd-flagcx"])
         registry = yaml.safe_load((ROOT / ".github/configs/platforms.yml").read_text())["platforms"]
