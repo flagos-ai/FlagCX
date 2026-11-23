@@ -670,27 +670,27 @@ struct CommTraits<AclshmemBackend> {
 //   [0]                 this PE's local generation
 //   [1 + teamRank]      generation this PE published for itself
 // A member's slot is written only by that member, so a wait is a plain
-// scan of the team's slots.  One generation counter per kind means two
+// scan of the team members' slots (read from the owner's own memory).  One
+// generation counter per kind means two
 // barrier *indices* of the same kind must not be in flight concurrently -
 // the IR suite uses its four indices sequentially (see device_ir.asc).
 // ============================================================
-// A ticket put can be dropped: measured at np=2 as the first put of a kernel
-// failing to land (S18B combo 0 left at the sentinel, S16 wait spinning
-// forever).  The ticket is a monotonic generation, so resending it is
-// idempotent; the waits below retransmit the whole ticket set every 4096
-// idle polls, which turns a dropped put into a bounded delay instead of a
-// hang.
-FLAGCX_DEVICE_INLINE_DECORATOR void
-aclshmemBarrierResendTicket(FLAGCX_ACLSHMEM_GM uint32_t *state, int base,
-                            int teamSize, int teamRank, int stride) {
-  for (int m = 0; m < teamSize; ++m) {
-    if (m == teamRank)
-      continue;
-    aclshmemPutMemNbi((FLAGCX_ACLSHMEM_GM void *)(state + 1 + teamRank),
-                      (FLAGCX_ACLSHMEM_GM void *)(state + 1 + teamRank), 4u,
-                      base + m * stride);
-  }
-  aclshmemQuiet();
+// Tickets are pulled, never pushed.  A posted MTE put can be dropped; at
+// np=2 a 4B barrier ticket was lost after its sender had already passed the
+// barrier, so no retransmission by the sender could repair the wait (S16
+// hung with one rank past and one rank spinning).  The vendor's own team
+// barrier has the same shape this file now uses: each PE stores its
+// generation in its own slot with a local store and peers poll that slot
+// through aclshmem_ptr(), a read being the one direction that cannot lose.
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_ACLSHMEM_GM volatile uint32_t *
+aclshmemPeerWord(FLAGCX_ACLSHMEM_GM uint32_t *local, int pe) {
+#if defined(__CCE_IS_AICORE__)
+  return (FLAGCX_ACLSHMEM_GM volatile uint32_t *)aclshmem_ptr(
+      (FLAGCX_ACLSHMEM_GM void *)local, pe);
+#else
+  (void)pe;
+  return local;
+#endif
 }
 
 template <typename Coop>
@@ -724,21 +724,12 @@ struct Barrier<AclshmemBackend, flagcxTeamTagIntra, Coop> {
   arrive(flagcxDeviceMemoryOrder_t = flagcxDeviceMemoryOrderAcqRel) {
     if (_teamSize <= 1)
       return;
-    // Earlier writes must reach the peer before its barrier ticket.
+    // Earlier writes must reach the peer before its barrier ticket; the
+    // published generation is a local store the peer reads back.
     aclshmemQuiet();
     uint32_t gen = aclshmemGmLoad32(_state) + 1u;
     aclshmemGmStore32(_state, gen);
     aclshmemGmStore32(_state + 1 + _teamRank, gen);
-    for (int m = 0; m < _teamSize; ++m) {
-      if (m == _teamRank)
-        continue;
-      aclshmemPutMemNbi((FLAGCX_ACLSHMEM_GM void *)(_state + 1 + _teamRank),
-                        (FLAGCX_ACLSHMEM_GM void *)(_state + 1 + _teamRank),
-                        4u, _base + m * _stride);
-    }
-    // The ticket has to leave this core now: a posted put that waits for the
-    // next doorbell leaves the peer polling its slot forever.
-    aclshmemQuiet();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -747,15 +738,13 @@ struct Barrier<AclshmemBackend, flagcxTeamTagIntra, Coop> {
       return;
     uint32_t gen = aclshmemGmLoad32(_state);
     for (int m = 0; m < _teamSize; ++m) {
+      if (m == _teamRank)
+        continue;
+      FLAGCX_ACLSHMEM_GM volatile uint32_t *slot =
+          aclshmemPeerWord(_state + 1 + m, _base + m * _stride);
       int iter = 0;
-      while (aclshmemGmLoad32(_state + 1 + m) < gen) {
-        // Capped backoff keeps the resend cadence bounded however long the
-        // wait runs.
-        Intrin::spinBackoff(iter < 1000 ? iter : 1000);
-        if ((++iter & 0xFFF) == 0)
-          aclshmemBarrierResendTicket(_state, _base, _teamSize, _teamRank,
-                                      _stride);
-      }
+      while (aclshmemGmLoad32(slot) < gen)
+        Intrin::spinBackoff(iter < 1000 ? iter : 1000), ++iter;
     }
   }
 
@@ -799,20 +788,12 @@ struct Barrier<AclshmemBackend, flagcxTeamTagInter, Coop> {
     flagcxAclshmemRequireRelaxedFence(fence);
     if (_teamSize <= 1)
       return;
+    // Earlier writes must reach the peer before its barrier ticket; the
+    // published generation is a local store the peer reads back.
     aclshmemQuiet();
     uint32_t gen = aclshmemGmLoad32(_state) + 1u;
     aclshmemGmStore32(_state, gen);
     aclshmemGmStore32(_state + 1 + _teamRank, gen);
-    for (int m = 0; m < _teamSize; ++m) {
-      if (m == _teamRank)
-        continue;
-      aclshmemPutMemNbi((FLAGCX_ACLSHMEM_GM void *)(_state + 1 + _teamRank),
-                        (FLAGCX_ACLSHMEM_GM void *)(_state + 1 + _teamRank),
-                        4u, _base + m * _stride);
-    }
-    // The ticket has to leave this core now: a posted put that waits for the
-    // next doorbell leaves the peer polling its slot forever.
-    aclshmemQuiet();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -823,15 +804,13 @@ struct Barrier<AclshmemBackend, flagcxTeamTagInter, Coop> {
       return;
     uint32_t gen = aclshmemGmLoad32(_state);
     for (int m = 0; m < _teamSize; ++m) {
+      if (m == _teamRank)
+        continue;
+      FLAGCX_ACLSHMEM_GM volatile uint32_t *slot =
+          aclshmemPeerWord(_state + 1 + m, _base + m * _stride);
       int iter = 0;
-      while (aclshmemGmLoad32(_state + 1 + m) < gen) {
-        // Capped backoff keeps the resend cadence bounded however long the
-        // wait runs.
-        Intrin::spinBackoff(iter < 1000 ? iter : 1000);
-        if ((++iter & 0xFFF) == 0)
-          aclshmemBarrierResendTicket(_state, _base, _teamSize, _teamRank,
-                                      _stride);
-      }
+      while (aclshmemGmLoad32(slot) < gen)
+        Intrin::spinBackoff(iter < 1000 ? iter : 1000), ++iter;
     }
   }
 
@@ -895,20 +874,12 @@ struct Barrier<AclshmemBackend, flagcxTeamTagWorld, Coop> {
     flagcxAclshmemRequireRelaxedFence(fence);
     if (_teamSize <= 1)
       return;
+    // Earlier writes must reach the peer before its barrier ticket; the
+    // published generation is a local store the peer reads back.
     aclshmemQuiet();
     uint32_t gen = aclshmemGmLoad32(_state) + 1u;
     aclshmemGmStore32(_state, gen);
     aclshmemGmStore32(_state + 1 + _teamRank, gen);
-    for (int m = 0; m < _teamSize; ++m) {
-      if (m == _teamRank)
-        continue;
-      aclshmemPutMemNbi((FLAGCX_ACLSHMEM_GM void *)(_state + 1 + _teamRank),
-                        (FLAGCX_ACLSHMEM_GM void *)(_state + 1 + _teamRank),
-                        4u, _base + m * _stride);
-    }
-    // The ticket has to leave this core now: a posted put that waits for the
-    // next doorbell leaves the peer polling its slot forever.
-    aclshmemQuiet();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -919,15 +890,13 @@ struct Barrier<AclshmemBackend, flagcxTeamTagWorld, Coop> {
       return;
     uint32_t gen = aclshmemGmLoad32(_state);
     for (int m = 0; m < _teamSize; ++m) {
+      if (m == _teamRank)
+        continue;
+      FLAGCX_ACLSHMEM_GM volatile uint32_t *slot =
+          aclshmemPeerWord(_state + 1 + m, _base + m * _stride);
       int iter = 0;
-      while (aclshmemGmLoad32(_state + 1 + m) < gen) {
-        // Capped backoff keeps the resend cadence bounded however long the
-        // wait runs.
-        Intrin::spinBackoff(iter < 1000 ? iter : 1000);
-        if ((++iter & 0xFFF) == 0)
-          aclshmemBarrierResendTicket(_state, _base, _teamSize, _teamRank,
-                                      _stride);
-      }
+      while (aclshmemGmLoad32(slot) < gen)
+        Intrin::spinBackoff(iter < 1000 ? iter : 1000), ++iter;
     }
   }
 
