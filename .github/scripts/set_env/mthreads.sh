@@ -31,6 +31,13 @@ export LD_LIBRARY_PATH="/usr/local/musa/lib:/usr/local/musa/lib64:/usr/local/lib
 export FLAGCX_SOCKET_IFNAME="${FLAGCX_SOCKET_IFNAME:-^lo,docker,br-,veth}"
 FLAGCX_CI_IGNORE_TEST=$(cat <<'JSON'
 {
+  "gtest": [
+    {
+      "suite": "adaptor",
+      "tests": ["DeviceAdaptorTest.StreamWaitEvent"],
+      "reason": "StreamWaitEvent currently fails on MUSA"
+    }
+  ],
   "phases": [
     {
       "suite": "p2p",

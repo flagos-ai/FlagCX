@@ -1163,7 +1163,6 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             "kunlunxin": [
                 "adaptor",
                 "core",
-                "device_api",
                 "device_api_host",
                 "device_api_unified_ir",
                 "p2p",
@@ -1175,14 +1174,14 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             "mthreads": [
                 "adaptor",
                 "core",
-                "device",
+                "device_api",
                 "device_api_host",
+                "device_api_unified_ir",
                 "p2p",
                 "rma",
                 "runner",
                 "service",
                 "symmem",
-                "topo",
             ],
             "ppu": [
                 "adaptor",

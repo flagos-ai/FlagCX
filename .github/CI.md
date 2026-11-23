@@ -17,9 +17,8 @@ changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
 PR labels `platform:cuda`, `platform:hygon`, `platform:iluvatar`,
-`platform:metax`, `platform:kunlunxin`, `platform:ppu`, and `platform:ascend`
-
-PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, `platform:mthreads`, and `platform:ppu`
+`platform:metax`, `platform:kunlunxin`, `platform:mthreads`, `platform:ppu`,
+and `platform:ascend`
 override path selection. Multiple platform labels select their union;
 `platform:musa` is an alias for `platform:mthreads`; `musa` also works in
 workflow dispatch selection and `/test musa` commands.
@@ -93,14 +92,15 @@ network still needs runner-side network provisioning. This check establishes
 visibility only; the adaptor Host MR and SendRecv tests verify connectivity.
 
 Mthreads CI uses `mt-8g-cicd-flagcx` and the image configured in
-`.github/configs/mthreads.yml`. It runs adaptor, core, device, device_api_host,
-p2p, rma, runner, service, symmem host unit, and topo unit suites plus
+`.github/configs/mthreads.yml`. It runs adaptor, core, device_api_host,
+p2p, rma, runner, service, and symmem host unit suites plus
 homogeneous and heterogeneous collective benchmarks. The symmem job currently
 runs host unit tests only; it does not cover IPC, VMM, or multi-process paths.
 The device adaptor suite excludes `DeviceAdaptorTest.StreamWaitEvent`, which
 currently fails on MUSA; all other device adaptor tests run.
-Device API MPI and kernel suites remain unselected because this repository has
-no MUSA device-kernel compiler backend. Torch plugin tests are also not
+Device API and unified IR suites are selected but report capability skips because
+this repository has no MUSA device-kernel compiler backend. Device adaptor and
+topology cases run through the adaptor and core suites respectively. Torch plugin tests are also not
 configured for Mthreads. Build its CI image with
 `docker build -f docker/mthreads-ci.Dockerfile .`.
 

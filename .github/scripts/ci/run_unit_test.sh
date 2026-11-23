@@ -287,8 +287,6 @@ build_suite() {
   if [[ "$SUITE" == device_api_host ||
         "$SUITE" == device_api_unified_ir ]]; then
     suite_dir="$PROJECT_ROOT/test/unittest/device_api"
-  elif [[ "$SUITE" == device ]]; then
-    suite_dir="$PROJECT_ROOT/test/unittest/device"
   fi
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
 
@@ -1340,15 +1338,6 @@ run_suite() {
     device_api_host)
       run_device_api_host
       ;;
-    device)
-      FLAGCX_CI_TEST_LABEL="device adaptor tests" \
-        GTEST_FILTER="${FLAGCX_CI_DEVICE_GTEST_FILTER:-*}" \
-        "$TEST_RUNNER" make -C "$suite_dir" run
-      ;;
-    topo)
-      FLAGCX_CI_TEST_LABEL="topology unit tests" \
-        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
-      ;;
     device_api_unified_ir)
       run_device_api_unified_ir
       ;;
@@ -1397,7 +1386,7 @@ run_supplemental_unit_tests() {
 }
 
 case "$SUITE" in
-  adaptor|core|device|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem|topo)
+  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
   device_traits)
