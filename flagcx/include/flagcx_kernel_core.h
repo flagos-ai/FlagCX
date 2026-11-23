@@ -40,8 +40,7 @@ typedef enum {
   flagcxDevicePrimPutValue = 8,
   flagcxDevicePrimPutSignal = 9,
   flagcxDevicePrimGet = 10,
-  // Standalone signal whose complete uint64_t value is carried in snd.
-  // The original PrimSignal encoding remains unchanged for compact values.
+  // Both standalone signal primitives carry the complete uint64_t in snd.
   flagcxDevicePrimSignalValue = 11
 } flagcxDevicePrim;
 
@@ -188,18 +187,39 @@ constexpr unsigned int flagcxDeviceTriggerBitsDatatype = 4;
 constexpr unsigned int flagcxDeviceTriggerOffCount = 0;
 constexpr unsigned int flagcxDeviceTriggerBitsCount = 32;
 
-// One-sided Put/PutSignal: trd prim-specific
-//   trd[35:29] = srcMrIdx(7), trd[28:22] = dstMrIdx(7)
-//   PutSignal: trd[21:10] = signalIdx(12), trd[9:0] = unused
-//   fst = srcOffset(32)|dstOffset(32), snd =
-//   size(32)|signalValue(16)|reserved(16)
-constexpr unsigned int flagcxDeviceTriggerOffSrcMrIdx = 29;
+// Version 1: Put/Get/PutSignal/Signal/SignalValue control in trd:
+//   [35:32] formatVersion(4), [31:26] reserved(6), [25:24] bufferType(2),
+//   [23:0] context-local completionId(24). Context comes from the FIFO worker.
+//   bufferType: 0 = signal, 1 = counter. Put/Get leave completion fields zero.
+// This is an internal protocol change: rebuild host library and device kernels
+// together. The proxy requires version 1; mixed old/new binaries are
+// unsupported.
+constexpr unsigned int flagcxDeviceTriggerFormatVersion = 1;
+constexpr unsigned int flagcxDeviceTriggerOffFormatVersion = 32;
+constexpr unsigned int flagcxDeviceTriggerBitsFormatVersion = 4;
+constexpr unsigned int flagcxDeviceTriggerOffBufferType = 24;
+constexpr unsigned int flagcxDeviceTriggerBitsBufferType = 2;
+constexpr unsigned int flagcxDeviceTriggerOffSignalIdx = 0;
+constexpr unsigned int flagcxDeviceTriggerBitsSignalIdx = 24;
+constexpr uint64_t flagcxDeviceTriggerCompletionCapacity = 1ULL << 24;
+
+FLAGCX_HOST_DEVICE_INLINE constexpr bool
+flagcxDeviceTriggerUsesVersionedLayout(uint64_t prim) {
+  return prim == flagcxDevicePrimPut || prim == flagcxDevicePrimGet ||
+         prim == flagcxDevicePrimPutSignal || prim == flagcxDevicePrimSignal ||
+         prim == flagcxDevicePrimSignalValue;
+}
+
+// Put/Get/PutSignal data parameters:
+//   fst[63:32] = srcOffset(32), fst[31:0] = dstOffset(32)
+//   snd[63:32] = size(32), snd[31:25] = srcMrIdx(7),
+//   snd[24:18] = dstMrIdx(7), snd[17:16] = reserved(2),
+//   snd[15:0] = signalValue(16), zero for Put/Get.
+constexpr unsigned int flagcxDeviceTriggerOffSrcMrIdx = 25;
 constexpr unsigned int flagcxDeviceTriggerBitsSrcMrIdx = 7;
-constexpr unsigned int flagcxDeviceTriggerOffDstMrIdx = 22;
+constexpr unsigned int flagcxDeviceTriggerOffDstMrIdx = 18;
 constexpr unsigned int flagcxDeviceTriggerBitsDstMrIdx = 7;
-constexpr unsigned int flagcxDeviceTriggerOffSignalIdx = 10;
-constexpr unsigned int flagcxDeviceTriggerBitsSignalIdx = 12;
-// PutSignal signalValue in snd[15:0] (same max as PrimSignal: 16b)
+// Larger fused increments use Put followed by a standalone 64-bit signal.
 constexpr unsigned int flagcxDeviceTriggerOffSignalValuePut = 0;
 constexpr unsigned int flagcxDeviceTriggerBitsSignalValuePut = 16;
 // fst offsets for srcOffset/dstOffset (shared with PutValue dstOffset accessor)
@@ -212,22 +232,16 @@ constexpr unsigned int flagcxDeviceTriggerOffSize = 32;
 constexpr unsigned int flagcxDeviceTriggerBitsSize = 32;
 
 // One-sided PutValue: trd prim-specific
-//   trd[28:22] = dstMrIdx(7) (same position as Put/PutSignal dstMrIdx)
+//   trd[28:22] = dstMrIdx(7), independent of the versioned layout above
 //   fst = 0|dstOffset(32) (fst[31:0], same position as Put/PutSignal)
 //   snd = value(64)
+constexpr unsigned int flagcxDeviceTriggerOffPutValueDstMrIdx = 22;
 
-// Signal/WaitSignal: all in trd prim-specific.  PrimSignalValue uses the
-// same bufferType/signalIdx fields and stores its full value in snd.
-//   trd[35:34] = bufferType(2), trd[33:22] = signalIdx(12),
-//   trd[21:6] = signalValue/expectedValue(16), trd[5:0] = unused
-//   fst = 0, snd = 0
-constexpr unsigned int flagcxDeviceTriggerOffBufferType = 34;
-constexpr unsigned int flagcxDeviceTriggerBitsBufferType = 2;
-constexpr unsigned int flagcxDeviceTriggerOffSignalIdxSig = 22;
-constexpr unsigned int flagcxDeviceTriggerBitsSignalIdxSig = 12;
-constexpr unsigned int flagcxDeviceTriggerOffSignalValue = 6;
+// Signal/SignalValue: fst = 0, snd = complete uint64_t increment.
+// Keep the compact-increment threshold for choosing the primitive, but both
+// use the same control/value layout. Legacy WaitSignal remains a proxy no-op.
 constexpr unsigned int flagcxDeviceTriggerBitsSignalValue =
-    16; // max signal value: 2^16 (65535)
+    16; // compact primitive selection threshold (65535)
 
 constexpr unsigned int flagcxReduceTriggerBitsAddr = 64;
 constexpr unsigned int flagcxReduceTriggerOffCount = 0;
@@ -285,6 +299,7 @@ struct flagcxDeviceTrigger {
   FLAGCX_HOST_DECORATOR uint64_t getPrim();
   FLAGCX_HOST_DECORATOR uint64_t getPeerRank();
   FLAGCX_HOST_DECORATOR uint64_t getSlotIdx();
+  FLAGCX_HOST_DECORATOR uint64_t getFormatVersion();
 
   // Two-sided accessors (Send/Recv)
   FLAGCX_HOST_DECORATOR uint64_t getAddr();     // fst
@@ -292,16 +307,15 @@ struct flagcxDeviceTrigger {
   FLAGCX_HOST_DECORATOR uint64_t getCount();    // trd[31:0]
 
   // One-sided accessors (Put/PutSignal/PutValue)
-  FLAGCX_HOST_DECORATOR uint64_t getSrcMrIdx();  // trd[35:29]
-  FLAGCX_HOST_DECORATOR uint64_t getDstMrIdx();  // trd[28:22]
-  FLAGCX_HOST_DECORATOR uint64_t getSize();      // snd[63:32]
-  FLAGCX_HOST_DECORATOR uint64_t getSrcOffset(); // fst[63:32]
-  FLAGCX_HOST_DECORATOR uint64_t getDstOffset(); // fst[31:0]
-  FLAGCX_HOST_DECORATOR uint64_t getValue();     // snd (PutValue)
-  FLAGCX_HOST_DECORATOR uint64_t
-  getSignalIdx(); // trd (PutSignal/Signal/WaitSignal)
-  FLAGCX_HOST_DECORATOR uint64_t getSignalValue();   // trd (Signal)
-  FLAGCX_HOST_DECORATOR uint64_t getExpectedValue(); // trd (WaitSignal)
+  FLAGCX_HOST_DECORATOR uint64_t getSrcMrIdx();      // snd[31:25]
+  FLAGCX_HOST_DECORATOR uint64_t getDstMrIdx();      // snd, or trd for PutValue
+  FLAGCX_HOST_DECORATOR uint64_t getSize();          // snd[63:32]
+  FLAGCX_HOST_DECORATOR uint64_t getSrcOffset();     // fst[63:32]
+  FLAGCX_HOST_DECORATOR uint64_t getDstOffset();     // fst[31:0]
+  FLAGCX_HOST_DECORATOR uint64_t getValue();         // snd (PutValue)
+  FLAGCX_HOST_DECORATOR uint64_t getSignalIdx();     // trd[23:0], context-local
+  FLAGCX_HOST_DECORATOR uint64_t getSignalValue();   // snd
+  FLAGCX_HOST_DECORATOR uint64_t getExpectedValue(); // legacy WaitSignal
   FLAGCX_HOST_DECORATOR uint64_t getBufferType();    // trd (Signal/WaitSignal)
 
   // Term accessor
@@ -311,6 +325,8 @@ struct flagcxDeviceTrigger {
   FLAGCX_HOST_DECORATOR uint64_t getType(); // alias for getPrim()
 };
 typedef flagcxDeviceTrigger *flagcxDeviceTrigger_t;
+static_assert(sizeof(flagcxDeviceTrigger) == 24,
+              "FIFO trigger must remain three uint64_t words");
 
 struct alignas(16) flagcxReduceTrigger {
   uint64_t value[12];

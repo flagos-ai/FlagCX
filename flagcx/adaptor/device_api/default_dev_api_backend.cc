@@ -17,6 +17,7 @@
 #include "device_api/flagcx_device.h"
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
+#include "kernel_proxy_completion.h"
 #include "net.h"
 #include "onesided.h"
 #include "p2p.h"
@@ -504,7 +505,11 @@ defaultDevApiCommCreate(flagcxComm_t comm,
                         size_t reqsSize, flagcxDevComm_t devComm) {
   // The default backend consumes only fields in the frozen prefix.
   (void)reqsSize;
-  if (reqs->interBarrierCount < 0)
+  if (reqs->interBarrierCount < 0 || reqs->interSignalCount < 0 ||
+      reqs->interCounterCount < 0 ||
+      uint64_t(reqs->interSignalCount) >
+          flagcxDeviceTriggerCompletionCapacity ||
+      uint64_t(reqs->interCounterCount) > flagcxDeviceTriggerCompletionCapacity)
     return flagcxInvalidArgument;
   devComm->interBarrierCount = reqs->interBarrierCount;
   const bool forceOneSidedNet = flagcxParamDeviceOneSidedForceNet() != 0;
@@ -576,6 +581,20 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     INFO(FLAGCX_INIT, "defaultDevApiCommCreate: bufCtxCount=%d contextCount=%d",
          bufCtxCount, devComm->contextCount);
 
+    int expandedSignals = 0;
+    size_t signalBytes = 0, counterBytes = 0;
+    if (!flagcxKernelCompletionLayout(
+            reqs->interSignalCount, reqs->interBarrierCount,
+            devComm->nTeamRanks, reqs->interCounterCount, bufCtxCount,
+            &expandedSignals, &signalBytes, &counterBytes)) {
+      WARN("defaultDevApiCommCreate: invalid completion layout "
+           "signals=%d barriers=%d team=%d counters=%d contexts=%d; "
+           "per-context capacity=%llu",
+           reqs->interSignalCount, reqs->interBarrierCount, devComm->nTeamRanks,
+           reqs->interCounterCount, bufCtxCount,
+           (unsigned long long)flagcxDeviceTriggerCompletionCapacity);
+      return flagcxInvalidArgument;
+    }
     flagcxResult_t res;
 
     // Signal buffer (host-pinned or GDR device memory)
@@ -583,27 +602,9 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       // Expand signalCount to include barrier slots:
       // Each barrier channel reserves one signal slot per Inter team rank.
       int userSignals = reqs->interSignalCount;
-      if (devComm->nTeamRanks < 0 || reqs->interBarrierCount < 0 ||
-          (reqs->interBarrierCount > 0 &&
-           devComm->nTeamRanks >
-               std::numeric_limits<int>::max() / reqs->interBarrierCount)) {
-        WARN("barrierSignalBase overflow: nTeamRanks=%d interBarrierCount=%d",
-             devComm->nTeamRanks, reqs->interBarrierCount);
-        return flagcxInternalError;
-      }
-      int barrierSlots = devComm->nTeamRanks * reqs->interBarrierCount;
-      if (userSignals < 0 || barrierSlots < 0 ||
-          userSignals > std::numeric_limits<int>::max() - barrierSlots ||
-          bufCtxCount <= 0 ||
-          (size_t)(userSignals + barrierSlots) >
-              SIZE_MAX / (size_t)bufCtxCount / sizeof(uint64_t)) {
-        WARN("defaultDevApiCommCreate: signal buffer size overflow");
-        return flagcxInvalidArgument;
-      }
-      devComm->signalCount = userSignals + barrierSlots;
+      devComm->signalCount = expandedSignals;
       devComm->barrierSignalBase = userSignals;
-      size_t sigSize =
-          (size_t)devComm->signalCount * bufCtxCount * sizeof(uint64_t);
+      size_t sigSize = signalBytes;
       devComm->signalBufferIsVmm = false;
       INFO(
           FLAGCX_INIT,
@@ -684,8 +685,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     // Counter buffer (host-pinned)
     if (reqs->interCounterCount > 0) {
       devComm->counterCount = reqs->interCounterCount;
-      size_t cntSize =
-          (size_t)devComm->counterCount * bufCtxCount * sizeof(uint64_t);
+      size_t cntSize = counterBytes;
       INFO(FLAGCX_INIT, "defaultDevApiCommCreate: counterBuffer cntSize=%zu",
            cntSize);
       res = deviceAdaptor->deviceMalloc((void **)&devComm->counterBuffer,

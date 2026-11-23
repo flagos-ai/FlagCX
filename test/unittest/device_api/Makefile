@@ -88,12 +88,15 @@ $(SIGNAL_LAYOUT_TARGET): test_signal_layout.cpp $(KERNEL_DIR)/include/device_sig
 	@mkdir -p $(BINDIR)
 	@$(HOST_CXX) -std=c++11 -Wall -Wextra -Werror -I$(KERNEL_DIR)/include -o $@ $<
 
-.PHONY: signal-layout-test signal-kernel-test
+.PHONY: signal-layout-test signal-kernel-test fifo-completion-test
 signal-layout-test: $(SIGNAL_LAYOUT_TARGET)
 	@$(SIGNAL_LAYOUT_TARGET)
 
 signal-kernel-test:
 	@python3 check_signal_kernels.py --cxx "$(HOST_CXX)"
+
+fifo-completion-test:
+	@python3 check_fifo_completion.py --cxx "$(HOST_CXX)"
 
 # Provider dispatch is host-testable without a GPU or a FlagCX library link.
 PROVIDER_TEST_TARGET := $(BINDIR)/test_default_net_provider
@@ -216,7 +219,7 @@ ifneq ($(SKIPPED_TARGETS),)
 	@echo "Skipped unsupported targets on $(KERNEL_PLATFORM): $(SKIPPED_TARGETS)"
 endif
 
-unit: $(UNIT_TARGET) $(PROVIDER_UNIT_TARGET) $(SIGNAL_LAYOUT_TARGET)
+unit: $(UNIT_TARGET) $(PROVIDER_UNIT_TARGET) $(SIGNAL_LAYOUT_TARGET) fifo-completion-test
 
 require-compile-kernel:
 	$(REQUIRE_COMPILE_KERNEL)

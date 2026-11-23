@@ -13,6 +13,7 @@
 #include "flagcx_hetero.h"
 #include "flagcx_kernel.h" // FLAGCX_DEVICE_CTA_COUNT
 #include "info.h"
+#include "kernel_proxy_completion.h"
 #include "kernel_proxy_transport.h"
 #include "net.h"
 #include "onesided.h"
@@ -2805,6 +2806,13 @@ static flagcxResult_t flagcxKernelWorkerProgressOnce(void *state, bool stopping,
     }
   }
 
+  if (res == flagcxSuccess) {
+    res = flagcxKernelProxyValidateFormat(pending);
+    if (res != flagcxSuccess)
+      WARN("rank=%d unsupported FIFO format=%llu prim=%llu", comm->rank,
+           (unsigned long long)pending.getFormatVersion(),
+           (unsigned long long)pending.getPrim());
+  }
   if (res == flagcxSuccess)
     switch (pending.getPrim()) {
       case flagcxDevicePrimSend:
@@ -2884,57 +2892,45 @@ static flagcxResult_t flagcxKernelWorkerProgressOnce(void *state, bool stopping,
       }
       case flagcxDevicePrimSignal:
       case flagcxDevicePrimSignalValue: {
-        uint64_t bufType = pending.getBufferType();
-        int signalIdx = (int)pending.getSignalIdx();
+        flagcxDevComm_t dc = comm->devCommHandle;
+        if (dc == NULL) {
+          res = flagcxInternalError;
+          break;
+        }
+        size_t completionOffset = 0;
+        res = flagcxKernelProxyCompletionOffset(
+            pending, contextId, dc->contextCount, dc->signalCount,
+            dc->counterCount, &completionOffset);
+        if (res != flagcxSuccess) {
+          WARN("rank=%d invalid completion context=%d type=%llu slot=%llu",
+               comm->rank, contextId,
+               (unsigned long long)pending.getBufferType(),
+               (unsigned long long)pending.getSignalIdx());
+          break;
+        }
         uint64_t signalValue = pending.getSignalValue();
-        size_t signalOff = (size_t)signalIdx * sizeof(uint64_t);
-
-        if (bufType == 0) {
-          // Signal buffer: RDMA FETCH_AND_ADD to peer's signalBuffer
+        if (pending.getBufferType() == 0) {
+          // Context-local ID is expanded only here, after consuming the FIFO.
           int peerRank = (int)pending.getPeerRank();
           res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
-          if (res != flagcxSuccess) {
+          if (res != flagcxSuccess)
             break;
-          }
           if (comm->signalHandle == NULL) {
             res = flagcxInternalError;
             break;
           }
-          res = flagcxKernelProxyPost(
-              kproxyState, comm, &submit, peerRank, FLAGCX_RMA_PUT_SIGNAL,
-              contextId, 0, 0, 0, -1, -1, signalOff, signalValue, 0, &postedIB);
+          res = flagcxKernelProxyPost(kproxyState, comm, &submit, peerRank,
+                                      FLAGCX_RMA_PUT_SIGNAL, contextId, 0, 0, 0,
+                                      -1, -1, completionOffset, signalValue, 0,
+                                      &postedIB);
           retryPending = res == flagcxInProgress;
         } else {
-          flagcxDevComm_t dc = comm->devCommHandle;
-          if (dc == NULL || dc->counterBuffer == NULL) {
+          if (dc->counterBuffer == NULL) {
             res = flagcxInternalError;
             break;
           }
-          int contextCount = dc->contextCount > 0 ? dc->contextCount : 1;
-          size_t totalCounterCount =
-              (size_t)contextCount * (size_t)dc->counterCount;
-          if (dc->counterCount <= 0 || signalIdx < 0 ||
-              (size_t)signalIdx >= totalCounterCount) {
-            WARN("rank=%d invalid encoded counter index=%d count=%d "
-                 "contexts=%d",
-                 comm->rank, signalIdx, dc->counterCount, contextCount);
-            res = flagcxInvalidArgument;
-            break;
-          }
-          int encodedContext = signalIdx / dc->counterCount;
-          int counterId = signalIdx % dc->counterCount;
-          if (encodedContext != contextId) {
-            WARN("rank=%d counter context mismatch proxy=%d encoded=%d "
-                 "counter=%d",
-                 comm->rank, contextId, encodedContext, counterId);
-            res = flagcxInternalError;
-            break;
-          }
-          // enqueueFifoSignal has already flattened context and counter into
-          // signalIdx. Use that offset directly; applying the context stride
-          // here again would address the wrong slot.
-          size_t counterOffset = (size_t)signalIdx;
-          uint64_t *counterPtr = (uint64_t *)dc->counterBuffer + counterOffset;
+          uint64_t *counterPtr = (uint64_t *)dc->counterBuffer +
+                                 completionOffset / sizeof(uint64_t);
           __atomic_fetch_add(counterPtr, signalValue, __ATOMIC_RELEASE);
         }
         break;
@@ -2961,9 +2957,18 @@ static flagcxResult_t flagcxKernelWorkerProgressOnce(void *state, bool stopping,
         size_t srcOffset = (size_t)pending.getSrcOffset();
         size_t dstOffset = (size_t)pending.getDstOffset();
         size_t size = (size_t)pending.getSize();
-        int signalIdx = (int)pending.getSignalIdx();
+        flagcxDevComm_t dc = comm->devCommHandle;
+        if (dc == NULL) {
+          res = flagcxInternalError;
+          break;
+        }
+        size_t signalOff = 0;
+        res = flagcxKernelProxyCompletionOffset(
+            pending, contextId, dc->contextCount, dc->signalCount,
+            dc->counterCount, &signalOff);
+        if (res != flagcxSuccess)
+          break;
         uint64_t signalValue = pending.getSignalValue();
-        size_t signalOff = (size_t)signalIdx * sizeof(uint64_t);
         if (comm->signalHandle == NULL) {
           res = flagcxInternalError;
           break;

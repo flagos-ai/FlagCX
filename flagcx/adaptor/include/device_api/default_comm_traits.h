@@ -660,18 +660,34 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       return fifoFlush(fifoBuffer);
     }
 
+    FLAGCX_DEVICE_INLINE_DECORATOR static void
+    validateCompletionId(int signalCount, int counterCount, int slot,
+                         uint64_t bufferType) {
+      int count = bufferType == 0 ? signalCount : counterCount;
+      if (bufferType > 1 || slot < 0 || slot >= count ||
+          uint64_t(slot) >= flagcxDeviceTriggerCompletionCapacity)
+        FLAGCX_DEVICE_TRAP();
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR static uint64_t
+    completionControl(int slot, uint64_t bufferType) {
+      return (uint64_t(flagcxDeviceTriggerFormatVersion)
+              << flagcxDeviceTriggerOffFormatVersion) |
+             (bufferType << flagcxDeviceTriggerOffBufferType) |
+             (uint64_t(slot) << flagcxDeviceTriggerOffSignalIdx);
+    }
+
     FLAGCX_DEVICE_INLINE_DECORATOR static flagcxResult_t
-    enqueueSignal(void *fifoBuffer, int contextId, int signalCount,
-                  int counterCount, int signalIdx, uint32_t value, int peer,
-                  uint64_t bufferType) {
-      int combinedIdx = bufferType == 0 ? contextId * signalCount + signalIdx
-                                        : contextId * counterCount + signalIdx;
-      uint64_t trdSpecific =
-          (bufferType << flagcxDeviceTriggerOffBufferType) |
-          ((uint64_t)combinedIdx << flagcxDeviceTriggerOffSignalIdxSig) |
-          ((uint64_t)(value & 0xFFFFu) << flagcxDeviceTriggerOffSignalValue);
-      return fifoEnqueue(fifoBuffer, 0, 0,
-                         buildTrd(flagcxDevicePrimSignal, peer, trdSpecific));
+    enqueueSignal(void *fifoBuffer, int signalCount, int counterCount,
+                  int signalIdx, uint64_t value, int peer, uint64_t bufferType,
+                  flagcxDevicePrim prim = flagcxDevicePrimSignal) {
+      validateCompletionId(signalCount, counterCount, signalIdx, bufferType);
+      if (peer < 0 ||
+          uint64_t(peer) > flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank))
+        FLAGCX_DEVICE_TRAP();
+      return fifoEnqueue(
+          fifoBuffer, 0, value,
+          buildTrd(prim, peer, completionControl(signalIdx, bufferType)));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR static void
@@ -974,69 +990,81 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     }
 
     // ---- One-sided FIFO encoders ----
+    FLAGCX_DEVICE_INLINE_DECORATOR static uint64_t
+    transferParameters(size_t srcOffset, size_t dstOffset, size_t size,
+                       int peer, int srcMrIdx, int dstMrIdx,
+                       uint32_t signalValue = 0) {
+      if (srcOffset > flagcxTriggerMask(flagcxDeviceTriggerBitsSrcOffset) ||
+          dstOffset > flagcxTriggerMask(flagcxDeviceTriggerBitsDstOffset) ||
+          size > flagcxTriggerMask(flagcxDeviceTriggerBitsSize) || peer < 0 ||
+          uint64_t(peer) > flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank) ||
+          srcMrIdx < 0 || dstMrIdx < 0 ||
+          uint64_t(srcMrIdx) >
+              flagcxTriggerMask(flagcxDeviceTriggerBitsSrcMrIdx) ||
+          uint64_t(dstMrIdx) >
+              flagcxTriggerMask(flagcxDeviceTriggerBitsDstMrIdx) ||
+          signalValue >
+              flagcxTriggerMask(flagcxDeviceTriggerBitsSignalValuePut))
+        FLAGCX_DEVICE_TRAP();
+      return (uint64_t(size) << flagcxDeviceTriggerOffSize) |
+             (uint64_t(srcMrIdx) << flagcxDeviceTriggerOffSrcMrIdx) |
+             (uint64_t(dstMrIdx) << flagcxDeviceTriggerOffDstMrIdx) |
+             (uint64_t(signalValue) << flagcxDeviceTriggerOffSignalValuePut);
+    }
+
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
     enqueueFifoPut(size_t srcOffset, size_t dstOffset, size_t size, int peer,
                    int srcMrIdx, int dstMrIdx) const {
       uint64_t fstValue =
-          ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
-          ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
-      uint64_t sndValue = (uint64_t)size << flagcxDeviceTriggerOffSize;
-      uint64_t trdSpecific =
-          ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
-          ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx);
+          (uint64_t(srcOffset) << flagcxDeviceTriggerOffSrcOffset) |
+          (uint64_t(dstOffset) << flagcxDeviceTriggerOffDstOffset);
+      uint64_t sndValue = transferParameters(srcOffset, dstOffset, size, peer,
+                                             srcMrIdx, dstMrIdx);
       return ProxyProvider::fifoEnqueue(
           fifoBuffer, fstValue, sndValue,
-          ProxyProvider::buildTrd(flagcxDevicePrimPut, peer, trdSpecific));
+          ProxyProvider::buildTrd(flagcxDevicePrimPut, peer,
+                                  ProxyProvider::completionControl(0, 0)));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
     enqueueFifoGet(size_t srcOffset, size_t dstOffset, size_t size, int peer,
                    int srcMrIdx, int dstMrIdx) const {
       uint64_t fstValue =
-          ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
-          ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
-      uint64_t sndValue = (uint64_t)size << flagcxDeviceTriggerOffSize;
-      uint64_t trdSpecific =
-          ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
-          ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx);
+          (uint64_t(srcOffset) << flagcxDeviceTriggerOffSrcOffset) |
+          (uint64_t(dstOffset) << flagcxDeviceTriggerOffDstOffset);
+      uint64_t sndValue = transferParameters(srcOffset, dstOffset, size, peer,
+                                             srcMrIdx, dstMrIdx);
       return ProxyProvider::fifoEnqueue(
           fifoBuffer, fstValue, sndValue,
-          ProxyProvider::buildTrd(flagcxDevicePrimGet, peer, trdSpecific));
+          ProxyProvider::buildTrd(flagcxDevicePrimGet, peer,
+                                  ProxyProvider::completionControl(0, 0)));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
     enqueueFifoSignalRaw(int signalIdx, int peer) const {
-      return ProxyProvider::enqueueSignal(fifoBuffer, _contextId, signalCount,
-                                          counterCount, signalIdx, 1, peer, 0);
+      return ProxyProvider::enqueueSignal(fifoBuffer, signalCount, counterCount,
+                                          signalIdx, 1, peer, 0);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t enqueueFifoSignal(
         int signalIdx, uint32_t value, int peer, uint64_t bufferType) const {
-      return ProxyProvider::enqueueSignal(fifoBuffer, _contextId, signalCount,
-                                          counterCount, signalIdx, value, peer,
-                                          bufferType);
+      return ProxyProvider::enqueueSignal(fifoBuffer, signalCount, counterCount,
+                                          signalIdx, value, peer, bufferType);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t enqueueFifoSignalValue(
         int signalIdx, uint64_t value, int peer, uint64_t bufferType) const {
-      int combinedIdx = (bufferType == 0)
-                            ? (_contextId * signalCount + signalIdx)
-                            : (_contextId * counterCount + signalIdx);
-      uint64_t trdSpecific =
-          ((uint64_t)bufferType << flagcxDeviceTriggerOffBufferType) |
-          ((uint64_t)combinedIdx << flagcxDeviceTriggerOffSignalIdxSig);
-      return ProxyProvider::fifoEnqueue(
-          fifoBuffer, 0, value,
-          ProxyProvider::buildTrd(flagcxDevicePrimSignalValue, peer,
-                                  trdSpecific));
+      return ProxyProvider::enqueueSignal(fifoBuffer, signalCount, counterCount,
+                                          signalIdx, value, peer, bufferType,
+                                          flagcxDevicePrimSignalValue);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t enqueueFifoPutValue(
         size_t dstOffset, uint64_t value, int peer, int dstMrIdx) const {
-      uint64_t fstValue = (uint64_t)dstOffset &
+      uint64_t fstValue = uint64_t(dstOffset) &
                           flagcxTriggerMask(flagcxDeviceTriggerBitsDstOffset);
-      uint64_t trdSpecific = (uint64_t)dstMrIdx
-                             << flagcxDeviceTriggerOffDstMrIdx;
+      uint64_t trdSpecific = uint64_t(dstMrIdx)
+                             << flagcxDeviceTriggerOffPutValueDstMrIdx;
       return ProxyProvider::fifoEnqueue(
           fifoBuffer, fstValue, value,
           ProxyProvider::buildTrd(flagcxDevicePrimPutValue, peer, trdSpecific));
@@ -1045,21 +1073,18 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t enqueueFifoPutSignal(
         size_t srcOffset, size_t dstOffset, size_t size, int signalIdx,
         uint32_t signalValue, int peer, int srcMrIdx, int dstMrIdx) const {
+      ProxyProvider::validateCompletionId(signalCount, counterCount, signalIdx,
+                                          0);
       uint64_t fstValue =
-          ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
-          ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
-      uint64_t sndValue = ((uint64_t)size << flagcxDeviceTriggerOffSize) |
-                          ((uint64_t)(signalValue & 0xFFFFu)
-                           << flagcxDeviceTriggerOffSignalValuePut);
-      uint64_t trdSpecific =
-          ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
-          ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx) |
-          ((uint64_t)(_contextId * signalCount + signalIdx)
-           << flagcxDeviceTriggerOffSignalIdx);
+          (uint64_t(srcOffset) << flagcxDeviceTriggerOffSrcOffset) |
+          (uint64_t(dstOffset) << flagcxDeviceTriggerOffDstOffset);
+      uint64_t sndValue = transferParameters(srcOffset, dstOffset, size, peer,
+                                             srcMrIdx, dstMrIdx, signalValue);
       return ProxyProvider::fifoEnqueue(
           fifoBuffer, fstValue, sndValue,
-          ProxyProvider::buildTrd(flagcxDevicePrimPutSignal, peer,
-                                  trdSpecific));
+          ProxyProvider::buildTrd(
+              flagcxDevicePrimPutSignal, peer,
+              ProxyProvider::completionControl(signalIdx, 0)));
     }
 
     // ---- MR offset helper ----
@@ -1640,7 +1665,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
               typename PlatformTraits<P>::CoopThread, flagcxDevNet_None,
               flagcxDeviceScope_t, flagcxDeviceScope_t) const {
     int targetRank = peer * _stride + _localRank;
-    if (ProxyProvider::enqueueSignal(_fifoBuffer, _contextId, _signalCount, 0,
+    if (ProxyProvider::enqueueSignal(_fifoBuffer, _signalCount, 0,
                                      (int)action.signal, 1, targetRank,
                                      0) != flagcxSuccess)
       FLAGCX_DEVICE_TRAP();
