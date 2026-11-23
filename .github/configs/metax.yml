@@ -9,6 +9,10 @@ paths_watch:
   - .github/scripts/ci/run_metax_workload.sh
   - .github/scripts/ci/check_metax_devices.py
   - flagcx/adaptor/device/maca_adaptor.cc
+  - makefiles/metax.mk
+  - flagcx/adaptor/kernel/metax/**/*
+  - flagcx/adaptor/include/device_api/metax_*.h
+  - bindings/ir/metax/**/*
   - test/kernel/maca/**/*
   - flagcx/adaptor/ccl/mccl_adaptor.cc
   - flagcx/adaptor/include/metax_adaptor.h
@@ -41,6 +45,9 @@ set_env: .github/scripts/set_env/metax.sh
 unit_test_suites:
   - adaptor
   - core
+  - device_api
+  - device_api_host
+  - device_api_unified_ir
   - p2p
   - rma
   - runner

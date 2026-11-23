@@ -468,6 +468,9 @@ else ifeq ($(USE_MUSA),1)
 else ifeq ($(USE_PPU),1)
   DEVICE_BITCODE_DIR := ppu
   DEVICE_BITCODE_ARCH_ARG := BITCODE_LIB_ARCH=$(DEVICE_BITCODE_ARCH)
+else ifeq ($(USE_METAX),1)
+  DEVICE_BITCODE_DIR := metax
+  DEVICE_BITCODE_ARCH_ARG := BITCODE_LIB_ARCH=$(DEVICE_BITCODE_ARCH)
 endif
 
 ifneq ($(filter device_bitcode,$(MAKECMDGOALS)),)
@@ -537,9 +540,18 @@ HOST_LINKER   ?= $(HOST_COMPILER)
 DEVICE_LINKER := $(DEVICE_COMPILER)
 LINKER        := $(HOST_LINKER)
 LINKER_FLAGS  :=
+LIB_LINK_INPUTS = $(LIBOBJ)
 ifeq ($(USE_DU),1)
   LINKER := $(DEVICE_LINKER)
   LINKER_FLAGS := $(DEVICE_LINK_FLAG)
+endif
+
+# Native MACA relocatable objects are finalized by mxcc. Mark ordinary C++
+# objects as host input so mxcc does not try to unbundle their device code.
+ifeq ($(USE_METAX)$(COMPILE_KERNEL),11)
+  LINKER := $(DEVICE_LINKER)
+  LINKER_FLAGS := $(DEVICE_LINK_FLAG)
+  LIB_LINK_INPUTS = $(foreach obj,$(LIBOBJ),-maca-host-input $(obj))
 endif
 
 # MUSA's generated image symbol is WEAK DEFAULT. Without local binding, a
@@ -565,7 +577,7 @@ $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS) $(MUSA_FATBIN_EXPORT_MAP) p2p_engine_m
 	  if [ ! -f $@ ] || [ "$$mode" != "$(USE_SHARED_P2P_ENGINE)" ] || \
 	     [ -n "$(filter-out p2p_engine_mode_force,$?)" ]; then \
 	    echo "Linking   $@"; \
-	    $(LINKER) $(LINKER_FLAGS) $(COVERAGE_LINK_FLAG) $(LIBOBJ) $(DEVOBJS) -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) $(SHCA_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) $(SHCA_LINK) -g && \
+	    $(LINKER) $(LINKER_FLAGS) $(COVERAGE_LINK_FLAG) $(LIB_LINK_INPUTS) $(DEVOBJS) -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) $(SHCA_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) $(SHCA_LINK) -g && \
 	    printf '%s\n' '$(USE_SHARED_P2P_ENGINE)' > $(P2P_ENGINE_MODE_FILE); \
 	  fi
 

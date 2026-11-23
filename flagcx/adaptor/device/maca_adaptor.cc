@@ -149,7 +149,9 @@ flagcxResult_t macaAdaptorDeviceMalloc(void **ptr, size_t size,
     DEVCHECK(mcMallocManaged(ptr, size, mcMemAttachGlobal));
   } else {
     if (stream == NULL) {
-      DEVCHECK(mcMalloc(ptr, size));
+      // DefaultBackend barriers/completions are shared through IPC. Cached
+      // device memory can hide a peer's writes from a polling kernel.
+      DEVCHECK(mcExtMallocWithFlags(ptr, size, mcDeviceMallocFinegrained));
     } else {
       DEVCHECK(mcMallocAsync(ptr, size, stream->base));
     }
@@ -215,7 +217,9 @@ flagcxResult_t macaAdaptorGdrMemAlloc(void **ptr, size_t size,
     return flagcxInvalidArgument;
   }
   if (!flagcxParamVmmEnable()) {
-    DEVCHECK(mcMalloc(ptr, size));
+    // flagcxMemAlloc uses this route in hetero mode, including Device API
+    // payload and signal buffers. Keep its IPC policy aligned with controls.
+    FLAGCXCHECK(macaAdaptorDeviceMalloc(ptr, size, flagcxMemDevice, NULL));
     mcPointerAttribute_t attrs;
     DEVCHECK(mcPointerGetAttributes(&attrs, *ptr));
     unsigned flags = 1;

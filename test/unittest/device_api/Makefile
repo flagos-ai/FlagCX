@@ -55,6 +55,17 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) $(IR_INCLUDE) $(PLATFORM_INCLUDES) \
 
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
+DEVICE_TEST_LINKER = $(CXX)
+DEVICE_TEST_LINK_FLAGS = $(CXXFLAGS)
+DEVICE_TEST_LINK_INPUTS = $^
+ifeq ($(USE_METAX),1)
+# Keep host translation units on the host compiler. Only mxcc's final link
+# consumes the relocatable MACA kernels; all other objects are host inputs.
+DEVICE_TEST_LINKER = $(DEVICE_COMPILER)
+DEVICE_TEST_LINK_FLAGS = $(DEVICE_LINK_FLAG)
+DEVICE_TEST_LINK_INPUTS = $(foreach obj,$^,$(if $(filter $(DEVICE_API_OBJ) $(DEVICE_IR_OBJ),$(obj)),$(obj),-maca-host-input $(obj)))
+endif
+
 # DU kernel objects contain absolute host relocations. Link their test
 # executables without PIE so the host linker accepts those relocations.
 ifeq ($(USE_DU), 1)
@@ -284,32 +295,32 @@ $(OBJDIR)/test_device_%.o: test_device_%.cpp | require-compile-kernel
 $(BINDIR)/test_device_ir_intra: $(OBJDIR)/test_device_ir_intra.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(DEVICE_TEST_LINKER) $(DEVICE_TEST_LINK_FLAGS) -o $@ $(DEVICE_TEST_LINK_INPUTS) $(ALL_LINK)
 
 $(BINDIR)/test_device_ir_inter: $(OBJDIR)/test_device_ir_inter.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(DEVICE_TEST_LINKER) $(DEVICE_TEST_LINK_FLAGS) -o $@ $(DEVICE_TEST_LINK_INPUTS) $(ALL_LINK)
 
 $(BINDIR)/test_device_ir_unified_intra: $(OBJDIR)/test_device_ir_unified_intra.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(DEVICE_TEST_LINKER) $(DEVICE_TEST_LINK_FLAGS) -o $@ $(DEVICE_TEST_LINK_INPUTS) $(ALL_LINK)
 
 $(BINDIR)/test_device_ir_unified_inter: $(OBJDIR)/test_device_ir_unified_inter.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(DEVICE_TEST_LINKER) $(DEVICE_TEST_LINK_FLAGS) -o $@ $(DEVICE_TEST_LINK_INPUTS) $(ALL_LINK)
 
 $(BINDIR)/test_device_api_intra: $(OBJDIR)/test_device_api_intra.o $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(DEVICE_TEST_LINKER) $(DEVICE_TEST_LINK_FLAGS) -o $@ $(DEVICE_TEST_LINK_INPUTS) $(ALL_LINK)
 
 $(BINDIR)/test_device_api_inter: $(OBJDIR)/test_device_api_inter.o $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(DEVICE_TEST_LINKER) $(DEVICE_TEST_LINK_FLAGS) -o $@ $(DEVICE_TEST_LINK_INPUTS) $(ALL_LINK)
 
 # Enflame-specific test targets (dual-buffer pattern)
 $(OBJDIR)/test_device_api_intra_enflame.o: enflame/test_device_api_intra.cpp | require-compile-kernel
@@ -325,12 +336,12 @@ $(OBJDIR)/test_device_ir_intra_enflame.o: enflame/test_device_ir_intra.cpp | req
 $(BINDIR)/test_device_api_intra_enflame: $(OBJDIR)/test_device_api_intra_enflame.o $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(DEVICE_TEST_LINKER) $(DEVICE_TEST_LINK_FLAGS) -o $@ $(DEVICE_TEST_LINK_INPUTS) $(ALL_LINK)
 
 $(BINDIR)/test_device_ir_intra_enflame: $(OBJDIR)/test_device_ir_intra_enflame.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(DEVICE_TEST_LINKER) $(DEVICE_TEST_LINK_FLAGS) -o $@ $(DEVICE_TEST_LINK_INPUTS) $(ALL_LINK)
 
 clean:
 	@rm -rf $(BUILDDIR)

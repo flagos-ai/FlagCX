@@ -52,6 +52,10 @@ flagcx_ci_configure_suite() {
   local suite=$1
 
   case "$suite" in
+    device_api|device_api_host|device_api_unified_ir)
+      FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
+      FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
+      ;;
     rma)
       export RMA_PLATFORM_ENV="-x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1"
       FLAGCX_CI_TEST_MAKE_ARGS+=(
@@ -70,6 +74,7 @@ flagcx_ci_prepare() {
   if [[ "$suite" == "adaptor" || "$suite" == "p2p" ||
         "$suite" == "rma" || "$suite" == "runner" ||
         "$suite" == "symmem" || "$suite" == "perf" ||
+        "$suite" == "device_api" || "$suite" == "device_api_unified_ir" ||
         "$suite" == "torch-api" ]]; then
     if [[ -d /sys/class/net/bond0 ]]; then
       export FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-bond0}

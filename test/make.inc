@@ -201,7 +201,11 @@ ifneq ($(strip $(DEVICE_PLATFORM)),)
   ifeq ($(KERNEL_PLATFORM), cuda)
     KERNEL_PLATFORM := nvidia
   endif
-  PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/$(KERNEL_PLATFORM)
+  ifeq ($(KERNEL_PLATFORM),maca)
+    PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/metax
+  else
+    PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/$(KERNEL_PLATFORM)
+  endif
   KERNEL_OBJ_DIR := $(KERNEL_DIR)/$(KERNEL_PLATFORM)/build/obj
 endif
 

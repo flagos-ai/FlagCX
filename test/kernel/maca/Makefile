@@ -1,17 +1,31 @@
-# MetaX/MACA kernel compilation for GDR visibility conformance tests.
+# MetaX/MACA Device API, Device IR and GDR visibility kernels.
 
 include ../../make.inc
 
 ALL_INCLUDES := $(FLAGCX_INCLUDES) \
+	-I$(PROJECT_ROOT)/flagcx/adaptor/include/device_api \
+	-I$(PROJECT_ROOT)/bindings/ir \
 	-I$(PROJECT_ROOT)/test/kernel/include \
 	$(CCL_INCLUDE) \
 	$(DEVICE_INCLUDE)
 
-.PHONY: all clean gdr_visibility.o
+.PHONY: all clean device_api.o device_ir.o gdr_visibility.o
 
-all: $(OBJDIR)/gdr_visibility.o
+all: $(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o
 
+device_api.o: $(OBJDIR)/device_api.o
+device_ir.o: $(OBJDIR)/device_ir.o
 gdr_visibility.o: $(OBJDIR)/gdr_visibility.o
+
+$(OBJDIR)/device_api.o: device_api.cu
+	@mkdir -p $(OBJDIR)
+	$(DEVICE_COMPILER) $(DEVICE_COMPILE_FLAG) -o $@ $< \
+		$(ALL_INCLUDES) -DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
+
+$(OBJDIR)/device_ir.o: device_ir.cu
+	@mkdir -p $(OBJDIR)
+	$(DEVICE_COMPILER) $(DEVICE_COMPILE_FLAG) -o $@ $< \
+		$(ALL_INCLUDES) -DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
 
 $(OBJDIR)/gdr_visibility.o: gdr_visibility.cu \
 	../include/gdr_visibility_test.h \
@@ -23,3 +37,5 @@ $(OBJDIR)/gdr_visibility.o: gdr_visibility.cu \
 
 clean:
 	@rm -rf $(BUILDDIR)
+
+-include $(OBJDIR)/*.d
