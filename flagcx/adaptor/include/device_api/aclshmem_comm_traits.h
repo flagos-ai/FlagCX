@@ -122,11 +122,18 @@ aclshmemPutMemNbi(FLAGCX_ACLSHMEM_GM void *dst, FLAGCX_ACLSHMEM_GM void *src,
 #endif
 }
 
+FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemQuiet();
+
 FLAGCX_DEVICE_INLINE_DECORATOR void
 aclshmemGetMem(FLAGCX_ACLSHMEM_GM void *dst, FLAGCX_ACLSHMEM_GM void *src,
                uint32_t bytes, int pe) {
 #if defined(__CCE_IS_AICORE__)
   aclshmem_getmem(dst, src, bytes, (int32_t)pe);
+  // The vendor's get RMA pairs its nbi copy with mte_quiet (see
+  // shmem_device_rma.hpp); the bare getmem entry does not promise the
+  // destination is complete when it returns, so drain before the caller
+  // reads it.
+  aclshmemQuiet();
 #else
   (void)dst;
   (void)src;
