@@ -220,11 +220,22 @@ struct CommTraits<AclshmemBackend> {
       dc.nRanks = di.nRanks;
       dc.intraRank = di.intraRank;
       dc.intraSize = di.intraSize;
-      dc.signalBuffer = di.signalBuffer;
       dc.signalCount = di.signalCount;
-      dc.counterBuffer = di.counterBuffer;
       dc.counterCount = di.counterCount;
+#if defined(__CCE_IS_AICORE__)
+      // This body is a device function on the bisheng pass even though only
+      // the host ever runs it (flagcx_device_core.h:99-104); a handle's
+      // plain pointers have no legal conversion to __gm__ there, so the
+      // aicore copy is left empty and the state comes from the prebuilt
+      // value struct (di.devComm branch) instead.
+      dc.signalBuffer = nullptr;
+      dc.counterBuffer = nullptr;
+      dc.shadowBuffer = nullptr;
+#else
+      dc.signalBuffer = di.signalBuffer;
+      dc.counterBuffer = di.counterBuffer;
       dc.shadowBuffer = di.shadowBuffer;
+#endif
       dc.gridSyncState = nullptr;
       dc.scratchBuffer = nullptr;
     }
