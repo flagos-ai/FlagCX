@@ -1,0 +1,7 @@
+test: distinguish a lost putValue from a zero-valued one
+
+Pre-fill the S18B destination with 0xAA and print the observed word in hex
+with its size. An untouched slot reads back 0xaaaa..., a slot that received
+a zero reads 0 - which the previous all-zero memset could not tell apart.
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>

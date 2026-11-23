@@ -388,7 +388,10 @@ int main(int argc, char *argv[]) {
 #endif
       constexpr size_t kPutValueStrideWords =
           kPutValueStrideBytes / sizeof(uint64_t);
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * kPutValueStrideBytes,
+      // 0xAA sentinel, not 0: an untouched slot must be distinguishable from
+      // a transfer that landed carrying a zero.
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0xAA,
+                                          6 * kPutValueStrideBytes,
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                           flagcxMemDevice, stream));
@@ -415,8 +418,8 @@ int main(int argc, char *argv[]) {
         int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
         uint64_t expected = (uint64_t)(senderRank * 100 + combo);
         if (hostRecvV[combo * kPutValueStrideWords] != expected) {
-          RPRINTF("  S18B mismatch combo=%d exp=%llu got=%llu\n", combo,
-                  (unsigned long long)expected,
+          RPRINTF("  S18B mismatch bytes=%zu combo=%d exp=%llu got=0x%llx\n",
+                  bytes, combo, (unsigned long long)expected,
                   (unsigned long long)hostRecvV[combo * kPutValueStrideWords]);
           s18Pass = false;
         }
