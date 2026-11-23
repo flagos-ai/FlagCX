@@ -36,6 +36,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <unistd.h>
 
 constexpr int kUnifiedIrSignalComboCount = 12;
 constexpr int kUnifiedIrS23ComboCount = 18;
@@ -413,7 +414,10 @@ int main(int argc, char *argv[]) {
         RPRINTF("  S18 results[0]=%d (expected 1)\n", hostRes);
         s18Pass = false;
       }
-      for (int combo = 0; combo < 6 && s18Pass; combo++) {
+      // Every slot is checked, not just up to the first mismatch: a loss
+      // confined to combo 0 and a scattered one are different faults.
+      bool s18bOk = true;
+      for (int combo = 0; combo < 6; combo++) {
         int teamIdx = combo % 2;
         int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
         uint64_t expected = (uint64_t)(senderRank * 100 + combo);
@@ -421,9 +425,27 @@ int main(int argc, char *argv[]) {
           RPRINTF("  S18B mismatch bytes=%zu combo=%d exp=%llu got=0x%llx\n",
                   bytes, combo, (unsigned long long)expected,
                   (unsigned long long)hostRecvV[combo * kPutValueStrideWords]);
-          s18Pass = false;
+          s18bOk = false;
         }
       }
+      // A slot that is correct a moment later was late, not lost. The host
+      // copy that reads it is not ordered against the SDMA queue the put was
+      // posted on, so a transfer still in flight shows up as the sentinel.
+      if (!s18bOk) {
+        usleep(200000);
+        FLAGCXCHECK(devHandle->deviceMemcpy(
+            hostRecvV, recvBuff, 6 * kPutValueStrideBytes,
+            flagcxMemcpyDeviceToHost, stream));
+        for (int combo = 0; combo < 6; combo++) {
+          int teamIdx = combo % 2;
+          int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
+          uint64_t expected = (uint64_t)(senderRank * 100 + combo);
+          if (hostRecvV[combo * kPutValueStrideWords] == expected) {
+            RPRINTF("  S18B late bytes=%zu combo=%d\n", bytes, combo);
+          }
+        }
+      }
+      s18Pass &= s18bOk;
 
       RPRINTF("S18 DevPut+PutValue(INTRA+WORLD): %s\n",
               s18Pass ? "PASS" : "FAIL");
