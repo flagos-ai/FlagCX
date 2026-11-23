@@ -4445,6 +4445,15 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
     result = flagcxCommFinalizeStatus(comm, 0x6c01 + phase * 4, local);
     if (result != flagcxSuccess)
       break;
+#if defined(FLAGCX_USE_GDA)
+    // Retire GDA collectively before owner cleanup can fail rank-locally.
+    // This remains outside localDoneMask so every rank joins a retry.
+    if (phase == flagcxFinalizeTransport) {
+      result = flagcxCommPrepareGdaDestroy(comm);
+      if (result != flagcxSuccess)
+        break;
+    }
+#endif
     if (phase == flagcxFinalizeImports && comm->heteroComm != NULL) {
       comm->heteroComm->finalizeState.importsClosedConfirmed = 1;
       comm->heteroComm->finalizeState.phase = flagcxHeteroFinalizeComplete;
@@ -4741,6 +4750,10 @@ static flagcxResult_t flagcxCommRollbackInit(flagcxComm_t comm) {
     }
     if (common != flagcxSuccess)
       return common;
+#if defined(FLAGCX_USE_GDA)
+    if (phase == flagcxFinalizeTransport)
+      FLAGCXCHECK(flagcxCommPrepareGdaDestroy(comm));
+#endif
     state->commonPhase = (flagcxFinalizePhase)(phase + 1);
   }
   if (comm->heteroComm != NULL) {

@@ -7,6 +7,9 @@
 
 #define FLAGCX_DISABLE_DEV_COMM_CREATE_SIZE_DISPATCH
 #include "device_api/flagcx_device.h"
+#if defined(FLAGCX_USE_GDA)
+#include "device_api/devnet/flagcx_dev_net_adaptor.h"
+#endif
 #include "alloc.h"
 #include "comm.h"
 #include "flagcx_hetero.h"
@@ -257,6 +260,30 @@ flagcxDevCommCreateSized(flagcxComm_t comm,
     *devComm = nullptr;
   return flagcxDevCommCreateInternal(comm, reqs, reqsSize, devComm);
 }
+
+#if defined(FLAGCX_USE_GDA)
+flagcxResult_t flagcxCommPrepareGdaDestroy(flagcxComm_t comm) {
+  // A failed drain has already revoked publication. Keep finding that owner
+  // through the active list (or a standalone destroy's retained cleanup).
+  flagcxDevComm_t devComm = comm->devNetCommHandle;
+  if (devComm == nullptr && comm->pendingDevCommCleanup != nullptr &&
+      comm->pendingDevCommCleanup->gdaDraining)
+    devComm = comm->pendingDevCommCleanup;
+  for (flagcxDevComm_t active = comm->activeDevComms;
+       devComm == nullptr && active != nullptr; active = active->previousActive)
+    if (active->gdaDraining && active->gdaHostOwner != nullptr)
+      devComm = active;
+  if (devComm == nullptr || devComm->gdaHostOwner == nullptr ||
+      devComm->gdaQuiesced)
+    return flagcxSuccess;
+
+  if (comm->devNetCommHandle == devComm)
+    comm->devNetCommHandle = nullptr;
+  // Do not release the DevComm or put it ahead of newer owners in pending
+  // cleanup. Stage 2 keeps the original LIFO destruction order.
+  return flagcxDevNetGda.prepareCommDestroy(devComm);
+}
+#endif
 
 extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
                                                flagcxDevComm_t devComm) {

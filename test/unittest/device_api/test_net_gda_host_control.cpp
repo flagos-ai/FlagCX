@@ -284,9 +284,18 @@ TEST_F(GdaHostControl, ErrorWindowCannotReleaseUntilCollectiveNicRetirement) {
     owner.publishAttempted = true;
     flagcxWindow host{};
     makeWindow(host);
+    flagcxSymWindow sym{};
+    sym.owner = &host;
+    sym.ipcSlot = -1;
+    sym.mrIndex = -1;
+    sym.state = flagcxSymWindowPublished;
+    host.ownerComm = &comm;
+    host.defaultBase = &sym;
+    host.isSymmetricDefault = 1;
     comm.devNetWindows = &host;
-    // The public collective entry must converge failure without releasing MRs.
+    // Public local deregistration must retain MRs on a GDA error.
     EXPECT_EQ(flagcxCommWindowDeregister(&comm, &host), flagcxRemoteError);
+    EXPECT_EQ(sym.state, flagcxSymWindowCleanupRequired);
     EXPECT_EQ(XpuNetioGda::deregisterWindow(&host), flagcxRemoteError);
     EXPECT_EQ(std::count(events.begin(), events.end(), Mr), 0);
     EXPECT_EQ(std::count(events.begin(), events.end(), Free), 0);

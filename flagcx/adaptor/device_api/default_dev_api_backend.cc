@@ -1000,6 +1000,14 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     }
     INFO(FLAGCX_INIT, "defaultDevApiCommCreate: preconnectFullMesh OK");
   }
+#if defined(FLAGCX_USE_GDA)
+  // GDA readiness comes from its published device context, not Proxy FIFOs.
+  if (devComm->gdaProvider != 0) {
+    if (devComm->gdaDeviceContext == nullptr || devComm->contextCount <= 0)
+      return flagcxInternalError;
+    devComm->netOneSidedReady = 1;
+  }
+#endif
   if (devComm->gdaProvider == 0 && comm->heteroComm != nullptr &&
       comm->heteroComm->oneSideHandleCount > 0 &&
       comm->heteroComm->oneSideHandles[0] != nullptr &&
