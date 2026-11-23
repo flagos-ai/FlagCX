@@ -247,14 +247,12 @@ enum flagcxMemType_t { flagcxMemHost, flagcxMemManaged, flagcxMemDevice };
 enum flagcxResult_t { flagcxSuccess, flagcxUnhandledDeviceError };
 struct flagcxStream { mcStream_t base; };
 using flagcxStream_t = flagcxStream *;
-enum { mcSuccess, mcMemAttachGlobal, mcDeviceMallocFinegrained };
+enum { mcSuccess, mcMemAttachGlobal };
 static int operation = 0, error = 0;
 static mcStream_t usedStream;
 int mcMallocHost(void **, size_t) { operation = 1; return error; }
 int mcMallocManaged(void **, size_t, int) { operation = 2; return error; }
-int mcExtMallocWithFlags(void **, size_t, int flags) {
-  assert(flags == mcDeviceMallocFinegrained); operation = 3; return error;
-}
+int mcMalloc(void **, size_t) { operation = 3; return error; }
 int mcMallocAsync(void **, size_t, mcStream_t stream) {
   operation = 4; usedStream = stream; return error;
 }
@@ -284,7 +282,7 @@ int main() {
   assert(operation == 2);
   error = 1;
   assert(macaAdaptorDeviceMalloc(&ptr, 64, flagcxMemDevice, nullptr) == flagcxUnhandledDeviceError);
-  assert(operation == 3); // A failed coherent allocation must not fall back.
+  assert(operation == 3); // Propagate the native allocation error.
 }
 """)
 

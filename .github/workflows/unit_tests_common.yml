@@ -148,6 +148,26 @@ jobs:
           FLAGCX_CI_CONTAINER_NAME: flagcx-unit-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
         run: docker container rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-unit_test-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload C++ coverage report
+        if: ${{ always() && inputs.cpp_coverage }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cpp-coverage-${{ inputs.platform }}-${{ matrix.suite }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/cpp-coverage/${{ inputs.platform }}/${{ matrix.suite }}/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
   unit_test_enflame:
     name: ${{ needs.load_config.outputs.display_name }} / ${{ matrix.suite }}
     needs: load_config
