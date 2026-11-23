@@ -58,7 +58,7 @@ for proxy_var in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy
 done
 
 cleanup() {
-  docker rm --force "$container_name" >/dev/null 2>&1 || true
+  docker container rm --force "$container_name" >/dev/null 2>&1 || true
 }
 log_dir=${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-/tmp}/flagcx-ci-attempts}
 mkdir -p "$log_dir"
@@ -118,7 +118,7 @@ if [[ "$platform" == "ascend" ]]; then
   fi
 fi
 
-docker run --rm \
+docker container run --rm \
   --name "$container_name" \
   "${docker_args[@]}" \
   --user=root \

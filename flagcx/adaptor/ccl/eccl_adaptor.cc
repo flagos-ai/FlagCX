@@ -90,11 +90,19 @@ flagcxResult_t ecclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
 }
 
 flagcxResult_t ecclAdaptorMemAlloc(void **ptr, size_t size) {
+#ifdef FLAGCX_ENFLAME_DEVICE_API
   return (flagcxResult_t)ecclMemAlloc(ptr, size);
+#else
+  return (flagcxResult_t)topsMalloc(ptr, size);
+#endif
 }
 
 flagcxResult_t ecclAdaptorMemFree(void *ptr) {
+#ifdef FLAGCX_ENFLAME_DEVICE_API
   return (flagcxResult_t)ecclMemFree(ptr);
+#else
+  return (flagcxResult_t)topsFree(ptr);
+#endif
 }
 
 flagcxResult_t ecclAdaptorCommRegister(const flagcxInnerComm_t comm, void *buff,
@@ -111,6 +119,7 @@ flagcxResult_t ecclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
                                              size_t size,
                                              flagcxInnerWindow_t *win,
                                              int winFlags) {
+#ifdef FLAGCX_ENFLAME_DEVICE_API
   if (*win == NULL) {
     FLAGCXCHECK(flagcxCalloc(win, 1));
   }
@@ -125,14 +134,28 @@ flagcxResult_t ecclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
     *win = NULL;
   }
   return res;
+#else
+  (void)comm;
+  (void)buff;
+  (void)size;
+  (void)win;
+  (void)winFlags;
+  return flagcxNotSupported;
+#endif
 }
 
 flagcxResult_t ecclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
                                                flagcxInnerWindow_t win) {
+#ifdef FLAGCX_ENFLAME_DEVICE_API
   flagcxResult_t res =
       (flagcxResult_t)ecclCommWindowDeregister(comm->base, win->base);
   free(win);
   return res;
+#else
+  (void)comm;
+  (void)win;
+  return flagcxNotSupported;
+#endif
 }
 
 flagcxResult_t ecclAdaptorReduce(const void *sendbuff, void *recvbuff,
@@ -239,6 +262,7 @@ flagcxResult_t ecclAdaptorGroupStart() {
 
 flagcxResult_t ecclAdaptorGroupEnd() { return (flagcxResult_t)ecclGroupEnd(); }
 
+#ifdef FLAGCX_ENFLAME_DEVICE_API
 flagcxResult_t ecclAdaptorDevCommReqsInit(flagcxInnerComm_t comm,
                                           flagcxDevCommRequirements *reqs) {
   ecclCommProperties_t props = ECCL_COMM_PROPERTIES_INITIALIZER;
@@ -299,6 +323,7 @@ flagcxResult_t ecclAdaptorDevCommDestroy(flagcxInnerComm_t comm,
   free(devComm);
   return ret;
 }
+#endif
 
 struct flagcxCCLAdaptor ecclAdaptor = {
     "ECCL",
@@ -320,8 +345,12 @@ struct flagcxCCLAdaptor ecclAdaptor = {
     ecclAdaptorSend, ecclAdaptorRecv,
     // Group semantics
     ecclAdaptorGroupStart, ecclAdaptorGroupEnd,
-    // Device API
+// Device API
+#ifdef FLAGCX_ENFLAME_DEVICE_API
     ecclAdaptorDevCommReqsInit, ecclAdaptorDevCommCreate,
     ecclAdaptorDevCommDestroy};
+#else
+    NULL, NULL, NULL};
+#endif
 
 #endif // USE_ENFLAME_ADAPTOR

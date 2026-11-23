@@ -66,7 +66,17 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
         self.assertEqual(
             ALL_ENABLED_PLATFORMS,
-            ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "mthreads", "ppu", "ascend"],
+            [
+                "cuda",
+                "hygon",
+                "iluvatar",
+                "metax",
+                "kunlunxin",
+                "mthreads",
+                "ppu",
+                "ascend",
+                "enflame",
+            ],
         )
         for event_name in ("push", "schedule"):
             with self.subTest(event=event_name):
@@ -101,6 +111,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 "flagcx/adaptor/device/cann_adaptor.cc",
                 enabled_platform_or_matrix("ascend"),
             ),
+            (".github/scripts/set_env/enflame.sh", ["enflame"]),
             (
                 ".github/scripts/ci/run_ppu_workload.sh",
                 enabled_platform_or_matrix("ppu"),
@@ -132,7 +143,8 @@ class CiMatrixRoutingTest(unittest.TestCase):
             ),
             (
                 "flagcx/adaptor/kernel/common/nested/foo.h",
-                ["cuda", "hygon"],
+                [p for p in ("cuda", "hygon") if p in ALL_ENABLED_PLATFORMS]
+                or ALL_ENABLED_PLATFORMS,
             ),
             (
                 "test/kernel/nvidia/nested/foo.cu",
@@ -162,14 +174,16 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 self.assertEqual(outputs["platforms"], expected)
 
     def test_platform_labels_override_paths_for_enabled_platforms(self):
-        outputs, _ = self.resolve(
-            {
-                "event_name": "pull_request",
-                "labels": ["platform:kunlunxin"],
-                "files": ["README.md"],
-            }
-        )
-        self.assertEqual(outputs["platforms"], ["kunlunxin"])
+        for platform in ("enflame", "kunlunxin"):
+            with self.subTest(platform=platform):
+                outputs, _ = self.resolve(
+                    {
+                        "event_name": "pull_request",
+                        "labels": [f"platform:{platform}"],
+                        "files": ["README.md"],
+                    }
+                )
+                self.assertEqual(outputs["platforms"], [platform])
 
     def test_all_label_forces_full_matrix(self):
         outputs, _ = self.resolve(
@@ -217,7 +231,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_fork_repository_and_immutable_ref_are_forwarded(self):
         outputs, _ = self.resolve({
             "event_name": "pull_request", "repository": "contributor/FlagCX",
-            "ref": "a" * 40, "labels": ["platform:kunlunxin"],
+            "ref": "a" * 40, "labels": ["platform:enflame"],
         })
         self.assertEqual(outputs["repository"], "contributor/FlagCX")
         self.assertEqual(outputs["ref"], "a" * 40)
@@ -225,10 +239,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_comment_without_platform_respects_labels(self):
         outputs, _ = self.resolve({
             "event_name": "issue_comment", "comment": "/test", "permission": "admin",
-            "is_pull_request": True, "labels": ["platform:kunlunxin"],
+            "is_pull_request": True, "labels": ["platform:enflame"],
             "files": ["flagcx/core/group.cc"],
         })
-        self.assertEqual(outputs["platforms"], ["kunlunxin"])
+        self.assertEqual(outputs["platforms"], ["enflame"])
 
     def test_every_platform_config_has_watch_patterns(self):
         for platform in ALL_ENABLED_PLATFORMS:
@@ -239,6 +253,16 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (
+            ("workflow_dispatch", {"selection": "enflame"}, ["enflame"]),
+            (
+                "issue_comment",
+                {
+                    "comment": "/test enflame",
+                    "permission": "write",
+                    "is_pull_request": True,
+                },
+                ["enflame"],
+            ),
             ("workflow_dispatch", {"selection": "kunlunxin"}, ["kunlunxin"]),
             (
                 "issue_comment",

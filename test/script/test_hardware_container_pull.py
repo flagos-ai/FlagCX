@@ -30,7 +30,7 @@ if sys.argv[1] == 'pull':
     if attempt < len(errors):
         print(errors[attempt], file=sys.stderr)
         sys.exit(17)
-elif sys.argv[1] == 'run':
+elif sys.argv[1:3] == ['container', 'run']:
     sys.exit(int(os.environ['WORKLOAD_STATUS']))
 """
 
@@ -79,7 +79,7 @@ class HardwareContainerPullTest(unittest.TestCase):
         result, calls, logs, summary = self.run_container()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sum(call[:2] == ["docker", "pull"] for call in calls), 1)
-        self.assertEqual(sum(call[:2] == ["docker", "run"] for call in calls), 1)
+        self.assertEqual(sum(call[:3] == ["docker", "container", "run"] for call in calls), 1)
         self.assertFalse(any(call[0] == "sleep" for call in calls))
         self.assertEqual(len(logs), 1)
         self.assertIn("succeeded on attempt 1/3", summary)
@@ -90,7 +90,7 @@ class HardwareContainerPullTest(unittest.TestCase):
         self.assertIn(REGISTRY_TIMEOUT, logs["image-pull-attempt-1.log"])
         self.assertEqual(len(logs), 2)
         self.assertIn(["sleep", "5"], calls)
-        self.assertEqual(sum(call[:2] == ["docker", "run"] for call in calls), 1)
+        self.assertEqual(sum(call[:3] == ["docker", "container", "run"] for call in calls), 1)
         self.assertIn("::warning::Image pull attempt 1/3 failed", result.stderr)
         self.assertIn("succeeded on attempt 2/3", summary)
 
@@ -102,7 +102,7 @@ class HardwareContainerPullTest(unittest.TestCase):
             [call for call in calls if call[0] == "sleep"],
             [["sleep", "5"], ["sleep", "10"]],
         )
-        self.assertFalse(any(call[:2] == ["docker", "run"] for call in calls))
+        self.assertFalse(any(call[:3] == ["docker", "container", "run"] for call in calls))
         self.assertIn("failed on attempt 3/3 (exit=17)", summary)
 
     def test_permanent_image_errors_do_not_retry_or_use_a_cached_image(self):
@@ -118,14 +118,14 @@ class HardwareContainerPullTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 17)
                 self.assertEqual(len(logs), 1)
                 self.assertFalse(any(call[0] == "sleep" for call in calls))
-                self.assertFalse(any(call[:2] == ["docker", "run"] for call in calls))
+                self.assertFalse(any(call[:3] == ["docker", "container", "run"] for call in calls))
                 self.assertIn("failed on attempt 1/3", summary)
 
     def test_workload_failure_is_propagated_without_repeating_it(self):
         result, calls, _, _ = self.run_container(workload_status=23)
         self.assertEqual(result.returncode, 23)
         self.assertEqual(sum(call[:2] == ["docker", "pull"] for call in calls), 1)
-        self.assertEqual(sum(call[:2] == ["docker", "run"] for call in calls), 1)
+        self.assertEqual(sum(call[:3] == ["docker", "container", "run"] for call in calls), 1)
         self.assertFalse(any(call[0] == "sleep" for call in calls))
 
 

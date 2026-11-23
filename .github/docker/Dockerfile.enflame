@@ -1,0 +1,22 @@
+FROM harbor.baai.ac.cn/flagos-runtime/flagos-runtime-enflame-tops1.9.10@sha256:e3cd3cb4b456d5b0acd273578e40e41426571d285d00e6921c7879397697e32d
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    git \
+    libgtest-dev \
+    libibverbs-dev \
+    libnuma-dev \
+    libpciaccess-dev \
+    librdmacm-dev \
+    libxml2-dev \
+    nlohmann-json3-dev \
+    openmpi-bin \
+    libopenmpi-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV MPI_HOME=/usr
+ENV PATH=/opt/tops/bin:/usr/bin:${PATH}
+ENV LD_LIBRARY_PATH=/opt/tops/lib:/usr/local/lib:${LD_LIBRARY_PATH}
