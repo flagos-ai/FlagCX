@@ -1,0 +1,9 @@
+test: name the failing S18 combo and value
+
+S18 fails intermittently on rank 0 at np=2 (2 of 30 rank-checks over 15
+sizes) now that the kernels run on a single vector core. The verdict alone
+cannot say whether it is the six-combo put block, the putValue block, or the
+kernel's results[] handshake, so print the first mismatch of each kind - only
+on failure.
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>

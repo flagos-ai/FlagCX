@@ -360,8 +360,11 @@ int main(int argc, char *argv[]) {
         int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
         for (size_t i = 0; i < count && s18Pass; i++) {
           float expected = (float)(senderRank * 1000 + off + i);
-          if (hostRecv[off + i] != expected)
+          if (hostRecv[off + i] != expected) {
+            RPRINTF("  S18A mismatch combo=%d i=%zu exp=%.1f got=%.1f\n",
+                    combo, i, (double)expected, (double)hostRecv[off + i]);
             s18Pass = false;
+          }
         }
       }
 
@@ -403,14 +406,20 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(hostRecvV, recvBuff,
                                           6 * kPutValueStrideBytes,
                                           flagcxMemcpyDeviceToHost, stream));
-      if (hostRes != 1)
+      if (hostRes != 1) {
+        RPRINTF("  S18 results[0]=%d (expected 1)\n", hostRes);
         s18Pass = false;
+      }
       for (int combo = 0; combo < 6 && s18Pass; combo++) {
         int teamIdx = combo % 2;
         int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
         uint64_t expected = (uint64_t)(senderRank * 100 + combo);
-        if (hostRecvV[combo * kPutValueStrideWords] != expected)
+        if (hostRecvV[combo * kPutValueStrideWords] != expected) {
+          RPRINTF("  S18B mismatch combo=%d exp=%llu got=%llu\n", combo,
+                  (unsigned long long)expected,
+                  (unsigned long long)hostRecvV[combo * kPutValueStrideWords]);
           s18Pass = false;
+        }
       }
 
       RPRINTF("S18 DevPut+PutValue(INTRA+WORLD): %s\n",
