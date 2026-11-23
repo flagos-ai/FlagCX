@@ -1,0 +1,16 @@
+ascend/shmem: install the FFTS base address at every aclshmem kernel entry
+
+A2/A3 requires util_set_ffts_config before the first aclshmem call. Without
+it the MTE/SDMA puts the barriers depend on do nothing, so the first
+cross-rank rendezvous never completes (measured: np=2 hangs at S16
+"Size = 1024" with no result line, np=1 passes since team size 1
+short-circuits every barrier).
+
+The value is host state (rtGetC2cCtrlAddr, cached by aclshmem init), so each
+launcher reads it and passes it through the existing POD args struct, and
+each kernel installs it at entry - the same two-step the vendor's own
+on-stream barrier kernel uses (shmemi_device_cc_kernel.cpp:21-25). The
+device/default UB configs the dispatcher reads are already seeded by
+aclshmem init (shmem_init.cpp:81-82), so FFTS was the only missing piece.
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>

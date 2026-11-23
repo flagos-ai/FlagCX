@@ -33,12 +33,42 @@
 #include <shmem.h>
 
 #if defined(__CCE_IS_AICORE__)
+#include "gm2gm/shmem_device_cc.h"
+#else
+#include "host/data_plane/shmem_host_p2p_sync.h"
+#endif
+
+#if defined(__CCE_IS_AICORE__)
 #define FLAGCX_ACLSHMEM_GM __gm__
 #else
 #define FLAGCX_ACLSHMEM_GM
 #endif
 
 struct AclshmemBackend {};
+
+// ---- FFTS base address ----
+// A2/A3 kernels must install the FFTS base address before their first
+// aclshmem call: the vendor docs list a missing util_set_ffts_config as the
+// A2/A3 "barrier 异常" cause (docs/principles/init_finalize.md), and every
+// vendor example does it at kernel entry.  The value is host state
+// (rtGetC2cCtrlAddr, cached by aclshmem init), so the launcher reads it and
+// the kernel installs it - the same two-step util_get/util_set the vendor's
+// own on-stream barrier kernel uses.
+FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemSetFftsConfig(uint64_t config) {
+#if defined(__CCE_IS_AICORE__)
+  util_set_ffts_config(config);
+#else
+  (void)config;
+#endif
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t aclshmemHostFftsConfig() {
+#if defined(__CCE_IS_AICORE__)
+  return 0;
+#else
+  return util_get_ffts_config();
+#endif
+}
 
 // ---- The measured 32-bit ordered channel (see CceAtomic for the record) ----
 FLAGCX_DEVICE_INLINE_DECORATOR uint32_t
