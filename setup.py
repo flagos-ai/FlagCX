@@ -117,7 +117,7 @@ if BuildExtension is not None:
 
             # -- Step 1: Build libflagcx.so, optionally with device bitcode --
             bitcode_arch = os.environ.get("FLAGCX_BITCODE_ARCH", "")
-            if bitcode_arch and adaptor not in ("nvidia", "iluvatar", "du", "musa"):
+            if bitcode_arch and adaptor not in ("nvidia", "iluvatar", "du", "musa", "ppu"):
                 raise RuntimeError(
                     "FLAGCX_BITCODE_ARCH is set but this build is for the "
                     f"{adaptor} adaptor, which has no bindings/ir Makefile"

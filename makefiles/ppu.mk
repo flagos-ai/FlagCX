@@ -7,6 +7,10 @@ DEVICE_PLATFORM := PPU
 DEVICE_COMPILER := $(DEVICE_HOME)/bin/hgcc
 DEVICE_COMPILE_FLAG := -x hg -std=c++17 -c -Xcompiler -fPIC -MMD -MP -rdc=true -g
 DEVICE_LINK_FLAG := -Xcompiler -fPIC
+ifneq ($(strip $(DEVICE_BITCODE_ARCH)),)
+DEVICE_COMPILE_FLAG += -arch=$(DEVICE_BITCODE_ARCH)
+DEVICE_LINK_FLAG += -arch=$(DEVICE_BITCODE_ARCH)
+endif
 DEVICE_FILE_EXTENSION := cu
 ifeq ($(FLAGCX_COVERAGE), 1)
 DEVICE_COMPILE_FLAG += -Xcompiler --coverage
