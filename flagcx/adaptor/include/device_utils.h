@@ -127,7 +127,10 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // down in this file is why __builtin_trap cannot be used on that pass)
 // instead of emitting the trap-symbol reference; other passes keep the
 // net arm verbatim.
-#if defined(__CCE_IS_AICORE__)
+// The cann-shmem backend replaces those fetchAdd/exchange calls with MTE
+// puts and local polling (aclshmem_comm_traits.h), so the net arm is real
+// there and must compile in.
+#if defined(__CCE_IS_AICORE__) && !defined(FLAGCX_COMM_TRAITS_SHMEM)
 #define FLAGCX_DEVICE_HAS_NET_TRANSPORT 0
 #else
 #define FLAGCX_DEVICE_HAS_NET_TRANSPORT 1

@@ -14,7 +14,8 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) \
 	-I$(PROJECT_ROOT)/bindings/ir \
 	-I$(PROJECT_ROOT)/test/kernel/include \
 	$(CCL_INCLUDE) \
-	$(DEVICE_INCLUDE)
+	$(DEVICE_INCLUDE) \
+	$(SHMEM_INCLUDE)
 
 # -DNDEBUG is load-bearing on this pass, not hygiene: probe r141 measured
 # that assert() in the instantiated shared templates (default_comm_traits.h

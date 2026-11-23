@@ -200,3 +200,14 @@ PLATFORM_KERNEL_DIR  := flagcx/adaptor/kernel/ascend
 PLATFORM_KERNEL_SRCS := \
     $(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENSION))
 PLATFORM_EXTRA_SRCS  := flagcx/adaptor/device_api/default_dev_api_backend.cc
+
+# USE_SHMEM=1 swaps the transport to cann-shmem: the aclshmem adaptor owns the
+# symmetric heap, the aclshmem device traits own every cross-rank byte, and
+# the DevComm lifecycle moves to the shmem backend. Only one backend .cc may
+# define devApiBackend, hence the replacement rather than an addition.
+ifeq ($(USE_SHMEM),1)
+ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_SHMEM
+DEVICE_LINK  += -L$(SHMEM_HOME)/lib -lshmem -Wl,-rpath,$(SHMEM_HOME)/lib
+PLATFORM_EXTRA_SRCS := flagcx/adaptor/shmem/aclshmem_adaptor.cc \
+    flagcx/adaptor/device_api/aclshmem_dev_api_backend.cc
+endif
