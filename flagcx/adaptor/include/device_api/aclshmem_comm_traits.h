@@ -103,6 +103,13 @@ FLAGCX_DEVICE_INLINE_DECORATOR void
 aclshmemPutMemNbi(FLAGCX_ACLSHMEM_GM void *dst, FLAGCX_ACLSHMEM_GM void *src,
                   uint32_t bytes, int pe) {
 #if defined(__CCE_IS_AICORE__)
+  // A source this core just stored to GM has to be retired before the
+  // engine reads it back. The first transfer of a kernel otherwise copies
+  // the previous contents: measured at np=2 as putValue combo 0 landing as
+  // 0 (the scratch word was written two instructions earlier), 4 of 15
+  // sizes, while every later combo arrived. Silent when it happens, so the
+  // barrier is paid on every put rather than chased per call site.
+  pipe_barrier(PIPE_ALL);
   // shortcut: the vendor entry takes a 32-bit length; the IR suite moves
   // at most a few MiB per call.  Widen when a caller can exceed 4 GiB.
   aclshmem_putmem_nbi(dst, src, bytes, (int32_t)pe);
