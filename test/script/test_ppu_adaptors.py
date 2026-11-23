@@ -297,7 +297,7 @@ int main() {
 }
 """)
 
-    def test_pccl_finalize_closes_native_before_local_wrapper_destroy(self):
+    def test_pccl_finalize_retains_native_until_destroy(self):
         source = r"""
 #include "adaptor.h"
 #include "ppu_adaptor.h"
@@ -330,7 +330,7 @@ int main() {
   assert(ppupcclAdaptorCommDestroy(nullptr) == flagcxInvalidArgument);
   assert(ppupcclAdaptorCommAbort(nullptr) == flagcxInvalidArgument);
   assert(ppupcclAdaptorGetVersion(nullptr) == flagcxSuccess);
-  assert(ppupcclAdaptor.finalizeScope == flagcxCclFinalizeWorld);
+  assert(ppupcclAdaptor.finalizeScope == flagcxCclFinalizeIntraNode);
   ppupcclApi.pcclCommFinalize = finalizeNative;
   ppupcclApi.pcclCommDestroy = destroyNative;
   flagcxInnerComm_t comm = static_cast<flagcxInnerComm_t>(calloc(1, sizeof(*comm)));
@@ -345,25 +345,21 @@ int main() {
   assert(ppupcclAdaptorCommGetAsyncError(comm, &status) == flagcxSuccess);
   assert(status == flagcxInProgress && destroyCalls == 0);
   pcclAsyncStatus = pcclSuccess;
+  assert(ppupcclAdaptorCommGetAsyncError(comm, &status) == flagcxSuccess);
+  assert(status == flagcxSuccess && destroyCalls == 0);
+  assert(comm->base == reinterpret_cast<pcclComm_t>(uintptr_t(17)));
+  int metadata = -1;
+  assert(ppupcclAdaptorCommCount(comm, &metadata) == flagcxSuccess);
+  assert(ppupcclAdaptorCommCuDevice(comm, &metadata) == flagcxSuccess);
+  assert(ppupcclAdaptorCommUserRank(comm, &metadata) == flagcxSuccess);
+  assert(wrapperFrees == 0 && finalizeCalls == 2);
   for (pcclResult_t failure : {pcclRemoteError, pcclInProgress}) {
     destroyStatus = failure;
-    assert(ppupcclAdaptorCommGetAsyncError(comm, &status) == flagcxSuccess);
-    assert(status == ppupcclResultToFlagcx(failure));
+    assert(ppupcclAdaptorCommDestroy(comm) == ppupcclResultToFlagcx(failure));
     assert(comm->base == reinterpret_cast<pcclComm_t>(uintptr_t(17)));
     assert(wrapperFrees == 0 && finalizeCalls == 2);
   }
   destroyStatus = pcclSuccess;
-  assert(ppupcclAdaptorCommGetAsyncError(comm, &status) == flagcxSuccess);
-  assert(status == flagcxSuccess && comm->base == nullptr);
-  int metadata = -1;
-  assert(ppupcclAdaptorCommCount(comm, &metadata) == flagcxInvalidUsage);
-  assert(ppupcclAdaptorCommCuDevice(comm, &metadata) == flagcxInvalidUsage);
-  assert(ppupcclAdaptorCommUserRank(comm, &metadata) == flagcxInvalidUsage);
-  assert(metadata == -1);
-  assert(ppupcclAdaptorCommFinalize(comm) == flagcxSuccess);
-  assert(ppupcclAdaptorCommAbort(comm) == flagcxSuccess);
-  assert(ppupcclAdaptorCommGetAsyncError(comm, &status) == flagcxSuccess);
-  assert(status == flagcxSuccess);
   assert(ppupcclAdaptorCommDestroy(comm) == flagcxSuccess);
   assert(finalizeCalls == 2 && destroyCalls == 3 && wrapperFrees == 1);
 

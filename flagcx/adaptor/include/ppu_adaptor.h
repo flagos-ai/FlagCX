@@ -12,8 +12,6 @@ struct flagcxInnerDevComm {};
 
 struct flagcxInnerComm {
   pcclComm_t base;
-  // Zero-initialized; progress is retained until native close succeeds.
-  int closePhase;
 };
 
 struct flagcxStream {

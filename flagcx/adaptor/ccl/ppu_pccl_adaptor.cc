@@ -757,6 +757,6 @@ struct flagcxCCLAdaptor ppupcclAdaptor = {
     ppupcclAdaptorGroupStart, ppupcclAdaptorGroupEnd,
     // Device API
     ppupcclAdaptorDevCommReqsInit, ppupcclAdaptorDevCommCreate,
-    ppupcclAdaptorDevCommDestroy, flagcxCclFinalizeWorld};
+    ppupcclAdaptorDevCommDestroy, flagcxCclFinalizeIntraNode};
 
 #endif // USE_PPU_ADAPTOR

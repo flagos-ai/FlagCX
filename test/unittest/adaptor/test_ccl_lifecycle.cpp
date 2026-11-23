@@ -23,7 +23,6 @@ struct NativeContext {
 struct Wrapper {
   NativeContext *base;
   int frees = 0;
-  int closePhase = 0;
 };
 typedef Wrapper *flagcxInnerComm_t;
 static void free(void *pointer) { ((Wrapper *)pointer)->frees++; }
@@ -172,7 +171,7 @@ struct PpuProviderGuard {
 };
 } // namespace
 
-TEST(CommLifecycleTest, PpuAsyncFinalizeWaitsForNativeDestroy) {
+TEST(CommLifecycleTest, PpuAsyncFinalizeRetainsNativeUntilDestroy) {
   PpuLifecycleShim::NativeContext native;
   native.finalizeResult = flagcxInProgress;
   native.pendingDestroys = 1;
@@ -183,36 +182,48 @@ TEST(CommLifecycleTest, PpuAsyncFinalizeWaitsForNativeDestroy) {
   comm.homoComm = (flagcxInnerComm_t)&wrapper;
   ASSERT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
   EXPECT_EQ(comm.finalizeState.commonPhase, flagcxFinalizeComplete);
-  EXPECT_EQ(wrapper.base, nullptr);
+  EXPECT_EQ(wrapper.base, &native);
   EXPECT_EQ(wrapper.frees, 0);
   EXPECT_EQ(native.finalizeCalls, 1);
   EXPECT_EQ(native.queryCalls, 1);
-  EXPECT_EQ(native.destroyCalls, 2);
+  EXPECT_EQ(native.destroyCalls, 0);
+  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
+  EXPECT_EQ(native.finalizeCalls, 1);
+  EXPECT_EQ(PpuLifecycleShim::ppupcclAdaptorCommDestroy(&wrapper),
+            flagcxInProgress);
+  EXPECT_EQ(wrapper.base, &native);
+  EXPECT_EQ(wrapper.frees, 0);
   EXPECT_EQ(PpuLifecycleShim::ppupcclAdaptorCommDestroy(&wrapper),
             flagcxSuccess);
+  EXPECT_EQ(native.destroyCalls, 2);
   EXPECT_EQ(wrapper.frees, 1);
 }
 
-TEST(CommLifecycleTest, PpuFailedCloseResumesThroughOuterAsyncPoll) {
+TEST(CommLifecycleTest, PpuFailedAsyncQueryRetriesWithoutNativeDestroy) {
   PpuLifecycleShim::NativeContext native;
   native.finalizeResult = flagcxInProgress;
-  native.destroyResult = flagcxRemoteError;
+  native.queryResult = flagcxSystemError;
   PpuLifecycleShim::Wrapper wrapper{&native};
   PpuProviderGuard guard;
   flagcxComm comm = {};
   comm.commType = flagcxCommunicatorHomo;
   comm.homoComm = (flagcxInnerComm_t)&wrapper;
-  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxRemoteError);
+  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxSystemError);
   EXPECT_NE(comm.finalizeState.commonPhase, flagcxFinalizeComplete);
   EXPECT_EQ(wrapper.base, &native);
-  native.destroyResult = flagcxSuccess;
+  native.queryResult = flagcxSuccess;
+  native.asyncResult = flagcxRemoteError;
+  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxRemoteError);
+  native.asyncResult = flagcxSuccess;
   ASSERT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
-  EXPECT_EQ(wrapper.base, nullptr);
+  EXPECT_EQ(wrapper.base, &native);
   EXPECT_EQ(native.finalizeCalls, 1);
-  EXPECT_EQ(native.queryCalls, 1);
-  EXPECT_EQ(native.destroyCalls, 2);
+  EXPECT_EQ(native.queryCalls, 3);
+  EXPECT_EQ(native.destroyCalls, 0);
   EXPECT_EQ(PpuLifecycleShim::ppupcclAdaptorCommDestroy(&wrapper),
             flagcxSuccess);
+  EXPECT_EQ(native.destroyCalls, 1);
+  EXPECT_EQ(wrapper.frees, 1);
 }
 
 #else
@@ -305,31 +316,28 @@ TEST(CclLifecycleTest, LegacyPluginKeepsV1LayoutAndUsesConservativeScope) {
 namespace {
 using namespace PpuLifecycleShim;
 
-TEST(PpuLifecycleTest, FinalizeClosesNativeAndRetainsWrapper) {
+TEST(PpuLifecycleTest, FinalizeRetainsNativeAndWrapperUntilDestroy) {
   NativeContext native;
   Wrapper wrapper{&native};
   EXPECT_EQ(ppupcclAdaptorCommFinalize(&wrapper), flagcxSuccess);
   EXPECT_EQ(native.finalizeCalls, 1);
-  EXPECT_EQ(native.destroyCalls, 1);
-  EXPECT_EQ(wrapper.base, nullptr);
+  EXPECT_EQ(native.destroyCalls, 0);
+  EXPECT_EQ(wrapper.base, &native);
   EXPECT_EQ(wrapper.frees, 0);
-  EXPECT_EQ(ppupcclAdaptorCommFinalize(&wrapper), flagcxSuccess);
   flagcxResult_t status = flagcxRemoteError;
   EXPECT_EQ(ppupcclAdaptorCommGetAsyncError(&wrapper, &status), flagcxSuccess);
   EXPECT_EQ(status, flagcxSuccess);
-  EXPECT_EQ(ppupcclAdaptorCommAbort(&wrapper), flagcxSuccess);
+  EXPECT_EQ(native.queryCalls, 1);
+  EXPECT_EQ(native.destroyCalls, 0);
   EXPECT_EQ(ppupcclAdaptorCommDestroy(&wrapper), flagcxSuccess);
   EXPECT_EQ(wrapper.frees, 1);
-  EXPECT_EQ(native.finalizeCalls, 1);
   EXPECT_EQ(native.destroyCalls, 1);
-  EXPECT_EQ(native.queryCalls + native.abortCalls, 0);
 }
 
-TEST(PpuLifecycleTest, AsyncFinalizeOnlyCompletesAfterNativeClose) {
+TEST(PpuLifecycleTest, AsyncFinalizePollDoesNotDestroyNative) {
   NativeContext native;
   native.finalizeResult = native.asyncResult = flagcxInProgress;
   Wrapper wrapper{&native};
-  EXPECT_EQ(ppupcclAdaptorCommFinalize(&wrapper), flagcxInProgress);
   EXPECT_EQ(ppupcclAdaptorCommFinalize(&wrapper), flagcxInProgress);
   EXPECT_EQ(native.finalizeCalls, 1);
   EXPECT_EQ(native.destroyCalls, 0);
@@ -337,69 +345,69 @@ TEST(PpuLifecycleTest, AsyncFinalizeOnlyCompletesAfterNativeClose) {
   EXPECT_EQ(ppupcclAdaptorCommGetAsyncError(&wrapper, &status), flagcxSuccess);
   EXPECT_EQ(status, flagcxInProgress);
   native.asyncResult = flagcxSuccess;
-  native.destroyResult = flagcxInProgress;
-  EXPECT_EQ(ppupcclAdaptorCommGetAsyncError(&wrapper, &status), flagcxSuccess);
-  EXPECT_EQ(status, flagcxInProgress);
-  EXPECT_EQ(wrapper.base, &native);
-  EXPECT_EQ(wrapper.frees, 0);
-  int queries = native.queryCalls;
-  native.destroyResult = flagcxSuccess;
   EXPECT_EQ(ppupcclAdaptorCommGetAsyncError(&wrapper, &status), flagcxSuccess);
   EXPECT_EQ(status, flagcxSuccess);
-  EXPECT_EQ(wrapper.base, nullptr);
+  EXPECT_EQ(wrapper.base, &native);
+  EXPECT_EQ(wrapper.frees, 0);
+  EXPECT_EQ(native.queryCalls, 2);
   EXPECT_EQ(native.finalizeCalls, 1);
-  EXPECT_EQ(native.queryCalls, queries);
-  EXPECT_EQ(native.destroyCalls, 2);
+  EXPECT_EQ(native.destroyCalls, 0);
   EXPECT_EQ(ppupcclAdaptorCommDestroy(&wrapper), flagcxSuccess);
+  EXPECT_EQ(native.destroyCalls, 1);
+}
+
+TEST(PpuLifecycleTest, DestroyFailureRetainsFinalizedNativeForRetry) {
+  NativeContext native;
+  Wrapper wrapper{&native};
+  ASSERT_EQ(ppupcclAdaptorCommFinalize(&wrapper), flagcxSuccess);
+  for (flagcxResult_t result : {flagcxRemoteError, flagcxInProgress}) {
+    native.destroyResult = result;
+    EXPECT_EQ(ppupcclAdaptorCommDestroy(&wrapper), result);
+    EXPECT_EQ(wrapper.base, &native);
+    EXPECT_EQ(wrapper.frees, 0);
+  }
+  native.destroyResult = flagcxSuccess;
+  EXPECT_EQ(ppupcclAdaptorCommDestroy(&wrapper), flagcxSuccess);
+  EXPECT_EQ(native.finalizeCalls, 1);
+  EXPECT_EQ(native.destroyCalls, 3);
   EXPECT_EQ(wrapper.frees, 1);
 }
 
-TEST(PpuLifecycleTest, CloseFailureRetainsNativeAndCompletedFinalize) {
-  NativeContext native;
-  native.destroyResult = flagcxRemoteError;
-  Wrapper wrapper{&native};
-  EXPECT_EQ(ppupcclAdaptorCommFinalize(&wrapper), flagcxRemoteError);
-  EXPECT_EQ(wrapper.base, &native);
-  EXPECT_EQ(wrapper.frees, 0);
-  native.destroyResult = flagcxSuccess;
-  EXPECT_EQ(ppupcclAdaptorCommFinalize(&wrapper), flagcxSuccess);
-  EXPECT_EQ(native.finalizeCalls, 1);
-  EXPECT_EQ(native.destroyCalls, 2);
-  EXPECT_EQ(ppupcclAdaptorCommDestroy(&wrapper), flagcxSuccess);
-}
-
-TEST(PpuLifecycleTest, FailedAsyncQueryRetainsAcceptedFinalize) {
+TEST(PpuLifecycleTest, FailedAsyncQueryRetainsNativeAndCallerOutput) {
   NativeContext native;
   native.finalizeResult = flagcxInProgress;
   native.queryResult = flagcxSystemError;
   Wrapper wrapper{&native};
   ASSERT_EQ(ppupcclAdaptorCommFinalize(&wrapper), flagcxInProgress);
-  flagcxResult_t status = flagcxSuccess;
-  EXPECT_EQ(ppupcclAdaptorCommGetAsyncError(&wrapper, &status), flagcxSuccess);
-  EXPECT_EQ(status, flagcxSystemError);
+  flagcxResult_t status = flagcxInProgress;
+  EXPECT_EQ(ppupcclAdaptorCommGetAsyncError(&wrapper, &status),
+            flagcxSystemError);
+  EXPECT_EQ(status, flagcxInProgress);
   EXPECT_EQ(wrapper.base, &native);
   EXPECT_EQ(native.destroyCalls, 0);
   native.queryResult = flagcxSuccess;
   native.asyncResult = flagcxRemoteError;
-  EXPECT_EQ(ppupcclAdaptorCommFinalize(&wrapper), flagcxRemoteError);
-  EXPECT_EQ(native.destroyCalls, 0);
+  EXPECT_EQ(ppupcclAdaptorCommGetAsyncError(&wrapper, &status), flagcxSuccess);
+  EXPECT_EQ(status, flagcxRemoteError);
   native.asyncResult = flagcxSuccess;
-  EXPECT_EQ(ppupcclAdaptorCommFinalize(&wrapper), flagcxSuccess);
+  EXPECT_EQ(ppupcclAdaptorCommGetAsyncError(&wrapper, &status), flagcxSuccess);
+  EXPECT_EQ(status, flagcxSuccess);
   EXPECT_EQ(native.finalizeCalls, 1);
+  EXPECT_EQ(native.destroyCalls, 0);
   EXPECT_EQ(ppupcclAdaptorCommDestroy(&wrapper), flagcxSuccess);
 }
 
-TEST(PpuLifecycleTest, InitialFinalizeFailureRetainsOpenNative) {
+TEST(PpuLifecycleTest, InitialFinalizeFailureRetainsNative) {
   NativeContext native;
   native.finalizeResult = flagcxRemoteError;
   Wrapper wrapper{&native};
   EXPECT_EQ(ppupcclAdaptorCommFinalize(&wrapper), flagcxRemoteError);
-  EXPECT_EQ(wrapper.closePhase, ppupcclCloseOpen);
   EXPECT_EQ(wrapper.base, &native);
   EXPECT_EQ(native.destroyCalls, 0);
   native.finalizeResult = flagcxSuccess;
   EXPECT_EQ(ppupcclAdaptorCommFinalize(&wrapper), flagcxSuccess);
   EXPECT_EQ(native.finalizeCalls, 2);
+  EXPECT_EQ(native.destroyCalls, 0);
   EXPECT_EQ(ppupcclAdaptorCommDestroy(&wrapper), flagcxSuccess);
 }
 

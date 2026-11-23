@@ -1234,7 +1234,7 @@ TEST(PpuPcclLoading, NativeCommBeforeBarexHostMrRegistration) {
 #endif
 
 #if defined(USE_PPU_ADAPTOR)
-TEST(PpuPcclLoading, FinalizeClosesNativeBeforeWrapperDestroy) {
+TEST(PpuPcclLoading, FinalizeRetainsNativeUntilDestroy) {
   ASSERT_EQ(deviceAdaptor->setDevice(0), flagcxSuccess);
   auto *ccl = cclAdaptors[flagcxCCLAdaptorDevice];
   ASSERT_NE(ccl, nullptr);
@@ -1253,13 +1253,18 @@ TEST(PpuPcclLoading, FinalizeClosesNativeBeforeWrapperDestroy) {
   } owner{ccl, comm};
   ASSERT_EQ(initialized, flagcxSuccess);
   ASSERT_NE(comm, nullptr);
-  EXPECT_EQ(ccl->finalizeScope, flagcxCclFinalizeWorld);
+  EXPECT_EQ(ccl->finalizeScope, flagcxCclFinalizeIntraNode);
+  auto native = comm->base;
   flagcxResult_t status = ccl->commFinalize(comm);
   while (status == flagcxInProgress)
     ASSERT_EQ(ccl->commGetAsyncError(comm, &status), flagcxSuccess);
   ASSERT_EQ(status, flagcxSuccess);
-  EXPECT_EQ(comm->base, nullptr);
-  EXPECT_EQ(ccl->commFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(comm->base, native);
+  int ranks = -1, rank = -1;
+  EXPECT_EQ(ccl->commCount(comm, &ranks), flagcxSuccess);
+  EXPECT_EQ(ccl->commUserRank(comm, &rank), flagcxSuccess);
+  EXPECT_EQ(ranks, 1);
+  EXPECT_EQ(rank, 0);
   EXPECT_EQ(ccl->commGetAsyncError(comm, &status), flagcxSuccess);
   EXPECT_EQ(status, flagcxSuccess);
 }
