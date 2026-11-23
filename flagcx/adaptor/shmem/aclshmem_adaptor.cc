@@ -8,7 +8,7 @@
  ************************************************************************/
 
 #include "aclshmem_adaptor.h"
-#include "aclshmem_state_layout.h"
+#include "device_api/aclshmem_state_layout.h"
 #include "shmem_adaptor.h"
 
 #include "debug.h"
