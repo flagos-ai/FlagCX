@@ -17,6 +17,7 @@
 #include "device_api/flagcx_device.h"
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
+#include "kernel_proxy_transport.h"
 #include "net.h"
 #include "onesided.h"
 #include "p2p.h"
@@ -1524,11 +1525,16 @@ static flagcxResult_t defaultCommQuiesce(flagcxComm_t comm) {
             (volatile uint64_t *)hetero->proxyState->kernelState.fifos[i]
                 ->buffer;
         if (buf) {
+          flagcxResult_t gate = flagcxKernelProxyCloseFifoProducerGate(
+              hetero->proxyState->kernelState.fifos[i]->buffer);
+          if (gate != flagcxSuccess)
+            return gate;
+          const flagcxCompletionWord_t target =
+              __atomic_load_n(flagcxFifoControlPtr(buf, flagcxFifoIdxProduced),
+                              __ATOMIC_ACQUIRE);
           while (
               __atomic_load_n(flagcxFifoControlPtr(buf, flagcxFifoIdxCompleted),
-                              __ATOMIC_ACQUIRE) !=
-              __atomic_load_n(flagcxFifoControlPtr(buf, flagcxFifoIdxProduced),
-                              __ATOMIC_ACQUIRE)) {
+                              __ATOMIC_ACQUIRE) != target) {
             flagcxResult_t terminal =
                 __atomic_load_n(&hetero->proxyState->kernelState.terminalResult,
                                 __ATOMIC_ACQUIRE);

@@ -618,7 +618,10 @@ flagcxResult_t hostRunnerGroupStart() {
 }
 
 flagcxResult_t hostRunnerGroupEnd() {
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->groupEnd());
+  flagcxResult_t result = flagcxWorkNativeGroupResult(
+      cclAdaptors[flagcxCCLAdaptorHost]->groupEnd());
+  if (result != flagcxSuccess)
+    return result;
   hostRunnerGroupDepth--;
   if (hostRunnerGroupDepth == 0) {
     for (size_t i = 0; i < recvHostBuffers.size(); ++i) {

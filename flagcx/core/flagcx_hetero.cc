@@ -10,6 +10,7 @@
 #include "sym_heap.h"
 #include "transport.h"
 #include "type.h"
+#include "work.h"
 
 #include <climits>
 #include <new>
@@ -84,11 +85,46 @@ static void flagcxRmaDescSetReleaseGroup(struct flagcxRmaDesc *desc,
   flagcxRmaReleaseGroupRetain(group);
 }
 
+static flagcxWorkTracker *flagcxHeteroWorkOwner(flagcxHeteroComm_t comm) {
+  return comm->workOwner != NULL ? comm->workOwner : &comm->submittedWork;
+}
+static flagcxResult_t flagcxHeteroBeginWork(flagcxHeteroComm_t comm,
+                                            flagcxStream_t stream,
+                                            flagcxWorkRecord **record,
+                                            flagcxWorkRecord **previous,
+                                            int hostOnly = 0) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  flagcxResult_t result =
+      hostOnly ? flagcxWorkPrepareHost(flagcxHeteroWorkOwner(comm), record)
+               : flagcxWorkPrepareAccepted(flagcxHeteroWorkOwner(comm), stream,
+                                           record);
+  if (result == flagcxSuccess)
+    *previous = flagcxWorkSetCurrent(*record);
+  return result;
+}
+static flagcxResult_t flagcxHeteroEndWork(flagcxWorkRecord *record,
+                                          flagcxWorkRecord *previous,
+                                          flagcxStream_t stream,
+                                          flagcxResult_t result, int streamWork,
+                                          int grouped = 0) {
+  flagcxWorkSetCurrent(previous);
+  if (!streamWork) {
+    if (record->nativeRequest != NULL)
+      return flagcxWorkFinishNative(record, result);
+    flagcxResult_t canceled = flagcxWorkCancel(record);
+    return canceled == flagcxSuccess ? result : canceled;
+  }
+  return flagcxWorkFinish(record, stream, result, flagcxWorkHeteroGroup,
+                          grouped, 1);
+}
+
 // ---- Stream→Proxy ready signal infrastructure ----
 
 // Context for launchHostFunc callbacks (HOST_FUNC path).
 // Allocated per-op, freed inside the callback.
 struct flagcxRmaReadyCtx {
+  struct flagcxRmaProxyState *proxy;
   volatile uint64_t *readySeqsCpu; // pointer to proxy's readySeqsCpu[peer]
   uint64_t opSeq;                  // the sequence number to signal
 };
@@ -98,11 +134,13 @@ struct flagcxRmaReadyCtx {
 static void flagcxRmaReadyHostFunc(void *arg) {
   struct flagcxRmaReadyCtx *ctx = (struct flagcxRmaReadyCtx *)arg;
   __atomic_store_n(ctx->readySeqsCpu, ctx->opSeq, __ATOMIC_RELEASE);
+  __atomic_sub_fetch(&ctx->proxy->callbacks, 1, __ATOMIC_RELEASE);
   free(ctx);
 }
 
 // Context for launchHostFunc done-wait callbacks (HOST_FUNC path).
 struct flagcxRmaDoneWaitCtx {
+  struct flagcxRmaProxyState *proxy;
   volatile uint64_t *doneSeqsCpu; // pointer to proxy's doneSeqsCpu[peer]
   uint64_t opSeq;                 // sequence to wait for
   volatile int *rmaError;         // proxy error flag
@@ -129,6 +167,7 @@ static void flagcxRmaDoneWaitHostFunc(void *arg) {
     pthread_cond_timedwait(ctx->doneCond, ctx->doneMutex, &ts);
   }
   pthread_mutex_unlock(ctx->doneMutex);
+  __atomic_sub_fetch(&ctx->proxy->callbacks, 1, __ATOMIC_RELEASE);
   free(ctx);
 }
 
@@ -139,17 +178,30 @@ static flagcxResult_t flagcxRmaSignalReady(struct flagcxRmaProxyState *proxy,
                                            flagcxStream_t stream) {
   if (proxy->useStreamOps) {
     // STREAM_OPS: GPU writes readySeqsDev directly (zero-overhead hardware op)
-    return deviceAdaptor->streamWriteValue64(stream, &proxy->readySeqsDev[peer],
-                                             opSeq, 0);
+    flagcxResult_t result = deviceAdaptor->streamWriteValue64(
+        stream, &proxy->readySeqsDev[peer], opSeq, 0);
+    if (result != flagcxSuccess)
+      __atomic_store_n(&proxy->pendingError, 1, __ATOMIC_RELEASE);
+    return result;
   } else {
     // HOST_FUNC: launch callback on stream that writes readySeqsCpu
     struct flagcxRmaReadyCtx *ctx =
         (struct flagcxRmaReadyCtx *)malloc(sizeof(*ctx));
     if (ctx == NULL)
       return flagcxSystemError;
+    ctx->proxy = proxy;
     ctx->readySeqsCpu = &proxy->readySeqsCpu[peer];
     ctx->opSeq = opSeq;
-    return deviceAdaptor->launchHostFunc(stream, flagcxRmaReadyHostFunc, ctx);
+    __atomic_add_fetch(&proxy->callbacks, 1, __ATOMIC_RELAXED);
+    flagcxResult_t result =
+        deviceAdaptor->launchHostFunc(stream, flagcxRmaReadyHostFunc, ctx);
+    if (result != flagcxSuccess) {
+      __atomic_sub_fetch(&proxy->callbacks, 1, __ATOMIC_RELEASE);
+      free(ctx);
+      // An accepted descriptor must not wait forever for rejected readiness.
+      __atomic_store_n(&proxy->pendingError, 1, __ATOMIC_RELEASE);
+    }
+    return result;
   }
 }
 
@@ -170,13 +222,20 @@ static flagcxResult_t flagcxRmaWaitDone(struct flagcxRmaProxyState *proxy,
         (struct flagcxRmaDoneWaitCtx *)malloc(sizeof(*ctx));
     if (ctx == NULL)
       return flagcxSystemError;
+    ctx->proxy = proxy;
     ctx->doneSeqsCpu = &proxy->doneSeqsCpu[peer];
     ctx->opSeq = opSeq;
     ctx->rmaError = &proxy->rmaError;
     ctx->doneMutex = &proxy->doneMutex;
     ctx->doneCond = &proxy->doneCond;
-    return deviceAdaptor->launchHostFunc(stream, flagcxRmaDoneWaitHostFunc,
-                                         ctx);
+    __atomic_add_fetch(&proxy->callbacks, 1, __ATOMIC_RELAXED);
+    flagcxResult_t result =
+        deviceAdaptor->launchHostFunc(stream, flagcxRmaDoneWaitHostFunc, ctx);
+    if (result != flagcxSuccess) {
+      __atomic_sub_fetch(&proxy->callbacks, 1, __ATOMIC_RELEASE);
+      free(ctx);
+    }
+    return result;
   }
 }
 
@@ -224,13 +283,41 @@ static flagcxResult_t flagcxRmaProxyTrackDesc(struct flagcxRmaProxyState *proxy,
                               group);
 }
 
-static void flagcxRmaDescDestroy(struct flagcxRmaDesc *desc) {
+static void flagcxRmaDescDestroy(struct flagcxRmaProxyState *proxy,
+                                 struct flagcxRmaDesc *desc) {
   if (desc == NULL)
     return;
-  if (desc->streamEvent != NULL)
-    deviceAdaptor->eventDestroy(desc->streamEvent);
+  if (desc->streamEvent != NULL) {
+    flagcxResult_t result = deviceAdaptor->eventDestroy(desc->streamEvent);
+    if (result != flagcxSuccess) {
+      // The descriptor has retired, but still owns its failed event cleanup.
+      struct flagcxRmaDesc *head =
+          __atomic_load_n(&proxy->cleanupDescs, __ATOMIC_ACQUIRE);
+      do {
+        desc->next = head;
+      } while (!__atomic_compare_exchange_n(&proxy->cleanupDescs, &head, desc,
+                                            false, __ATOMIC_RELEASE,
+                                            __ATOMIC_ACQUIRE));
+      return;
+    }
+    desc->streamEvent = NULL;
+  }
   flagcxRmaReleaseGroupRelease(desc->releaseGroup);
   free(desc);
+}
+static flagcxResult_t flagcxRmaCleanupDescs(struct flagcxRmaProxyState *proxy) {
+  // Called only after the producer gate is closed and the worker has retired.
+  while (proxy->cleanupDescs != NULL) {
+    struct flagcxRmaDesc *desc = proxy->cleanupDescs;
+    flagcxResult_t result = deviceAdaptor->eventDestroy(desc->streamEvent);
+    if (result != flagcxSuccess)
+      return result;
+    desc->streamEvent = NULL;
+    proxy->cleanupDescs = desc->next;
+    flagcxRmaReleaseGroupRelease(desc->releaseGroup);
+    free(desc);
+  }
+  return flagcxSuccess;
 }
 
 static flagcxResult_t
@@ -1047,7 +1134,7 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
       pthread_cond_broadcast(&proxy->doneCond);
       pthread_mutex_unlock(&proxy->doneMutex);
     }
-    flagcxRmaDescDestroy(desc);
+    flagcxRmaDescDestroy(proxy, desc);
     did = true;
     desc = next;
   }
@@ -1085,7 +1172,7 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
       pthread_cond_broadcast(&proxy->doneCond);
       pthread_mutex_unlock(&proxy->doneMutex);
     }
-    flagcxRmaDescDestroy(desc);
+    flagcxRmaDescDestroy(proxy, desc);
     did = true;
     desc = next;
   }
@@ -1156,7 +1243,7 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
           pthread_cond_broadcast(&proxy->doneCond);
           pthread_mutex_unlock(&proxy->doneMutex);
         }
-        flagcxRmaDescDestroy(desc);
+        flagcxRmaDescDestroy(proxy, desc);
         did = true;
         if (eventResult != flagcxSuccess)
           break;
@@ -1165,7 +1252,7 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
       if (eventResult != flagcxSuccess) {
         __atomic_store_n(&proxy->cis[peer], ci + 1, __ATOMIC_RELEASE);
         flagcxRmaProxyCompleteDesc(proxy, peer, desc, eventResult);
-        flagcxRmaDescDestroy(desc);
+        flagcxRmaDescDestroy(proxy, desc);
         did = true;
         break;
       }
@@ -1322,7 +1409,7 @@ static bool flagcxRmaProxyDrainRing(struct flagcxRmaProxyState *proxy,
         proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx];
     __atomic_store_n(&proxy->cis[peer], ci + 1, __ATOMIC_RELEASE);
     flagcxRmaProxyCompleteDesc(proxy, peer, desc, flagcxRemoteError);
-    flagcxRmaDescDestroy(desc);
+    flagcxRmaDescDestroy(proxy, desc);
     drained = true;
   }
   return drained;
@@ -1687,6 +1774,11 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   flagcxResult_t result = flagcxHeteroRmaIpcDestroy(comm);
   if (result != flagcxSuccess)
     return result;
+  if (__atomic_load_n(&proxy->callbacks, __ATOMIC_ACQUIRE) != 0)
+    return flagcxInProgress;
+  result = flagcxRmaCleanupDescs(proxy);
+  if (result != flagcxSuccess)
+    return result;
   if (proxy->doneSeqsCpu != NULL) {
     if (proxy->doneSeqsMapped) {
       if (deviceAdaptor->gdrPtrMunmap == NULL)
@@ -1835,8 +1927,9 @@ flagcxResult_t flagcxHeteroFlushRma(flagcxHeteroComm_t comm, int peer,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxHeteroFlushRmaStream(flagcxHeteroComm_t comm, int peer,
-                                          uint64_t seq, flagcxStream_t stream) {
+static flagcxResult_t flagcxHeteroFlushRmaStreamImpl(flagcxHeteroComm_t comm,
+                                                     int peer, uint64_t seq,
+                                                     flagcxStream_t stream) {
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   if (proxy == NULL || seq == 0)
     return flagcxSuccess;
@@ -1860,8 +1953,8 @@ flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   if (proxy == NULL)
     return flagcxSuccess;
-  if (proxy->flushAllEnterForTest != NULL)
-    proxy->flushAllEnterForTest(proxy->flushAllEnterContextForTest);
+  if (proxy->drainEnterForTest != NULL)
+    proxy->drainEnterForTest(proxy->drainEnterContextForTest);
   for (int p = 0; p < proxy->nRanks; p++) {
     uint64_t target = __atomic_load_n(&proxy->opSeqs[p], __ATOMIC_RELAXED);
     if (target == 0)
@@ -1922,11 +2015,11 @@ flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
                                    stream, 0, opId, step);
 }
 
-flagcxResult_t flagcxHeteroSendOnChannel(const void *sendbuff, size_t count,
-                                         flagcxDataType_t datatype, int peer,
-                                         flagcxHeteroComm_t comm,
-                                         flagcxStream_t stream, int channelId,
-                                         int opId, int step) {
+static flagcxResult_t
+flagcxHeteroSendOnChannelImpl(const void *sendbuff, size_t count,
+                              flagcxDataType_t datatype, int peer,
+                              flagcxHeteroComm_t comm, flagcxStream_t stream,
+                              int channelId, int opId, int step) {
   if (comm == NULL || peer < 0 || peer >= comm->nRanks || channelId < 0 ||
       channelId >= MAXCHANNELS)
     return flagcxInvalidArgument;
@@ -1953,8 +2046,7 @@ flagcxResult_t flagcxHeteroSendOnChannel(const void *sendbuff, size_t count,
   flagcxIntruQueueEnqueue(&tasks->peers[peer].sendQueue, p2p);
 
   flagcxGroupCommJoin(comm);
-  flagcxHeteroGroupEnd();
-  return flagcxSuccess;
+  return flagcxHeteroGroupEnd();
 }
 
 flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
@@ -1965,11 +2057,11 @@ flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
                                    stream, 0, opId, step);
 }
 
-flagcxResult_t flagcxHeteroRecvOnChannel(void *recvbuff, size_t count,
-                                         flagcxDataType_t datatype, int peer,
-                                         flagcxHeteroComm_t comm,
-                                         flagcxStream_t stream, int channelId,
-                                         int opId, int step) {
+static flagcxResult_t
+flagcxHeteroRecvOnChannelImpl(void *recvbuff, size_t count,
+                              flagcxDataType_t datatype, int peer,
+                              flagcxHeteroComm_t comm, flagcxStream_t stream,
+                              int channelId, int opId, int step) {
   if (comm == NULL || peer < 0 || peer >= comm->nRanks || channelId < 0 ||
       channelId >= MAXCHANNELS)
     return flagcxInvalidArgument;
@@ -1996,8 +2088,7 @@ flagcxResult_t flagcxHeteroRecvOnChannel(void *recvbuff, size_t count,
   flagcxIntruQueueEnqueue(&tasks->peers[peer].recvQueue, p2p);
 
   flagcxGroupCommJoin(comm);
-  flagcxHeteroGroupEnd();
-  return flagcxSuccess;
+  return flagcxHeteroGroupEnd();
 }
 
 static inline bool flagcxRmaMrIndexIsValid(flagcxHeteroComm_t comm,
@@ -2006,11 +2097,11 @@ static inline bool flagcxRmaMrIndexIsValid(flagcxHeteroComm_t comm,
          comm->oneSideHandles != NULL && comm->oneSideHandles[mrIndex] != NULL;
 }
 
-flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
-                               size_t srcOffset, size_t dstOffset, size_t size,
-                               int srcMrIdx, int dstMrIdx, bool streamSyncReady,
-                               uint64_t *assignedSeq, uint64_t orderingKey,
-                               bool independent) {
+static flagcxResult_t
+flagcxHeteroPutImpl(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
+                    size_t dstOffset, size_t size, int srcMrIdx, int dstMrIdx,
+                    bool streamSyncReady, uint64_t *assignedSeq,
+                    uint64_t orderingKey, bool independent) {
   if (comm == NULL)
     return flagcxInvalidArgument;
   if (comm->netAdaptor == NULL || comm->netAdaptor->iput == NULL)
@@ -2046,11 +2137,11 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
   return res;
 }
 
-flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
-                                    const size_t *srcOffsets,
-                                    const size_t *dstOffsets,
-                                    const size_t *sizes, const int *srcMrIdxs,
-                                    const int *dstMrIdxs, size_t count) {
+static flagcxResult_t
+flagcxHeteroBatchPutImpl(flagcxHeteroComm_t comm, int peer,
+                         const size_t *srcOffsets, const size_t *dstOffsets,
+                         const size_t *sizes, const int *srcMrIdxs,
+                         const int *dstMrIdxs, size_t count) {
   if (count == 0)
     return flagcxSuccess;
   if (comm == NULL || srcOffsets == NULL || dstOffsets == NULL ||
@@ -2122,7 +2213,7 @@ flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
   return res;
 }
 
-flagcxResult_t flagcxHeteroBatchPutSignal(
+static flagcxResult_t flagcxHeteroBatchPutSignalImpl(
     flagcxHeteroComm_t comm, int peer, const size_t *srcOffsets,
     const size_t *dstOffsets, const size_t *sizes, const int *srcMrIdxs,
     const int *dstMrIdxs, const uint64_t *orderingKeys,
@@ -2203,22 +2294,25 @@ flagcxResult_t flagcxHeteroBatchPutSignal(
 
   if (result != flagcxSuccess) {
     for (size_t i = 0; i < count; i++)
-      flagcxRmaDescDestroy(data[i]);
-    flagcxRmaDescDestroy(release);
+      flagcxRmaDescDestroy(comm->rmaProxy, data[i]);
+    flagcxRmaDescDestroy(comm->rmaProxy, release);
   }
   flagcxRmaReleaseGroupRelease(group); // creator reference
   free(data);
   return result;
 }
 
-flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
-                               size_t srcOffset, size_t dstOffset, size_t size,
-                               int srcMrIdx, int dstMrIdx, uint64_t orderingKey,
-                               bool independent, flagcxEvent_t streamEvent,
-                               uint64_t *assignedSeq) {
+static flagcxResult_t
+flagcxHeteroGetImpl(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
+                    size_t dstOffset, size_t size, int srcMrIdx, int dstMrIdx,
+                    uint64_t orderingKey, bool independent,
+                    flagcxEvent_t streamEvent, uint64_t *assignedSeq,
+                    struct flagcxRmaDesc *preparedDesc = NULL) {
   // Ownership of a non-null event transfers here, including on failure.
-  auto reject = [streamEvent](flagcxResult_t result) {
-    if (streamEvent != NULL)
+  auto reject = [comm, streamEvent, preparedDesc](flagcxResult_t result) {
+    if (preparedDesc != NULL)
+      flagcxRmaDescDestroy(comm->rmaProxy, preparedDesc);
+    else if (streamEvent != NULL)
       deviceAdaptor->eventDestroy(streamEvent);
     return result;
   };
@@ -2238,7 +2332,9 @@ flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
     WARN("flagcxHeteroGet: rmaProxy not initialized");
     return reject(flagcxInternalError);
   }
-  struct flagcxRmaDesc *desc = (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
+  struct flagcxRmaDesc *desc =
+      preparedDesc != NULL ? preparedDesc
+                           : (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
   if (desc == NULL)
     return reject(flagcxSystemError);
   desc->type = FLAGCX_RMA_GET;
@@ -2255,16 +2351,15 @@ flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
   flagcxResult_t res = flagcxRmaProxyEnqueueDesc(
       comm->rmaProxy, peer, desc, streamEvent != NULL, assignedSeq);
   if (res != flagcxSuccess)
-    flagcxRmaDescDestroy(desc);
+    flagcxRmaDescDestroy(comm->rmaProxy, desc);
   return res;
 }
 
-flagcxResult_t flagcxHeteroGetStream(flagcxHeteroComm_t comm, int peer,
-                                     size_t srcOffset, size_t dstOffset,
-                                     size_t size, int srcMrIdx, int dstMrIdx,
-                                     flagcxSymWindow_t srcWindow,
-                                     flagcxSymWindow_t dstWindow,
-                                     flagcxStream_t stream) {
+static flagcxResult_t
+flagcxHeteroGetStreamImpl(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
+                          size_t dstOffset, size_t size, int srcMrIdx,
+                          int dstMrIdx, flagcxSymWindow_t srcWindow,
+                          flagcxSymWindow_t dstWindow, flagcxStream_t stream) {
   if (comm == NULL || stream == NULL || peer < 0 || peer >= comm->nRanks)
     return flagcxInvalidArgument;
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
@@ -2283,17 +2378,17 @@ flagcxResult_t flagcxHeteroGetStream(flagcxHeteroComm_t comm, int peer,
         comm, srcWindow, peer, srcOffset, size, &srcBuf);
     if (mapResult == flagcxSuccess && srcBuf != NULL) {
       void *dstBuf = (void *)((uintptr_t)dstWindow->localBase + dstOffset);
-      flagcxEvent_t doneEvent = NULL;
-      flagcxResult_t result =
-          deviceAdaptor->eventCreate(&doneEvent, flagcxEventDisableTiming);
-      if (result != flagcxSuccess)
-        return result;
       struct flagcxRmaDesc *desc =
           (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
-      if (desc == NULL) {
-        deviceAdaptor->eventDestroy(doneEvent);
+      if (desc == NULL)
         return flagcxSystemError;
+      flagcxResult_t result = deviceAdaptor->eventCreate(
+          &desc->streamEvent, flagcxEventDisableTiming);
+      if (result != flagcxSuccess) {
+        flagcxRmaDescDestroy(proxy, desc);
+        return result;
       }
+      flagcxEvent_t doneEvent = desc->streamEvent;
       desc->type = FLAGCX_RMA_IPC_GET;
       desc->streamEvent = doneEvent;
       desc->ipcStatus = flagcxSuccess;
@@ -2307,7 +2402,7 @@ flagcxResult_t flagcxHeteroGetStream(flagcxHeteroComm_t comm, int peer,
             __atomic_load_n(&proxy->pendingError, __ATOMIC_ACQUIRE) ||
             __atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
           pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
-          flagcxRmaDescDestroy(desc);
+          flagcxRmaDescDestroy(comm->rmaProxy, desc);
           return flagcxInvalidUsage;
         }
         result = flagcxInProgress;
@@ -2317,7 +2412,7 @@ flagcxResult_t flagcxHeteroGetStream(flagcxHeteroComm_t comm, int peer,
           break;
         if (result != flagcxInProgress) {
           pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
-          flagcxRmaDescDestroy(desc);
+          flagcxRmaDescDestroy(comm->rmaProxy, desc);
           return result;
         }
         pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
@@ -2349,30 +2444,31 @@ flagcxResult_t flagcxHeteroGetStream(flagcxHeteroComm_t comm, int peer,
   if (deviceAdaptor == NULL || deviceAdaptor->eventCreate == NULL ||
       deviceAdaptor->eventRecord == NULL || deviceAdaptor->eventQuery == NULL)
     return flagcxNotSupported;
-  flagcxEvent_t readyEvent = NULL;
+  struct flagcxRmaDesc *desc = (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
+  if (desc == NULL)
+    return flagcxSystemError;
   flagcxResult_t res =
-      deviceAdaptor->eventCreate(&readyEvent, flagcxEventDisableTiming);
-  if (res != flagcxSuccess)
-    return res;
-  res = deviceAdaptor->eventRecord(readyEvent, stream);
+      deviceAdaptor->eventCreate(&desc->streamEvent, flagcxEventDisableTiming);
+  if (res == flagcxSuccess)
+    res = deviceAdaptor->eventRecord(desc->streamEvent, stream);
   if (res != flagcxSuccess) {
-    deviceAdaptor->eventDestroy(readyEvent);
+    flagcxRmaDescDestroy(proxy, desc);
     return res;
   }
-  res = flagcxHeteroGet(comm, peer, srcOffset, dstOffset, size, srcMrIdx,
-                        dstMrIdx, 0, false, readyEvent, &assignedSeq);
+  res = flagcxHeteroGetImpl(comm, peer, srcOffset, dstOffset, size, srcMrIdx,
+                            dstMrIdx, 0, false, desc->streamEvent, &assignedSeq,
+                            desc);
   if (res != flagcxSuccess)
     return res;
   return flagcxRmaWaitDone(proxy, peer, assignedSeq, stream);
 }
 
-flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
-                                     size_t srcOffset, size_t dstOffset,
-                                     size_t size, size_t signalOffset,
-                                     int srcMrIdx, int dstMrIdx,
-                                     uint64_t signalValue, bool streamSyncReady,
-                                     uint64_t *assignedSeq,
-                                     uint64_t orderingKey, bool independent) {
+static flagcxResult_t
+flagcxHeteroPutSignalImpl(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
+                          size_t dstOffset, size_t size, size_t signalOffset,
+                          int srcMrIdx, int dstMrIdx, uint64_t signalValue,
+                          bool streamSyncReady, uint64_t *assignedSeq,
+                          uint64_t orderingKey, bool independent) {
   if (comm == NULL)
     return flagcxInvalidArgument;
   if (comm->netAdaptor == NULL || comm->netAdaptor->iputSignal == NULL ||
@@ -2411,7 +2507,7 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
                                 comm->rmaProxy->generation);
   if (res != flagcxSuccess) {
     free(data);
-    flagcxRmaDescDestroy(release);
+    flagcxRmaDescDestroy(comm->rmaProxy, release);
     flagcxRmaReleaseGroupRelease(group);
     return res;
   }
@@ -2444,15 +2540,17 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
                                           data == NULL ? 0u : 1u, release,
                                           streamSyncReady, assignedSeq);
   if (res != flagcxSuccess) {
-    flagcxRmaDescDestroy(data);
-    flagcxRmaDescDestroy(release);
+    flagcxRmaDescDestroy(comm->rmaProxy, data);
+    flagcxRmaDescDestroy(comm->rmaProxy, release);
   }
   flagcxRmaReleaseGroupRelease(group); // creator reference
   return res;
 }
 
-flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
-                                 size_t size, void *gHandleInfo) {
+static flagcxResult_t flagcxHeteroFlushImpl(flagcxHeteroComm_t comm,
+                                            void *gpuAddr, size_t size,
+                                            void *gHandleInfo,
+                                            flagcxWorkRecord *record) {
   struct flagcxOneSideHandleInfo *info =
       (struct flagcxOneSideHandleInfo *)gHandleInfo;
   if (info == NULL || info->localRecvComm == NULL ||
@@ -2468,23 +2566,33 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
   void *data_arr[1] = {gpuAddr};
   int sizes_arr[1] = {flagcxRmaVisibilityFlushSize(size)};
   void *mh_arr[1] = {info->localMrHandle};
-  void *request = NULL;
-  FLAGCXCHECK(comm->netAdaptor->iflush(info->localRecvComm, 1, data_arr,
-                                       sizes_arr, mh_arr, &request));
-  if (request != NULL) {
+  record->nativeAdaptor = comm->netAdaptor;
+  flagcxResult_t result =
+      comm->netAdaptor->iflush(info->localRecvComm, 1, data_arr, sizes_arr,
+                               mh_arr, &record->nativeRequest);
+  if (result != flagcxSuccess && result != flagcxInProgress)
+    return result;
+  while (record->nativeRequest != NULL) {
     int done = 0;
-    while (!done) {
-      FLAGCXCHECK(comm->netAdaptor->test(request, &done, NULL));
-    }
+    result = comm->netAdaptor->test(record->nativeRequest, &done, NULL);
+    if (done)
+      record->nativeRequest = NULL;
+    if (result != flagcxSuccess && result != flagcxInProgress)
+      return result;
+    if (!done)
+      sched_yield();
   }
+  if (result == flagcxInProgress)
+    return result;
   return flagcxSuccess;
 }
 
 static inline bool flagcxIsIntraNode(flagcxHeteroComm_t comm, int peer);
 
-flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
-                                      size_t signalOffset, uint64_t expected,
-                                      flagcxStream_t stream) {
+static flagcxResult_t flagcxHeteroWaitSignalImpl(flagcxHeteroComm_t comm,
+                                                 int peer, size_t signalOffset,
+                                                 uint64_t expected,
+                                                 flagcxStream_t stream) {
   (void)peer;
   if (comm == NULL || comm->rmaSignalBase == NULL)
     return flagcxNotSupported;
@@ -2529,9 +2637,9 @@ flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
                                           waitFlags);
 }
 
-flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,
-                                    uint64_t value, size_t dstOffset,
-                                    int dstMrIdx) {
+static flagcxResult_t flagcxHeteroPutValueImpl(flagcxHeteroComm_t comm,
+                                               int peer, uint64_t value,
+                                               size_t dstOffset, int dstMrIdx) {
   if (comm->netAdaptor == NULL || comm->netAdaptor->iput == NULL)
     return flagcxNotSupported;
   if (peer < 0 || peer >= comm->nRanks) {
@@ -2655,12 +2763,10 @@ flagcxResult_t flagcxHeteroRmaIpcDestroy(flagcxHeteroComm_t comm) {
 
 // ---- Stream-based Put with intra-node D2D bypass ----
 
-flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
-                                     size_t srcOffset, size_t dstOffset,
-                                     size_t size, int srcMrIdx, int dstMrIdx,
-                                     flagcxSymWindow_t srcWindow,
-                                     flagcxSymWindow_t dstWindow,
-                                     flagcxStream_t stream, uint64_t *opSeq) {
+static flagcxResult_t flagcxHeteroPutStreamImpl(
+    flagcxHeteroComm_t comm, int peer, size_t srcOffset, size_t dstOffset,
+    size_t size, int srcMrIdx, int dstMrIdx, flagcxSymWindow_t srcWindow,
+    flagcxSymWindow_t dstWindow, flagcxStream_t stream, uint64_t *opSeq) {
   if (comm == NULL || peer < 0 || peer >= comm->nRanks)
     return flagcxInvalidArgument;
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
@@ -2733,7 +2839,7 @@ flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
   }
 }
 
-flagcxResult_t flagcxHeteroPutSignalStream(
+static flagcxResult_t flagcxHeteroPutSignalStreamImpl(
     flagcxHeteroComm_t comm, int peer, size_t srcOffset, size_t dstOffset,
     size_t size, size_t signalOffset, int srcMrIdx, int dstMrIdx,
     uint64_t signalValue, flagcxSymWindow_t srcWindow,
@@ -2851,4 +2957,260 @@ flagcxResult_t flagcxHeteroPutSignalStream(
       *opSeq = assignedSeq;
     return res;
   }
+}
+
+// Public internal entry points own admission; already accepted children reuse
+// their calling thread's live submission token. CPU descriptors retain their
+// existing proxy sequence/retirement ownership.
+flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
+                               size_t srcOffset, size_t dstOffset, size_t size,
+                               int srcMrIdx, int dstMrIdx, bool streamSyncReady,
+                               uint64_t *assignedSeq, uint64_t orderingKey,
+                               bool independent) {
+  flagcxWorkRecord *record = NULL, *previous = NULL;
+  flagcxResult_t result =
+      flagcxHeteroBeginWork(comm, NULL, &record, &previous, 1);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxHeteroPutImpl(comm, peer, srcOffset, dstOffset, size, srcMrIdx,
+                               dstMrIdx, streamSyncReady, assignedSeq,
+                               orderingKey, independent);
+  return flagcxHeteroEndWork(record, previous, NULL, result, 0);
+}
+
+flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
+                                    const size_t *srcOffsets,
+                                    const size_t *dstOffsets,
+                                    const size_t *sizes, const int *srcMrIdxs,
+                                    const int *dstMrIdxs, size_t count) {
+  flagcxWorkRecord *record = NULL, *previous = NULL;
+  flagcxResult_t result =
+      flagcxHeteroBeginWork(comm, NULL, &record, &previous, 1);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxHeteroBatchPutImpl(comm, peer, srcOffsets, dstOffsets, sizes,
+                                    srcMrIdxs, dstMrIdxs, count);
+  return flagcxHeteroEndWork(record, previous, NULL, result, 0);
+}
+
+flagcxResult_t flagcxHeteroBatchPutSignal(
+    flagcxHeteroComm_t comm, int peer, const size_t *srcOffsets,
+    const size_t *dstOffsets, const size_t *sizes, const int *srcMrIdxs,
+    const int *dstMrIdxs, const uint64_t *orderingKeys,
+    const uint8_t *independent, size_t count, size_t signalOffset,
+    uint64_t signalValue, uint64_t releaseOrderingKey, bool releaseIndependent,
+    uint64_t *assignedSeq) {
+  flagcxWorkRecord *record = NULL, *previous = NULL;
+  flagcxResult_t result =
+      flagcxHeteroBeginWork(comm, NULL, &record, &previous, 1);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxHeteroBatchPutSignalImpl(
+      comm, peer, srcOffsets, dstOffsets, sizes, srcMrIdxs, dstMrIdxs,
+      orderingKeys, independent, count, signalOffset, signalValue,
+      releaseOrderingKey, releaseIndependent, assignedSeq);
+  return flagcxHeteroEndWork(record, previous, NULL, result, 0);
+}
+
+flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
+                               size_t srcOffset, size_t dstOffset, size_t size,
+                               int srcMrIdx, int dstMrIdx, uint64_t orderingKey,
+                               bool independent, flagcxEvent_t streamEvent,
+                               uint64_t *assignedSeq) {
+  flagcxWorkRecord *record = NULL, *previous = NULL;
+  flagcxResult_t result =
+      flagcxHeteroBeginWork(comm, NULL, &record, &previous, 1);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxHeteroGetImpl(comm, peer, srcOffset, dstOffset, size, srcMrIdx,
+                               dstMrIdx, orderingKey, independent, streamEvent,
+                               assignedSeq);
+  return flagcxHeteroEndWork(record, previous, NULL, result, 0);
+}
+
+flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
+                                     size_t srcOffset, size_t dstOffset,
+                                     size_t size, size_t signalOffset,
+                                     int srcMrIdx, int dstMrIdx,
+                                     uint64_t signalValue, bool streamSyncReady,
+                                     uint64_t *assignedSeq,
+                                     uint64_t orderingKey, bool independent) {
+  flagcxWorkRecord *record = NULL, *previous = NULL;
+  flagcxResult_t result =
+      flagcxHeteroBeginWork(comm, NULL, &record, &previous, 1);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxHeteroPutSignalImpl(
+      comm, peer, srcOffset, dstOffset, size, signalOffset, srcMrIdx, dstMrIdx,
+      signalValue, streamSyncReady, assignedSeq, orderingKey, independent);
+  return flagcxHeteroEndWork(record, previous, NULL, result, 0);
+}
+
+flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,
+                                    uint64_t value, size_t dstOffset,
+                                    int dstMrIdx) {
+  flagcxWorkRecord *record = NULL, *previous = NULL;
+  flagcxResult_t result =
+      flagcxHeteroBeginWork(comm, NULL, &record, &previous, 1);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxHeteroPutValueImpl(comm, peer, value, dstOffset, dstMrIdx);
+  return flagcxHeteroEndWork(record, previous, NULL, result, 0);
+}
+
+flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
+                                     size_t srcOffset, size_t dstOffset,
+                                     size_t size, int srcMrIdx, int dstMrIdx,
+                                     flagcxSymWindow_t srcWindow,
+                                     flagcxSymWindow_t dstWindow,
+                                     flagcxStream_t stream, uint64_t *opSeq) {
+  flagcxWorkRecord *record = NULL, *previous = NULL;
+  flagcxResult_t result =
+      flagcxHeteroBeginWork(comm, stream, &record, &previous);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxHeteroPutStreamImpl(comm, peer, srcOffset, dstOffset, size,
+                                     srcMrIdx, dstMrIdx, srcWindow, dstWindow,
+                                     stream, opSeq);
+  return flagcxHeteroEndWork(record, previous, stream, result, 1);
+}
+
+flagcxResult_t flagcxHeteroGetStream(flagcxHeteroComm_t comm, int peer,
+                                     size_t srcOffset, size_t dstOffset,
+                                     size_t size, int srcMrIdx, int dstMrIdx,
+                                     flagcxSymWindow_t srcWindow,
+                                     flagcxSymWindow_t dstWindow,
+                                     flagcxStream_t stream) {
+  flagcxWorkRecord *record = NULL, *previous = NULL;
+  flagcxResult_t result =
+      flagcxHeteroBeginWork(comm, stream, &record, &previous);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxHeteroGetStreamImpl(comm, peer, srcOffset, dstOffset, size,
+                                     srcMrIdx, dstMrIdx, srcWindow, dstWindow,
+                                     stream);
+  return flagcxHeteroEndWork(record, previous, stream, result, 1);
+}
+
+flagcxResult_t flagcxHeteroPutSignalStream(
+    flagcxHeteroComm_t comm, int peer, size_t srcOffset, size_t dstOffset,
+    size_t size, size_t signalOffset, int srcMrIdx, int dstMrIdx,
+    uint64_t signalValue, flagcxSymWindow_t srcWindow,
+    flagcxSymWindow_t dstWindow, flagcxStream_t stream, uint64_t *opSeq) {
+  flagcxWorkRecord *record = NULL, *previous = NULL;
+  flagcxResult_t result =
+      flagcxHeteroBeginWork(comm, stream, &record, &previous);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxHeteroPutSignalStreamImpl(
+      comm, peer, srcOffset, dstOffset, size, signalOffset, srcMrIdx, dstMrIdx,
+      signalValue, srcWindow, dstWindow, stream, opSeq);
+  return flagcxHeteroEndWork(record, previous, stream, result, 1);
+}
+
+flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
+                                      size_t signalOffset, uint64_t expected,
+                                      flagcxStream_t stream) {
+  flagcxWorkRecord *record = NULL, *previous = NULL;
+  flagcxResult_t result =
+      flagcxHeteroBeginWork(comm, stream, &record, &previous);
+  if (result != flagcxSuccess)
+    return result;
+  result =
+      flagcxHeteroWaitSignalImpl(comm, peer, signalOffset, expected, stream);
+  return flagcxHeteroEndWork(record, previous, stream, result, 1);
+}
+
+flagcxResult_t flagcxHeteroFlushRmaStream(flagcxHeteroComm_t comm, int peer,
+                                          uint64_t seq, flagcxStream_t stream) {
+  flagcxWorkRecord *record = NULL, *previous = NULL;
+  flagcxResult_t result =
+      flagcxHeteroBeginWork(comm, stream, &record, &previous);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxHeteroFlushRmaStreamImpl(comm, peer, seq, stream);
+  return flagcxHeteroEndWork(record, previous, stream, result, 1);
+}
+
+flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
+                                 size_t size, void *gHandleInfo) {
+  flagcxWorkRecord *record = NULL, *previous = NULL;
+  flagcxResult_t result =
+      flagcxHeteroBeginWork(comm, NULL, &record, &previous, 1);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxHeteroFlushImpl(comm, gpuAddr, size, gHandleInfo, record);
+  return flagcxHeteroEndWork(record, previous, NULL, result, 0);
+}
+
+static flagcxResult_t flagcxHeteroSendTracked(const void *buffer, size_t count,
+                                              flagcxDataType_t type, int peer,
+                                              flagcxHeteroComm_t comm,
+                                              flagcxStream_t stream,
+                                              int channelId, int opId, int step,
+                                              int fromProxy) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  flagcxWorkTracker *tracker =
+      fromProxy ? &comm->proxyWork : flagcxHeteroWorkOwner(comm);
+  flagcxWorkRecord *record = NULL;
+  flagcxResult_t result = flagcxWorkPrepareAccepted(tracker, stream, &record);
+  if (result != flagcxSuccess)
+    return result;
+  flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  result = flagcxHeteroSendOnChannelImpl(buffer, count, type, peer, comm,
+                                         stream, channelId, opId, step);
+  return flagcxHeteroEndWork(record, previous, stream, result, 1,
+                             flagcxGetGroupDepth() != 0);
+}
+flagcxResult_t flagcxHeteroSendOnChannel(const void *buffer, size_t count,
+                                         flagcxDataType_t type, int peer,
+                                         flagcxHeteroComm_t comm,
+                                         flagcxStream_t stream, int channelId,
+                                         int opId, int step) {
+  return flagcxHeteroSendTracked(buffer, count, type, peer, comm, stream,
+                                 channelId, opId, step, 0);
+}
+flagcxResult_t flagcxHeteroProxySend(const void *buffer, size_t count,
+                                     flagcxDataType_t type, int peer,
+                                     flagcxHeteroComm_t comm,
+                                     flagcxStream_t stream) {
+  return flagcxHeteroSendTracked(buffer, count, type, peer, comm, stream, 0,
+                                 INT_MAX, -1, 1);
+}
+
+static flagcxResult_t flagcxHeteroRecvTracked(void *buffer, size_t count,
+                                              flagcxDataType_t type, int peer,
+                                              flagcxHeteroComm_t comm,
+                                              flagcxStream_t stream,
+                                              int channelId, int opId, int step,
+                                              int fromProxy) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  flagcxWorkTracker *tracker =
+      fromProxy ? &comm->proxyWork : flagcxHeteroWorkOwner(comm);
+  flagcxWorkRecord *record = NULL;
+  flagcxResult_t result = flagcxWorkPrepareAccepted(tracker, stream, &record);
+  if (result != flagcxSuccess)
+    return result;
+  flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  result = flagcxHeteroRecvOnChannelImpl(buffer, count, type, peer, comm,
+                                         stream, channelId, opId, step);
+  return flagcxHeteroEndWork(record, previous, stream, result, 1,
+                             flagcxGetGroupDepth() != 0);
+}
+flagcxResult_t flagcxHeteroRecvOnChannel(void *buffer, size_t count,
+                                         flagcxDataType_t type, int peer,
+                                         flagcxHeteroComm_t comm,
+                                         flagcxStream_t stream, int channelId,
+                                         int opId, int step) {
+  return flagcxHeteroRecvTracked(buffer, count, type, peer, comm, stream,
+                                 channelId, opId, step, 0);
+}
+flagcxResult_t flagcxHeteroProxyRecv(void *buffer, size_t count,
+                                     flagcxDataType_t type, int peer,
+                                     flagcxHeteroComm_t comm,
+                                     flagcxStream_t stream) {
+  return flagcxHeteroRecvTracked(buffer, count, type, peer, comm, stream, 0,
+                                 INT_MAX, -1, 1);
 }

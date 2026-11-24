@@ -26,6 +26,8 @@ struct flagcxWindow {
   flagcxComm_t ownerComm;
   flagcxWindow_t nextOwned;
   uint32_t devMemRefs;
+  flagcxWorkSnapshot cleanupWork;
+  bool cleanupStarted;
 };
 
 enum flagcxSymWindowState {

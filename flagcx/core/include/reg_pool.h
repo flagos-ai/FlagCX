@@ -24,13 +24,15 @@ public:
                     uintptr_t *endAddr);
   flagcxResult_t addNetHandle(void *comm, flagcxRegItem *reg, void *handle,
                               struct flagcxProxyConnector *proxyConn,
-                              bool complete = true);
+                              bool complete = true, bool usable = true);
   flagcxResult_t removeRegItemNetHandles(void *comm, flagcxRegItem *reg);
   flagcxResult_t addP2pHandle(void *comm, flagcxRegItem *reg,
                               struct flagcxIpcRegInfo *handle,
                               struct flagcxProxyConnector *proxyConn);
   struct flagcxIpcRegInfo *findP2pHandle(void *comm, int peerRank,
                                          void *allocationBase);
+  flagcxResult_t reserveP2pRegistration(void *comm, flagcxRegItem *reg,
+                                        struct flagcxIpcRegInfo *info);
   flagcxResult_t removeRegItemP2pHandles(void *comm, flagcxRegItem *reg);
   flagcxResult_t removeAllP2pHandles(void *comm);
   flagcxResult_t removeAllNetHandles(void *comm);
@@ -44,7 +46,8 @@ public:
   bool isGlobalOnly(void *handle);
   flagcxResult_t reserveNetHandle(flagcxRegItem *item, void *comm,
                                   struct flagcxProxyConnector *connector);
-  flagcxResult_t reserveHomoHandle(flagcxRegItem *item, void *comm);
+  flagcxResult_t reserveHomoHandle(flagcxRegItem *item, void *comm,
+                                   void *nativeComm = nullptr);
   void *getNetHandle(flagcxRegItem *item, void *comm,
                      struct flagcxProxyConnector *connector);
   void *getHomoHandle(flagcxRegItem *item, void *comm);

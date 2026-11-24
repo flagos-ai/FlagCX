@@ -24,6 +24,7 @@
 #include "sym_heap.h"
 #include "timer.h"
 #include "transport.h"
+#include "uni_runner_impl.h"
 #include "utils.h"
 #include <algorithm>
 #include <cassert>
@@ -2558,7 +2559,7 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
     if (useHomoComm(comm) && !useHeteroComm()) {
       if (globalRegPool.getHomoHandle(reg, key) == NULL) {
         // Reserve metadata before acquiring a native registration.
-        result = globalRegPool.reserveHomoHandle(reg, key);
+        result = globalRegPool.reserveHomoHandle(reg, key, comm->homoComm);
         if (result == flagcxSuccess) {
           void *native = NULL;
           result = cclAdaptors[flagcxCCLAdaptorDevice]->commRegister(
@@ -2936,9 +2937,13 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (win->devMemRefs != 0)
     return flagcxInvalidUsage;
+  win->cleanupStarted = true;
 
   if (useHomoComm(comm) && !useHeteroComm() && win->vendorBase != nullptr &&
       !win->isSymmetricDefault) {
+    flagcxResult_t drained = flagcxCommDrainSnapshot(comm, &win->cleanupWork);
+    if (drained != flagcxSuccess)
+      return drained;
     // Backend owns this window — deregister via backend only
     flagcxResult_t res =
         win->vendorBase != nullptr
@@ -2946,6 +2951,8 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
                   comm->homoComm, win->vendorBase)
             : flagcxSuccess;
     if (res == flagcxSuccess) {
+      flagcxWorkSnapshotRelease(&win->cleanupWork);
+      win->cleanupStarted = false;
       win->vendorBase = nullptr;
       win->winFlags = 0;
       if (win->ownerComm == nullptr)
@@ -2968,10 +2975,7 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   while (sym != nullptr &&
          __atomic_load_n(&sym->inSubmit, __ATOMIC_ACQUIRE) != 0)
     sched_yield();
-  flagcxResult_t syncResult = flagcxSuccess;
-  if (sym != nullptr && deviceAdaptor != nullptr &&
-      deviceAdaptor->deviceSynchronize != nullptr)
-    syncResult = deviceAdaptor->deviceSynchronize();
+  flagcxResult_t syncResult = flagcxCommDrainSnapshot(comm, &win->cleanupWork);
   flagcxResult_t commonSyncResult = syncResult;
   // Failed collective registration must keep every rank in the same rollback
   // sequence, including ranks with no synchronization callback to execute.
@@ -2984,8 +2988,7 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   // ordinary-allocation rank when another node owns an LSA mapping. Drain
   // accepted work everywhere before releasing an MR or reusing an LSA offset.
   flagcxResult_t drain = flagcxSuccess;
-  if (sym != NULL && sym->published)
-    drain = flagcxHeteroDrainAllRmaForCleanup(hetero);
+  // The saved snapshot includes every RMA target accepted before closure.
   flagcxResult_t commonDrain = drain;
   if (cleanupMode == flagcxSymCleanupCollective)
     FLAGCXCHECK(flagcxSymConvergeStatus(hetero, drain, &commonDrain));
@@ -3972,6 +3975,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     // call flagcxHeteroCommInitRank
     FLAGCXCHECK(flagcxHeteroCommInitRank(&(*comm)->heteroComm, nranks,
                                          heteroCommId, rank));
+    (*comm)->heteroComm->workOwner = &(*comm)->submittedWork;
 
     // Share ipcTable with heteroComm for intra-node D2D bypass
     (*comm)->heteroComm->ipcTable = (*comm)->ipcTable;
@@ -4092,16 +4096,38 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
 
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  FLAGCXCHECK(
-      cclAdaptors[flagcxCCLAdaptorDevice]->commFinalize(comm->homoComm));
-
-  if (!useHomoComm(comm) || useHeteroComm()) {
-    // Finalize initiates local RMA quiescence without adding a blocking rank
-    // collective. This preserves serial multi-rank lifecycle calls in one
-    // process; transport-specific peer shutdown remains in commCleanup.
-    FLAGCXCHECK(flagcxCommQuiesce(comm));
+  if (flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0 ||
+      flagcxGetGroupDepth() != 0)
+    return flagcxInvalidUsage;
+  flagcxResult_t drain =
+      flagcxWorkDrain(&comm->submittedWork, comm->heteroComm);
+  if (drain != flagcxSuccess)
+    return drain;
+  if (comm->heteroComm != NULL) {
+    drain = flagcxGroupDrainWork(comm->heteroComm, 1);
+    if (drain != flagcxSuccess)
+      return drain;
   }
-  return flagcxSuccess;
+  drain = flagcxC2cDrainPendingResources(comm, 1);
+  if (drain != flagcxSuccess)
+    return drain;
+  if (comm->heteroComm != NULL && comm->heteroComm->proxyState != NULL) {
+    auto *state = &comm->heteroComm->proxyState->uniRunnerState;
+    if (state->invocationOwner != NULL) {
+      drain = cleanupUniRunner(comm, false);
+      if (drain != flagcxSuccess)
+        return drain;
+    }
+    drain = flagcxFusedDrainPendingBuffers(comm);
+    if (drain != flagcxSuccess)
+      return drain;
+  }
+  if (!useHomoComm(comm) || useHeteroComm()) {
+    drain = flagcxCommQuiesce(comm);
+    if (drain != flagcxSuccess)
+      return drain;
+  }
+  return cclAdaptors[flagcxCCLAdaptorDevice]->commFinalize(comm->homoComm);
 }
 
 flagcxResult_t flagcxDestroyHomoCommOwner(flagcxComm_t comm,
@@ -4183,6 +4209,27 @@ static flagcxResult_t flagcxCommDestroyNativeOwners(flagcxComm_t comm) {
 static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
                                                     int stage) {
   if (stage == 0) {
+    if (flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0 ||
+        flagcxGetGroupDepth() != 0)
+      return flagcxInvalidUsage;
+    flagcxResult_t drain =
+        flagcxWorkDrain(&comm->submittedWork, comm->heteroComm);
+    if (drain != flagcxSuccess)
+      return drain;
+    drain = flagcxC2cDrainPendingResources(comm, 1);
+    if (drain != flagcxSuccess)
+      return drain;
+    if (comm->heteroComm != NULL) {
+      drain = flagcxGroupDrainWork(comm->heteroComm, 1);
+      if (drain != flagcxSuccess)
+        return drain;
+    }
+    if (comm->heteroComm != NULL && comm->heteroComm->proxyState != NULL &&
+        comm->heteroComm->proxyState->uniRunnerState.invocationOwner != NULL) {
+      drain = cleanupUniRunner(comm, false);
+      if (drain != flagcxSuccess)
+        return drain;
+    }
     // Drain local producers before any rank enters transport shutdown.
     if (!useHomoComm(comm) || useHeteroComm())
       do {
@@ -4428,6 +4475,9 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
       return destroyResult;
     comm->tunerContext = NULL;
   }
+  destroyResult = flagcxWorkRelease(&comm->submittedWork);
+  if (destroyResult != flagcxSuccess)
+    return destroyResult;
   destroyResult = flagcxCommReleasePluginRefs(comm);
   if (destroyResult != flagcxSuccess)
     return destroyResult;
@@ -4574,15 +4624,61 @@ flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
 }
 
 flagcxResult_t flagcxBarrier(flagcxComm_t comm, flagcxStream_t stream) {
-  void *barrierBuff;
-  deviceAdaptor->deviceMalloc(&barrierBuff, comm->nranks, flagcxMemDevice,
-                              stream);
-  deviceAdaptor->deviceMemset(barrierBuff, 0, comm->nranks, flagcxMemDevice,
-                              stream);
-  flagcxAllReduce(barrierBuff, barrierBuff, comm->nranks, flagcxChar, flagcxMax,
-                  comm, stream);
-  deviceAdaptor->deviceFree(barrierBuff, flagcxMemDevice, stream);
-  deviceAdaptor->streamSynchronize(stream);
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (flagcxWorkGroupDepth(flagcxWorkNativeGroup) || flagcxGetGroupDepth())
+    return flagcxInvalidUsage;
+  flagcxWorkRecord *record = NULL;
+  flagcxResult_t result =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (result != flagcxSuccess)
+    return result;
+  flagcxWorkRetain(record);
+  flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  result = deviceAdaptor->deviceMalloc(&record->buffer, comm->nranks,
+                                       flagcxMemDevice, stream);
+  if (result == flagcxSuccess)
+    result = deviceAdaptor->deviceMemset(record->buffer, 0, comm->nranks,
+                                         flagcxMemDevice, stream);
+  if (result == flagcxSuccess)
+    result = flagcxAllReduce(record->buffer, record->buffer, comm->nranks,
+                             flagcxChar, flagcxMax, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  flagcxResult_t completion = flagcxWorkFinish(
+      record, stream, result, flagcxWorkNativeGroup, 0, useHeteroComm());
+  if (completion == flagcxSuccess)
+    completion = flagcxWorkDrainRecord(record, comm->heteroComm);
+  if (completion == flagcxSuccess)
+    completion = flagcxWorkReleaseBuffer(record);
+  flagcxWorkDrop(record);
+  return result == flagcxSuccess ? completion : result;
+}
+
+static flagcxResult_t flagcxReduceImpl(const void *sendbuff, void *recvbuff,
+                                       size_t count, flagcxDataType_t datatype,
+                                       flagcxRedOp_t op, int root,
+                                       flagcxComm_t comm,
+                                       flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (useHeteroComm()) {
+    return flagcxRunners[flagcxUniRunner]->reduce(
+        sendbuff, recvbuff, count, datatype, op, root, comm, stream);
+  } else if (useHomoComm(comm)) {
+    return flagcxRunners[flagcxHomoRunner]->reduce(
+        sendbuff, recvbuff, count, datatype, op, root, comm, stream);
+  } else if (useHostComm() || comm->hasSingleRankHomoComm) {
+    // c2c validation
+    if (comm->hasSingleRankHomoComm) {
+      WARN("Host comm is required to perform C2C reduce op when "
+           "comm->hasSingleRankHomoComm is True");
+    }
+    return flagcxRunners[flagcxHostRunner]->reduce(
+        sendbuff, recvbuff, count, datatype, op, root, comm, stream);
+  } else {
+    return flagcxRunners[flagcxHybridRunner]->reduce(
+        sendbuff, recvbuff, count, datatype, op, root, comm, stream);
+  }
   return flagcxSuccess;
 }
 
@@ -4590,24 +4686,45 @@ flagcxResult_t flagcxReduce(const void *sendbuff, void *recvbuff, size_t count,
                             flagcxDataType_t datatype, flagcxRedOp_t op,
                             int root, flagcxComm_t comm,
                             flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  struct flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  flagcxResult_t result = flagcxReduceImpl(sendbuff, recvbuff, count, datatype,
+                                           op, root, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkNativeGroup,
+                          flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0,
+                          useHeteroComm());
+}
+
+static flagcxResult_t flagcxGatherImpl(const void *sendbuff, void *recvbuff,
+                                       size_t count, flagcxDataType_t datatype,
+                                       int root, flagcxComm_t comm,
+                                       flagcxStream_t stream) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->reduce(
-        sendbuff, recvbuff, count, datatype, op, root, comm, stream));
+    return flagcxRunners[flagcxUniRunner]->gather(sendbuff, recvbuff, count,
+                                                  datatype, root, comm, stream);
   } else if (useHomoComm(comm)) {
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->reduce(
-        sendbuff, recvbuff, count, datatype, op, root, comm, stream));
+    return flagcxRunners[flagcxHomoRunner]->gather(
+        sendbuff, recvbuff, count, datatype, root, comm, stream);
   } else if (useHostComm() || comm->hasSingleRankHomoComm) {
     // c2c validation
     if (comm->hasSingleRankHomoComm) {
-      WARN("Host comm is required to perform C2C reduce op when "
+      WARN("Host comm is required to perform C2C gather op when "
            "comm->hasSingleRankHomoComm is True");
     }
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->reduce(
-        sendbuff, recvbuff, count, datatype, op, root, comm, stream));
+    return flagcxRunners[flagcxHostRunner]->gather(
+        sendbuff, recvbuff, count, datatype, root, comm, stream);
   } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->reduce(
-        sendbuff, recvbuff, count, datatype, op, root, comm, stream));
+    return flagcxRunners[flagcxHybridRunner]->gather(
+        sendbuff, recvbuff, count, datatype, root, comm, stream);
   }
   return flagcxSuccess;
 }
@@ -4615,24 +4732,45 @@ flagcxResult_t flagcxReduce(const void *sendbuff, void *recvbuff, size_t count,
 flagcxResult_t flagcxGather(const void *sendbuff, void *recvbuff, size_t count,
                             flagcxDataType_t datatype, int root,
                             flagcxComm_t comm, flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  struct flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  flagcxResult_t result =
+      flagcxGatherImpl(sendbuff, recvbuff, count, datatype, root, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkNativeGroup,
+                          flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0,
+                          useHeteroComm());
+}
+
+static flagcxResult_t flagcxScatterImpl(const void *sendbuff, void *recvbuff,
+                                        size_t count, flagcxDataType_t datatype,
+                                        int root, flagcxComm_t comm,
+                                        flagcxStream_t stream) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->gather(
-        sendbuff, recvbuff, count, datatype, root, comm, stream));
+    return flagcxRunners[flagcxUniRunner]->scatter(
+        sendbuff, recvbuff, count, datatype, root, comm, stream);
   } else if (useHomoComm(comm)) {
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->gather(
-        sendbuff, recvbuff, count, datatype, root, comm, stream));
+    return flagcxRunners[flagcxHomoRunner]->scatter(
+        sendbuff, recvbuff, count, datatype, root, comm, stream);
   } else if (useHostComm() || comm->hasSingleRankHomoComm) {
     // c2c validation
     if (comm->hasSingleRankHomoComm) {
-      WARN("Host comm is required to perform C2C gather op when "
+      WARN("Host comm is required to perform C2C scatter op when "
            "comm->hasSingleRankHomoComm is True");
     }
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->gather(
-        sendbuff, recvbuff, count, datatype, root, comm, stream));
+    return flagcxRunners[flagcxHostRunner]->scatter(
+        sendbuff, recvbuff, count, datatype, root, comm, stream);
   } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->gather(
-        sendbuff, recvbuff, count, datatype, root, comm, stream));
+    return flagcxRunners[flagcxHybridRunner]->scatter(
+        sendbuff, recvbuff, count, datatype, root, comm, stream);
   }
   return flagcxSuccess;
 }
@@ -4640,24 +4778,46 @@ flagcxResult_t flagcxGather(const void *sendbuff, void *recvbuff, size_t count,
 flagcxResult_t flagcxScatter(const void *sendbuff, void *recvbuff, size_t count,
                              flagcxDataType_t datatype, int root,
                              flagcxComm_t comm, flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  struct flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  flagcxResult_t result = flagcxScatterImpl(sendbuff, recvbuff, count, datatype,
+                                            root, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkNativeGroup,
+                          flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0,
+                          useHeteroComm());
+}
+
+static flagcxResult_t flagcxBroadcastImpl(const void *sendbuff, void *recvbuff,
+                                          size_t count,
+                                          flagcxDataType_t datatype, int root,
+                                          flagcxComm_t comm,
+                                          flagcxStream_t stream) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->scatter(
-        sendbuff, recvbuff, count, datatype, root, comm, stream));
+    return flagcxRunners[flagcxUniRunner]->broadcast(
+        sendbuff, recvbuff, count, datatype, root, comm, stream);
   } else if (useHomoComm(comm)) {
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->scatter(
-        sendbuff, recvbuff, count, datatype, root, comm, stream));
+    return flagcxRunners[flagcxHomoRunner]->broadcast(
+        sendbuff, recvbuff, count, datatype, root, comm, stream);
   } else if (useHostComm() || comm->hasSingleRankHomoComm) {
     // c2c validation
     if (comm->hasSingleRankHomoComm) {
-      WARN("Host comm is required to perform C2C scatter op when "
+      WARN("Host comm is required to perform C2C broadcast op when "
            "comm->hasSingleRankHomoComm is True");
     }
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->scatter(
-        sendbuff, recvbuff, count, datatype, root, comm, stream));
+    return flagcxRunners[flagcxHostRunner]->broadcast(
+        sendbuff, recvbuff, count, datatype, root, comm, stream);
   } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->scatter(
-        sendbuff, recvbuff, count, datatype, root, comm, stream));
+    return flagcxRunners[flagcxHybridRunner]->broadcast(
+        sendbuff, recvbuff, count, datatype, root, comm, stream);
   }
   return flagcxSuccess;
 }
@@ -4666,32 +4826,28 @@ flagcxResult_t flagcxBroadcast(const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
                                int root, flagcxComm_t comm,
                                flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->broadcast(
-        sendbuff, recvbuff, count, datatype, root, comm, stream));
-  } else if (useHomoComm(comm)) {
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->broadcast(
-        sendbuff, recvbuff, count, datatype, root, comm, stream));
-  } else if (useHostComm() || comm->hasSingleRankHomoComm) {
-    // c2c validation
-    if (comm->hasSingleRankHomoComm) {
-      WARN("Host comm is required to perform C2C broadcast op when "
-           "comm->hasSingleRankHomoComm is True");
-    }
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->broadcast(
-        sendbuff, recvbuff, count, datatype, root, comm, stream));
-  } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->broadcast(
-        sendbuff, recvbuff, count, datatype, root, comm, stream));
-  }
-  return flagcxSuccess;
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  struct flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  flagcxResult_t result = flagcxBroadcastImpl(sendbuff, recvbuff, count,
+                                              datatype, root, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkNativeGroup,
+                          flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0,
+                          useHeteroComm());
 }
 
-flagcxResult_t flagcxAllReduce(const void *sendbuff, void *recvbuff,
-                               size_t count, flagcxDataType_t datatype,
-                               flagcxRedOp_t op, flagcxComm_t comm,
-                               flagcxStream_t stream) {
+static flagcxResult_t flagcxAllReduceImpl(const void *sendbuff, void *recvbuff,
+                                          size_t count,
+                                          flagcxDataType_t datatype,
+                                          flagcxRedOp_t op, flagcxComm_t comm,
+                                          flagcxStream_t stream) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
 
   // Try custom allreduce if registered
@@ -4714,22 +4870,69 @@ flagcxResult_t flagcxAllReduce(const void *sendbuff, void *recvbuff,
   }
 
   if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->allReduce(
-        sendbuff, recvbuff, count, datatype, op, comm, stream));
+    return flagcxRunners[flagcxUniRunner]->allReduce(
+        sendbuff, recvbuff, count, datatype, op, comm, stream);
   } else if (useHomoComm(comm)) {
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->allReduce(
-        sendbuff, recvbuff, count, datatype, op, comm, stream));
+    return flagcxRunners[flagcxHomoRunner]->allReduce(
+        sendbuff, recvbuff, count, datatype, op, comm, stream);
   } else if (useHostComm() || comm->hasSingleRankHomoComm) {
     // c2c validation
     if (comm->hasSingleRankHomoComm) {
       WARN("Host comm is required to perform C2C allreduce op when "
            "comm->hasSingleRankHomoComm is True");
     }
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->allReduce(
-        sendbuff, recvbuff, count, datatype, op, comm, stream));
+    return flagcxRunners[flagcxHostRunner]->allReduce(
+        sendbuff, recvbuff, count, datatype, op, comm, stream);
   } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->allReduce(
-        sendbuff, recvbuff, count, datatype, op, comm, stream));
+    return flagcxRunners[flagcxHybridRunner]->allReduce(
+        sendbuff, recvbuff, count, datatype, op, comm, stream);
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxAllReduce(const void *sendbuff, void *recvbuff,
+                               size_t count, flagcxDataType_t datatype,
+                               flagcxRedOp_t op, flagcxComm_t comm,
+                               flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  struct flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  flagcxResult_t result = flagcxAllReduceImpl(sendbuff, recvbuff, count,
+                                              datatype, op, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkNativeGroup,
+                          flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0,
+                          useHeteroComm());
+}
+
+static flagcxResult_t
+flagcxReduceScatterImpl(const void *sendbuff, void *recvbuff, size_t recvcount,
+                        flagcxDataType_t datatype, flagcxRedOp_t op,
+                        flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (useHeteroComm()) {
+    return flagcxRunners[flagcxUniRunner]->reduceScatter(
+        sendbuff, recvbuff, recvcount, datatype, op, comm, stream);
+  } else if (useHomoComm(comm)) {
+    return flagcxRunners[flagcxHomoRunner]->reduceScatter(
+        sendbuff, recvbuff, recvcount, datatype, op, comm, stream);
+  } else if (useHostComm() || comm->hasSingleRankHomoComm) {
+    // c2c validation
+    if (comm->hasSingleRankHomoComm) {
+      WARN("Host comm is required to perform C2C reducescatter op when "
+           "comm->hasSingleRankHomoComm is True");
+    }
+    return flagcxRunners[flagcxHostRunner]->reduceScatter(
+        sendbuff, recvbuff, recvcount, datatype, op, comm, stream);
+  } else {
+    return flagcxRunners[flagcxHybridRunner]->reduceScatter(
+        sendbuff, recvbuff, recvcount, datatype, op, comm, stream);
   }
   return flagcxSuccess;
 }
@@ -4738,24 +4941,41 @@ flagcxResult_t flagcxReduceScatter(const void *sendbuff, void *recvbuff,
                                    size_t recvcount, flagcxDataType_t datatype,
                                    flagcxRedOp_t op, flagcxComm_t comm,
                                    flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  struct flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  flagcxResult_t result = flagcxReduceScatterImpl(sendbuff, recvbuff, recvcount,
+                                                  datatype, op, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkNativeGroup,
+                          flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0,
+                          useHeteroComm());
+}
+
+static flagcxResult_t flagcxAllGatherImpl(const void *sendbuff, void *recvbuff,
+                                          size_t sendcount,
+                                          flagcxDataType_t datatype,
+                                          flagcxComm_t comm,
+                                          flagcxStream_t stream) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->reduceScatter(
-        sendbuff, recvbuff, recvcount, datatype, op, comm, stream));
+    return flagcxRunners[flagcxUniRunner]->allGather(
+        sendbuff, recvbuff, sendcount, datatype, comm, stream);
   } else if (useHomoComm(comm)) {
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->reduceScatter(
-        sendbuff, recvbuff, recvcount, datatype, op, comm, stream));
-  } else if (useHostComm() || comm->hasSingleRankHomoComm) {
-    // c2c validation
-    if (comm->hasSingleRankHomoComm) {
-      WARN("Host comm is required to perform C2C reducescatter op when "
-           "comm->hasSingleRankHomoComm is True");
-    }
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->reduceScatter(
-        sendbuff, recvbuff, recvcount, datatype, op, comm, stream));
+    return flagcxRunners[flagcxHomoRunner]->allGather(
+        sendbuff, recvbuff, sendcount, datatype, comm, stream);
+  } else if (useHostComm()) {
+    return flagcxRunners[flagcxHostRunner]->allGather(
+        sendbuff, recvbuff, sendcount, datatype, comm, stream);
   } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->reduceScatter(
-        sendbuff, recvbuff, recvcount, datatype, op, comm, stream));
+    return flagcxRunners[flagcxHybridRunner]->allGather(
+        sendbuff, recvbuff, sendcount, datatype, comm, stream);
   }
   return flagcxSuccess;
 }
@@ -4763,19 +4983,41 @@ flagcxResult_t flagcxReduceScatter(const void *sendbuff, void *recvbuff,
 flagcxResult_t flagcxAllGather(const void *sendbuff, void *recvbuff,
                                size_t sendcount, flagcxDataType_t datatype,
                                flagcxComm_t comm, flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  struct flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  flagcxResult_t result = flagcxAllGatherImpl(sendbuff, recvbuff, sendcount,
+                                              datatype, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkNativeGroup,
+                          flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0,
+                          useHeteroComm());
+}
+
+static flagcxResult_t flagcxAlltoAllImpl(const void *sendbuff, void *recvbuff,
+                                         size_t count,
+                                         flagcxDataType_t datatype,
+                                         flagcxComm_t comm,
+                                         flagcxStream_t stream) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->allGather(
-        sendbuff, recvbuff, sendcount, datatype, comm, stream));
+    return flagcxRunners[flagcxUniRunner]->alltoAll(sendbuff, recvbuff, count,
+                                                    datatype, comm, stream);
   } else if (useHomoComm(comm)) {
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->allGather(
-        sendbuff, recvbuff, sendcount, datatype, comm, stream));
+    return flagcxRunners[flagcxHomoRunner]->alltoAll(sendbuff, recvbuff, count,
+                                                     datatype, comm, stream);
   } else if (useHostComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->allGather(
-        sendbuff, recvbuff, sendcount, datatype, comm, stream));
+    return flagcxRunners[flagcxHostRunner]->alltoAll(sendbuff, recvbuff, count,
+                                                     datatype, comm, stream);
   } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->allGather(
-        sendbuff, recvbuff, sendcount, datatype, comm, stream));
+    return flagcxRunners[flagcxHybridRunner]->alltoAll(
+        sendbuff, recvbuff, count, datatype, comm, stream);
   }
   return flagcxSuccess;
 }
@@ -4783,19 +5025,46 @@ flagcxResult_t flagcxAllGather(const void *sendbuff, void *recvbuff,
 flagcxResult_t flagcxAlltoAll(const void *sendbuff, void *recvbuff,
                               size_t count, flagcxDataType_t datatype,
                               flagcxComm_t comm, flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  struct flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  flagcxResult_t result =
+      flagcxAlltoAllImpl(sendbuff, recvbuff, count, datatype, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkNativeGroup,
+                          flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0,
+                          useHeteroComm());
+}
+
+static flagcxResult_t
+flagcxAlltoAllvImpl(const void *sendbuff, size_t *sendcounts, size_t *sdispls,
+                    void *recvbuff, size_t *recvcounts, size_t *rdispls,
+                    flagcxDataType_t datatype, flagcxComm_t comm,
+                    flagcxStream_t stream) {
+
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->alltoAll(
-        sendbuff, recvbuff, count, datatype, comm, stream));
+    return flagcxRunners[flagcxUniRunner]->alltoAllv(
+        sendbuff, sendcounts, sdispls, recvbuff, recvcounts, rdispls, datatype,
+        comm, stream);
   } else if (useHomoComm(comm)) {
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->alltoAll(
-        sendbuff, recvbuff, count, datatype, comm, stream));
+    return flagcxRunners[flagcxHomoRunner]->alltoAllv(
+        sendbuff, sendcounts, sdispls, recvbuff, recvcounts, rdispls, datatype,
+        comm, stream);
   } else if (useHostComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->alltoAll(
-        sendbuff, recvbuff, count, datatype, comm, stream));
+    return flagcxRunners[flagcxHostRunner]->alltoAllv(
+        sendbuff, sendcounts, sdispls, recvbuff, recvcounts, rdispls, datatype,
+        comm, stream);
   } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->alltoAll(
-        sendbuff, recvbuff, count, datatype, comm, stream));
+    return flagcxRunners[flagcxHybridRunner]->alltoAllv(
+        sendbuff, sendcounts, sdispls, recvbuff, recvcounts, rdispls, datatype,
+        comm, stream);
   }
   return flagcxSuccess;
 }
@@ -4805,24 +5074,40 @@ flagcxResult_t flagcxAlltoAllv(const void *sendbuff, size_t *sendcounts,
                                size_t *recvcounts, size_t *rdispls,
                                flagcxDataType_t datatype, flagcxComm_t comm,
                                flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  struct flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  flagcxResult_t result =
+      flagcxAlltoAllvImpl(sendbuff, sendcounts, sdispls, recvbuff, recvcounts,
+                          rdispls, datatype, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkNativeGroup,
+                          flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0,
+                          useHeteroComm());
+}
 
+static flagcxResult_t flagcxSendImpl(const void *sendbuff, size_t count,
+                                     flagcxDataType_t datatype, int peer,
+                                     flagcxComm_t comm, flagcxStream_t stream) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->alltoAllv(
-        sendbuff, sendcounts, sdispls, recvbuff, recvcounts, rdispls, datatype,
-        comm, stream));
+    return flagcxRunners[flagcxUniRunner]->send(sendbuff, count, datatype, peer,
+                                                comm, stream);
   } else if (useHomoComm(comm)) {
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->alltoAllv(
-        sendbuff, sendcounts, sdispls, recvbuff, recvcounts, rdispls, datatype,
-        comm, stream));
+    return flagcxRunners[flagcxHomoRunner]->send(sendbuff, count, datatype,
+                                                 peer, comm, stream);
   } else if (useHostComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->alltoAllv(
-        sendbuff, sendcounts, sdispls, recvbuff, recvcounts, rdispls, datatype,
-        comm, stream));
+    return flagcxRunners[flagcxHostRunner]->send(sendbuff, count, datatype,
+                                                 peer, comm, stream);
   } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->alltoAllv(
-        sendbuff, sendcounts, sdispls, recvbuff, recvcounts, rdispls, datatype,
-        comm, stream));
+    return flagcxRunners[flagcxHybridRunner]->send(sendbuff, count, datatype,
+                                                   peer, comm, stream);
   }
   return flagcxSuccess;
 }
@@ -4830,19 +5115,39 @@ flagcxResult_t flagcxAlltoAllv(const void *sendbuff, size_t *sendcounts,
 flagcxResult_t flagcxSend(const void *sendbuff, size_t count,
                           flagcxDataType_t datatype, int peer,
                           flagcxComm_t comm, flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  struct flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  flagcxResult_t result =
+      flagcxSendImpl(sendbuff, count, datatype, peer, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkNativeGroup,
+                          flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0,
+                          useHeteroComm());
+}
+
+static flagcxResult_t flagcxRecvImpl(void *recvbuff, size_t count,
+                                     flagcxDataType_t datatype, int peer,
+                                     flagcxComm_t comm, flagcxStream_t stream) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->send(sendbuff, count, datatype,
-                                                     peer, comm, stream));
+    return flagcxRunners[flagcxUniRunner]->recv(recvbuff, count, datatype, peer,
+                                                comm, stream);
   } else if (useHomoComm(comm)) {
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->send(sendbuff, count, datatype,
-                                                      peer, comm, stream));
+    return flagcxRunners[flagcxHomoRunner]->recv(recvbuff, count, datatype,
+                                                 peer, comm, stream);
   } else if (useHostComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->send(sendbuff, count, datatype,
-                                                      peer, comm, stream));
+    return flagcxRunners[flagcxHostRunner]->recv(recvbuff, count, datatype,
+                                                 peer, comm, stream);
   } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->send(
-        sendbuff, count, datatype, peer, comm, stream));
+    return flagcxRunners[flagcxHybridRunner]->recv(recvbuff, count, datatype,
+                                                   peer, comm, stream);
   }
   return flagcxSuccess;
 }
@@ -4850,21 +5155,21 @@ flagcxResult_t flagcxSend(const void *sendbuff, size_t count,
 flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
                           flagcxDataType_t datatype, int peer,
                           flagcxComm_t comm, flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->recv(recvbuff, count, datatype,
-                                                     peer, comm, stream));
-  } else if (useHomoComm(comm)) {
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->recv(recvbuff, count, datatype,
-                                                      peer, comm, stream));
-  } else if (useHostComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->recv(recvbuff, count, datatype,
-                                                      peer, comm, stream));
-  } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->recv(
-        recvbuff, count, datatype, peer, comm, stream));
-  }
-  return flagcxSuccess;
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  struct flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  flagcxResult_t result =
+      flagcxRecvImpl(recvbuff, count, datatype, peer, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkNativeGroup,
+                          flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0,
+                          useHeteroComm());
 }
 
 flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
@@ -5099,36 +5404,34 @@ flagcxResult_t flagcxWaitCounter(flagcxComm_t comm, uint64_t target) {
 }
 
 flagcxResult_t flagcxGroupStart(flagcxComm_t comm) {
-  if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->groupStart());
-  } else if (comm == NULL || useHomoComm(comm)) {
-    if (comm == NULL) {
-      INFO(
-          FLAGCX_COLL,
-          "flagcxGroupStart: comm is NULL, delegating to homo runner directly");
-    }
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->groupStart());
-  } else if (useHostComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->groupStart());
-  } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->groupStart());
-  }
-  return flagcxSuccess;
+  if (comm != NULL &&
+      __atomic_load_n(&comm->submittedWork.closed, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
+  flagcxResult_t result;
+  if (useHeteroComm())
+    result = flagcxRunners[flagcxUniRunner]->groupStart();
+  else if (comm == NULL || useHomoComm(comm))
+    result = flagcxRunners[flagcxHomoRunner]->groupStart();
+  else if (useHostComm())
+    result = flagcxRunners[flagcxHostRunner]->groupStart();
+  else
+    result = flagcxRunners[flagcxHybridRunner]->groupStart();
+  if (result == flagcxSuccess)
+    flagcxWorkGroupStart(flagcxWorkNativeGroup);
+  return result;
 }
 
 flagcxResult_t flagcxGroupEnd(flagcxComm_t comm) {
-  if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->groupEnd());
-  } else if (comm == NULL || useHomoComm(comm)) {
-    if (comm == NULL) {
-      INFO(FLAGCX_COLL,
-           "flagcxGroupEnd: comm is NULL, delegating to homo runner directly");
-    }
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->groupEnd());
-  } else if (useHostComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->groupEnd());
-  } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->groupEnd());
-  }
-  return flagcxSuccess;
+  if (flagcxWorkGroupDepth(flagcxWorkNativeGroup) == 0)
+    return flagcxInvalidUsage;
+  flagcxResult_t result;
+  if (useHeteroComm())
+    result = flagcxRunners[flagcxUniRunner]->groupEnd();
+  else if (comm == NULL || useHomoComm(comm))
+    result = flagcxRunners[flagcxHomoRunner]->groupEnd();
+  else if (useHostComm())
+    result = flagcxRunners[flagcxHostRunner]->groupEnd();
+  else
+    result = flagcxRunners[flagcxHybridRunner]->groupEnd();
+  return flagcxWorkGroupEnd(flagcxWorkNativeGroup, result);
 }

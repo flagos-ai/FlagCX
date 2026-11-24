@@ -147,7 +147,9 @@ flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
     if (comm->isTuningWithFlagscale) {                                         \
       FLAGCXCHECK(comm->tuner->handleFlagscaleTuning(comm->tunerContext, comm, \
                                                      commOp, nBytes));         \
-      FLAGCXCHECK(call);                                                       \
+      flagcxResult_t submitted = (call);                                       \
+      if (submitted != flagcxSuccess)                                          \
+        return submitted;                                                      \
       return flagcxSuccess;                                                    \
     }                                                                          \
     comm->tunerInnerComm = nullptr;                                            \
@@ -157,7 +159,9 @@ flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
     flagcxProfileKey pkey;                                                     \
     FLAGCXCHECK(comm->tuner->startProfiling(comm->tunerContext, commOp,        \
                                             nBytes, stream, &tag, &pkey));     \
-    FLAGCXCHECK(call);                                                         \
+    flagcxResult_t submitted = (call);                                         \
+    if (submitted != flagcxSuccess)                                            \
+      return submitted;                                                        \
     FLAGCXCHECK(comm->tuner->stopProfiling(comm->tunerContext, &pkey));        \
     return flagcxSuccess;                                                      \
   } while (0);

@@ -5662,7 +5662,8 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
   return flagcxSuccess;
 }
 
-flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
+static flagcxResult_t initUniRunnerImpl(flagcxComm_t comm,
+                                        flagcxStream_t stream) {
   if (!comm->uniRunnerKernelSupported)
     return flagcxNotSupported;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
@@ -5770,8 +5771,7 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
   runnerState->numPendingNodes = 0;
 
   // Create dedicated reduce and copy streams
-  flagcxStream_t redStream = NULL;
-  flagcxResult_t result = deviceAdaptor->streamCreate(&redStream);
+  flagcxResult_t result = deviceAdaptor->streamCreate(&runnerState->redStream);
   if (result != flagcxSuccess) {
     delete runnerState->ipcFifo;
     runnerState->ipcFifo = NULL;
@@ -5779,23 +5779,119 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
     runnerState->fifo = NULL;
     return result;
   }
-  flagcxStream_t cpyStream = NULL;
-  result = deviceAdaptor->streamCreate(&cpyStream);
+  result = deviceAdaptor->streamCreate(&runnerState->cpyStream);
   if (result != flagcxSuccess) {
-    (void)deviceAdaptor->streamDestroy(redStream);
+    // Keep the successful first stream for checked invocation cleanup.
     delete runnerState->ipcFifo;
     runnerState->ipcFifo = NULL;
     delete runnerState->fifo;
     runnerState->fifo = NULL;
     return result;
   }
-  runnerState->redStream = redStream;
-  runnerState->cpyStream = cpyStream;
   runnerState->ipcCommStream = stream;
   return flagcxSuccess;
 }
 
-flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
+static flagcxResult_t sealUniRunnerWork(flagcxComm_t comm,
+                                        flagcxResult_t operationResult) {
+  auto *state = &comm->heteroComm->proxyState->uniRunnerState;
+  flagcxStream_t streams[] = {state->ipcCommStream, state->redStream,
+                              state->cpyStream, state->netCommStream};
+  flagcxResult_t first = flagcxSuccess;
+  for (unsigned int i = 0; i < 4; ++i) {
+    auto *record = state->invocationWork[i];
+    if (record == NULL)
+      continue;
+    pthread_mutex_lock(&record->owner->mutex);
+    bool preparing = record->state == flagcxWorkPreparing;
+    pthread_mutex_unlock(&record->owner->mutex);
+    if (!preparing)
+      continue;
+    flagcxResult_t result =
+        (i != 0 && streams[i] == NULL)
+            ? flagcxWorkCancel(record)
+            : flagcxWorkFinish(record, streams[i], operationResult,
+                               flagcxWorkNativeGroup, 0, 1);
+    if (first == flagcxSuccess && result != flagcxSuccess)
+      first = result;
+  }
+  return first;
+}
+
+flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
+  if (comm == NULL || comm->heteroComm == NULL ||
+      comm->heteroComm->proxyState == NULL)
+    return flagcxInvalidArgument;
+  if (!comm->uniRunnerKernelSupported)
+    return flagcxNotSupported;
+  auto *state = &comm->heteroComm->proxyState->uniRunnerState;
+  for (auto *record : state->invocationWork)
+    if (record != NULL)
+      return flagcxInvalidUsage;
+  // Allocate every invocation fence before any GPU work. Lazy native streams
+  // use the same records once created; no fence is appended during teardown.
+  for (unsigned int i = 0; i < 4; ++i) {
+    flagcxResult_t result =
+        flagcxWorkPrepareAccepted(&comm->submittedWork, i == 0 ? stream : NULL,
+                                  &state->invocationWork[i]);
+    if (result != flagcxSuccess) {
+      for (auto *&record : state->invocationWork) {
+        if (record != NULL) {
+          flagcxWorkCancel(record);
+          flagcxWorkDrop(record);
+          record = NULL;
+        }
+      }
+      return result;
+    }
+    flagcxWorkRetain(state->invocationWork[i]);
+  }
+  state->invocationOwner = comm;
+  flagcxResult_t result = initUniRunnerImpl(comm, stream);
+  if (result != flagcxSuccess) {
+    // init has not submitted stream work. Cancel rather than recording a
+    // default-stream event when only a prefix of the streams was created.
+    for (auto *&record : state->invocationWork) {
+      flagcxWorkCancel(record);
+      flagcxWorkDrop(record);
+      record = NULL;
+    }
+    flagcxResult_t cleanup = cleanupUniRunner(comm, false);
+    if (cleanup != flagcxSuccess)
+      return cleanup;
+  }
+  return result;
+}
+
+flagcxResult_t flagcxUniRunnerDrainWork(flagcxComm_t comm,
+                                        bool atSubmissionBoundary) {
+  if (comm == NULL || comm->heteroComm == NULL ||
+      comm->heteroComm->proxyState == NULL)
+    return flagcxSuccess;
+  auto *state = &comm->heteroComm->proxyState->uniRunnerState;
+  if (atSubmissionBoundary) {
+    flagcxResult_t result = sealUniRunnerWork(comm, flagcxSuccess);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  for (auto *&record : state->invocationWork) {
+    if (record == NULL)
+      continue;
+    pthread_mutex_lock(&record->owner->mutex);
+    bool preparing = record->state == flagcxWorkPreparing;
+    pthread_mutex_unlock(&record->owner->mutex);
+    if (preparing)
+      return flagcxInvalidUsage;
+    flagcxResult_t result = flagcxWorkDrainRecord(record, comm->heteroComm);
+    if (result != flagcxSuccess)
+      return result;
+    flagcxWorkDrop(record);
+    record = NULL;
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t cleanupUniRunner(flagcxComm_t comm, bool atSubmissionBoundary) {
   if (comm == nullptr || comm->heteroComm == nullptr ||
       comm->heteroComm->proxyState == nullptr)
     return flagcxInvalidArgument;
@@ -5806,20 +5902,7 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
                                    state->ipcOutputMem == NULL;
   flagcxResult_t result = flagcxSuccess;
 
-  // Stream work may still reference completion flags and invocation buffers.
-  // If a stream cannot be drained, retain all resources for a later retry.
-  if (state->redStream != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->streamSynchronize(state->redStream), &result);
-  if (state->cpyStream != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->streamSynchronize(state->cpyStream), &result);
-  if (state->ipcCommStream != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->streamSynchronize(state->ipcCommStream), &result);
-  if (state->netCommStream != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->streamSynchronize(state->netCommStream), &result);
+  result = flagcxUniRunnerDrainWork(comm, atSubmissionBoundary);
   if (result != flagcxSuccess)
     return result;
 
@@ -5909,6 +5992,8 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
     state->ipcOutputBase = nullptr;
     state->ipcDataBytes = 0;
   }
+  if (result == flagcxSuccess)
+    state->invocationOwner = NULL;
   return result;
 }
 
@@ -7199,7 +7284,8 @@ static flagcxResult_t runDynamicDagFallback(flagcxHeteroComm_t hcomm,
   return drainUniRunnerStreams(runnerState, flagcxSuccess);
 }
 
-flagcxResult_t runUniRunner(flagcxComm_t comm, bool convergeHostPreparation) {
+static flagcxResult_t runUniRunnerImpl(flagcxComm_t comm,
+                                       bool convergeHostPreparation) {
   if (!comm->uniRunnerKernelSupported)
     return flagcxNotSupported;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
@@ -7283,6 +7369,12 @@ flagcxResult_t runUniRunner(flagcxComm_t comm, bool convergeHostPreparation) {
     return localPreparationResult;
   }
   return runStaticHostRed(hcomm, convergeHostPreparation ? comm : nullptr);
+}
+
+flagcxResult_t runUniRunner(flagcxComm_t comm, bool convergeHostPreparation) {
+  flagcxResult_t result = runUniRunnerImpl(comm, convergeHostPreparation);
+  flagcxResult_t recorded = sealUniRunnerWork(comm, result);
+  return result == flagcxSuccess ? recorded : result;
 }
 
 flagcxResult_t

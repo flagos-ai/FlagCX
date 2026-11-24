@@ -83,3 +83,22 @@ The wheel includes `flagcx/lib/libflagcx_device.bc`, `libflagcx.so`, and the
 matching headers under `flagcx/include/`. The BC build selects
 `COMPILE_KERNEL=1` for the host library, which is required for Device API net
 contexts. An explicit `COMPILE_KERNEL=0` conflicts with this build and fails.
+
+## Resource lifetime
+
+Complete kernels launched directly by the application before destroying the
+DevComm, DevMem, or Window they use, or finalizing their communicator. The same
+rule applies to captured graph replays. FlagCX does not discover external
+streams or track graph capture/replay.
+
+Host communication submissions save completion events at their submission
+boundaries. Communicator cleanup waits for these records and accepted proxy/RMA
+work without synchronizing the whole device. DevComm, DevMem, and Window cleanup
+retain their first work snapshot and accepted RMA/FIFO prefix across retries,
+so later independent host work
+is not added to that snapshot. Existing stream ordering and explicit dependencies
+still apply.
+
+If cleanup fails, keep the handle and retry it. Resources already released remain
+cleared; the remaining event, mapping, allocation, or plugin owner is retained.
+Do not submit new work through a resource whose cleanup has started.

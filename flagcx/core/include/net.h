@@ -244,8 +244,8 @@ flagcxResult_t flagcxNetPrepareProxyOp(struct flagcxHeteroComm *comm,
 flagcxResult_t
 flagcxNetProgressProxyOp(struct flagcxProxyConnection *connection,
                          struct flagcxProxyOp *op);
-void flagcxNetCleanupRelaySendOp(struct flagcxProxyOp *op);
-void flagcxNetAbandonRelaySendOp(struct flagcxProxyOp *op);
+flagcxResult_t flagcxNetCleanupRelaySendOp(struct flagcxProxyOp *op);
+flagcxResult_t flagcxNetCancelRelaySendOp(struct flagcxProxyOp *op);
 flagcxResult_t
 flagcxNetCleanupProxyConnection(struct flagcxProxyConnection *connection,
                                 int cleanupPhase);

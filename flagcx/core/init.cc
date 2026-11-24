@@ -541,6 +541,20 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
 }
 
 flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm) {
+  flagcxResult_t drain = flagcxWorkDrain(
+      comm->workOwner != NULL ? comm->workOwner : &comm->submittedWork, comm);
+  if (drain != flagcxSuccess)
+    return drain;
+  drain = flagcxGroupDrainWork(comm, 1);
+  if (drain != flagcxSuccess)
+    return drain;
+  if (comm->proxyState != NULL &&
+      comm->proxyState->uniRunnerState.invocationOwner != NULL) {
+    drain = cleanupUniRunner(comm->proxyState->uniRunnerState.invocationOwner,
+                             false);
+    if (drain != flagcxSuccess)
+      return drain;
+  }
   if (!comm->destroyProxyComplete) {
     flagcxResult_t result = flagcxHeteroRmaProxyStop(comm);
     if (result != flagcxSuccess)
@@ -605,6 +619,12 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t *owner) {
   if (result != flagcxSuccess)
     return result;
   flagcxResult_t proxyResult = comm->destroyProxyResult;
+  result = flagcxWorkRelease(&comm->proxyWork);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxWorkRelease(&comm->submittedWork);
+  if (result != flagcxSuccess)
+    return result;
   if (comm->netPluginHeld) {
     FLAGCXCHECK(flagcxNetAdaptorPluginFinalize());
     comm->netPluginHeld = false;
