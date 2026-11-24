@@ -138,6 +138,7 @@ docker container run --rm \
   --env FLAGCX_CI_CPP_COVERAGE_REPORT="${FLAGCX_CI_CPP_COVERAGE_REPORT:-/ci-logs/cpp-coverage}" \
   --env GITHUB_STEP_SUMMARY="/ci-logs/$(basename "$summary_file")" \
   --env FLAGCX_CI_PLATFORM="$platform" \
+  --env FLAGCX_CI_IGNORE_TEST \
   --env FLAGCX_CI_WORKLOAD="$workload" \
   --env FLAGCX_CI_SUITE="$suite" \
   --env FLAGCX_CI_SET_ENV="$set_env" \

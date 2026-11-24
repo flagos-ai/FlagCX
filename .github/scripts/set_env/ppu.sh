@@ -40,33 +40,6 @@ export FLAGCX_MEM_ENABLE=1
 export FLAGCX_VMM_ENABLE=0
 export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-eth0}"
 
-FLAGCX_CI_IGNORE_TEST='{
-  "gtest": [
-    {
-      "suite": "p2p",
-      "tests": [
-        "P2pAdaptorStruct.*",
-        "P2pAdaptorTest.*",
-        "P2pLoopbackTest.*",
-        "P2pEngineRpcTransportTest.ConnectAcceptIsLocalSameHost"
-      ],
-      "reason": "These tests directly target the IBRC vtable; PPU CI validates the BAREX transport through P2P Engine tests"
-    }
-  ],
-  "phases": [
-    {
-      "suite": "p2p",
-      "name": "p2p-legacy-unit",
-      "reason": "Legacy ACCL P2P unit tests can hang in BAREX process-exit statistics cleanup; shared-engine unit and WRITE MPI coverage remains enabled"
-    },
-    {
-      "suite": "symmem",
-      "name": "vmm-net-data",
-      "reason": "PPU BAREX has no validated VMM-capable MR route"
-    }
-  ]
-}'
-export FLAGCX_CI_IGNORE_TEST
 
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_PPU=1 USE_ACCL_BAREX=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_PPU=1 USE_ACCL_BAREX=1)

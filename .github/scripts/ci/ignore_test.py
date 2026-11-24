@@ -1,14 +1,37 @@
 #!/usr/bin/env python3
-"""Read structured per-platform test exclusions supplied by the CI workflow."""
+"""Read platform ignore_test, exported from configs/<platform>.yml by CI."""
 
 import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 
 def config():
-    raw = os.environ.get("FLAGCX_CI_IGNORE_TEST", "{}")
+    raw = os.environ.get("FLAGCX_CI_IGNORE_TEST")
+    if raw is None:
+        # Local execution can read YAML directly. Hardware jobs receive JSON
+        # from load_platform_config.rb and need no YAML package in the image.
+        platform = os.environ.get("FLAGCX_CI_PLATFORM")
+        if not platform:
+            return {}
+        path = Path(__file__).resolve().parents[2] / "configs" / f"{platform}.yml"
+        try:
+            import yaml
+
+            value = yaml.safe_load(path.read_text()).get("ignore_test", {})
+        except ImportError:
+            import subprocess
+
+            raw = subprocess.check_output(
+                ["ruby", "-e", 'require "yaml"; require "json"; puts JSON.generate(YAML.safe_load(File.read(ARGV.fetch(0))).fetch("ignore_test", {}))', str(path)],
+                text=True,
+            )
+            value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise SystemExit(f"{path}: ignore_test must be a map")
+        return value
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as error:

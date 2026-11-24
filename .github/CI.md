@@ -1,14 +1,14 @@
 # FlagCX CI
 
-The hardware CI matrix enables eight platforms: CUDA, Hygon, Iluvatar,
-MetaX, KunlunXin, PPU, Ascend, and Enflame. PR runs select platforms from changed paths
+The hardware CI matrix enables nine platforms: CUDA, Hygon, Iluvatar,
+MetaX, KunlunXin, Mthreads, PPU, Ascend, and Enflame. PR runs select platforms from changed paths
 and PR labels; push and scheduled runs select all enabled platforms. Unit,
 performance, and Torch API jobs run for the selected platforms alongside
 common checks. See `configs/platforms.yml` for the active registry.
 
-Platform-specific test exclusions are defined in each platform's
-`scripts/set_env/*.sh` file and reported as skipped coverage. Platform
-selection, images, runners, and suite lists remain in `configs/*.yml`.
+Platform-specific test exclusions are defined under `ignore_test` in each
+platform's `configs/*.yml` file. The same configuration drives test filtering
+and the plan Summary, where exclusions remain visible as skipped coverage.
 
 `unit-test.yml` is the automatic controller for PRs to `main`/`devops`, pushes
 to those branches, and the daily schedule. It runs the selected platforms'
@@ -48,6 +48,27 @@ Comment requests have separate concurrency groups and cannot cancel PR checks.
 GitHub only enables `issue_comment` workflows present on the default branch;
 comment-triggered runs belong to that branch's check suite, so the automatic
 PR run remains the merge gate.
+
+## Test Levels
+
+PRs default to L2. Add a `level:L0` through `level:L3` label to choose a level;
+when several level labels are present, the highest level wins. Manual dispatch
+accepts the same level input. Pushes and the nightly schedule always use L3.
+
+| Level | Workloads | Typical use |
+| --- | --- | --- |
+| L0 | Common checks and CI plan only | Workflow/configuration-only validation |
+| L1 | Selected platforms' unit suites | Fast PR feedback |
+| L2 | Unit, performance, and Torch API tests on selected platforms | Default PR coverage |
+| L3 | Same test groups as L2 on all enabled platforms | Push and nightly coverage |
+
+The prepare job writes the selected platforms, level, configured suites,
+`ignore_test` entries, routing reasons, and blocked-work policy to the GitHub
+Summary and archives the machine-readable plan. An unmapped changed path selects
+the full platform matrix. If a workload is unavailable, it should be recorded
+as blocked while other runnable jobs continue; an unknown path or a partial
+plan does not stop test execution. Actual selected test failures still fail
+`ci-complete`.
 
 ## Required Check
 

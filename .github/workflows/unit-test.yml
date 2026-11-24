@@ -17,6 +17,11 @@ on:
         required: true
         type: string
         default: all
+      level:
+        description: "CI test level: L0, L1, L2, or L3"
+        required: true
+        type: string
+        default: L2
   issue_comment:
     types: [created]
 
@@ -41,6 +46,8 @@ jobs:
       has_platforms: ${{ steps.resolve.outputs.has_platforms }}
       repository: ${{ steps.resolve.outputs.repository }}
       ref: ${{ steps.resolve.outputs.ref }}
+      level: ${{ steps.resolve.outputs.level }}
+      plan_status: ${{ steps.resolve.outputs.plan_status }}
     steps:
       - uses: ruby/setup-ruby@v1
         with:
@@ -60,7 +67,9 @@ jobs:
           EVENT_SHA: ${{ github.sha }}
           EVENT_REPOSITORY: ${{ github.repository }}
           EVENT_SELECTION: ${{ inputs.platform || 'all' }}
+          EVENT_LEVEL: ${{ inputs.level || 'L2' }}
           ACTOR: ${{ github.actor }}
+          FLAGCX_CI_PLAN_PATH: ${{ runner.temp }}/flagcx-ci-plan.json
         shell: bash
         run: |
           set -euo pipefail
@@ -118,19 +127,29 @@ jobs:
             --arg comment "$comment" \
             --argjson is_pull_request "$is_pull_request" \
             --arg selection "$selection" \
+            --arg level "$EVENT_LEVEL" \
             --arg repository "$repository" \
             --arg ref "$ref" \
             '{event_name:$event_name, labels:$labels, files:$files, permission:$permission,
               comment:$comment, is_pull_request:$is_pull_request, selection:$selection,
-              repository:$repository, ref:$ref}' > "$context_file"
+              repository:$repository, ref:$ref, level:$level}' > "$context_file"
 
           ruby .github/scripts/ci/resolve_ci_matrix.rb \
             .github/configs "$context_file"
 
+      - name: Archive CI plan
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: flagcx-ci-plan-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/flagcx-ci-plan.json
+          if-no-files-found: warn
+          retention-days: 14
+
   unit_tests:
     name: Platform unit tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true'
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true' && needs.prepare.outputs.level != 'L0'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -143,7 +162,7 @@ jobs:
   performance_tests:
     name: Platform performance tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true'
+    if: needs.prepare.outputs.active == 'true' && (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3')
     uses: ./.github/workflows/test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -153,7 +172,7 @@ jobs:
   torch_api_tests:
     name: Platform Torch API tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true'
+    if: needs.prepare.outputs.active == 'true' && (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3')
     uses: ./.github/workflows/torch-api-test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -189,8 +208,9 @@ jobs:
           PERF_RESULT: ${{ needs.performance_tests.result }}
           TORCH_RESULT: ${{ needs.torch_api_tests.result }}
           FORMAT_RESULT: ${{ needs.format-check.result }}
+          LEVEL: ${{ needs.prepare.outputs.level }}
         shell: bash
         run: |
           bash .github/scripts/ci/check_ci_results.sh \
             "$ACTIVE" "$HAS_PLATFORMS" "$PREPARE_RESULT" "$UNIT_RESULT" \
-            "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT"
+            "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT" "$LEVEL"

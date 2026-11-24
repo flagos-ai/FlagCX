@@ -23,28 +23,26 @@ ENABLED_PLATFORMS = [
 
 
 def load_platform_ignore_config(platform):
-    result = subprocess.run(
-        ["bash", "-c",
-         'source "$1"; if [[ -n "${FLAGCX_CI_IGNORE_TEST:-}" ]]; then '
-         'printf "%s" "$FLAGCX_CI_IGNORE_TEST"; else printf "{}"; fi',
-         "bash", str(REPO_ROOT / f".github/scripts/set_env/{platform}.sh")],
-        capture_output=True, text=True, check=True,
-    )
-    return json.loads(result.stdout)
+    return yaml.safe_load(
+        (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
+    )["ignore_test"]
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
-    def test_platform_ignore_lists_live_in_environment_scripts(self):
+    def test_platform_ignore_lists_live_in_yaml_configs(self):
         for platform in (
-            "ascend", "hygon", "iluvatar", "kunlunxin", "metax", "ppu"
+            "ascend", "hygon", "iluvatar", "kunlunxin", "metax", "ppu",
+            "cuda", "enflame", "mthreads"
         ):
             with self.subTest(platform=platform):
                 config = yaml.safe_load(
                     (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
                 )
-                self.assertNotIn("ignore_test", config)
+                self.assertIsInstance(config["ignore_test"], dict)
+                shell = (REPO_ROOT / f".github/scripts/set_env/{platform}.sh").read_text()
+                self.assertNotIn("FLAGCX_CI_IGNORE_TEST=", shell)
                 ignore_config = load_platform_ignore_config(platform)
-                if platform == "iluvatar":
+                if platform in ("iluvatar", "cuda"):
                     self.assertEqual(ignore_config, {})
                 else:
                     self.assertTrue(ignore_config)
@@ -54,13 +52,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "unit_tests_common.yml",
         ):
             workflow = (REPO_ROOT / ".github/workflows" / filename).read_text()
-            self.assertNotIn("ignore_test", workflow)
+            self.assertIn("FLAGCX_CI_IGNORE_TEST:", workflow)
         loader = (REPO_ROOT / ".github/scripts/ci/load_platform_config.rb").read_text()
-        self.assertNotIn('"ignore_test"', loader)
+        self.assertIn('"ignore_test"', loader)
         container_runner = (
             REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh"
         ).read_text()
-        self.assertNotIn("FLAGCX_CI_IGNORE_TEST", container_runner)
+        self.assertIn("FLAGCX_CI_IGNORE_TEST", container_runner)
 
     def test_kunlunxin_workloads_use_job_containers(self):
         for filename, job_name, workload in (
@@ -3303,6 +3301,7 @@ run_suite
                                  "PROJECT_ROOT_FOR_TEST": str(REPO_ROOT),
                                  "TEST_SUITE": suite, "TEST_RDMA": rdma,
                                  "TEST_UNIT_STATUS": unit_status,
+                                 "FLAGCX_CI_IGNORE_TEST": json.dumps(load_platform_ignore_config("enflame")),
                                  "GITHUB_STEP_SUMMARY": str(summary)},
                             text=True, capture_output=True, check=False,
                         )

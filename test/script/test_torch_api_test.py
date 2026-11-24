@@ -4,6 +4,8 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+
+import yaml
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("torch_api_test.sh")
@@ -99,12 +101,9 @@ class TorchApiEnvironmentTest(unittest.TestCase):
         ])
 
     def test_ascend_config_excludes_only_selected_heterogeneous_operations(self):
-        config = json.loads(subprocess.check_output(
-            ["bash", "-c",
-             'source "$1"; printf "%s" "$FLAGCX_CI_IGNORE_TEST"',
-             "bash", str(SCRIPT.parents[2] / ".github/scripts/set_env/ascend.sh")],
-            text=True,
-        ))
+        config = yaml.safe_load(
+            (Path(__file__).resolve().parents[2] / ".github/configs/ascend.yml").read_text()
+        )["ignore_test"]
         result, lines = self.run_script(ignore_config=config)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(lines, [
