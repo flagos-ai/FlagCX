@@ -17,7 +17,7 @@ paths_watch:
   - test/kernel/musa/**/*
   - makefiles/musa.mk
 
-ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:mthreads-dev-fixed-20261022
+ci_image: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-mthreads-musa5.2.0@sha256:1870e059f98d95465009f55db78d723cf77640b211ff1c5f1378d59b8e200c27
 
 runner_labels:
   - mt-8g-cicd-flagcx
@@ -51,13 +51,7 @@ unit_test_suites:
 
 # Platform exclusions; every entry must document its reason.
 ignore_test:
-  gtest:
-  - suite: device_api_host
-    tests:
-    - CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator
-    - CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator
-    reason: Current MCCL SDK has no mcclCommFinalize; compatibility native Destroy may drain
-      unrelated work. Restore with the supported native Finalize SDK
+  gtest: []
   phases:
   - suite: symmem
     name: vmm-local-and-remote-without-net

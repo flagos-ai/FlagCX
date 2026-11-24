@@ -37,6 +37,49 @@ The launch adaptation follows the native
 for cooperative launch, occupancy and kernel launch. Native compilation and
 execution remain necessary to validate the installed SDK and driver.
 
+## Device API CI
+
+Both `device_api` and `device_api_unified_ir` build the library and tests with
+`USE_MUSA=1 COMPILE_KERNEL=1` in the existing shared Mthreads image. The
+`device_api_host` suite retains its host-only configuration. The native suites
+print the installed mcc version and fail on build errors instead of returning
+a successful capability skip.
+
+The shared unit runner executes all six public programs: the regular Device
+API and legacy IR intra/inter programs, plus the unified IR intra/inter
+programs. The MUSA configuration enables local P2P with VMM disabled; unified
+IR additionally runs the existing forced-NET intra/inter phases. Full sweeps
+cover 1 KiB–16 MiB with factor 2; forced-NET sweeps cover 1–2 KiB.
+
+`run_device_api_checked.py` delegates each invocation to the shared MPI timeout
+and diagnostic wrapper, then checks its output. K10/K14, legacy IR S10/S14,
+and unified IR S16–S25 must pass on every rank for every size. Missing, skipped,
+duplicate or failed required results, incomplete size sweeps and missing
+summaries fail the invocation. Other reported case failures also fail it.
+Each acceptance round saves a transcript and JSON report under the CI log
+directory and must pass without an automatic retry.
+
+Inside the configured MUSA container, run the normal four-GPU configuration:
+
+```bash
+export GITHUB_WORKSPACE="$PWD"
+for suite in device_api device_api_unified_ir; do
+  bash .github/scripts/ci/run_hardware_workload.sh mthreads unittest \
+    .github/scripts/set_env/mthreads.sh "$suite"
+done
+```
+
+CI uses exactly four visible GPUs: four intra ranks and two per logical node,
+matching the other platforms. Both native Device API suites and the UniRunner
+experimental workload are required to execute. Native SDK/compiler failures,
+missing required test results and unexpected skips fail their jobs.
+
+The MUSA host suite requires both communicator isolation cases to pass in its
+GoogleTest XML: Finalize must complete without draining independent work on a
+second communicator. Native MCCL Finalize retains the communicator; rank-local
+Destroy releases it only after completed finalization, preserving ownership
+when cleanup needs a retry.
+
 ## Experimental CI
 
 The performance jobs are named `perf-test (musa)` and
@@ -46,13 +89,12 @@ and `run_mthreads_workload.sh`. The internal platform key is `mthreads`;
 `platform:musa` and `/test musa` are existing aliases that select that same
 configuration. The runner label is `mt-8g-cicd-flagcx`.
 
-The existing image `mthreads-dev-fixed-20261022` contains MUSA 4.3.6, MCCL
-2.1.6 and MPI. Upstream records that this SDK lacks `musa::atomic_ref` and
-keeps the legacy Device API/IR suites disabled. Experimental kernels require
-an SDK/image that implements this API. The native preflight compiles and uses
-`musa::atomic_ref` before building the library; unsupported SDKs fail the job
-rather than report a skipped experimental run as successful. Keep the
-platform configuration shared when updating the SDK image.
+The shared CI image is the pinned FlagOS MUSA 5.2.0 runtime (tag 2.3.0).
+Its SDK provides native `musa::atomic_ref`, `mcclCommFinalize`, and asynchronous
+completion queries. The CI Dockerfile uses the same pinned runtime and adds
+build/diagnostic dependencies for local reproduction. The native preflight
+checks cooperative launch, stream operations, IPC and system-scope atomics
+before running the full UniRunner workload.
 
 Run the same workload inside the configured MUSA environment:
 
@@ -77,6 +119,8 @@ the expected kernel, stream-value and local P2P capabilities. It covers:
 - AllGatherGemm/GemmReduceScatter and rank-local error convergence.
 - IPC buffer rebinding, outer-group behavior, unsupported reduction types,
   repeated calls, alternating streams, and in-place/out-of-place AllReduce.
+- IPC Finalize followed by rank-local Destroy, and finalizing grouped
+  communicators whose work runs on another communicator's stream.
 
 Perf invocations enable numerical verification. Required GTests must execute
 and pass in every rank's XML report; missing or skipped cases fail the job.

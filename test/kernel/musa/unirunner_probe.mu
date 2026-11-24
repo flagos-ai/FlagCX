@@ -52,8 +52,9 @@ int main() {
         musaDeviceGetAttribute(&sms, musaDevAttrMultiProcessorCount, device));
     MUSA_CHECK(musaDeviceGetAttribute(&maxThreads,
                                       musaDevAttrMaxThreadsPerBlock, device));
-    MUSA_CHECK(musaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &blocks, probeKernel, 256, 0));
+    MUSA_CHECK(musaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(
+        &blocks, reinterpret_cast<const void *>(probeKernel), 256, 0,
+        musaOccupancyDefault));
     MUdevice nativeDevice;
     int stream64 = 0;
     DRIVER_CHECK(muDeviceGet(&nativeDevice, device));

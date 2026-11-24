@@ -35,8 +35,9 @@
 #define cudaDevAttrConcurrentKernels musaDevAttrConcurrentKernels
 #define cudaDevAttrMultiProcessorCount musaDevAttrMultiProcessorCount
 #define cudaDevAttrMaxThreadsPerBlock musaDevAttrMaxThreadsPerBlock
-#define cudaOccupancyMaxActiveBlocksPerMultiprocessor                          \
-  musaOccupancyMaxActiveBlocksPerMultiprocessor
+#define cudaOccupancyMaxActiveBlocksPerMultiprocessor(...)                     \
+  musaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(__VA_ARGS__,          \
+                                                         musaOccupancyDefault)
 #define cudaLaunchCooperativeKernel musaLaunchCooperativeKernel
 #define cudaLaunchKernel musaLaunchKernel
 #define cudaError_t musaError_t

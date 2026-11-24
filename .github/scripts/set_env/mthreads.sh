@@ -42,11 +42,6 @@ if [[ ${#FLAGCX_CI_MUSA_DEVICE_IDS[@]} -ne 4 ]]; then
   return 1 2>/dev/null || exit 1
 fi
 export MUSA_VISIBLE_DEVICES=$FLAGCX_CI_MUSA_DEVICES
-# The MUSA 4.3.6 CI image lacks musa::atomic_ref required by the Device API
-# backend added upstream. Re-enable these suites when the SDK image is updated.
-FLAGCX_CI_DEVICE_API_SUPPORTED=0
-FLAGCX_CI_UNIFIED_IR_SUPPORTED=0
-FLAGCX_CI_DEVICE_API_SKIP_REASON="MUSA 4.3.6 SDK lacks musa::atomic_ref required by the Device API kernels"
 # Require GPU MR now that RDMA support is being revalidated. Unsupported
 # registration must fail the check rather than pass as a capability skip.
 export FLAGCX_CI_GPU_MR_POLICY=gpu-mr-required
@@ -63,40 +58,48 @@ FLAGCX_CI_NODE_NP=2
 FLAGCX_CI_RUNNER_NP=4
 FLAGCX_CI_ENABLE_PXN=0
 FLAGCX_CI_PXN_VISIBLE_DEVICES=0,2,4,7
+FLAGCX_CI_MUSA_NODE1=$(IFS=,; echo "${FLAGCX_CI_MUSA_DEVICE_IDS[*]:0:FLAGCX_CI_NODE_NP}")
+FLAGCX_CI_MUSA_NODE2=$(IFS=,; echo "${FLAGCX_CI_MUSA_DEVICE_IDS[*]:FLAGCX_CI_NODE_NP}")
 FLAGCX_CI_NODE1_MPI_ARGS=(
-  -x MUSA_VISIBLE_DEVICES=${FLAGCX_CI_MUSA_DEVICE_IDS[0]},${FLAGCX_CI_MUSA_DEVICE_IDS[1]}
+  -x MUSA_VISIBLE_DEVICES=$FLAGCX_CI_MUSA_NODE1
   -x FLAGCX_HOSTID=node0
   -x NCCL_HOSTID=node0
 )
 FLAGCX_CI_NODE2_MPI_ARGS=(
-  -x MUSA_VISIBLE_DEVICES=${FLAGCX_CI_MUSA_DEVICE_IDS[2]},${FLAGCX_CI_MUSA_DEVICE_IDS[3]}
+  -x MUSA_VISIBLE_DEVICES=$FLAGCX_CI_MUSA_NODE2
   -x FLAGCX_HOSTID=node1
   -x NCCL_HOSTID=node1
 )
 export NP=4
 
-# Experimental kernels require a native SDK build; they never use the
-# legacy Device API suite skip as a successful experimental result.
 flagcx_ci_configure_suite() {
-  if [[ "$1" == perf-test-experimental ]]; then
-    FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
-    FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
-  fi
-}
-
-flagcx_ci_skip_suite() {
-  local suite=$1
-  if [[ "$suite" == device_api &&
-        "$FLAGCX_CI_DEVICE_API_SUPPORTED" == 0 ]]; then
-    echo "Skipping device_api: $FLAGCX_CI_DEVICE_API_SKIP_REASON"
-    return 0
-  fi
-  if [[ "$suite" == device_api_unified_ir &&
-        "$FLAGCX_CI_UNIFIED_IR_SUPPORTED" == 0 ]]; then
-    echo "Skipping device_api_unified_ir: $FLAGCX_CI_DEVICE_API_SKIP_REASON"
-    return 0
-  fi
-  return 1
+  case "$1" in
+    device_api|device_api_unified_ir|perf-test-experimental)
+      FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      ;;
+  esac
+  case "$1" in
+    device_api|device_api_unified_ir)
+      # Try the installed SDK, including native musa::atomic_ref, rather than
+      # inferring support from its version or silently skipping these suites.
+      export FLAGCX_CI_DEVICE_API_MPI_RUNNER="$FLAGCX_CI_ENV_DIR/../ci/run_device_api_checked.py"
+      export FLAGCX_CI_DEVICE_API_ROUNDS=${FLAGCX_CI_DEVICE_API_ROUNDS:-1}
+      export FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=0
+      FLAGCX_CI_DEVICE_API_FLAGS=(-b 1K -e 16M -f 2 -R 2)
+      FLAGCX_CI_DEVICE_API_P2P_DISABLE=0
+      FLAGCX_CI_DEVICE_API_MPI_ARGS=(
+        -x FLAGCX_IB_HCA
+        -x FLAGCX_IB_DISABLE=0 -x FLAGCX_DMABUF_ENABLE=1
+        -x FLAGCX_SIGNAL_HOST_ENABLE=1
+        -x MCCL_IB_DISABLE=1 -x MCCL_TOPO_ENHANCE=0
+      )
+      FLAGCX_CI_UNIFIED_IR_MPI_ARGS=(
+        "${FLAGCX_CI_DEVICE_API_MPI_ARGS[@]}"
+        -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_P2P_DISABLE=0
+      )
+      ;;
+  esac
 }
 
 flagcx_ci_prepare() {
@@ -104,6 +107,10 @@ flagcx_ci_prepare() {
   echo "Preparing Mthreads MUSA environment for CI workload: $suite"
   command -v mpirun
   command -v g++
+  if [[ "$suite" == device_api || "$suite" == device_api_unified_ir ]]; then
+    echo "Building native Device API with the current MUSA SDK: $DEVICE_HOME"
+    "$DEVICE_HOME/bin/mcc" --version || return
+  fi
   command -v mthreads-gmi || command -v musa-smi || command -v mthreads-smi || true
   if command -v mthreads-gmi >/dev/null 2>&1; then
     mthreads-gmi

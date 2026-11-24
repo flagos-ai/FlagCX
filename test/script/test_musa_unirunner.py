@@ -50,7 +50,9 @@ inline int musaDeviceGetAttribute(int *out, musaDeviceAttr attr, int device) {
   if (device != 3) return 99;
   int values[] = {cooperative, concurrent, sms, 1024}; *out=values[attr]; return runtimeError;
 }
-inline int musaOccupancyMaxActiveBlocksPerMultiprocessor(int *out, const void *, int, size_t) {
+constexpr unsigned musaOccupancyDefault = 0;
+inline int musaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(int *out, const void *, int, size_t, unsigned flags) {
+  if (flags != musaOccupancyDefault) return 99;
   *out=occupancy; return runtimeError;
 }
 inline int musaLaunchCooperativeKernel(const void *kernel, dim3 grid, dim3 block,

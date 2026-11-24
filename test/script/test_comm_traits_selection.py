@@ -1,6 +1,7 @@
 """Compile the real backend selectors with SDK-independent dependency shims."""
 
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import tempfile
@@ -8,7 +9,7 @@ import unittest
 
 
 TRAITS = Path(__file__).resolve().parents[2] / "flagcx/adaptor/include/device_api"
-CXX = shutil.which("g++") or shutil.which("clang++")
+CXX = os.environ.get("CXX") or shutil.which("g++") or shutil.which("clang++")
 
 
 @unittest.skipUnless(CXX, "C++ compiler required")

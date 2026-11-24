@@ -347,7 +347,7 @@ clean:
 	@rm -rf $(BUILDDIR)
 
 run-unit: unit
-	@GTEST_DEATH_TEST_STYLE=threadsafe $(UNIT_TARGET)
+	@GTEST_DEATH_TEST_STYLE=threadsafe $(UNIT_TARGET) $(if $(FLAGCX_CI_GTEST_XML_DIR),--gtest_output=xml:"$(FLAGCX_CI_GTEST_XML_DIR)/host-default.xml")
 	@$(DEVICEPTR_ARGS_TARGET)
 ifneq ($(PROVIDER_UNIT_TARGET),)
 	@$(PROVIDER_UNIT_TARGET)

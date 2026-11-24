@@ -1,4 +1,4 @@
-FROM harbor.baai.ac.cn/flagos-runtime/flagos-runtime-mthreads-musa4.3.6@sha256:5a1207992e6d7fd671e6f5843735a7d0aeb94ea6a3fd834bc06cf0b3287af7bc
+FROM harbor.baai.ac.cn/flagos-runtime/flagos-runtime-mthreads-musa5.2.0@sha256:1870e059f98d95465009f55db78d723cf77640b211ff1c5f1378d59b8e200c27
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/usr/local/musa/bin:/usr/local/mpi/bin:${PATH}
@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     cmake \
     git \
+    gdb \
     iproute2 \
     libgtest-dev \
     libibverbs-dev \
@@ -26,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pytest \
     python3-yaml \
     pkg-config \
+    procps \
     ruby \
     && rm -rf /var/lib/apt/lists/*
 

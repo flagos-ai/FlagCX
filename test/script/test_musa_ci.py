@@ -3,7 +3,9 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -65,6 +67,87 @@ sys.exit(19 if kind == os.environ.get("FAIL_MODE") else 0)
                         expected.append("heterogeneous")
                     self.assertEqual(calls, expected)
 
+    def test_torch_handler_uses_one_interpreter_and_preserves_failures(self):
+        cases = (("explicit", ""), ("venv", ""), ("explicit", "probe"),
+                 ("explicit", "pip"), ("explicit", "build"),
+                 ("explicit", "suite"), ("explicit", "coverage"))
+        for selection, failure in cases:
+            with self.subTest(selection=selection, failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                scripts = root / ".github/scripts/ci"
+                scripts.mkdir(parents=True)
+                handler = scripts / "run_mthreads_workload.sh"
+                handler.write_text((CI / handler.name).read_text())
+                environment = root / "environment.sh"
+                environment.write_text("""export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}
+FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_MUSA=1)
+flagcx_ci_configure_suite() { :; }
+flagcx_ci_prepare() { :; }
+flagcx_ci_validate_rdma() { :; }
+""")
+                test_scripts = root / "test/script"
+                test_scripts.mkdir(parents=True)
+                (test_scripts / "torch_api_test.sh").write_text('"$PYTHON_BIN" suite\n')
+                (scripts / "run_torch_coverage.sh").write_text('#!/bin/bash\n"$PYTHON_BIN" coverage\n')
+                (scripts / "run_torch_coverage.sh").chmod(0o755)
+                fake_bin = root / "bin"
+                fake_bin.mkdir()
+                python = root / "torch environment/bin/python3"
+                python.parent.mkdir(parents=True)
+                recorder = f"#!{sys.executable}\n" + r'''import json, os, pathlib, sys
+args = sys.argv[1:]
+if pathlib.Path(sys.argv[0]).name == "make":
+    kind = "make"
+elif args[0] == "-c":
+    kind = "probe" if "device_count" in args[1] else "import"
+elif args[:2] == ["-m", "pip"]:
+    kind = "coverage-install" if "coverage==7.10.7" in args else "pip"
+elif args[0] == "setup.py":
+    kind = "build"
+else:
+    kind = args[0]
+with open(os.environ["CAPTURE"], "a") as out:
+    out.write(json.dumps({"kind": kind, "executable": sys.argv[0],
+                          "selected": os.environ.get("PYTHON_BIN"),
+                          "autoload": os.environ.get("TORCH_DEVICE_BACKEND_AUTOLOAD")}) + "\n")
+sys.exit(19 if kind == os.environ.get("FAIL_STEP") else 0)
+'''
+                python.write_text(recorder)
+                python.chmod(0o755)
+                (fake_bin / "make").write_text(recorder)
+                (fake_bin / "make").chmod(0o755)
+                # A system interpreter without Torch must not be used by the workload.
+                for name in ("python3", "python"):
+                    (fake_bin / name).write_text("#!/bin/sh\nexit 29\n")
+                    (fake_bin / name).chmod(0o755)
+                (fake_bin / "nproc").write_text("#!/bin/sh\necho 2\n")
+                (fake_bin / "nproc").chmod(0o755)
+                capture = root / "calls"
+                env = {k: v for k, v in os.environ.items() if k != "PYTHON_BIN"}
+                env.update(GITHUB_WORKSPACE=str(root), FLAGCX_CI_SET_ENV=environment.name,
+                           PATH=f"{fake_bin}:{os.environ['PATH']}", CAPTURE=str(capture),
+                           FAIL_STEP=failure, FLAGCX_CI_TORCH_COVERAGE="1",
+                           VIRTUAL_ENV=str(python.parents[1]))
+                if selection == "explicit":
+                    env["PYTHON_BIN"] = str(python)
+                result = subprocess.run(["bash", str(handler), "torch-api"], env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 19 if failure else 0, result.stderr)
+                calls = [json.loads(line) for line in capture.read_text().splitlines()]
+                expected = ["probe", "make", "pip", "build", "suite", "coverage-install", "coverage"]
+                if failure:
+                    expected = expected[:expected.index(failure) + 1]
+                if selection == "venv":
+                    expected.insert(0, "import")
+                self.assertEqual([c["kind"] for c in calls], expected)
+                for call in calls:
+                    if call["kind"] != "make":
+                        self.assertEqual(call["executable"], str(python))
+                    if call["kind"] != "import":
+                        self.assertEqual(call["selected"], str(python))
+                    if call["kind"] == "build":
+                        self.assertEqual(call["autoload"], "0")
+
     def load_mthreads_config(self):
         result = subprocess.run(
             ["ruby", str(CI / "load_platform_config.rb"), "mthreads"],
@@ -88,6 +171,7 @@ sys.exit(19 if kind == os.environ.get("FAIL_MODE") else 0)
     def test_config_and_public_workflows_consume_musa(self):
         config = self.load_mthreads_config()
         self.assertEqual(config["set_env"], ".github/scripts/set_env/mthreads.sh")
+        self.assertEqual(config["ci_image"], "harbor.baai.ac.cn/flagos-runtime/flagos-runtime-mthreads-musa5.2.0@sha256:1870e059f98d95465009f55db78d723cf77640b211ff1c5f1378d59b8e200c27")
         self.assertEqual(json.loads(config["runs_on"]), ["mt-8g-cicd-flagcx"])
         registry = yaml.safe_load((ROOT / ".github/configs/platforms.yml").read_text())["platforms"]
         self.assertIn("mthreads", registry)
@@ -113,6 +197,19 @@ sys.exit(19 if kind == os.environ.get("FAIL_MODE") else 0)
                 self.assertIn(f"mthreads {workload}", commands)
                 self.assertTrue(any(step.get("if") == "always()" and "upload-artifact" in step.get("uses", "") for step in job["steps"]))
             self.assertIn("MTHREADS_RESULT", jobs[completion]["env"])
+
+    def test_native_isolation_uses_yaml_policy_without_environment_override(self):
+        config = self.load_mthreads_config()
+        policy = json.loads(config["ignore_test"])
+        self.assertEqual(policy["gtest"], [])
+        self.assertEqual({item["name"] for item in policy["phases"]}, {
+            "vmm-local-and-remote-without-net", "vmm-net-data"})
+        result = subprocess.run(
+            ["bash", "-eu", "-c", 'source "$1"; printf "%s" "$FLAGCX_CI_IGNORE_TEST"',
+             "bash", str(ROOT / config["set_env"])],
+            env={**os.environ, "FLAGCX_CI_IGNORE_TEST": config["ignore_test"]},
+            capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(result.stdout), policy)
 
     def test_completion_gate_rejects_selected_musa_failure_or_skip(self):
         for experimental in (False, True):
@@ -151,7 +248,7 @@ sys.exit(19 if kind == os.environ.get("FAIL_MODE") else 0)
                 capture_output=True, text=True, check=True,
             )
             self.assertIn("USE_MUSA=1", result.stdout)
-            self.assertEqual(result.stdout.count("COMPILE_KERNEL=1"), 2 if suite == "perf-test-experimental" else 0)
+            self.assertEqual(result.stdout.count("COMPILE_KERNEL=1"), 2 if suite in ("device_api", "device_api_unified_ir", "perf-test-experimental") else 0)
 
     def run_experimental(self, directory, *, fail_label="", xml_mode="pass", fail_sdk_build=False):
         root = Path(directory)
@@ -163,7 +260,8 @@ sys.exit(19 if kind == os.environ.get("FAIL_MODE") else 0)
             (scripts / name).write_text((CI / name).read_text())
         for name in ("run_mpi_with_timeout.sh", "run_with_timeout.sh"):
             path = scripts / name
-            path.write_text('#!/usr/bin/env bash\nexec python3 "$(dirname "$0")/recorder.py" "$@"\n')
+            path.write_text('#!/usr/bin/env bash\nexec ' + shlex.quote(sys.executable)
+                            + ' "$(dirname "$0")/recorder.py" "$@"\n')
             (scripts / "recorder.py").write_text(r'''#!/usr/bin/env python3
 import json, os, pathlib, sys, xml.etree.ElementTree as ET
 args = sys.argv[1:]
@@ -216,7 +314,9 @@ source "$GITHUB_WORKSPACE/.github/scripts/ci/run_mthreads_perf_experimental.sh"
         with tempfile.TemporaryDirectory() as directory:
             result, calls = self.run_experimental(directory)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(len(calls), 61)  # Probe, 5 GTests, 55 perf runs.
+            self.assertEqual(len(calls), 62)  # Probe, 6 GTests, 55 perf runs.
+            lifecycle = next(call for call in calls if call["label"] == "MUSA experimental IPC lifecycle")
+            self.assertIn("--gtest_filter=FlagCXCollTest.UniRunnerIpcFinalizeThenRankLocalDestroy:FlagCXCollTest.GroupedCommunicatorsFinalizeTheNonLaunchStreamFirst", lifecycle["args"])
             for call in calls[1:]:
                 args = call["args"]
                 self.assertEqual(args[:3], ["-np", "4", "--allow-run-as-root"])
@@ -232,7 +332,7 @@ source "$GITHUB_WORKSPACE/.github/scripts/ci/run_mthreads_perf_experimental.sh"
             self.assertEqual({c["label"].split()[-1] for c in calls if "RingAR int32" in c["label"]}, {"sum", "prod", "min", "max", "avg"})
 
     def test_experimental_preserves_launcher_failures(self):
-        for label in ("probe", "MUSA experimental AllGatherGemm", "MUSA experimental IpcRingAR", "MUSA experimental SlicedAR"):
+        for label in ("probe", "MUSA experimental AllGatherGemm", "MUSA experimental IPC lifecycle", "MUSA experimental IpcRingAR", "MUSA experimental SlicedAR"):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
                 result, calls = self.run_experimental(directory, fail_label=label)
                 self.assertEqual(result.returncode, 19, result.stderr)

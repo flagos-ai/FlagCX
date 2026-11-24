@@ -41,15 +41,35 @@ case "$workload" in
   torch-api)
     # Use the existing Torch API suite so registering MUSA cannot silently
     # omit its Torch workload from the common CI completion gate.
-    python3 -c 'import torch, torch_musa; print("torch", torch.__version__, "devices", torch.musa.device_count()); assert torch.musa.device_count() >= 4'
+    # The FlagOS image keeps Torch in /flagos, while a login shell can put
+    # system Python first. Resolve the interpreter before building the plugin.
+    if [[ -z "${PYTHON_BIN:-}" ]]; then
+      python_candidates=()
+      if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+        python_candidates+=("$VIRTUAL_ENV/bin/python3")
+      fi
+      python_candidates+=(/flagos/bin/python3 python3 python)
+      for candidate in "${python_candidates[@]}"; do
+        if command -v "$candidate" >/dev/null 2>&1 &&
+            "$candidate" -c 'import torch, torch_musa' >/dev/null 2>&1; then
+          PYTHON_BIN=$(command -v "$candidate")
+          break
+        fi
+      done
+      if [[ -z "${PYTHON_BIN:-}" ]]; then
+        echo "No Python interpreter with torch and torch_musa was found; set PYTHON_BIN to the MUSA environment's interpreter." >&2
+        exit 1
+      fi
+    fi
+    export PYTHON_BIN
+    "$PYTHON_BIN" -c 'import sys, torch, torch_musa; print("python", sys.executable, "torch", torch.__version__, "devices", torch.musa.device_count()); assert torch.musa.device_count() >= 4'
     make -C "$project_root" --jobs="$(nproc)" "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
-    python3 -m pip install 'setuptools_scm>=8'
+    "$PYTHON_BIN" -m pip install 'setuptools_scm>=8'
     (
       cd "$project_root"
       export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-      python3 setup.py build_ext --inplace
+      "$PYTHON_BIN" setup.py build_ext --inplace
     )
-    export PYTHON_BIN=python3
     export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
     bash "$project_root/test/script/torch_api_test.sh"
     if [[ "${FLAGCX_CI_TORCH_COVERAGE:-0}" == 1 ]]; then

@@ -45,11 +45,11 @@ internal exported backing. User-provided allocations remain user-owned.
 
 ## Native SDK boundaries
 
-NCCL, RCCL, DU, Iluvatar, MetaX, TCCL and PPU retain their separate adaptor
+NCCL, RCCL, DU, Iluvatar, MetaX, MUSA MCCL, TCCL and PPU retain their separate adaptor
 Finalize/Destroy operations. Accepted native asynchronous Finalize is issued
 once and progressed through GetAsyncError before Finalize completes.
 
-HCCL, CNCL, ECCL, MUSA MCCL, legacy Sunrise PCCL and XCCL currently report
+HCCL, CNCL, ECCL, legacy Sunrise PCCL and XCCL currently report
 `flagcxNotSupported` from adaptor Finalize. Core explicitly selects compatibility
 close for these built-in adaptors, invokes Destroy in the coordinated vendor
 phase, and clears every consumed wrapper alias on strict success. Unknown
@@ -68,14 +68,15 @@ still pending, it returns InProgress with the communicator retained; the
 participants must complete Finalize before retrying cleanup. Only success from
 the public Abort consumes its handle, including through the NCCL wrapper.
 
-Two CI exceptions remain:
+One CI exception remains:
 
 - PPU keeps native `pcclCommFinalize` in Finalize and `pcclCommDestroy` in Destroy.
   Its current SDK can wait for peer Destroy even after Finalize. The runner's
   rank-local native Destroy case is excluded until the SDK boundary supports it.
-- The current MUSA image lacks `mcclCommFinalize`. Compatibility native Destroy
-  may drain another communicator's work. Two native stream-isolation cases are
-  excluded; non-VMM RMA isolation and IPC cleanup remain enabled.
+
+MUSA uses the pinned 5.2.0 runtime with native `mcclCommFinalize`. Both native
+stream-isolation cases are required, alongside non-VMM RMA isolation and IPC
+cleanup. MUSA no longer uses compatibility Destroy during Finalize.
 
 The native stream-isolation cases also require a separate native Finalize on
 other compatibility adaptors. Ascend and Enflame declare these exclusions in

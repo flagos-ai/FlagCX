@@ -46,7 +46,11 @@ flagcxResult_t mcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 flagcxResult_t mcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  return flagcxNotSupported;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxSuccess;
+  return (flagcxResult_t)mcclCommFinalize(comm->base);
 }
 
 flagcxResult_t mcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
@@ -101,6 +105,12 @@ flagcxResult_t mcclAdaptorCommUserRank(const flagcxInnerComm_t comm,
 
 flagcxResult_t mcclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
                                             flagcxResult_t *asyncError) {
+  if (comm == NULL || asyncError == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL) {
+    *asyncError = flagcxSuccess;
+    return flagcxSuccess;
+  }
   return (flagcxResult_t)mcclCommGetAsyncError(comm->base,
                                                (mcclResult_t *)asyncError);
 }
