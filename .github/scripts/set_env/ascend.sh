@@ -124,7 +124,10 @@ if [[ "${FLAGCX_CI_ASCEND_SHMEM:-1}" == 1 ]]; then
     export LD_LIBRARY_PATH="$SHMEM_HOME/lib:${LD_LIBRARY_PATH:-}"
     FLAGCX_CI_PROJECT_MAKE_ARGS+=(USE_SHMEM=1)
     FLAGCX_CI_TEST_MAKE_ARGS+=(USE_SHMEM=1)
-    FLAGCX_CI_DEVICE_API_IR=1
+    # Do not flip FLAGCX_CI_DEVICE_API_IR here: that gate launches the legacy
+    # build/bin/test_device_ir_intra, which the Ascend Makefile never builds
+    # (SKIPPED_TARGETS).  The unified IR suite has its own matrix entry
+    # (device_api_unified_ir) and its own runner path (MC952 review P1).
     UNIFIED_IR_NP=$FLAGCX_CI_INTRA_NP
     export UNIFIED_IR_NP
     echo "cann-shmem backend enabled: SHMEM_HOME=$SHMEM_HOME"

@@ -197,6 +197,7 @@ aclshmemAdaptorDevCommCreate(flagcxComm_t comm,
   // must live in the symmetric heap.
   {
     size_t gridWords = (size_t)FLAGCX_ACLSHMEM_BARRIER_KINDS *
+                       (size_t)FLAGCX_ACLSHMEM_BARRIER_INDICES *
                        (size_t)FLAGCX_ACLSHMEM_BARRIER_SLOTS;
     size_t gridBytes = gridWords * sizeof(uint32_t);
     sc->gridSyncState = (uint64_t *)aclshmem_malloc(gridBytes);

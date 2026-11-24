@@ -19,8 +19,10 @@
  *            proven XSHMEM ticket scheme instead and writes tickets with MTE
  *            puts, so neither 64-bit signals nor ADD-atomicity is assumed.
  *
- *   barrier: per barrier kind, 1 local generation + one arrival slot per
- *            source PE (the same single-writer ticket idea).
+ *   barrier: per (kind, index), 1 local generation + one arrival slot per
+ *            source PE (the same single-writer ticket idea).  The index is
+ *            the channel dimension, so concurrent indices never share a
+ *            generation plane.
  ************************************************************************/
 
 #ifndef FLAGCX_ACLSHMEM_STATE_LAYOUT_H_
@@ -34,8 +36,14 @@
 #define FLAGCX_ACLSHMEM_SIGNAL_SLOTS (2 * FLAGCX_ACLSHMEM_MAX_PES + 2)
 #define FLAGCX_ACLSHMEM_SIGNAL_RESET_BASELINE (2 * FLAGCX_ACLSHMEM_MAX_PES + 1)
 
-// Per barrier kind: [0] local generation, [1, MAX_PES] arrival slots.
+// Per barrier (kind, index): [0] local generation, [1, MAX_PES] arrival
+// slots.  The index names an independent channel - concurrent Coop groups
+// use different indices (flagcx_device_core.h, flagcxDevBarrier) - so every
+// index owns its own block instead of sharing one generation plane.  Four
+// covers the unified IR's per-block indices (S16 runs b = 0..3); a larger
+// index is rejected in the Barrier constructor, never aliased.
 #define FLAGCX_ACLSHMEM_BARRIER_SLOTS (1 + FLAGCX_ACLSHMEM_MAX_PES)
 #define FLAGCX_ACLSHMEM_BARRIER_KINDS 3
+#define FLAGCX_ACLSHMEM_BARRIER_INDICES 4
 
 #endif // FLAGCX_ACLSHMEM_STATE_LAYOUT_H_

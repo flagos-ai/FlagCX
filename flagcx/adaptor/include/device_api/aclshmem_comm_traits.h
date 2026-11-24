@@ -97,6 +97,33 @@ aclshmemGmStore32(FLAGCX_ACLSHMEM_GM volatile uint32_t *p, uint32_t v) {
 #endif
 }
 
+// ---- The 32-bit completion contract ----
+// Every completion word this backend publishes is 32 bits
+// (aclshmem_state_layout.h), which the trait advertises as completionBits /
+// defaultCounterBits = 32; the shared IR passes that width back here.  A
+// threshold or delta the 32-bit word cannot represent is rejected, never
+// truncated (MC952 review P2).  There is no runtime trap on this pass
+// (device_utils.h trap note), so a rejected value is a contract violation:
+// the project's noreturn marker is the loudest spelling available.
+FLAGCX_DEVICE_INLINE_DECORATOR uint32_t
+aclshmemCompletionValue(uint64_t value) {
+  if (value > 0xffffffffull)
+    FLAGCX_DEVICE_TRAP();
+  return (uint32_t)value;
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemRequireCompletionBits(int bits) {
+  if (bits != 32)
+    FLAGCX_DEVICE_TRAP();
+}
+
+// Circular comparison: wrap is well defined while the outstanding distance
+// stays below 2^31, the documented range of a 32-bit sequence number.
+FLAGCX_DEVICE_INLINE_DECORATOR bool
+aclshmemCompletionBefore(uint32_t current, uint32_t target) {
+  return (int)(current - target) < 0;
+}
+
 // ---- cann-shmem device entry points, host-pass shims ----
 // The declarations are device-pass only in the vendor header, and no host
 // code ever executes these bodies.
@@ -189,6 +216,12 @@ struct CommTraits<AclshmemBackend> {
   using Atomic = PlatformTraits<AscendPlatform>::Atomic;
   using CoopOps = PlatformTraits<AscendPlatform>::CoopOps;
   using Clock = PlatformTraits<AscendPlatform>::Clock;
+
+  // Completion words are 32 bits wide end to end (state layout).  Advertised
+  // so the shared IR never assumes a 64-bit signal/counter here; the paths
+  // below reject values beyond 32 bits instead of truncating them.
+  static constexpr int completionBits = 32;
+  static constexpr int defaultCounterBits = 32;
 
   // ---- Multimem ----
   struct Multimem {
@@ -420,27 +453,24 @@ struct CommTraits<AclshmemBackend> {
         // without a read-back, and putValue is the primitive both measured
         // as S18B's lost combo 0. The destination lives in the symmetric
         // heap, so poll the peer mapping (the one lossless direction) and
-        // re-issue the same bytes until they are there.
-        // shortcut: a finite retry budget - a link that keeps dropping
-        // stays silent; the transport reports no per-write completion.
+        // re-issue the same bytes until they are there.  The 8B value is
+        // the whole payload, so observing it at the peer is this call's
+        // completion proof; there is no retry budget, because a value that
+        // never arrives must not fall through to the remote action (the
+        // old code sent the signal anyway - MC952 review P1).
         FLAGCX_ACLSHMEM_GM volatile uint32_t *remoteWord =
             aclshmemPeerWord((FLAGCX_ACLSHMEM_GM uint32_t *)dstPtr, pe);
-        for (int attempt = 0; attempt < 3; ++attempt) {
+        for (int spins = 0;; ++spins) {
           uint32_t lo = aclshmemGmLoad32(remoteWord);
           uint32_t hi = aclshmemGmLoad32(remoteWord + 1);
-          int spins = 0;
-          while ((lo != (uint32_t)v || hi != (uint32_t)(v >> 32)) &&
-                 spins < 32) {
-            Intrin::spinBackoff(spins < 16 ? spins : 16);
-            ++spins;
-            lo = aclshmemGmLoad32(remoteWord);
-            hi = aclshmemGmLoad32(remoteWord + 1);
-          }
           if (lo == (uint32_t)v && hi == (uint32_t)(v >> 32))
             break;
-          aclshmemPutMemNbi(dstPtr, (FLAGCX_ACLSHMEM_GM void *)scratch, 8u,
-                            pe);
-          aclshmemQuiet();
+          if ((spins & 31) == 31) {
+            aclshmemPutMemNbi(dstPtr, (FLAGCX_ACLSHMEM_GM void *)scratch, 8u,
+                              pe);
+            aclshmemQuiet();
+          }
+          Intrin::spinBackoff(spins < 16 ? spins : 16);
         }
         remoteActionImpl(pe, ra);
       }
@@ -492,34 +522,39 @@ struct CommTraits<AclshmemBackend> {
     // ---- Wait: waitSignal ----
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignal(Coop coop, flagcxDevSignal_t signalId, uint64_t least, int,
+    waitSignal(Coop coop, flagcxDevSignal_t signalId, uint64_t least, int bits,
                flagcxDeviceMemoryOrder_t) const {
+      aclshmemRequireCompletionBits(bits);
+      uint32_t target = aclshmemCompletionValue(least);
       coop.sync();
       if (coop.threadRank() == 0)
-        spinSignal(signalId, least);
+        spinSignal(signalId, target);
       coop.sync();
     }
 
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignalMeetShadow(Coop coop, flagcxDevSignal_t signalId, int,
+    waitSignalMeetShadow(Coop coop, flagcxDevSignal_t signalId, int bits,
                          flagcxDeviceMemoryOrder_t) const {
+      aclshmemRequireCompletionBits(bits);
       coop.sync();
       if (coop.threadRank() == 0)
-        spinSignal(signalId, (uint64_t)aclshmemGmLoad32(shadowWord(signalId)));
+        spinSignal(signalId, aclshmemGmLoad32(shadowWord(signalId)));
       coop.sync();
     }
 
     template <typename Coop, typename Uint>
     FLAGCX_DEVICE_INLINE_DECORATOR void
     waitSignalFollowShadow(Coop coop, flagcxDevSignal_t signalId,
-                           Uint leastDelta, Uint *before, Uint *delta, int,
+                           Uint leastDelta, Uint *before, Uint *delta, int bits,
                            flagcxDeviceMemoryOrder_t) const {
+      aclshmemRequireCompletionBits(bits);
       coop.sync();
       if (coop.threadRank() == 0) {
-        uint64_t shadow =
-            (uint64_t)aclshmemGmLoad32(shadowWord(signalId));
-        uint64_t current = spinSignal(signalId, shadow + (uint64_t)leastDelta);
+        uint32_t shadow = aclshmemGmLoad32(shadowWord(signalId));
+        uint32_t target = aclshmemCompletionValue((uint64_t)shadow +
+                                                  (uint64_t)leastDelta);
+        uint32_t current = spinSignal(signalId, target);
         if (before)
           *before = (Uint)shadow;
         if (delta)
@@ -531,12 +566,14 @@ struct CommTraits<AclshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     increaseSignalShadow(flagcxDevSignal_t signalId, uint64_t delta) const {
       FLAGCX_ACLSHMEM_GM volatile uint32_t *p = shadowWord(signalId);
-      aclshmemGmStore32(p, aclshmemGmLoad32(p) + (uint32_t)delta);
+      aclshmemGmStore32(p, aclshmemGmLoad32(p) +
+                              aclshmemCompletionValue(delta));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readSignal(flagcxDevSignal_t signalId, int,
+    readSignal(flagcxDevSignal_t signalId, int bits,
                flagcxDeviceMemoryOrder_t) const {
+      aclshmemRequireCompletionBits(bits);
       return (uint64_t)signalValue(signalId);
     }
 
@@ -549,21 +586,24 @@ struct CommTraits<AclshmemBackend> {
     // ---- Counters: one local 32-bit word per slot ----
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitCounter(Coop coop, flagcxDevCounter_t counterId, uint64_t least, int,
-                flagcxDeviceMemoryOrder_t) const {
+    waitCounter(Coop coop, flagcxDevCounter_t counterId, uint64_t least,
+                int bits, flagcxDeviceMemoryOrder_t) const {
+      aclshmemRequireCompletionBits(bits);
+      uint32_t target = aclshmemCompletionValue(least);
       coop.sync();
       if (coop.threadRank() == 0) {
         FLAGCX_ACLSHMEM_GM volatile uint32_t *p = counterWord(counterId);
         int iter = 0;
-        while (aclshmemGmLoad32(p) < (uint32_t)least)
+        while (aclshmemCompletionBefore(aclshmemGmLoad32(p), target))
           Intrin::spinBackoff(iter++);
       }
       coop.sync();
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readCounter(flagcxDevCounter_t counterId, int,
+    readCounter(flagcxDevCounter_t counterId, int bits,
                 flagcxDeviceMemoryOrder_t) const {
+      aclshmemRequireCompletionBits(bits);
       return (uint64_t)aclshmemGmLoad32(counterWord(counterId));
     }
 
@@ -577,27 +617,32 @@ struct CommTraits<AclshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     completeCounter(flagcxDevCounter_t counterId, uint64_t delta) const {
       FLAGCX_ACLSHMEM_GM volatile uint32_t *p = counterWord(counterId);
-      aclshmemGmStore32(p, aclshmemGmLoad32(p) + (uint32_t)delta);
+      aclshmemGmStore32(p, aclshmemGmLoad32(p) +
+                              aclshmemCompletionValue(delta));
     }
 
     // ---- Two-sided stubs (one-sided backend) ----
+    // This transport has no two-sided FIFO: the operations are declared
+    // absent, as the XSHMEM backend does, so a caller that depends on them
+    // sees flagcxNotSupported instead of a success that transmitted
+    // nothing (MC952 review P1).
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
     send(Coop, Window, size_t, size_t, flagcxDataType_t, int) const {
-      return flagcxSuccess;
+      return flagcxNotSupported;
     }
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
     recv(Coop, Window, size_t, size_t, flagcxDataType_t, int) const {
-      return flagcxSuccess;
+      return flagcxNotSupported;
     }
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t term(Coop) const {
-      return flagcxSuccess;
+      return flagcxNotSupported;
     }
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t wait(Coop) const {
-      return flagcxSuccess;
+      return flagcxNotSupported;
     }
 
   private:
@@ -641,13 +686,13 @@ struct CommTraits<AclshmemBackend> {
              aclshmemGmLoad32(baselineWord(signalId));
     }
 
-    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    spinSignal(flagcxDevSignal_t signalId, uint64_t least) const {
+    FLAGCX_DEVICE_INLINE_DECORATOR uint32_t
+    spinSignal(flagcxDevSignal_t signalId, uint32_t target) const {
       int iter = 0;
-      uint64_t current = (uint64_t)signalValue(signalId);
-      while (current < least) {
+      uint32_t current = signalValue(signalId);
+      while (aclshmemCompletionBefore(current, target)) {
         Intrin::spinBackoff(iter++);
-        current = (uint64_t)signalValue(signalId);
+        current = signalValue(signalId);
       }
       return current;
     }
@@ -671,30 +716,44 @@ struct CommTraits<AclshmemBackend> {
       // lossless direction - and re-put until this exact ticket is there.
       // The poll also serialises consecutive signals on one slot, which
       // keeps the 5-in-a-row S25 increments from landing out of order.
-      // shortcut: a finite retry budget - a link that keeps dropping stays
-      // silent; the transport reports no per-write completion.
+      //
+      // Observing the ticket at the peer is the delivery proof for this
+      // signal, and an unconfirmed ticket must never be reported as
+      // delivered: there is no runtime trap on this pass (device_utils.h
+      // trap note), so a transport that keeps dropping makes the kernel
+      // not return instead of letting the caller signal success it did not
+      // observe (MC952 review P1).
       FLAGCX_ACLSHMEM_GM volatile uint32_t *remote = aclshmemPeerWord(
           (FLAGCX_ACLSHMEM_GM uint32_t *)dst, pe);
-      for (int attempt = 0; attempt < 3; ++attempt) {
-        int spins = 0;
-        while (aclshmemGmLoad32(remote) != ticket && spins < 32) {
-          Intrin::spinBackoff(spins < 16 ? spins : 16);
-          ++spins;
-        }
+      for (int spins = 0;; ++spins) {
         if (aclshmemGmLoad32(remote) == ticket)
           return;
-        aclshmemPutMemNbi(dst, (FLAGCX_ACLSHMEM_GM void *)sent, 4u, pe);
-        aclshmemQuiet();
+        if ((spins & 31) == 31) {
+          aclshmemPutMemNbi(dst, (FLAGCX_ACLSHMEM_GM void *)sent, 4u, pe);
+          aclshmemQuiet();
+        }
+        Intrin::spinBackoff(spins < 16 ? spins : 16);
       }
     }
 
     // Data must be in the peer's GM before any ticket: flush this core's
-    // dirty lines, transfer, drain. The drain is local completion only - a
-    // posted MTE write can still surface at the peer after the 4B ticket
-    // that follows it, and the receiver's whole wait is on that ticket.
-    // Confirm both ends of the range through the pull path (the lossless
-    // direction) and replay the put while they are missing.
-    // shortcut: first and last 4B word only, not every chunk.
+    // dirty lines, transfer, drain.  The transfer's completion evidence is
+    // the ticket putImpl sends next: sendSignalTicket polls that exact
+    // ticket at the peer through the pull path before it returns, and the
+    // data put, the quiet and the ticket put issue in that order from this
+    // core to the same PE - the vendor's own data-then-doorbell pattern
+    // (barrier_all_kernel.cpp writes, quiet, then the ticket).  The probe
+    // below is the retransmit trigger, not a completion proof: it reads the
+    // first and last 4B chunks back, which is where the measured drop modes
+    // (a lost posted write, a skipped last-chunk retire) surface; an
+    // interior chunk lost on its own is invisible here and would show up as
+    // a receiver-side payload mismatch, never as a boundary-consistent
+    // pass.  There is no retry budget: with no runtime trap on this pass
+    // (device_utils.h trap note) a put whose boundary chunks never arrive
+    // keeps retrying instead of returning to signal delivery it did not
+    // observe (MC952 review P1).  Sub-word and odd-tail transfers return
+    // after quiet: they have no 4B probe, and their completion is the
+    // ticket as well.
     FLAGCX_DEVICE_INLINE_DECORATOR void
     putData(FLAGCX_ACLSHMEM_GM void *dst, FLAGCX_ACLSHMEM_GM void *src,
             size_t bytes, int pe) const {
@@ -715,19 +774,15 @@ struct CommTraits<AclshmemBackend> {
           aclshmemPeerWord(dw, pe);
       FLAGCX_ACLSHMEM_GM volatile uint32_t *remoteTail =
           aclshmemPeerWord(dw + words - 1u, pe);
-      for (int attempt = 0; attempt < 3; ++attempt) {
-        int spins = 0;
-        while ((aclshmemGmLoad32(remoteHead) != head ||
-                aclshmemGmLoad32(remoteTail) != tail) &&
-               spins < 32) {
-          Intrin::spinBackoff(spins < 16 ? spins : 16);
-          ++spins;
-        }
+      for (int spins = 0;; ++spins) {
         if (aclshmemGmLoad32(remoteHead) == head &&
             aclshmemGmLoad32(remoteTail) == tail)
           return;
-        aclshmemPutMemNbi(dst, src, (uint32_t)bytes, pe);
-        aclshmemQuiet();
+        if ((spins & 31) == 31) {
+          aclshmemPutMemNbi(dst, src, (uint32_t)bytes, pe);
+          aclshmemQuiet();
+        }
+        Intrin::spinBackoff(spins < 16 ? spins : 16);
       }
     }
 
@@ -751,7 +806,7 @@ struct CommTraits<AclshmemBackend> {
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void
     remoteActionImpl(int pe, flagcxDevNet_SignalAdd ra) const {
-      sendSignalTicket(pe, ra.signal, (uint32_t)ra.value);
+      sendSignalTicket(pe, ra.signal, aclshmemCompletionValue(ra.value));
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void
     remoteActionImpl(int, flagcxDevNet_CounterInc) const {
@@ -770,14 +825,16 @@ struct CommTraits<AclshmemBackend> {
 // ============================================================
 // Barriers
 //
-// One state block per kind in the symmetric heap:
+// One state block per (kind, index) in the symmetric heap:
 //   [0]                 this PE's local generation
 //   [1 + teamRank]      generation this PE published for itself
 // A member's slot is written only by that member, so a wait is a plain
-// scan of the team members' slots, read from the owner's own memory.  One
-// generation counter per kind means two barrier *indices* of the same kind
-// must not be in flight concurrently - the IR suite uses its four indices
-// sequentially (see device_ir.asc).
+// scan of the team members' slots, read from the owner's own memory.  The
+// index is a channel dimension: concurrent Coop groups use distinct
+// indices (flagcx_device_core.h, flagcxDevBarrier), so each index owns its
+// own generation plane and two indices never alias.  Indices are
+// FLAGCX_ACLSHMEM_BARRIER_INDICES wide; anything beyond that is rejected
+// rather than folded onto another channel (MC952 review P1).
 // ============================================================
 // Tickets are pulled, never pushed.  A posted MTE put can be dropped; at
 // np=2 a 4B barrier ticket was lost after its sender had already passed the
@@ -786,6 +843,17 @@ struct CommTraits<AclshmemBackend> {
 // barrier has the same shape this file now uses: each PE stores its
 // generation in its own slot with a local store and peers poll that slot
 // through aclshmem_ptr(), a read being the one direction that cannot lose.
+
+// One state block per (kind, index); see the section comment above.
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_ACLSHMEM_GM uint32_t *
+aclshmemBarrierState(FLAGCX_ACLSHMEM_GM uint64_t *base, int kind,
+                     uint32_t index) {
+  if (index >= FLAGCX_ACLSHMEM_BARRIER_INDICES)
+    FLAGCX_DEVICE_TRAP();
+  return (FLAGCX_ACLSHMEM_GM uint32_t *)base +
+         ((size_t)kind * FLAGCX_ACLSHMEM_BARRIER_INDICES + (size_t)index) *
+             FLAGCX_ACLSHMEM_BARRIER_SLOTS;
+}
 
 template <typename Coop>
 struct Barrier<AclshmemBackend, flagcxTeamTagIntra, Coop> {
@@ -806,11 +874,11 @@ struct Barrier<AclshmemBackend, flagcxTeamTagIntra, Coop> {
         _stride(1) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
-  Barrier(Coop coop, const Comm &dc, Team team, uint32_t, bool = false,
-          const Multimem & = {})
-      : _coop(coop),
-        _state((FLAGCX_ACLSHMEM_GM uint32_t *)dc.gridSyncState), _base(0),
-        _teamSize(team.nRanks), _teamRank(team.rank), _stride(team.stride) {
+  Barrier(Coop coop, const Comm &dc, Team team, uint32_t index,
+          bool = false, const Multimem & = {})
+      : _coop(coop), _state(aclshmemBarrierState(dc.gridSyncState, 0, index)),
+        _base(0), _teamSize(team.nRanks), _teamRank(team.rank),
+        _stride(team.stride) {
     _base = dc.rank - team.rank * team.stride;
   }
 
@@ -869,10 +937,9 @@ struct Barrier<AclshmemBackend, flagcxTeamTagInter, Coop> {
         _stride(1) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
-  Barrier(Coop coop, const Net &, const Comm &dc, Team team, uint32_t, int = 0)
-      : _coop(coop),
-        _state((FLAGCX_ACLSHMEM_GM uint32_t *)dc.gridSyncState +
-               FLAGCX_ACLSHMEM_BARRIER_SLOTS),
+  Barrier(Coop coop, const Net &, const Comm &dc, Team team, uint32_t index,
+          int = 0)
+      : _coop(coop), _state(aclshmemBarrierState(dc.gridSyncState, 1, index)),
         _base(dc.rank - team.rank * team.stride), _teamSize(team.nRanks),
         _teamRank(team.rank), _stride(team.stride) {}
 
@@ -936,28 +1003,22 @@ struct Barrier<AclshmemBackend, flagcxTeamTagWorld, Coop> {
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagWorld, const Net &, const Comm &dc,
-          uint32_t, bool, int)
-      : _coop(coop),
-        _state((FLAGCX_ACLSHMEM_GM uint32_t *)dc.gridSyncState +
-               2 * FLAGCX_ACLSHMEM_BARRIER_SLOTS),
+          uint32_t index, bool, int)
+      : _coop(coop), _state(aclshmemBarrierState(dc.gridSyncState, 2, index)),
         _base(0), _teamSize(dc.nRanks), _teamRank(dc.rank), _stride(1) {}
 
   // Intra-only form of the world barrier.
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagIntra, const Net &, const Comm &dc,
-          uint32_t, bool, int)
-      : _coop(coop),
-        _state((FLAGCX_ACLSHMEM_GM uint32_t *)dc.gridSyncState +
-               2 * FLAGCX_ACLSHMEM_BARRIER_SLOTS),
+          uint32_t index, bool, int)
+      : _coop(coop), _state(aclshmemBarrierState(dc.gridSyncState, 2, index)),
         _base(dc.rank - dc.intraRank), _teamSize(dc.intraSize),
         _teamRank(dc.intraRank), _stride(1) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagInter, const Net &, const Comm &dc,
-          uint32_t, bool, int)
-      : _coop(coop),
-        _state((FLAGCX_ACLSHMEM_GM uint32_t *)dc.gridSyncState +
-               2 * FLAGCX_ACLSHMEM_BARRIER_SLOTS),
+          uint32_t index, bool, int)
+      : _coop(coop), _state(aclshmemBarrierState(dc.gridSyncState, 2, index)),
         _base(dc.rank), _teamSize(1), _teamRank(0), _stride(1) {
     (void)dc;
   }
