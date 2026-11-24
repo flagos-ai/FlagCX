@@ -689,7 +689,12 @@ struct CommTraits<AclshmemBackend> {
     }
 
     // Data must be in the peer's GM before any ticket: flush this core's
-    // dirty lines, transfer, drain.
+    // dirty lines, transfer, drain. The drain is local completion only - a
+    // posted MTE write can still surface at the peer after the 4B ticket
+    // that follows it, and the receiver's whole wait is on that ticket.
+    // Confirm both ends of the range through the pull path (the lossless
+    // direction) and replay the put while they are missing.
+    // shortcut: first and last 4B word only, not every chunk.
     FLAGCX_DEVICE_INLINE_DECORATOR void
     putData(FLAGCX_ACLSHMEM_GM void *dst, FLAGCX_ACLSHMEM_GM void *src,
             size_t bytes, int pe) const {
@@ -698,6 +703,32 @@ struct CommTraits<AclshmemBackend> {
 #endif
       aclshmemPutMemNbi(dst, src, (uint32_t)bytes, pe);
       aclshmemQuiet();
+      if (bytes < 2u * sizeof(uint32_t) || (bytes % sizeof(uint32_t)) != 0u)
+        return;
+      size_t words = bytes / sizeof(uint32_t);
+      const FLAGCX_ACLSHMEM_GM uint32_t *sw =
+          (const FLAGCX_ACLSHMEM_GM uint32_t *)src;
+      uint32_t head = sw[0];
+      uint32_t tail = sw[words - 1u];
+      FLAGCX_ACLSHMEM_GM uint32_t *dw = (FLAGCX_ACLSHMEM_GM uint32_t *)dst;
+      FLAGCX_ACLSHMEM_GM volatile uint32_t *remoteHead =
+          aclshmemPeerWord(dw, pe);
+      FLAGCX_ACLSHMEM_GM volatile uint32_t *remoteTail =
+          aclshmemPeerWord(dw + words - 1u, pe);
+      for (int attempt = 0; attempt < 3; ++attempt) {
+        int spins = 0;
+        while ((aclshmemGmLoad32(remoteHead) != head ||
+                aclshmemGmLoad32(remoteTail) != tail) &&
+               spins < 32) {
+          Intrin::spinBackoff(spins < 16 ? spins : 16);
+          ++spins;
+        }
+        if (aclshmemGmLoad32(remoteHead) == head &&
+            aclshmemGmLoad32(remoteTail) == tail)
+          return;
+        aclshmemPutMemNbi(dst, src, (uint32_t)bytes, pe);
+        aclshmemQuiet();
+      }
     }
 
     template <typename RA, typename LA>
