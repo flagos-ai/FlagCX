@@ -157,9 +157,9 @@ endif
 # launchers live in test/kernel/ascend/device_ir.asc (S16-S25; the net half
 # only under USE_SHMEM=1), which is
 # build-gated by the in--c device link - an undefined trap reference fails
-# the object, not the test.  The legacy API inter suite (test_device_api_inter)
-# builds only under USE_SHMEM=1, where the net transport exists; the unified
-# INTER IR product stays out of scope on both builds.
+# the object, not the test.  The two leg-across suites (test_device_api_inter
+# and test_device_ir_unified_inter) build only under USE_SHMEM=1, where the
+# net transport exists; the IPC build declares their launchers absent.
 # NO_REMOTE_READ compiles the S19 call sites out in the IPC build (read-back
 # of peer GM is not a measured path there; the reference file itself states
 # the same rule for P800); the shmem build keeps S19, whose transport is
@@ -177,11 +177,12 @@ endif
 ifeq ($(KERNEL_PLATFORM), ascend)
   ASCEND_IR_TARGETS  := $(BINDIR)/test_device_ir_unified_intra
   ASCEND_API_TARGETS := $(BINDIR)/test_device_api_intra
-  # The leg-across suite builds only on the cann-shmem backend: it needs the
+  # The leg-across suites build only on the cann-shmem backend: they need the
   # net transport (aclshmem MTE puts + signal tickets) that the IPC build
   # declares absent.  Must be added before SKIPPED_TARGETS is computed.
   ifeq ($(USE_SHMEM),1)
     ASCEND_API_TARGETS += $(BINDIR)/test_device_api_inter
+    ASCEND_IR_TARGETS  += $(BINDIR)/test_device_ir_unified_inter
   endif
   # The skip list is the original universe minus everything this platform
   # actually builds.  Ascend keeps ONE IR suite (unified_intra) AND the
@@ -372,6 +373,8 @@ UNIFIED_TEST_ARGS := -b 1K -e 16M -f 2
 # rendezvous is not a supported hardware capability narrow this to 1
 # (see set_env/ascend.sh); everywhere else keeps the historical -n 4.
 UNIFIED_IR_NP ?= 4
+# Unified-inter ranks per logical node (the asc 2x4 leg overrides to 4).
+UNIFIED_IR_INTER_NP ?= 2
 
 # Legacy intra-node tests. Platforms only run targets selected in MPI_TARGETS;
 # this prevents a stale executable from bypassing a platform capability filter.
@@ -438,9 +441,9 @@ ifneq ($(filter $(BINDIR)/test_device_ir_unified_inter,$(MPI_TARGETS)),)
 run-mpi-unified-inter: $(BINDIR)/test_device_ir_unified_inter
 	@echo "Running unified inter suite tests (INTER + WORLD, full coop matrices)..."
 	$(MPIRUN) $(MPI_ROOT_ARGS) \
-		-n 2 $(UNIFIED_COMMON_ENV) $(INTER_NODE0_ENV) \
+		-n $(UNIFIED_IR_INTER_NP) $(UNIFIED_COMMON_ENV) $(INTER_NODE0_ENV) \
 		$(BINDIR)/test_device_ir_unified_inter $(UNIFIED_TEST_ARGS) \
-		: -n 2 $(UNIFIED_COMMON_ENV) $(INTER_NODE1_ENV) \
+		: -n $(UNIFIED_IR_INTER_NP) $(UNIFIED_COMMON_ENV) $(INTER_NODE1_ENV) \
 		$(BINDIR)/test_device_ir_unified_inter $(UNIFIED_TEST_ARGS)
 else
 run-mpi-unified-inter:
