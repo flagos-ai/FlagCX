@@ -312,9 +312,18 @@ clean:
 
 run-unit: unit
 ifneq ($(strip $(UNIT_TARGET)),)
-	@GTEST_DEATH_TEST_STYLE=threadsafe $(UNIT_TARGET) --gtest_filter=-$(UNIT_NON_VMM_CASE)
+	@filter="$${GTEST_FILTER:-*}"; \
+	  case "$$filter" in \
+	    *-*) filter="$$filter:$(UNIT_NON_VMM_CASE)" ;; \
+	    *) filter="$$filter-$(UNIT_NON_VMM_CASE)" ;; \
+	  esac; \
+	  GTEST_DEATH_TEST_STYLE=threadsafe $(UNIT_TARGET) --gtest_filter="$$filter"
 # VMM_ENABLE is cached by the runtime; select it before this process starts.
-	@GTEST_DEATH_TEST_STYLE=threadsafe FLAGCX_VMM_ENABLE=0 $(UNIT_TARGET) --gtest_filter=$(UNIT_NON_VMM_CASE)
+	@filter="$(UNIT_NON_VMM_CASE)"; \
+	  case "$${GTEST_FILTER:-}" in \
+	    *-*) filter="$$filter-$${GTEST_FILTER#*-}" ;; \
+	  esac; \
+	  GTEST_DEATH_TEST_STYLE=threadsafe FLAGCX_VMM_ENABLE=0 $(UNIT_TARGET) --gtest_filter="$$filter"
 endif
 	@$(DEVICEPTR_ARGS_TARGET)
 ifneq ($(PROVIDER_UNIT_TARGET),)

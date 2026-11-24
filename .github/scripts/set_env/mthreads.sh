@@ -31,7 +31,16 @@ export LD_LIBRARY_PATH="/usr/local/musa/lib:/usr/local/musa/lib64:/usr/local/lib
 export FLAGCX_SOCKET_IFNAME="${FLAGCX_SOCKET_IFNAME:-^lo,docker,br-,veth}"
 FLAGCX_CI_IGNORE_TEST=$(cat <<'JSON'
 {
-  "gtest": [],
+  "gtest": [
+    {
+      "suite": "device_api_host",
+      "tests": [
+        "CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator",
+        "CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator"
+      ],
+      "reason": "Temporarily disabled: deployed MCCL requires Destroy during Finalize and may wait for independent communicator work; restore after SDK isolation validation (PR #734, run 45222679264)"
+    }
+  ],
   "phases": [
     {
       "suite": "symmem",

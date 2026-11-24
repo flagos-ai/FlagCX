@@ -90,17 +90,13 @@ namespace MusaLifecycleShim {
 using CclLifecycleShim::flagcxInnerComm_t;
 using CclLifecycleShim::free;
 using CclLifecycleShim::NativeContext;
-static flagcxResult_t mcclCommFinalize(NativeContext *native) {
-  return CclLifecycleShim::finalizeNative(native);
-}
 static flagcxResult_t mcclCommDestroy(NativeContext *native) {
   return CclLifecycleShim::destroyNative(native);
 }
-#define FLAGCX_CCL_FINALIZE mcclAdaptorCommFinalize
-#define FLAGCX_CCL_DESTROY mcclAdaptorCommDestroy
-#define FLAGCX_CCL_NATIVE_FINALIZE mcclCommFinalize
-#define FLAGCX_CCL_NATIVE_DESTROY mcclCommDestroy
-#include "../../../flagcx/adaptor/ccl/nccl_comm_lifecycle.h"
+#define FLAGCX_COMPAT_FINALIZE mcclAdaptorCommFinalize
+#define FLAGCX_COMPAT_DESTROY mcclAdaptorCommDestroy
+#define FLAGCX_COMPAT_CLOSE_NATIVE(comm) mcclCommDestroy((comm)->base)
+#include "../../../flagcx/adaptor/ccl/compat_comm_lifecycle.h"
 } // namespace MusaLifecycleShim
 
 namespace {
@@ -118,9 +114,10 @@ const NativeLifecycleOps nativeLifecycleOps[] = {
      DuLifecycleShim::durcclAdaptorCommDestroy},
     {"Iluvatar", IluvatarLifecycleShim::ixncclAdaptorCommFinalize,
      IluvatarLifecycleShim::ixncclAdaptorCommDestroy},
-    {"MUSA", MusaLifecycleShim::mcclAdaptorCommFinalize,
-     MusaLifecycleShim::mcclAdaptorCommDestroy},
 };
+const NativeLifecycleOps musaLifecycleOps = {
+    "MUSA", MusaLifecycleShim::mcclAdaptorCommFinalize,
+    MusaLifecycleShim::mcclAdaptorCommDestroy};
 } // namespace
 
 namespace HcclLifecycleShim {
@@ -221,9 +218,17 @@ struct NativeFinalizeProviderGuard {
       return activeNativeFinalizeOps->finalize(
           (CclLifecycleShim::flagcxInnerComm_t)inner);
     };
+    provider.commDestroy = [](flagcxInnerComm_t inner) {
+      return activeNativeFinalizeOps->destroy(
+          (CclLifecycleShim::flagcxInnerComm_t)inner);
+    };
     provider.commGetAsyncError = [](flagcxInnerComm_t inner,
                                     flagcxResult_t *status) {
       auto *native = ((CclLifecycleShim::Wrapper *)inner)->base;
+      if (native == nullptr) {
+        ADD_FAILURE() << "querying a closed native context";
+        return flagcxInternalError;
+      }
       native->queryCalls++;
       if (native->queryResult != flagcxSuccess)
         return native->queryResult;
@@ -283,6 +288,34 @@ struct NativeDestroyProviderGuard {
   }
 };
 } // namespace
+
+TEST(CommLifecycleTest, MusaCompatibilityCloseRetriesAndDestroyIsLocal) {
+  NativeFinalizeProviderGuard guard(&musaLifecycleOps);
+  CclLifecycleShim::NativeContext native;
+  CclLifecycleShim::Wrapper wrapper{&native};
+  auto *comm = (flagcxComm_t)calloc(1, sizeof(flagcxComm));
+  comm->commType = flagcxCommunicatorHomo;
+  comm->homoComm = (flagcxInnerComm_t)&wrapper;
+  native.destroyResult = flagcxRemoteError;
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxRemoteError);
+  EXPECT_NE(comm->finalizeState.commonPhase, flagcxFinalizeComplete);
+  EXPECT_EQ(comm->homoComm, (flagcxInnerComm_t)&wrapper);
+  EXPECT_EQ(wrapper.base, &native);
+  EXPECT_EQ(wrapper.frees, 0);
+  EXPECT_EQ(native.destroyCalls, 1);
+  native.destroyResult = flagcxSuccess;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(comm->finalizeState.commonPhase, flagcxFinalizeComplete);
+  EXPECT_EQ(wrapper.base, nullptr);
+  EXPECT_EQ(wrapper.frees, 0);
+  EXPECT_EQ(native.queryCalls, 0);
+  EXPECT_EQ(native.destroyCalls, 2);
+  EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+  EXPECT_EQ(native.destroyCalls, 2);
+  EXPECT_EQ(native.finalizeCalls, 0);
+  EXPECT_EQ(wrapper.frees, 1);
+}
 
 TEST(CommLifecycleTest, NativeFinalizeFailureRetainsContextForRetry) {
   for (const auto &ops : nativeLifecycleOps) {
@@ -511,15 +544,23 @@ TEST(CclLifecycleTest, UnsupportedNativeFinalizeClosesOnceAndRetainsWrapper) {
                             CnclLifecycleShim::cnclAdaptorCommFinalize,
                             PcclLifecycleShim::pcclAdaptorCommFinalize,
                             XcclLifecycleShim::xcclAdaptorCommFinalize,
+                            MusaLifecycleShim::mcclAdaptorCommFinalize,
                             EcclLifecycleShim::ecclAdaptorCommFinalize};
   Operation destructors[] = {HcclLifecycleShim::hcclAdaptorCommDestroy,
                              CnclLifecycleShim::cnclAdaptorCommDestroy,
                              PcclLifecycleShim::pcclAdaptorCommDestroy,
                              XcclLifecycleShim::xcclAdaptorCommDestroy,
+                             MusaLifecycleShim::mcclAdaptorCommDestroy,
                              EcclLifecycleShim::ecclAdaptorCommDestroy};
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 6; i++) {
     NcclLifecycleShim::NativeContext native = {};
     NcclLifecycleShim::Wrapper wrapper = {&native, 0};
+    EXPECT_EQ(finalizers[i](nullptr), flagcxInvalidArgument);
+    EXPECT_EQ(destructors[i](nullptr), flagcxInvalidArgument);
+    native.pendingDestroys = 1;
+    EXPECT_EQ(destructors[i](&wrapper), flagcxInProgress);
+    EXPECT_EQ(wrapper.base, &native);
+    EXPECT_EQ(wrapper.frees, 0);
     native.destroyResult = flagcxRemoteError;
     EXPECT_EQ(finalizers[i](&wrapper), flagcxRemoteError);
     EXPECT_EQ(wrapper.base, &native);
@@ -530,7 +571,7 @@ TEST(CclLifecycleTest, UnsupportedNativeFinalizeClosesOnceAndRetainsWrapper) {
     EXPECT_EQ(wrapper.frees, 0);
     EXPECT_EQ(finalizers[i](&wrapper), flagcxSuccess);
     EXPECT_EQ(destructors[i](&wrapper), flagcxSuccess);
-    EXPECT_EQ(native.destroyCalls, 2);
+    EXPECT_EQ(native.destroyCalls, 3);
     EXPECT_EQ(wrapper.frees, 1);
   }
 }

@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import os
 import shlex
@@ -204,7 +205,22 @@ int main() {
         source = (REPO_ROOT / "test/unittest/device_api/Makefile").read_text()
         start = source.index("run-unit: unit\n")
         end = source.index("\n# Use the same backend selection", start)
+        runner = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        setup = runner[runner.index('ignore_filter=$(python3 '):
+                       runner.index('if [[ "${FLAGCX_CI_COVERAGE:-0}" != 1 ]]')]
         case = "CommStreamIsolation.HeteroRmaNonVmmFinalizeDoesNotDrainIndependentWork"
+        skipped = {
+            "CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator",
+            "CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator",
+        }
+
+        def selected(name, value):
+            positive, _, negative = value.partition("-")
+            return (any(fnmatch.fnmatchcase(name, pattern)
+                        for pattern in (positive or "*").split(":"))
+                    and not any(fnmatch.fnmatchcase(name, pattern)
+                                for pattern in negative.split(":")))
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             binary = root / "test-unit"
@@ -213,6 +229,7 @@ import json, os, sys
 with open(os.environ['CALL_LOG'], 'a') as out:
     out.write(json.dumps([os.environ.get('GTEST_DEATH_TEST_STYLE'),
                           os.environ.get('FLAGCX_VMM_ENABLE'), sys.argv[1:]]) + '\\n')
+sys.exit(int(os.environ.get('FAIL_UNIT', '0')))
 ''')
             binary.chmod(0o755)
             makefile = root / "Makefile"
@@ -221,19 +238,59 @@ with open(os.environ['CALL_LOG'], 'a') as out:
                 "DEVICEPTR_ARGS_TARGET := true\n.PHONY: unit\nunit:\n"
                 + source[start:end]
             )
-            log = root / "calls.jsonl"
-            result = subprocess.run(
-                ["make", "-f", str(makefile), "run-unit"],
-                env=dict(os.environ, CALL_LOG=str(log), FLAGCX_VMM_ENABLE="1",
-                         GTEST_DEATH_TEST_STYLE="fast"),
-                capture_output=True, text=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            calls = [json.loads(line) for line in log.read_text().splitlines()]
-            self.assertEqual(calls, [
-                ["threadsafe", "1", [f"--gtest_filter=-{case}"]],
-                ["threadsafe", "0", [f"--gtest_filter={case}"]],
-            ])
+            for platform, restore, positive, failure in (
+                ("mthreads", False, "*", 0), ("mthreads", True, "*", 0),
+                ("mthreads", False, "CommStreamIsolation.*", 0),
+                ("cuda", False, "*", 0), ("cuda", False, "", 0),
+                ("mthreads", False, "*", 19),
+            ):
+                with self.subTest(platform=platform, restore=restore,
+                                  positive=positive, failure=failure):
+                    config = load_platform_ignore_config(platform)
+                    if platform == "mthreads":
+                        entries = [entry for entry in config.get("gtest", [])
+                                   if entry["suite"] == "device_api_host"]
+                        self.assertEqual({test for entry in entries
+                                          for test in entry["tests"]}, skipped)
+                        self.assertTrue(all(entry.get("reason") for entry in entries))
+                        self.assertFalse(any(entry["suite"] == "runner"
+                                             for entry in config.get("gtest", [])))
+                    if restore:
+                        config["gtest"] = [entry for entry in config.get("gtest", [])
+                                           if entry["suite"] != "device_api_host"]
+                    log = root / "calls.jsonl"
+                    log.write_text("")
+                    env = dict(os.environ, CALL_LOG=str(log), FLAGCX_VMM_ENABLE="1",
+                               GTEST_DEATH_TEST_STYLE="fast", SUITE="device_api_host",
+                               PROJECT_ROOT=str(REPO_ROOT), FAIL_UNIT=str(failure),
+                               FLAGCX_CI_IGNORE_TEST=json.dumps(config),
+                               GTEST_FILTER=(positive + "-AlreadyExcluded.*"
+                                             if positive else ""))
+                    result = subprocess.run(
+                        ["bash", "-c", setup + '\nmake -f "$1" run-unit',
+                         "bash", str(makefile)], env=env,
+                        capture_output=True, text=True,
+                    )
+                    calls = [json.loads(line) for line in log.read_text().splitlines()]
+                    self.assertEqual(result.returncode == 0, failure == 0,
+                                     result.stdout + result.stderr)
+                    self.assertEqual(len(calls), 1 if failure else 2)
+                    filters = [call[2][0].removeprefix("--gtest_filter=") for call in calls]
+                    self.assertEqual(calls[0][:2], ["threadsafe", "1"])
+                    self.assertFalse(selected(case, filters[0]))
+                    self.assertEqual(selected("AlreadyExcluded.Example", filters[0]),
+                                     not positive)
+                    for name in skipped:
+                        self.assertEqual(selected(name, filters[0]),
+                                         platform != "mthreads" or restore)
+                    self.assertEqual(selected("DevCommCleanup.OrdinaryCase", filters[0]),
+                                     positive in ("", "*"))
+                    if not failure:
+                        self.assertEqual(calls[1][:2], ["threadsafe", "0"])
+                        self.assertTrue(selected(case, filters[1]))
+                        self.assertFalse(selected("AlreadyExcluded.Example", filters[1]))
+                        self.assertTrue(all(not selected(name, filters[1])
+                                            for name in skipped))
 
     def test_fused_preflight_requires_named_rank_reports_and_propagates_failure(self):
         with tempfile.TemporaryDirectory() as directory:

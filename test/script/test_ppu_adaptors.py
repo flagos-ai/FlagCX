@@ -316,15 +316,17 @@ assert(compatDevice == 4 && nativeDevice == 4);
 
 @unittest.skipUnless(CXX, "C++ compiler required")
 class MusaLifecycleTest(unittest.TestCase):
-    def test_production_finalize_retains_native_until_local_destroy(self):
+    def test_production_compatibility_close_and_local_retry(self):
         production = (ROOT / "flagcx/adaptor/ccl/musa_mccl_adaptor.cc").read_text()
         start = production.index("flagcxResult_t mcclAdaptorCommInitRank(")
         start = production.index("\n}\n", start) + 3
         end = production.index("flagcxResult_t mcclAdaptorCommAbort(", start)
         lifecycle = production[start:end]
-        start = production.index("flagcxResult_t mcclAdaptorCommGetAsyncError(")
-        end = production.index("\n}\n", start) + 3
-        query = production[start:end]
+        functions = []
+        for name in ("mcclAdaptorCommAbort", "mcclAdaptorCommGetAsyncError"):
+            start = production.index("flagcxResult_t " + name + "(")
+            end = production.index("\n}\n", start) + 3
+            functions.append(production[start:end])
         source = r"""
 #include <cassert>
 #include "flagcx.h"
@@ -333,66 +335,63 @@ struct NativeContext {};
 struct Wrapper { NativeContext *base; int frees; };
 typedef Wrapper *flagcxInnerComm_t;
 static NativeContext native;
-static int finalizeCalls = 0, destroyCalls = 0, queryCalls = 0;
-static mcclResult_t finalizeResult = flagcxSuccess, destroyResult = flagcxSuccess;
+static int destroyCalls = 0, queryCalls = 0, abortCalls = 0;
+static mcclResult_t destroyResult = flagcxSuccess;
 static mcclResult_t queryResult = flagcxSuccess, asyncResult = flagcxSuccess;
-static mcclResult_t mcclCommFinalize(NativeContext *comm) {
-  assert(comm == &native); ++finalizeCalls; return finalizeResult;
-}
+// Deliberately no mcclCommFinalize: the deployed SDK does not provide it.
 static mcclResult_t mcclCommDestroy(NativeContext *comm) {
   assert(comm == &native); ++destroyCalls; return destroyResult;
 }
 static mcclResult_t mcclCommGetAsyncError(NativeContext *comm, mcclResult_t *status) {
   assert(comm == &native); ++queryCalls; *status = asyncResult; return queryResult;
 }
+static mcclResult_t mcclCommAbort(NativeContext *comm) {
+  assert(comm == &native); ++abortCalls; return flagcxSuccess;
+}
 static void releaseWrapper(void *comm) { ((Wrapper *)comm)->frees++; }
 #define free releaseWrapper
-#define FLAGCXCHECK(call) do { \
-  flagcxResult_t result = (call); \
-  if (result != flagcxSuccess && result != flagcxInProgress) return result; \
-} while (0)
-""" + lifecycle + query + r"""
+""" + lifecycle + "\n".join(functions) + r"""
 int main() {
   Wrapper wrapper = {&native, 0};
+  flagcxResult_t status = flagcxInProgress;
   assert(mcclAdaptorCommFinalize(nullptr) == flagcxInvalidArgument);
   assert(mcclAdaptorCommDestroy(nullptr) == flagcxInvalidArgument);
-  finalizeResult = flagcxRemoteError;
-  assert(mcclAdaptorCommFinalize(&wrapper) == flagcxRemoteError);
-  assert(finalizeCalls == 1 && destroyCalls == 0 && wrapper.frees == 0);
-  finalizeResult = flagcxInProgress;
-  assert(mcclAdaptorCommFinalize(&wrapper) == flagcxInProgress);
-  flagcxResult_t status = flagcxSuccess;
+  assert(mcclAdaptorCommAbort(nullptr) == flagcxInvalidArgument);
+  assert(mcclAdaptorCommGetAsyncError(nullptr, &status) == flagcxInvalidArgument);
+  assert(mcclAdaptorCommGetAsyncError(&wrapper, nullptr) == flagcxInvalidArgument);
   asyncResult = flagcxInProgress;
   assert(mcclAdaptorCommGetAsyncError(&wrapper, &status) == flagcxSuccess);
-  assert(status == flagcxInProgress);
+  assert(status == flagcxInProgress && queryCalls == 1);
   queryResult = flagcxSystemError;
   assert(mcclAdaptorCommGetAsyncError(&wrapper, &status) == flagcxSystemError);
-  queryResult = flagcxSuccess;
-  asyncResult = flagcxRemoteError;
-  assert(mcclAdaptorCommGetAsyncError(&wrapper, &status) == flagcxSuccess);
-  assert(status == flagcxRemoteError);
-  asyncResult = flagcxSuccess;
-  assert(mcclAdaptorCommGetAsyncError(&wrapper, &status) == flagcxSuccess);
-  assert(status == flagcxSuccess && queryCalls == 4);
-  assert(finalizeCalls == 2 && destroyCalls == 0);
-  assert(wrapper.base == &native && wrapper.frees == 0);
-  finalizeResult = flagcxSuccess;
-  assert(mcclAdaptorCommFinalize(&wrapper) == flagcxSuccess);
-  assert(finalizeCalls == 3 && destroyCalls == 0 && wrapper.base == &native);
-  for (flagcxResult_t result : {flagcxInProgress, flagcxRemoteError}) {
-    destroyResult = result;
-    assert(mcclAdaptorCommDestroy(&wrapper) == result);
-    assert(wrapper.base == &native && wrapper.frees == 0);
-  }
+  assert(queryCalls == 2);
+  destroyResult = flagcxRemoteError;
+  assert(mcclAdaptorCommFinalize(&wrapper) == flagcxRemoteError);
+  assert(destroyCalls == 1 && wrapper.base == &native && wrapper.frees == 0);
+  destroyResult = flagcxInProgress;
+  assert(mcclAdaptorCommDestroy(&wrapper) == flagcxInProgress);
+  assert(destroyCalls == 2 && wrapper.base == &native && wrapper.frees == 0);
+  destroyResult = flagcxUnhandledDeviceError;
+  assert(mcclAdaptorCommDestroy(&wrapper) == flagcxUnhandledDeviceError);
+  assert(destroyCalls == 3 && wrapper.base == &native && wrapper.frees == 0);
   destroyResult = flagcxSuccess;
+  assert(mcclAdaptorCommFinalize(&wrapper) == flagcxSuccess);
+  assert(destroyCalls == 4 && wrapper.base == nullptr && wrapper.frees == 0);
+  assert(mcclAdaptorCommFinalize(&wrapper) == flagcxSuccess && destroyCalls == 4);
+  assert(mcclAdaptorCommGetAsyncError(&wrapper, &status) == flagcxSuccess);
+  assert(status == flagcxSuccess && queryCalls == 2);
+  assert(mcclAdaptorCommAbort(&wrapper) == flagcxSuccess && abortCalls == 0);
   assert(mcclAdaptorCommDestroy(&wrapper) == flagcxSuccess);
-  assert(destroyCalls == 3 && wrapper.frees == 1 && finalizeCalls == 3);
+  assert(destroyCalls == 4 && wrapper.frees == 1);
+  Wrapper rollback = {&native, 0};
+  assert(mcclAdaptorCommDestroy(&rollback) == flagcxSuccess);
+  assert(destroyCalls == 5 && rollback.base == nullptr && rollback.frees == 1);
 }
 """
         with tempfile.TemporaryDirectory() as folder:
             cpp = Path(folder) / "lifecycle.cc"
             binary = Path(folder) / "lifecycle"
-            cpp.write_text('#include <initializer_list>\n' + source)
+            cpp.write_text(source)
             result = subprocess.run(
                 [CXX, "-std=c++11", f"-I{ROOT / 'flagcx/include'}",
                  f"-I{ROOT / 'flagcx/adaptor/ccl'}", str(cpp), "-o", str(binary)],

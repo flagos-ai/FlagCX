@@ -92,6 +92,13 @@ The deployed PCCL SDK has previously blocked in native Destroy after native
 Finalize. This SDK compatibility issue remains subject to the rank-local
 Destroy hardware tests; Finalize does not absorb native Destroy to hide it.
 
+The deployed MUSA MCCL SDK lacks `mcclCommFinalize`. Its compatibility
+Finalize calls `mcclCommDestroy`, clears the native base only after success,
+and retains the wrapper for local Destroy. Two MUSA host isolation tests are
+temporarily excluded because this native close has waited for unrelated
+communicator work. Runner rank-local Destroy coverage remains enabled;
+the exclusions do not certify Finalize stream isolation on this SDK.
+
 The CCL v1 plugin layout is unchanged. The latest internal descriptor appends
 its shutdown scope, and upgraded v1 plugins default to world agreement. No
 Finalize callback may free its wrapper. Native SDK errors remain errors; a

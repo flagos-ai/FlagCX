@@ -13,7 +13,9 @@ flagcxResult_t FLAGCX_COMPAT_FINALIZE(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t FLAGCX_COMPAT_DESTROY(flagcxInnerComm_t comm) {
-  FLAGCXCHECK(FLAGCX_COMPAT_FINALIZE(comm));
+  flagcxResult_t result = FLAGCX_COMPAT_FINALIZE(comm);
+  if (result != flagcxSuccess)
+    return result;
   free(comm);
   return flagcxSuccess;
 }

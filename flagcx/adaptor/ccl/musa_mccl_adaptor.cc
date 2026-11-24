@@ -45,15 +45,18 @@ flagcxResult_t mcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                           *(mcclUniqueId *)commId, rank);
 }
 
-// Like NCCL, keep the native context alive until local Destroy succeeds.
-#define FLAGCX_CCL_FINALIZE mcclAdaptorCommFinalize
-#define FLAGCX_CCL_DESTROY mcclAdaptorCommDestroy
-#define FLAGCX_CCL_NATIVE_FINALIZE mcclCommFinalize
-#define FLAGCX_CCL_NATIVE_DESTROY mcclCommDestroy
-#include "nccl_comm_lifecycle.h"
+// The deployed MCCL SDK has no native Finalize. Close native state here and
+// retain the wrapper until local Destroy.
+#define FLAGCX_COMPAT_FINALIZE mcclAdaptorCommFinalize
+#define FLAGCX_COMPAT_DESTROY mcclAdaptorCommDestroy
+#define FLAGCX_COMPAT_CLOSE_NATIVE(comm)                                       \
+  (flagcxResult_t) mcclCommDestroy((comm)->base)
+#include "compat_comm_lifecycle.h"
 
 flagcxResult_t mcclAdaptorCommAbort(flagcxInnerComm_t comm) {
-  if (comm != NULL && comm->base == NULL)
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
     return flagcxSuccess;
   return (flagcxResult_t)mcclCommAbort(comm->base);
 }
@@ -82,6 +85,12 @@ flagcxResult_t mcclAdaptorCommUserRank(const flagcxInnerComm_t comm,
 
 flagcxResult_t mcclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
                                             flagcxResult_t *asyncError) {
+  if (comm == NULL || asyncError == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL) {
+    *asyncError = flagcxSuccess;
+    return flagcxSuccess;
+  }
   return (flagcxResult_t)mcclCommGetAsyncError(comm->base,
                                                (mcclResult_t *)asyncError);
 }
