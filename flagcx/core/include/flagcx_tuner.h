@@ -121,6 +121,10 @@ bool operator==(const struct flagcxCommTag &lhs,
 
 extern flagcxTuner_t internalTuner;
 
+// Release a native owner and clear its aliases only after strict success.
+flagcxResult_t flagcxDestroyHomoCommOwner(flagcxComm_t comm,
+                                          struct flagcxInnerComm *inner);
+
 // On-demand communicator lifecycle helpers implemented in flagcx/flagcx.cc
 flagcxResult_t flagcxCreateHomoCommForTag(flagcxComm_t comm, uint32_t idx);
 flagcxResult_t flagcxDestroyHomoCommByTag(flagcxComm_t comm, uint32_t idx);

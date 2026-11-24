@@ -470,6 +470,19 @@ TEST_F(DeviceAdaptorTest, StreamOperations) {
   EXPECT_EQ(result, flagcxSuccess);
 }
 
+TEST_F(DeviceAdaptorTest, CaptureIntrospectionReportsSdkCapability) {
+  ASSERT_NE(deviceAdaptor->streamGetCaptureStatus, nullptr);
+  flagcxStreamCaptureStatus_t status = flagcxStreamCaptureInvalidated;
+  flagcxResult_t result =
+      deviceAdaptor->streamGetCaptureStatus(stream, &status);
+  if (result == flagcxNotSupported) {
+    EXPECT_EQ(status, flagcxStreamCaptureInvalidated);
+    return;
+  }
+  ASSERT_EQ(result, flagcxSuccess);
+  EXPECT_EQ(status, flagcxStreamCaptureNone);
+}
+
 // Test: Event operations
 TEST_F(DeviceAdaptorTest, EventOperations) {
   flagcxEvent_t event = nullptr;

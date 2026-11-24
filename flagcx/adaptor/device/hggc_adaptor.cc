@@ -92,6 +92,12 @@ flagcxResult_t hggcAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t hggcAdaptorSetDevice(int dev) {
+  // Re-selecting an already current device is unnecessary. Query the runtime
+  // rather than caching an ordinal: applications may select devices directly.
+  int current = -1;
+  if (hggcGetDevice(&current) == hggcSuccess && current == dev)
+    return flagcxSuccess;
+  // Preserve the original selection/error path if the query is unavailable.
   HGGCCHECK(hggcSetDevice(dev));
   return flagcxSuccess;
 }
@@ -301,8 +307,48 @@ flagcxResult_t hggcAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
 #endif
 }
 
+static flagcxResult_t
+hggcAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                  flagcxStreamCaptureStatus_t *status) {
+  if (status == NULL)
+    return flagcxInvalidArgument;
+  *status = flagcxStreamCaptureInvalidated;
+#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
+  hggcStreamCaptureStatus nativeStatus = hggcStreamCaptureStatusInvalidated;
+  int result =
+      (int)hggcStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
+  if (result == (int)hggcErrorNotReady)
+    return flagcxInProgress;
+  if (result == (int)hggcErrorNotSupported)
+    return flagcxNotSupported;
+  if (result != (int)hggcSuccess)
+    return flagcxUnhandledDeviceError;
+  switch (nativeStatus) {
+    case hggcStreamCaptureStatusNone:
+      *status = flagcxStreamCaptureNone;
+      break;
+    case hggcStreamCaptureStatusActive:
+      *status = flagcxStreamCaptureActive;
+      break;
+    case hggcStreamCaptureStatusInvalidated:
+      *status = flagcxStreamCaptureInvalidated;
+      break;
+    default:
+      return flagcxInternalError;
+  }
+  return flagcxSuccess;
+#else
+  (void)stream;
+  return flagcxNotSupported;
+#endif
+}
+
 flagcxResult_t hggcAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  if (event == NULL)
+    return flagcxInvalidArgument;
   (*event) = NULL;
   *event = (flagcxEvent_t)calloc(1, sizeof(**event));
   if (*event == NULL)
@@ -993,7 +1039,7 @@ struct flagcxDeviceAdaptor hggcAdaptor {
       hggcAdaptorSymFlatMapSegmentsBegin, hggcAdaptorSymFlatMapSegmentOne,
       hggcAdaptorSymLsaGetCapacity, hggcAdaptorSymLsaVaReserve,
       hggcAdaptorSymLsaVaFree, hggcAdaptorSymLsaMapBeginAt, NULL, NULL, NULL,
-      NULL,
+      NULL, hggcAdaptorStreamGetCaptureStatus
 };
 
 #endif // USE_PPU_ADAPTOR

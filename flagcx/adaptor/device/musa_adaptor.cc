@@ -148,6 +148,9 @@ flagcxResult_t musaAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t musaAdaptorSetDevice(int dev) {
+  int current = -1;
+  if (musaGetDevice(&current) == musaSuccess && current == dev)
+    return flagcxSuccess;
   DEVCHECK(musaSetDevice(dev));
   return flagcxSuccess;
 }
@@ -268,14 +271,56 @@ flagcxResult_t musaAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+musaAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                  flagcxStreamCaptureStatus_t *status) {
+  if (status == NULL)
+    return flagcxInvalidArgument;
+  *status = flagcxStreamCaptureInvalidated;
+#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
+  musaStreamCaptureStatus nativeStatus = musaStreamCaptureStatusInvalidated;
+  int result =
+      (int)musaStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
+  if (result == (int)musaErrorNotSupported)
+    return flagcxNotSupported;
+  if (result != (int)musaSuccess)
+    return flagcxUnhandledDeviceError;
+  switch (nativeStatus) {
+    case musaStreamCaptureStatusNone:
+      *status = flagcxStreamCaptureNone;
+      break;
+    case musaStreamCaptureStatusActive:
+      *status = flagcxStreamCaptureActive;
+      break;
+    case musaStreamCaptureStatusInvalidated:
+      *status = flagcxStreamCaptureInvalidated;
+      break;
+    default:
+      return flagcxInternalError;
+  }
+  return flagcxSuccess;
+#else
+  (void)stream;
+  return flagcxNotSupported;
+#endif
+}
+
 flagcxResult_t musaAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? musaEventDefault
                                  : musaEventDisableTiming;
-  DEVCHECK(musaEventCreateWithFlags(&((*event)->base), flags));
+  if (musaEventCreateWithFlags(&wrapper->base, flags) != musaSuccess) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 
@@ -715,7 +760,10 @@ struct flagcxDeviceAdaptor musaAdaptor {
       // A NIC completion alone does not establish GPU visibility. Require
       // the provider's acquire for both incoming WRITE and local GET results.
       FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
-      FLAGCX_GDR_DEVICE_MUSA,
+      FLAGCX_GDR_DEVICE_MUSA, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+
+      musaAdaptorStreamGetCaptureStatus
 };
 
 #endif // USE_MUSA_ADAPTOR

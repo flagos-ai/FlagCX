@@ -1204,10 +1204,7 @@ TEST(PpuPcclLoading, NativeCommBeforeBarexHostMrRegistration) {
   struct NativeCommGuard {
     flagcxCCLAdaptor *adaptor;
     flagcxInnerComm_t comm;
-    ~NativeCommGuard() {
-      EXPECT_EQ(adaptor->commDestroy(comm), flagcxSuccess);
-      free(comm);
-    }
+    ~NativeCommGuard() { EXPECT_EQ(adaptor->commDestroy(comm), flagcxSuccess); }
   } native{ccl, nativeComm};
 
   // The PPU CI preflight runs this case alone, so PCCL is opened before BAREX

@@ -101,7 +101,14 @@ flagcxResult_t pcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t pcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)p2f_ret_map[pcclCommDestroy(comm->base)];
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  flagcxResult_t result =
+      (flagcxResult_t)p2f_ret_map[pcclCommDestroy(comm->base)];
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
+  return flagcxSuccess;
 }
 
 flagcxResult_t pcclAdaptorCommAbort(flagcxInnerComm_t comm) {

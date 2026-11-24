@@ -498,6 +498,9 @@ flagcxResult_t ixcudaAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t ixcudaAdaptorSetDevice(int dev) {
+  int current = -1;
+  if (cudaGetDevice(&current) == cudaSuccess && current == dev)
+    return flagcxSuccess;
   DEVCHECK(cudaSetDevice(dev));
   return flagcxSuccess;
 }
@@ -623,15 +626,54 @@ flagcxResult_t ixcudaAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+ixcudaAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                    flagcxStreamCaptureStatus_t *status) {
+  if (status == NULL)
+    return flagcxInvalidArgument;
+  *status = flagcxStreamCaptureInvalidated;
+#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
+  cudaStreamCaptureStatus nativeStatus = cudaStreamCaptureStatusInvalidated;
+  int result =
+      (int)cudaStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
+  if (result != (int)cudaSuccess)
+    return flagcxUnhandledDeviceError;
+  switch (nativeStatus) {
+    case cudaStreamCaptureStatusNone:
+      *status = flagcxStreamCaptureNone;
+      break;
+    case cudaStreamCaptureStatusActive:
+      *status = flagcxStreamCaptureActive;
+      break;
+    case cudaStreamCaptureStatusInvalidated:
+      *status = flagcxStreamCaptureInvalidated;
+      break;
+    default:
+      return flagcxInternalError;
+  }
+  return flagcxSuccess;
+#else
+  (void)stream;
+  return flagcxNotSupported;
+#endif
+}
+
 flagcxResult_t ixcudaAdaptorEventCreate(flagcxEvent_t *event,
                                         flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? cudaEventDefault
                                  : cudaEventDisableTiming;
-  DEVCHECK(cudaEventCreateWithFlags(&((*event)->base), flags));
-
+  if (cudaEventCreateWithFlags(&wrapper->base, flags) != cudaSuccess) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 
@@ -1129,5 +1171,6 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
       NULL, NULL, NULL, NULL, NULL,
 #endif
+      ixcudaAdaptorStreamGetCaptureStatus
 };
 #endif // USE_ILUVATAR_ADAPTOR

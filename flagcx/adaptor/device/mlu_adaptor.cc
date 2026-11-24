@@ -67,6 +67,9 @@ flagcxResult_t mluAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t mluAdaptorSetDevice(int dev) {
+  int current = -1;
+  if (cnrtGetDevice(&current) == cnrtSuccess && current == dev)
+    return flagcxSuccess;
   DEVCHECK(cnrtSetDevice(dev));
   return flagcxSuccess;
 }
@@ -206,14 +209,54 @@ flagcxResult_t mluAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+mluAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                 flagcxStreamCaptureStatus_t *status) {
+  if (status == NULL)
+    return flagcxInvalidArgument;
+  *status = flagcxStreamCaptureInvalidated;
+#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
+  cnrtQueueCaptureStatus_t nativeStatus = CNRT_QUEUE_CAPTURE_STATUS_INVALIDATED;
+  int result =
+      (int)cnrtQueueIsCapturing(stream ? stream->base : NULL, &nativeStatus);
+  if (result != (int)cnrtSuccess)
+    return flagcxUnhandledDeviceError;
+  switch (nativeStatus) {
+    case CNRT_QUEUE_CAPTURE_STATUS_NONE:
+      *status = flagcxStreamCaptureNone;
+      break;
+    case CNRT_QUEUE_CAPTURE_STATUS_ACTIVE:
+      *status = flagcxStreamCaptureActive;
+      break;
+    case CNRT_QUEUE_CAPTURE_STATUS_INVALIDATED:
+      *status = flagcxStreamCaptureInvalidated;
+      break;
+    default:
+      return flagcxInternalError;
+  }
+  return flagcxSuccess;
+#else
+  (void)stream;
+  return flagcxNotSupported;
+#endif
+}
+
 flagcxResult_t mluAdaptorEventCreate(flagcxEvent_t *event,
                                      flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? CNRT_NOTIFIER_DEFAULT
                                  : CNRT_NOTIFIER_DISABLE_TIMING_ALL;
-  DEVCHECK(cnrtNotifierCreateWithFlags(&((*event)->base), flags));
+  if (cnrtNotifierCreateWithFlags(&wrapper->base, flags) != cnrtSuccess) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 
@@ -402,7 +445,11 @@ struct flagcxDeviceAdaptor mluAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL, NULL, NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_UNKNOWN, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL,
+
+      mluAdaptorStreamGetCaptureStatus
 };
 
 #endif // USE_CAMBRICON_ADAPTOR

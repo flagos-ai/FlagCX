@@ -81,6 +81,9 @@ flagcxResult_t topsAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t topsAdaptorSetDevice(int dev) {
+  int current = -1;
+  if (topsGetDevice(&current) == topsSuccess && current == dev)
+    return flagcxSuccess;
   DEVCHECK(topsSetDevice(dev));
   return flagcxSuccess;
 }
@@ -185,14 +188,54 @@ flagcxResult_t topsAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+topsAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                  flagcxStreamCaptureStatus_t *status) {
+  if (status == NULL)
+    return flagcxInvalidArgument;
+  *status = flagcxStreamCaptureInvalidated;
+#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
+  topsStreamCaptureStatus nativeStatus = topsStreamCaptureStatusInvalidated;
+  int result =
+      (int)topsStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
+  if (result != (int)topsSuccess)
+    return flagcxUnhandledDeviceError;
+  switch (nativeStatus) {
+    case topsStreamCaptureStatusNone:
+      *status = flagcxStreamCaptureNone;
+      break;
+    case topsStreamCaptureStatusActive:
+      *status = flagcxStreamCaptureActive;
+      break;
+    case topsStreamCaptureStatusInvalidated:
+      *status = flagcxStreamCaptureInvalidated;
+      break;
+    default:
+      return flagcxInternalError;
+  }
+  return flagcxSuccess;
+#else
+  (void)stream;
+  return flagcxNotSupported;
+#endif
+}
+
 flagcxResult_t topsAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? topsEventDefault
                                  : topsEventDisableTiming;
-  DEVCHECK(topsEventCreateWithFlags(&((*event)->base), flags));
+  if (topsEventCreateWithFlags(&wrapper->base, flags) != topsSuccess) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 
@@ -511,7 +554,11 @@ struct flagcxDeviceAdaptor topsAdaptor {
       NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_UNKNOWN, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL,
+
+      topsAdaptorStreamGetCaptureStatus
 };
 
 #endif // USE_ENFLAME_ADAPTOR

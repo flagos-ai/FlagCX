@@ -77,6 +77,9 @@ flagcxResult_t hipAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t hipAdaptorSetDevice(int dev) {
+  int current = -1;
+  if (hipGetDevice(&current) == hipSuccess && current == dev)
+    return flagcxSuccess;
   DEVCHECK(hipSetDevice(dev));
   return flagcxSuccess;
 }
@@ -179,14 +182,54 @@ flagcxResult_t hipAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+hipAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                 flagcxStreamCaptureStatus_t *status) {
+  if (status == NULL)
+    return flagcxInvalidArgument;
+  *status = flagcxStreamCaptureInvalidated;
+#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
+  hipStreamCaptureStatus nativeStatus = hipStreamCaptureStatusInvalidated;
+  int result =
+      (int)hipStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
+  if (result != (int)hipSuccess)
+    return flagcxUnhandledDeviceError;
+  switch (nativeStatus) {
+    case hipStreamCaptureStatusNone:
+      *status = flagcxStreamCaptureNone;
+      break;
+    case hipStreamCaptureStatusActive:
+      *status = flagcxStreamCaptureActive;
+      break;
+    case hipStreamCaptureStatusInvalidated:
+      *status = flagcxStreamCaptureInvalidated;
+      break;
+    default:
+      return flagcxInternalError;
+  }
+  return flagcxSuccess;
+#else
+  (void)stream;
+  return flagcxNotSupported;
+#endif
+}
+
 flagcxResult_t hipAdaptorEventCreate(flagcxEvent_t *event,
                                      flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? hipEventDefault
                                  : hipEventDisableTiming;
-  DEVCHECK(hipEventCreateWithFlags(&((*event)->base), flags));
+  if (hipEventCreateWithFlags(&wrapper->base, flags) != hipSuccess) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 
@@ -476,7 +519,11 @@ struct flagcxDeviceAdaptor hipAdaptor {
       NULL, NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_UNKNOWN, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL,
+
+      hipAdaptorStreamGetCaptureStatus
 };
 
 #endif // USE_AMD_ADAPTOR

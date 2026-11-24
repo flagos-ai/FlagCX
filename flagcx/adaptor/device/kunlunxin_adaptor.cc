@@ -85,10 +85,16 @@ flagcxResult_t kunlunAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t kunlunAdaptorSetDevice(int dev) {
-  DEVCHECK(cudaSetDevice(dev));
+  int current = -1;
+  if (cudaGetDevice(&current) != cudaSuccess || current != dev) {
+    DEVCHECK(cudaSetDevice(dev));
+  }
   // The CUDA compat layer's cudaSetDevice does not always bind the XRE-native
   // device context that xshmem / xpu_* APIs use. Set it explicitly so the
   // native xshmem device state is created on the intended card.
+  int nativeCurrent = -1;
+  if (xpu_current_device(&nativeCurrent) == 0 && nativeCurrent == dev)
+    return flagcxSuccess;
   int xret = xpu_set_device(dev);
   if (xret != 0) {
     WARN("kunlunAdaptorSetDevice: xpu_set_device(%d) failed with %d", dev,
@@ -224,14 +230,54 @@ flagcxResult_t kunlunAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+kunlunAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                    flagcxStreamCaptureStatus_t *status) {
+  if (status == NULL)
+    return flagcxInvalidArgument;
+  *status = flagcxStreamCaptureInvalidated;
+#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
+  cudaStreamCaptureStatus nativeStatus = cudaStreamCaptureStatusInvalidated;
+  int result =
+      (int)cudaStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
+  if (result != (int)cudaSuccess)
+    return flagcxUnhandledDeviceError;
+  switch (nativeStatus) {
+    case cudaStreamCaptureStatusNone:
+      *status = flagcxStreamCaptureNone;
+      break;
+    case cudaStreamCaptureStatusActive:
+      *status = flagcxStreamCaptureActive;
+      break;
+    case cudaStreamCaptureStatusInvalidated:
+      *status = flagcxStreamCaptureInvalidated;
+      break;
+    default:
+      return flagcxInternalError;
+  }
+  return flagcxSuccess;
+#else
+  (void)stream;
+  return flagcxNotSupported;
+#endif
+}
+
 flagcxResult_t kunlunAdaptorEventCreate(flagcxEvent_t *event,
                                         flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? cudaEventDefault
                                  : cudaEventDisableTiming;
-  DEVCHECK(cudaEventCreateWithFlags(&((*event)->base), flags));
+  if (cudaEventCreateWithFlags(&wrapper->base, flags) != cudaSuccess) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 
@@ -567,6 +613,10 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL, NULL, NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_UNKNOWN, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL,
+
+      kunlunAdaptorStreamGetCaptureStatus
 };
 #endif // USE_KUNLUNXIN_ADAPTOR

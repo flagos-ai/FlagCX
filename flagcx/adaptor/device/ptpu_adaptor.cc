@@ -68,6 +68,9 @@ flagcxResult_t ptpuAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t ptpuAdaptorSetDevice(int dev) {
+  int current = -1;
+  if (tangGetDevice(&current) == tangSuccess && current == dev)
+    return flagcxSuccess;
   DEVCHECK(tangSetDevice(dev));
   return flagcxSuccess;
 }
@@ -194,14 +197,54 @@ flagcxResult_t ptpuAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
 
 // TODO:ref of cuda_adaptor.cc, ignore flags with tangEventBlockingSync,
 // tangEventInterprocess
+static flagcxResult_t
+ptpuAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                  flagcxStreamCaptureStatus_t *status) {
+  if (status == NULL)
+    return flagcxInvalidArgument;
+  *status = flagcxStreamCaptureInvalidated;
+#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
+  tangStreamCaptureStatus nativeStatus = tangStreamCaptureStatusInvalidated;
+  int result =
+      (int)tangStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
+  if (result != (int)tangSuccess)
+    return flagcxUnhandledDeviceError;
+  switch (nativeStatus) {
+    case tangStreamCaptureStatusNone:
+      *status = flagcxStreamCaptureNone;
+      break;
+    case tangStreamCaptureStatusActive:
+      *status = flagcxStreamCaptureActive;
+      break;
+    case tangStreamCaptureStatusInvalidated:
+      *status = flagcxStreamCaptureInvalidated;
+      break;
+    default:
+      return flagcxInternalError;
+  }
+  return flagcxSuccess;
+#else
+  (void)stream;
+  return flagcxNotSupported;
+#endif
+}
+
 flagcxResult_t ptpuAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? tangEventDefault
                                  : tangEventDisableTiming;
-  DEVCHECK(tangEventCreateWithFlags(&((*event)->base), flags));
+  if (tangEventCreateWithFlags(&wrapper->base, flags) != tangSuccess) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 
@@ -440,6 +483,10 @@ struct flagcxDeviceAdaptor ptpuAdaptor {
       NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_UNKNOWN, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL,
+
+      ptpuAdaptorStreamGetCaptureStatus
 };
 #endif // USE_SUNRISE_ADAPTOR

@@ -263,6 +263,9 @@ flagcxResult_t duhipAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t duhipAdaptorSetDevice(int dev) {
+  int current = -1;
+  if (hipGetDevice(&current) == hipSuccess && current == dev)
+    return flagcxSuccess;
   DEVCHECK(hipSetDevice(dev));
   return flagcxSuccess;
 }
@@ -557,14 +560,54 @@ flagcxResult_t duhipAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+duhipAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                   flagcxStreamCaptureStatus_t *status) {
+  if (status == NULL)
+    return flagcxInvalidArgument;
+  *status = flagcxStreamCaptureInvalidated;
+#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
+  hipStreamCaptureStatus nativeStatus = hipStreamCaptureStatusInvalidated;
+  int result =
+      (int)hipStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
+  if (result != (int)hipSuccess)
+    return flagcxUnhandledDeviceError;
+  switch (nativeStatus) {
+    case hipStreamCaptureStatusNone:
+      *status = flagcxStreamCaptureNone;
+      break;
+    case hipStreamCaptureStatusActive:
+      *status = flagcxStreamCaptureActive;
+      break;
+    case hipStreamCaptureStatusInvalidated:
+      *status = flagcxStreamCaptureInvalidated;
+      break;
+    default:
+      return flagcxInternalError;
+  }
+  return flagcxSuccess;
+#else
+  (void)stream;
+  return flagcxNotSupported;
+#endif
+}
+
 flagcxResult_t duhipAdaptorEventCreate(flagcxEvent_t *event,
                                        flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? hipEventDefault
                                  : hipEventDisableTiming;
-  DEVCHECK(hipEventCreateWithFlags(&((*event)->base), flags));
+  if (hipEventCreateWithFlags(&wrapper->base, flags) != hipSuccess) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 
@@ -1489,7 +1532,7 @@ struct flagcxDeviceAdaptor duhipAdaptor {
       duhipAdaptorSymFlatMapSegmentsBegin, duhipAdaptorSymFlatMapSegmentOne,
       duhipAdaptorSymLsaGetCapacity, duhipAdaptorSymLsaVaReserve,
       duhipAdaptorSymLsaVaFree, duhipAdaptorSymLsaMapBeginAt, NULL, NULL, NULL,
-      NULL,
+      NULL, duhipAdaptorStreamGetCaptureStatus
 };
 
 #endif // USE_DU_ADAPTOR

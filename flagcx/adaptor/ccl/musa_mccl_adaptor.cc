@@ -50,7 +50,13 @@ flagcxResult_t mcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t mcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)mcclCommDestroy(comm->base);
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  flagcxResult_t result = (flagcxResult_t)mcclCommDestroy(comm->base);
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
+  return flagcxSuccess;
 }
 
 flagcxResult_t mcclAdaptorCommAbort(flagcxInnerComm_t comm) {

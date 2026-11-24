@@ -540,6 +540,9 @@ flagcxResult_t cannAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t cannAdaptorSetDevice(int dev) {
+  int current = -1;
+  if (aclrtGetDevice(&current) == ACL_SUCCESS && current == dev)
+    return flagcxSuccess;
   DEVCHECK(aclrtSetDevice(dev));
   return flagcxSuccess;
 }
@@ -652,13 +655,57 @@ flagcxResult_t cannAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+cannAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                  flagcxStreamCaptureStatus_t *status) {
+  if (status == NULL)
+    return flagcxInvalidArgument;
+  *status = flagcxStreamCaptureInvalidated;
+#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
+  aclmdlRICaptureStatus nativeStatus = ACL_MODEL_RI_CAPTURE_STATUS_INVALIDATED;
+  aclmdlRI model = NULL;
+  int result = (int)aclmdlRICaptureGetInfo(stream ? stream->base : NULL,
+                                           &nativeStatus, &model);
+  if (result == ACL_ERROR_FEATURE_UNSUPPORTED ||
+      result == ACL_ERROR_RT_FEATURE_NOT_SUPPORT)
+    return flagcxNotSupported;
+  if (result != (int)ACL_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  switch (nativeStatus) {
+    case ACL_MODEL_RI_CAPTURE_STATUS_NONE:
+      *status = flagcxStreamCaptureNone;
+      break;
+    case ACL_MODEL_RI_CAPTURE_STATUS_ACTIVE:
+      *status = flagcxStreamCaptureActive;
+      break;
+    case ACL_MODEL_RI_CAPTURE_STATUS_INVALIDATED:
+      *status = flagcxStreamCaptureInvalidated;
+      break;
+    default:
+      return flagcxInternalError;
+  }
+  return flagcxSuccess;
+#else
+  (void)stream;
+  return flagcxNotSupported;
+#endif
+}
+
 flagcxResult_t cannAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
   const unsigned int flags =
       (eventType == flagcxEventDefault) ? ACL_EVENT_TIME_LINE : ACL_EVENT_SYNC;
-  DEVCHECK(aclrtCreateEventWithFlag(&((*event)->base), flags));
+  if (aclrtCreateEventWithFlag(&wrapper->base, flags) != ACL_SUCCESS) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 
@@ -1284,6 +1331,7 @@ struct flagcxDeviceAdaptor cannAdaptor {
       cannAdaptorSymFlatMapSegmentOne, cannAdaptorSymLsaGetCapacity,
       cannAdaptorSymLsaVaReserve, cannAdaptorSymLsaVaFree,
       cannAdaptorSymLsaMapBeginAt, NULL, NULL, NULL, NULL,
+      cannAdaptorStreamGetCaptureStatus
 };
 
 #endif // USE_ASCEND_ADAPTOR

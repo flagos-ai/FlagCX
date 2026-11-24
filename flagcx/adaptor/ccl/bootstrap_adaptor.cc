@@ -7,14 +7,24 @@ static int groupDepth = 0;
 static std::vector<stagedBuffer_t> sendStagedBufferList;
 static std::vector<stagedBuffer_t> recvStagedBufferList;
 
-static void
-bootstrapAdaptorFreeStagedBuffers(std::vector<stagedBuffer_t> &buffers) {
-  while (!buffers.empty()) {
-    stagedBuffer *buff = buffers.back();
-    buffers.pop_back();
-    free(buff->buffer);
-    free(buff);
+static flagcxResult_t bootstrapCleanupOwner(flagcxInnerComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  std::vector<stagedBuffer_t> *lists[] = {&sendStagedBufferList,
+                                          &recvStagedBufferList};
+  for (unsigned i = 0; i < sizeof(lists) / sizeof(lists[0]); i++) {
+    for (auto it = lists[i]->begin(); it != lists[i]->end();) {
+      stagedBuffer_t buffer = *it;
+      if (buffer->owner != comm) {
+        ++it;
+        continue;
+      }
+      free(buffer->buffer);
+      free(buffer);
+      it = lists[i]->erase(it);
+    }
   }
+  return flagcxSuccess;
 }
 
 // TODO: unsupported
@@ -30,11 +40,13 @@ flagcxResult_t bootstrapAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
 flagcxResult_t bootstrapAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
                                                void **buff, size_t size,
                                                int isRecv) {
+  if (comm == NULL || comm->base == NULL || buff == NULL)
+    return flagcxInvalidArgument;
   stagedBuffer *sbuff = NULL;
   if (isRecv) {
     for (auto it = recvStagedBufferList.begin();
          it != recvStagedBufferList.end(); it++) {
-      if ((*it)->size - (*it)->offset >= size) {
+      if ((*it)->owner == comm && (*it)->size - (*it)->offset >= size) {
         sbuff = (*it);
         break;
       }
@@ -42,7 +54,7 @@ flagcxResult_t bootstrapAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
   } else {
     for (auto it = sendStagedBufferList.begin();
          it != sendStagedBufferList.end(); it++) {
-      if ((*it)->size - (*it)->offset >= size) {
+      if ((*it)->owner == comm && (*it)->size - (*it)->offset >= size) {
         sbuff = (*it);
         break;
       }
@@ -50,6 +62,7 @@ flagcxResult_t bootstrapAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
   }
   if (sbuff == NULL) {
     FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
+    sbuff->owner = comm;
     sbuff->offset = 0;
     int newSize = BOOTSTRAP_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
     while (newSize < size) {
@@ -57,6 +70,7 @@ flagcxResult_t bootstrapAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
     }
     sbuff->buffer = malloc(newSize);
     if (sbuff->buffer == NULL) {
+      free(sbuff);
       return flagcxSystemError;
     }
     sbuff->size = newSize;
@@ -93,21 +107,19 @@ flagcxResult_t bootstrapAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 flagcxResult_t bootstrapAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  bootstrapAdaptorFreeStagedBuffers(sendStagedBufferList);
-  bootstrapAdaptorFreeStagedBuffers(recvStagedBufferList);
-  return flagcxSuccess;
+  return bootstrapCleanupOwner(comm);
 }
 
 flagcxResult_t bootstrapAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  bootstrapAdaptorFreeStagedBuffers(sendStagedBufferList);
-  bootstrapAdaptorFreeStagedBuffers(recvStagedBufferList);
+  flagcxResult_t result = bootstrapCleanupOwner(comm);
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
   return flagcxSuccess;
 }
 
 flagcxResult_t bootstrapAdaptorCommAbort(flagcxInnerComm_t comm) {
-  bootstrapAdaptorFreeStagedBuffers(sendStagedBufferList);
-  bootstrapAdaptorFreeStagedBuffers(recvStagedBufferList);
-  return flagcxSuccess;
+  return bootstrapCleanupOwner(comm);
 }
 
 // TODO: unsupported
