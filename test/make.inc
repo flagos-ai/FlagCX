@@ -2,8 +2,11 @@
 # Provides common paths, compiler flags, GoogleTest, FlagCX library,
 # MPI, and fixture include settings.
 
-# Project root (relative to each leaf Makefile, set before including)
-PROJECT_ROOT ?= $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
+# Resolve relative to this shared file immediately. A recursive ?= expression
+# would use the last included generated .d file on a later incremental build.
+ifeq ($(origin PROJECT_ROOT),undefined)
+PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
+endif
 
 # Build directories
 BUILDDIR ?= $(abspath ./build)
@@ -115,6 +118,8 @@ else ifeq ($(USE_ENFLAME), 1)
   include $(PROJECT_ROOT)/makefiles/enflame.mk
 else ifeq ($(USE_METAX), 1)
   include $(PROJECT_ROOT)/makefiles/metax.mk
+else ifeq ($(USE_MUSA), 1)
+  include $(PROJECT_ROOT)/makefiles/musa.mk
 else ifeq ($(USE_PPU), 1)
   include $(PROJECT_ROOT)/makefiles/ppu.mk
 else ifeq ($(USE_AMD), 1)

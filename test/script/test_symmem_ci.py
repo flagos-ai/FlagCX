@@ -193,6 +193,27 @@ run_suite
             self.assertFalse(any("FLAGCX_VMM_ENABLE=1" in line for line in unsupported_calls))
             self.assertIn("Skipping symmem VMM-local tests", unsupported.stdout)
 
+            enflame_capture = root / "enflame-vmm-unsupported.calls"
+            enflame = subprocess.run(
+                ["bash", str(script)],
+                env=dict(
+                    os.environ,
+                    FLAGCX_ADAPTOR="enflame",
+                    FLAGCX_CI_SYMMEM_VMM_SUPPORTED="0",
+                    CI_CAPTURE=str(enflame_capture),
+                ),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(enflame.returncode, 0, enflame.stderr)
+            enflame_calls = enflame_capture.read_text().splitlines()
+            self.assertTrue(any("symmem_unit_tests" in line for line in enflame_calls))
+            self.assertTrue(any("symmem_mpi_tests" in line for line in enflame_calls))
+            self.assertTrue(any("FLAGCX_VMM_ENABLE=0" in line for line in enflame_calls))
+            self.assertFalse(any("FLAGCX_VMM_ENABLE=1" in line for line in enflame_calls))
+            self.assertFalse(any("UntrackedVmmMappingIsRejected" in line for line in enflame_calls))
+            self.assertIn("Skipping symmem VMM-local tests", enflame.stdout)
+
             invalid = subprocess.run(
                 ["bash", str(script)],
                 env=dict(os.environ, FLAGCX_ADAPTOR="unknown"),

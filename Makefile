@@ -457,6 +457,12 @@ else ifeq ($(USE_ILUVATAR),1)
 else ifeq ($(USE_DU),1)
   DEVICE_BITCODE_DIR := du
   DEVICE_BITCODE_ARCH_ARG := BITCODE_LIB_ARCH=$(DEVICE_BITCODE_ARCH)
+else ifeq ($(USE_MUSA),1)
+  DEVICE_BITCODE_DIR := musa
+  DEVICE_BITCODE_ARCH_ARG := MUSA_ARCH=$(DEVICE_BITCODE_ARCH)
+else ifeq ($(USE_PPU),1)
+  DEVICE_BITCODE_DIR := ppu
+  DEVICE_BITCODE_ARCH_ARG := BITCODE_LIB_ARCH=$(DEVICE_BITCODE_ARCH)
 endif
 
 ifneq ($(filter device_bitcode,$(MAKECMDGOALS)),)
@@ -531,13 +537,24 @@ ifeq ($(USE_DU),1)
   LINKER_FLAGS := $(DEVICE_LINK_FLAG)
 endif
 
+# MUSA's generated image symbol is WEAK DEFAULT. Without local binding, a
+# device-enabled executable can preempt it and make this library register the
+# executable's image instead of its own. Keep public FlagCX APIs exported.
+MUSA_FATBIN_EXPORT_MAP :=
+ifeq ($(USE_MUSA),1)
+ifeq ($(COMPILE_KERNEL),1)
+MUSA_FATBIN_EXPORT_MAP := makefiles/musa_fatbin.map
+LINKER_FLAGS += -Wl,--version-script=$(abspath $(MUSA_FATBIN_EXPORT_MAP))
+endif
+endif
+
 BUILD_CONFIG_CHANGED := $(shell printf '%s\n' '$(BUILD_CONFIG_SIGNATURE)' | cmp -s - '$(BUILD_CONFIG_FILE)' || echo 1)
 ifneq ($(BUILD_CONFIG_CHANGED),)
 $(BUILD_CONFIG_FILE): build_config_force
 $(LIBOBJ) $(DEVOBJ): build_config_force
 endif
 
-$(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS) p2p_engine_mode_force
+$(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS) $(MUSA_FATBIN_EXPORT_MAP) p2p_engine_mode_force
 	@mkdir -p `dirname $@`
 	@mode=$$(test -f $(P2P_ENGINE_MODE_FILE) && sed -n '1p' $(P2P_ENGINE_MODE_FILE)); \
 	  if [ ! -f $@ ] || [ "$$mode" != "$(USE_SHARED_P2P_ENGINE)" ] || \
@@ -570,10 +587,14 @@ $(OBJDIR)/kernel_dlink.o: $(DEVOBJ)
 	@$(DEVICE_LINKER) -dlink $^ -o $@ $(DEVICE_LINK) $(DEVICE_LINK_FLAG)
 endif
 
+ifeq ($(USE_MUSA), 1)
+include makefiles/musa_kernel_rules.mk
+else
 $(OBJDIR)/%.o: %.$(DEVICE_FILE_EXTENSION)
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@ ($(DEVICE_PLATFORM))"
 	@$(DEVICE_COMPILER) $(DEVICE_COMPILE_FLAG) $(COMPILE_KERNEL_FLAG) $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(SHCA_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) -g $< -o $@
+endif
 endif
 
 ifeq ($(COMPILE_KERNEL), 1)

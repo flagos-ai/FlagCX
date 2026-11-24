@@ -26,7 +26,7 @@ the flag and pip installs it for you.
 
 A wheel that will be an input to a Device API kernel build also carries the device bitcode and the
 headers a consumer compiles against. Both are opt-in because building bitcode needs a
-compiler and LLVM tools for the target GPU. CUDA, Iluvatar, and Hygon are supported; see
+compiler and LLVM tools for the target GPU. CUDA, Iluvatar, Hygon, and PPU are supported; see
 [Device API bitcode](device_api_bitcode.md) for build commands. For CUDA:
 
 ```shell
