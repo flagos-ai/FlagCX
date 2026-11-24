@@ -189,9 +189,13 @@ typedef struct flagcxDeviceHandle *flagcxDeviceHandle_t;
  * populated device handle. Call before flagcxCommInitRank if you need device
  * operations (setDevice, getDeviceCount, streamCreate, etc.) early.
  * If not called explicitly, flagcxCommInitRank will load plugins internally. */
+/* On failure, a non-NULL output owns unfinished cleanup and must be retained
+ * for flagcxDeviceHandleFree retries. It cannot be used for device operations.
+ */
 flagcxResult_t flagcxDeviceHandleInit(flagcxDeviceHandle_t *devHandle);
 
 /* Free device handle — finalizes device/CCL adaptor plugins. */
+/* Only success consumes the handle. Other results preserve it for retry. */
 flagcxResult_t flagcxDeviceHandleFree(flagcxDeviceHandle_t devHandle);
 
 /* Deprecated: use flagcxDeviceHandleInit/Free and manage comm/uniqueId
@@ -203,10 +207,12 @@ struct flagcxHandlerGroup {
 };
 typedef struct flagcxHandlerGroup *flagcxHandlerGroup_t;
 
-/* Deprecated: use flagcxDeviceHandleInit instead */
+/* Deprecated: use flagcxDeviceHandleInit instead. A failed Init may retain a
+ * non-NULL cleanup owner; release it with flagcxHandleFree. */
 flagcxResult_t flagcxHandleInit(flagcxHandlerGroup_t *handler);
 
-/* Deprecated: use flagcxDeviceHandleFree instead */
+/* Deprecated: use flagcxDeviceHandleFree instead. Only success consumes the
+ * handler; other results preserve it for retry. */
 flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler);
 
 /* Allocation and user-buffer registration. A backend may reserve more memory

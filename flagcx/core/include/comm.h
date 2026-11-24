@@ -174,6 +174,7 @@ class flagcxWorkerPool;
 
 struct flagcxHeteroComm {
   uint64_t startMagic;
+  bool netPluginHeld;
   bool destroyProxyComplete;
   flagcxResult_t destroyProxyResult;
   struct flagcxMemoryStack memPermanent, memScoped;

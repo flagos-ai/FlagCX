@@ -229,7 +229,11 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
        comm->activeDevComms != devComm))
     return flagcxInvalidUsage;
   if (deviceAdaptor != nullptr && deviceAdaptor->deviceSynchronize != nullptr)
-    FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
+    do {
+      flagcxResult_t cleanupResult = deviceAdaptor->deviceSynchronize();
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    } while (0);
 
   // Stop the proxy from acquiring a new reference while the backend tears
   // down fields reachable through DevComm. Restore publication on failure so
@@ -250,18 +254,30 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   }
 
   if (devComm->cachedNetContextsPtr != nullptr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->cachedNetContextsPtr,
-                                          flagcxMemDevice, nullptr));
+    do {
+      flagcxResult_t cleanupResult = deviceAdaptor->deviceFree(
+          devComm->cachedNetContextsPtr, flagcxMemDevice, nullptr);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    } while (0);
     devComm->cachedNetContextsPtr = nullptr;
   }
   if (devComm->cachedDevicePtr != nullptr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->cachedDevicePtr,
-                                          flagcxMemDevice, nullptr));
+    do {
+      flagcxResult_t cleanupResult = deviceAdaptor->deviceFree(
+          devComm->cachedDevicePtr, flagcxMemDevice, nullptr);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    } while (0);
     devComm->cachedDevicePtr = nullptr;
   }
   if (devComm->cachedGridBarrierPtr != nullptr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->cachedGridBarrierPtr,
-                                          flagcxMemDevice, nullptr));
+    do {
+      flagcxResult_t cleanupResult = deviceAdaptor->deviceFree(
+          devComm->cachedGridBarrierPtr, flagcxMemDevice, nullptr);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    } while (0);
     devComm->cachedGridBarrierPtr = nullptr;
   }
   pthread_mutex_destroy(&devComm->cachedPtrMutex);
@@ -442,9 +458,17 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
     return flagcxInvalidArgument;
 
   if (deviceAdaptor != nullptr && deviceAdaptor->deviceSynchronize != nullptr)
-    FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
+    do {
+      flagcxResult_t cleanupResult = deviceAdaptor->deviceSynchronize();
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    } while (0);
   if (!devMem->backendDestroyed) {
-    FLAGCXCHECK(devApiBackend->devMemDestroy(comm, devMem));
+    do {
+      flagcxResult_t cleanupResult = devApiBackend->devMemDestroy(comm, devMem);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    } while (0);
     devMem->backendDestroyed = true;
   }
 
@@ -467,13 +491,21 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
   }
   devMem->ipcIndex = -1;
   if (devMem->cachedDevicePtr != nullptr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devMem->cachedDevicePtr,
-                                          flagcxMemDevice, nullptr));
+    do {
+      flagcxResult_t cleanupResult = deviceAdaptor->deviceFree(
+          devMem->cachedDevicePtr, flagcxMemDevice, nullptr);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    } while (0);
     devMem->cachedDevicePtr = nullptr;
   }
   if (devMem->segmentedPeerLayouts != nullptr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devMem->segmentedPeerLayouts,
-                                          flagcxMemDevice, nullptr));
+    do {
+      flagcxResult_t cleanupResult = deviceAdaptor->deviceFree(
+          devMem->segmentedPeerLayouts, flagcxMemDevice, nullptr);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    } while (0);
     devMem->segmentedPeerLayouts = nullptr;
   }
   if (devMem->boundWindow != nullptr) {
@@ -546,7 +578,11 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
     struct flagcxIpcTableEntry *e = &comm->ipcTable[k];
     if (e->refCount != 0)
       return flagcxInvalidUsage;
-    FLAGCXCHECK(releaseIpcTableSlot(comm, k));
+    do {
+      flagcxResult_t cleanupResult = releaseIpcTableSlot(comm, k);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    } while (0);
   }
   return flagcxSuccess;
 }
@@ -568,7 +604,12 @@ flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e) {
   if (e->hostPeerBasePtrs != nullptr) {
     for (int i = 0; i < e->nPeers; i++) {
       if (e->hostPeerBasePtrs[i] != nullptr) {
-        FLAGCXCHECK(deviceAdaptor->ipcMemHandleClose(e->hostPeerBasePtrs[i]));
+        do {
+          flagcxResult_t cleanupResult =
+              deviceAdaptor->ipcMemHandleClose(e->hostPeerBasePtrs[i]);
+          if (cleanupResult != flagcxSuccess)
+            return cleanupResult;
+        } while (0);
         e->hostPeerBasePtrs[i] = nullptr;
       }
     }
@@ -576,8 +617,12 @@ flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e) {
     e->hostPeerBasePtrs = nullptr;
   }
   if (e->devPeerPtrs != nullptr) {
-    FLAGCXCHECK(
-        deviceAdaptor->deviceFree(e->devPeerPtrs, flagcxMemDevice, nullptr));
+    do {
+      flagcxResult_t cleanupResult =
+          deviceAdaptor->deviceFree(e->devPeerPtrs, flagcxMemDevice, nullptr);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    } while (0);
     e->devPeerPtrs = nullptr;
   }
   free(e->hostPeerPtrs);

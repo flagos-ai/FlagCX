@@ -375,6 +375,14 @@ struct flagcxProxyState {
   volatile uint32_t *abortFlag;
   // Service threads
   pthread_t thread;
+  bool serviceJoined;
+  uint32_t serviceExited;
+  uint32_t relayExportsPending;
+  struct flagcxProxyConnectionPool *connectionPool;
+  struct flagcxProxyLocalPeer *servicePeers;
+  struct pollfd *servicePollFds;
+  int nServicePeers;
+  flagcxResult_t workerCleanupResult;
   pthread_t threadUDS;
   struct flagcxSocket listenSock;
   struct flagcxSocket ipcSock;
@@ -450,6 +458,8 @@ struct flagcxProxyConnection {
   struct flagcxProxyArgs *proxyAppend;
   struct flagcxProxyArgs **proxyAppendPtr;
   void *transportResources;
+  bool cleanupImportsDone;
+  bool cleanupResourcesDone;
   flagcxNetDeviceHandle_t *netDeviceHandle;
   void *mhandles[FLAGCX_NUM_PROTOCOLS];
   proxyConnectState state;
@@ -468,6 +478,8 @@ struct flagcxProxyConnection {
   size_t relayBufferCapacity;
   struct flagcxNetRelayImport *relayImport;
   uint32_t relayActiveOps;
+  bool relayReleasePending;
+  bool relayReleaseAcknowledged;
   struct flagcxCollNetSharedRes *collNet;
   int needsProxyProgress;
 };
@@ -533,10 +545,12 @@ flagcxResult_t flagcxProxyCallAsync(struct flagcxHeteroComm *comm,
 
 // This function will internally call flagcxProxyCallAsync() and spin until
 // flagcxPollProxyResponse() confirms the result is received
+// responseReceived distinguishes a complete error reply from a lost reply.
 flagcxResult_t flagcxProxyCallBlocking(struct flagcxHeteroComm *comm,
                                        struct flagcxProxyConnector *proxyConn,
                                        int type, void *reqBuff, int reqSize,
-                                       void *respBuff, int respSize);
+                                       void *respBuff, int respSize,
+                                       bool *responseReceived = NULL);
 flagcxResult_t flagcxPollProxyResponse(struct flagcxHeteroComm *comm,
                                        struct flagcxProxyConnector *proxyConn,
                                        void *respBuff, void *opId);
