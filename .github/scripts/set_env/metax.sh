@@ -26,7 +26,6 @@ fi
 export PATH="/opt/maca/mxgpu_llvm/bin:$PATH"
 export LD_LIBRARY_PATH="/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:${LD_LIBRARY_PATH:-}"
 
-
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
@@ -68,6 +67,9 @@ flagcx_ci_configure_suite() {
 flagcx_ci_prepare() {
   local suite=$1
   echo "Preparing MetaX environment for CI workload: $suite"
+  if [[ "$suite" == adaptor || "$suite" == rma ]]; then
+    echo "MetaX CI temporary exclusions: native stream wait/write value operations reject finegrained allocations; see ignore_test.gtest in .github/configs/metax.yml."
+  fi
   command -v mpirun
   command -v mxcc
 

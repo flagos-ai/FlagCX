@@ -292,10 +292,46 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 ["ruby", str(MATRIX_SCRIPT), str(CONFIG_DIR), str(context_path)],
                 check=True, capture_output=True, text=True, env=env,
             )
-            entry = json.loads(plan_path.read_text())["ignore_test"][0]
+            entries = json.loads(plan_path.read_text())["ignore_test"]
+            perf_entries = [
+                entry for entry in entries
+                if entry["platform"] == "metax" and entry["kind"] == "perf"
+            ]
+            self.assertEqual(len(perf_entries), 1)
+            entry = perf_entries[0]
             self.assertEqual(entry["modes"], ["homogeneous"])
             self.assertEqual(entry["operations"], ["allreduce", "reducescatter"])
-            self.assertIn('"modes":["homogeneous"]', summary_path.read_text())
+            summary = summary_path.read_text()
+            self.assertIn('"modes":["homogeneous"]', summary)
+
+            expected_gtest = yaml.safe_load(
+                (CONFIG_DIR / "metax.yml").read_text()
+            )["ignore_test"]["gtest"]
+            gtest_entries = [
+                entry for entry in entries
+                if entry["platform"] == "metax" and entry["kind"] == "gtest"
+            ]
+            self.assertCountEqual(
+                [entry["suite"] for entry in gtest_entries],
+                [entry["suite"] for entry in expected_gtest],
+            )
+            for expected in expected_gtest:
+                with self.subTest(suite=expected["suite"]):
+                    entry = next(
+                        entry for entry in gtest_entries
+                        if entry["suite"] == expected["suite"]
+                    )
+                    self.assertEqual(entry["tests"], expected["tests"])
+                    self.assertEqual(entry["reason"], expected["reason"])
+                    summary_line = next(
+                        line for line in summary.splitlines()
+                        if line.startswith(f'- **metax/gtest/{expected["suite"]}:**')
+                    )
+                    self.assertIn(expected["reason"], summary_line)
+                    self.assertIn(
+                        json.dumps(expected["tests"], separators=(",", ":")),
+                        summary_line,
+                    )
 
     def test_mixed_platform_and_unknown_changes_run_all_platforms(self):
         outputs, _ = self.resolve(

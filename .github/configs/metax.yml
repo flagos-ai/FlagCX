@@ -56,6 +56,16 @@ unit_test_suites:
 
 # Platform exclusions; every entry must document its reason.
 ignore_test:
+  gtest:
+  - suite: adaptor
+    tests:
+    - DeviceAdaptorTest.StreamWaitWriteValue64
+    - DeviceAdaptorTest.StreamWaitValue64RemoteFlushCapability
+    reason: 'Temporary: the current MACA SDK rejects native stream memops on finegrained allocations required by Device API IPC'
+  - suite: rma
+    tests:
+    - RmaTest.IpcGetSameStreamCompletion
+    reason: 'Temporary: the same-stream gate uses native stream memops, which reject finegrained allocations in the current MACA SDK'
   perf:
     operations:
     - allreduce

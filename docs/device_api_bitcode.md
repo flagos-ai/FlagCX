@@ -86,7 +86,10 @@ ordinary host objects are passed as `-maca-host-input`. The `mxcc`, `opt`,
 Override `MACA_LLVM_BIN` or the individual `MXCC`, `OPT`, `LLVM_DIS`, and
 `LLVM_AS` paths for another SDK layout. Use LLVM tools from that SDK.
 
-Synchronous `deviceMalloc` and the non-VMM GDR allocator use direct `mcMalloc`.
+Synchronous `deviceMalloc` and the non-VMM GDR allocator use
+`mcExtMallocWithFlags(..., mcDeviceMallocFinegrained)` for IPC kernel
+publication and polling. Direct `mcMalloc` supports ordinary stream memops
+in the tested SDK, but timed out in the first Unified IR intra barrier.
 Use the existing Default Device API, Scalar IR, and Unified IR intra tests to
 validate IPC kernel-write visibility for this allocation path. The
 asynchronous pool allocator retains its stream-ordered allocation/free
@@ -95,6 +98,16 @@ have their own memory properties. They are not covered by the non-VMM hetero
 Device API CI configuration (`FLAGCX_USE_HETERO_COMM=1`, `FLAGCX_VMM_ENABLE=0`).
 Allocations supplied by a caller must support the required peer visibility.
 Uncached IPC memory does not remove the adaptor's NIC DMA flush requirements.
+
+MetaX CI temporarily excludes `DeviceAdaptorTest.StreamWaitWriteValue64`,
+`DeviceAdaptorTest.StreamWaitValue64RemoteFlushCapability`, and
+`RmaTest.IpcGetSameStreamCompletion`: the current MACA SDK rejects their native
+stream memops on finegrained allocations. The exclusions are recorded under
+`ignore_test.gtest` in `.github/configs/metax.yml`; the other adaptor/RMA and
+Device API cases remain enabled. The adaptor still reports errors normally
+outside CI. Its strong remote-write wait returns `flagcxNotSupported` because
+an acquire/flush mapping has not been validated; this does not mean the NIC
+cannot transfer GPU data.
 
 The existing `device_api`, `device_api_host`, and `device_api_unified_ir`
 MetaX CI suites build the Default backend with `COMPILE_KERNEL=1` and exercise

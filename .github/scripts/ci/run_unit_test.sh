@@ -884,11 +884,24 @@ run_suite() {
       # timeout. Collect both statuses so a failure in one path cannot prevent
       # the other path from running and producing a useful result.
       if flagcx_ci_phase_supported rma-ipc-mpi; then
+        # This invocation passes a CLI filter, which overrides GTEST_FILTER.
+        # Merge platform exclusions here as well as in the unit-test env.
+        local ipc_filter=${FLAGCX_CI_RMA_IPC_FILTER:-RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetSameStreamCompletion:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals}
+        local ipc_exclude
+        ipc_exclude=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" gtest rma)
+        if [[ -n "$ipc_exclude" ]]; then
+          if [[ "$ipc_filter" == *-* ]]; then
+            ipc_filter+=":$ipc_exclude"
+          else
+            ipc_filter+="-$ipc_exclude"
+          fi
+          echo "Applying configured RMA IPC exclusions: $ipc_exclude"
+        fi
         FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
           make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
           MPIRUN="$MPI_RUNNER" \
           IPC_XML_DIR="$ipc_xml_dir" \
-          IPC_FILTER="${FLAGCX_CI_RMA_IPC_FILTER:-RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetSameStreamCompletion:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals}" || ipc_status=$?
+          IPC_FILTER="$ipc_filter" || ipc_status=$?
       fi
       if ((ipc_status == 0)) && [[ "$rma_platform_name" == iluvatar ]]; then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
