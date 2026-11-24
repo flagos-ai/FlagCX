@@ -12,8 +12,7 @@ FLAGCX_PARAM(SemaphoreBufferPoolCapacity, "SEMAPHORE_BUFFER_POOL_CAPACITY", 32);
 flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
 
 flagcxDeviceSemaphoreBufferPool::flagcxDeviceSemaphoreBufferPool()
-    : capacity(-1), slotId(-1), signalsPool(nullptr), dSignalsPool(nullptr),
-      events(nullptr), initError(flagcxSuccess) {}
+    : capacity(0), chunks(NULL), pending(NULL) {}
 
 flagcxDeviceSemaphoreBufferPool::~flagcxDeviceSemaphoreBufferPool() {
   (void)clear();
@@ -21,107 +20,131 @@ flagcxDeviceSemaphoreBufferPool::~flagcxDeviceSemaphoreBufferPool() {
 
 flagcxResult_t flagcxDeviceSemaphoreBufferPool::getSlotId(int *id) {
   *id = -1;
-  std::unique_lock<std::mutex> lock(mutex);
-  if (initError != flagcxSuccess) {
-    lock.unlock();
-    flagcxResult_t result = clear();
+  std::lock_guard<std::mutex> lock(mutex);
+  for (;;) {
+    for (auto *chunk = chunks; chunk != NULL; chunk = chunk->next) {
+      for (int i = 0; i < chunk->capacity; ++i) {
+        if (chunk->inUse[i])
+          continue;
+        chunk->inUse[i] = 1;
+        memset(chunk->signals + (size_t)FLAGCX_SIGNALS_PER_SEMAPHORE * i, 0,
+               FLAGCX_SIGNALS_PER_SEMAPHORE * sizeof(int));
+        *id = chunk->first + i;
+        return flagcxSuccess;
+      }
+    }
+    // Completed groups may still have live Comm owners. Grow without moving
+    // their signals or reclaiming any slot before its owner releases it.
+    flagcxResult_t result = grow();
     if (result != flagcxSuccess)
       return result;
-    lock.lock();
   }
-  if (capacity == -1) {
-    initError = initialize();
-    if (initError != flagcxSuccess)
-      return initError;
-  }
-  for (int i = 0; i < capacity; ++i) {
-    int candidate = (slotId + i) % capacity;
-    if (inUse[candidate])
-      continue;
-    inUse[candidate] = 1;
-    memset(signalsPool + FLAGCX_SIGNALS_PER_SEMAPHORE * candidate, 0,
-           FLAGCX_SIGNALS_PER_SEMAPHORE * sizeof(int));
-    slotId = (candidate + 1) % capacity;
-    *id = candidate;
-    return flagcxSuccess;
-  }
-  // A busy slot belongs to its previous Comm until that owner releases it.
-  return flagcxInProgress;
 }
 
-flagcxResult_t flagcxDeviceSemaphoreBufferPool::initialize() {
-  capacity = flagcxParamSemaphoreBufferPoolCapacity();
-  if (capacity <= 0 || capacity > INT_MAX / FLAGCX_SIGNALS_PER_SEMAPHORE)
-    return flagcxInvalidArgument;
-  slotId = 0;
-  // Allocate host-pinned memory for all semaphores (3 ints each)
-  flagcxResult_t result = deviceAdaptor->deviceMalloc(
-      (void **)&signalsPool,
-      capacity * FLAGCX_SIGNALS_PER_SEMAPHORE * sizeof(int), flagcxMemHost,
-      nullptr);
-  if (result != flagcxSuccess)
-    return result;
-  // Get device pointer alias
-  result =
-      deviceAdaptor->hostGetDevicePointer(&dSignalsPool, (void *)signalsPool);
-  if (result != flagcxSuccess)
-    return result;
-  // Init events to nullptr
-  result = flagcxCalloc(&events, capacity);
-  if (result != flagcxSuccess)
-    return result;
-  try {
-    inUse.assign(capacity, 0);
-  } catch (const std::bad_alloc &) {
-    return flagcxSystemError;
+flagcxResult_t flagcxDeviceSemaphoreBufferPool::grow() {
+  if (pending == NULL) {
+    int count = flagcxParamSemaphoreBufferPoolCapacity();
+    if (count <= 0 || count > INT_MAX - capacity ||
+        (size_t)count > SIZE_MAX / FLAGCX_SIGNALS_PER_SEMAPHORE / sizeof(int))
+      return flagcxInvalidArgument;
+    pending = (Chunk *)calloc(1, sizeof(Chunk));
+    if (pending == NULL)
+      return flagcxSystemError;
+    pending->capacity = count;
+    pending->first = capacity;
   }
+  if (pending->inUse == NULL) {
+    pending->inUse = (int *)calloc(pending->capacity, sizeof(int));
+    if (pending->inUse == NULL)
+      return flagcxSystemError;
+  }
+  if (!pending->allocated) {
+    // Some adaptors return an owner even when allocation fails. Retain it
+    // until cleanup succeeds; never publish it as a usable signal buffer.
+    if (pending->signals != NULL) {
+      flagcxResult_t result =
+          deviceAdaptor->deviceFree(pending->signals, flagcxMemHost, NULL);
+      if (result != flagcxSuccess)
+        return result;
+      pending->signals = NULL;
+    }
+    flagcxResult_t result = deviceAdaptor->deviceMalloc(
+        (void **)&pending->signals,
+        (size_t)pending->capacity * FLAGCX_SIGNALS_PER_SEMAPHORE * sizeof(int),
+        flagcxMemHost, NULL);
+    if (result != flagcxSuccess)
+      return result;
+    if (pending->signals == NULL)
+      return flagcxSystemError;
+    pending->allocated = 1;
+  }
+  flagcxResult_t result =
+      deviceAdaptor->hostGetDevicePointer(&pending->dSignals, pending->signals);
+  if (result != flagcxSuccess)
+    return result;
+  if (pending->dSignals == NULL)
+    return flagcxSystemError;
+  capacity += pending->capacity;
+  pending->next = chunks;
+  chunks = pending;
+  pending = NULL;
   return flagcxSuccess;
+}
+
+flagcxDeviceSemaphoreBufferPool::Chunk *
+flagcxDeviceSemaphoreBufferPool::findChunk(int id) {
+  for (auto *chunk = chunks; chunk != NULL; chunk = chunk->next)
+    if (id >= chunk->first && id - chunk->first < chunk->capacity)
+      return chunk;
+  assert(false);
+  return NULL;
 }
 
 void flagcxDeviceSemaphoreBufferPool::releaseSlot(int id) {
   std::lock_guard<std::mutex> lock(mutex);
-  assert(id >= 0 && id < capacity && inUse[id]);
-  events[id] = nullptr;
-  inUse[id] = 0;
+  auto *chunk = findChunk(id);
+  assert(chunk->inUse[id - chunk->first]);
+  chunk->inUse[id - chunk->first] = 0;
 }
 
 flagcxResult_t flagcxDeviceSemaphoreBufferPool::clear() {
   std::lock_guard<std::mutex> lock(mutex);
-  for (int used : inUse)
-    if (used)
-      return flagcxInProgress;
-  if (signalsPool != nullptr) {
-    flagcxResult_t result =
-        deviceAdaptor->deviceFree(signalsPool, flagcxMemHost, nullptr);
-    if (result != flagcxSuccess)
-      return result;
-    signalsPool = nullptr;
+  for (auto *chunk = chunks; chunk != NULL; chunk = chunk->next)
+    for (int i = 0; i < chunk->capacity; ++i)
+      if (chunk->inUse[i])
+        return flagcxInProgress;
+  // Each successful free removes its owner. A later failure retains only the
+  // remaining chunks, including any partially initialized growth allocation.
+  Chunk **lists[] = {&pending, &chunks};
+  for (auto **list : lists) {
+    while (*list != NULL) {
+      auto *chunk = *list;
+      if (chunk->signals != NULL) {
+        flagcxResult_t result =
+            deviceAdaptor->deviceFree(chunk->signals, flagcxMemHost, NULL);
+        if (result != flagcxSuccess)
+          return result;
+      }
+      *list = chunk->next;
+      free(chunk->inUse);
+      free(chunk);
+    }
   }
-  free(events);
-  events = nullptr;
-  dSignalsPool = nullptr;
-  inUse.clear();
-  capacity = slotId = -1;
-  initError = flagcxSuccess;
+  capacity = 0;
   return flagcxSuccess;
 }
 
-// Set event for a semaphore
-void flagcxDeviceSemaphoreBufferPool::setEvent(int id, flagcxEvent_t event) {
-  assert(id >= 0 && id < capacity);
-  // events[id] should be set to nullptr before
-  events[id] = event;
-}
-
-// Return pointer to the start of a semaphore’s signals (host/device)
 int *flagcxDeviceSemaphoreBufferPool::getHostPtr(int id) {
-  assert(id >= 0 && id < capacity);
-  return signalsPool + FLAGCX_SIGNALS_PER_SEMAPHORE * id;
+  std::lock_guard<std::mutex> lock(mutex);
+  auto *chunk = findChunk(id);
+  return chunk->signals +
+         (size_t)FLAGCX_SIGNALS_PER_SEMAPHORE * (id - chunk->first);
 }
 void *flagcxDeviceSemaphoreBufferPool::getDevicePtr(int id) {
-  assert(id >= 0 && id < capacity);
-  return static_cast<void *>((static_cast<char *>(dSignalsPool) +
-                              FLAGCX_SIGNALS_PER_SEMAPHORE * id * sizeof(int)));
+  std::lock_guard<std::mutex> lock(mutex);
+  auto *chunk = findChunk(id);
+  return (char *)chunk->dSignals + (size_t)FLAGCX_SIGNALS_PER_SEMAPHORE *
+                                       (id - chunk->first) * sizeof(int);
 }
 
 void cpuAsyncKernel(void *args) {

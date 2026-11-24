@@ -580,6 +580,8 @@ flagcxResult_t flagcxCommDrainSnapshot(flagcxComm_t comm,
             __atomic_load_n(&proxy->opSeqs[p], __ATOMIC_ACQUIRE);
     }
     snapshot->rmaCaptured = 1;
+    if (proxy != NULL && proxy->drainEnterForTest != NULL)
+      proxy->drainEnterForTest(proxy->drainEnterContextForTest);
   }
   if (!snapshot->fifoCaptured) {
     auto *state = hetero != NULL ? hetero->proxyState : NULL;

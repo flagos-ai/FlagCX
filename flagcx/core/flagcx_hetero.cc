@@ -1953,8 +1953,8 @@ flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   if (proxy == NULL)
     return flagcxSuccess;
-  if (proxy->flushAllEnterForTest != NULL)
-    proxy->flushAllEnterForTest(proxy->flushAllEnterContextForTest);
+  if (proxy->drainEnterForTest != NULL)
+    proxy->drainEnterForTest(proxy->drainEnterContextForTest);
   for (int p = 0; p < proxy->nRanks; p++) {
     uint64_t target = __atomic_load_n(&proxy->opSeqs[p], __ATOMIC_RELAXED);
     if (target == 0)

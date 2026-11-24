@@ -555,10 +555,7 @@ flagcxResult_t uniRunnerGroupStart() {
   return flagcxSuccess;
 }
 
-flagcxResult_t uniRunnerGroupEnd() {
-  FLAGCXCHECK(flagcxHeteroGroupEnd());
-  return flagcxSuccess;
-}
+flagcxResult_t uniRunnerGroupEnd() { return flagcxHeteroGroupEnd(); }
 
 struct flagcxRunner uniRunner = {
     // Communication functions

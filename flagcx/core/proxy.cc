@@ -212,9 +212,10 @@ static void proxyReleaseRetiredRelaySlot(flagcxProxyAsyncOp *op) {
 }
 
 static flagcxResult_t proxyServiceCompleteOp(struct flagcxProxyLocalPeer *peer,
-                                             struct flagcxProxyAsyncOp *op,
+                                             struct flagcxProxyAsyncOp **owner,
                                              int *asyncOpCount,
                                              flagcxResult_t result) {
+  struct flagcxProxyAsyncOp *op = *owner;
   int retired = 0;
   flagcxResult_t retirement =
       proxyRetireAccepted(op->connection, &op->args, &retired);
@@ -224,8 +225,19 @@ static flagcxResult_t proxyServiceCompleteOp(struct flagcxProxyLocalPeer *peer,
     result = retirement;
     flagcxProxyRecordConnectionError(op->connection, result);
   }
-  if (op->cleanupOnly)
+  // A response is attempted once, but physical retirement must continue after
+  // a terminal error. Consuming the operation is independent of send success.
+  if (op->cleanupOnly) {
+    if (!retired)
+      return retirement == flagcxSuccess ? flagcxInProgress : retirement;
+    proxyReleaseRetiredRelaySlot(op);
+    if (op->connection != NULL && op->connection->activeRelayOp == op)
+      op->connection->activeRelayOp = NULL;
+    asyncProxyOpDequeue(peer, op);
+    --*asyncOpCount;
+    *owner = NULL;
     return flagcxSuccess;
+  }
   op->cleanupOnly = true;
   if (retired)
     proxyReleaseRetiredRelaySlot(op);
@@ -253,6 +265,7 @@ static flagcxResult_t proxyServiceCompleteOp(struct flagcxProxyLocalPeer *peer,
       op->connection->activeRelayOp = NULL;
     asyncProxyOpDequeue(peer, op);
     (*asyncOpCount)--;
+    *owner = NULL;
   }
   return sendResult;
 }
@@ -1450,23 +1463,15 @@ flagcxNetProxyDeregister(struct flagcxProxyConnection *connection,
 }
 
 static flagcxResult_t
-proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
-                   int *asyncOpCount,
+proxyProgressAsync(struct flagcxProxyLocalPeer *peer,
+                   flagcxProxyAsyncOp **owner, int *asyncOpCount,
                    struct flagcxProxyConnectionPool *connectionPool,
                    struct flagcxHeteroComm *comm) {
   int done = 0;
   flagcxResult_t res = flagcxSuccess;
+  flagcxProxyAsyncOp *op = *owner;
   if (op->cleanupOnly) {
-    int retired = 0;
-    (void)proxyRetireAccepted(op->connection, &op->args, &retired);
-    if (!retired)
-      return flagcxInProgress;
-    proxyReleaseRetiredRelaySlot(op);
-    if (op->connection != NULL && op->connection->activeRelayOp == op)
-      op->connection->activeRelayOp = NULL;
-    asyncProxyOpDequeue(peer, op);
-    --*asyncOpCount;
-    return flagcxSuccess;
+    return proxyServiceCompleteOp(peer, owner, asyncOpCount, flagcxSuccess);
   }
   if (op->type != flagcxProxyMsgInit && op->connection != NULL &&
       !proxyCleanupOpType(op->type)) {
@@ -1623,7 +1628,7 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
      * If we still choose to abort and close the connection, it can cause
      * segfault if the requester is using the respBuff. */
 
-    return proxyServiceCompleteOp(peer, op, asyncOpCount, res);
+    return proxyServiceCompleteOp(peer, owner, asyncOpCount, res);
   } else if (!proxyCleanupOpType(op->type) && comm->abortFlag &&
              __atomic_load_n(comm->abortFlag, __ATOMIC_ACQUIRE) != 0) {
     return flagcxInternalError;
@@ -1797,13 +1802,17 @@ proxyServiceInitOp(int type, struct flagcxProxyLocalPeer *peer,
 
   asyncProxyOpEnqueue(peer, asyncOp);
   (*asyncOpCount)++;
-  ret = proxyProgressAsync(peer, asyncOp, asyncOpCount, connectionPool, comm);
+  ret = proxyProgressAsync(peer, &asyncOp, asyncOpCount, connectionPool, comm);
   if (ret != flagcxSuccess && ret != flagcxInProgress) {
+    // Completion may already have consumed the operation before a response
+    // send failed. Propagate the socket error without touching that owner.
+    if (asyncOp == NULL || asyncOp->cleanupOnly)
+      return ret;
     // A rejected registration does not invalidate the established connection.
     if (!proxyCleanupOpType(type) && type != flagcxProxyMsgRegister)
       flagcxProxyRecordConnectionError(asyncOp->connection, ret);
     flagcxResult_t responseResult =
-        proxyServiceCompleteOp(peer, asyncOp, asyncOpCount, ret);
+        proxyServiceCompleteOp(peer, &asyncOp, asyncOpCount, ret);
     if (responseResult != flagcxSuccess)
       return responseResult;
   }
@@ -2204,12 +2213,13 @@ static flagcxResult_t flagcxProxyCleanupLocal(struct flagcxHeteroComm *comm) {
     for (int i = 0; i < state->nServicePeers; ++i) {
       auto *peer = state->servicePeers + i;
       while (peer->asyncOps != NULL) {
-        int retired = 0;
-        flagcxResult_t retirement = proxyRetireAccepted(
-            peer->asyncOps->connection, &peer->asyncOps->args, &retired);
-        if (!retired)
-          return retirement == flagcxSuccess ? flagcxInProgress : retirement;
-        asyncProxyOpDequeue(peer, peer->asyncOps);
+        auto *op = peer->asyncOps;
+        op->cleanupOnly = true;
+        int count = 1;
+        flagcxResult_t retirement =
+            proxyServiceCompleteOp(peer, &op, &count, flagcxSuccess);
+        if (retirement != flagcxSuccess)
+          return retirement;
       }
       FLAGCXCHECK(flagcxSocketClose(&peer->sock));
     }
@@ -2295,7 +2305,7 @@ void *flagcxProxyService(void *args) {
 
     // Progress async ops per-peer
     for (int i = 0; i < maxnpeers; i++) {
-      if (pollfds[i].fd == -1)
+      if (pollfds[i].fd == -1 && peers[i].asyncOps == NULL)
         continue;
       struct flagcxProxyLocalPeer *peer = &peers[i];
       struct flagcxProxyAsyncOp *op = peer->asyncOps;
@@ -2306,7 +2316,7 @@ void *flagcxProxyService(void *args) {
         res = (asyncResult != flagcxSuccess &&
                asyncResult != flagcxInProgress && !proxyCleanupOpType(op->type))
                   ? asyncResult
-                  : proxyProgressAsync(peer, op, &asyncOpCount, connectionPool,
+                  : proxyProgressAsync(peer, &op, &asyncOpCount, connectionPool,
                                        comm);
         if (res == flagcxSuccess || res == flagcxInProgress) {
           op = opNext;
@@ -2314,12 +2324,18 @@ void *flagcxProxyService(void *args) {
           WARN("[Service thread] Error encountered progressing operation with "
                "res=%d",
                res);
+          if (op == NULL) {
+            flagcxProxyRecordAsyncError(comm->proxyState, res);
+            op = opNext;
+            continue;
+          }
           if (!proxyCleanupOpType(op->type) &&
               op->type != flagcxProxyMsgRegister)
             flagcxProxyRecordConnectionError(op->connection, res);
           flagcxResult_t responseResult =
-              proxyServiceCompleteOp(peer, op, &asyncOpCount, res);
-          if (responseResult != flagcxSuccess) {
+              proxyServiceCompleteOp(peer, &op, &asyncOpCount, res);
+          if (responseResult != flagcxSuccess &&
+              responseResult != flagcxInProgress) {
             // At this point no reliable RPC response can be delivered. Poison
             // the proxy so callers terminate through the socket/abort path.
             flagcxProxyRecordAsyncError(comm->proxyState, responseResult);
@@ -2375,7 +2391,7 @@ void *flagcxProxyService(void *args) {
       // Find first free slot (fd == -1)
       int slot = -1;
       for (int i = 0; i < maxConns; i++) {
-        if (pollfds[i].fd == -1) {
+        if (pollfds[i].fd == -1 && peers[i].asyncOps == NULL) {
           slot = i;
           break;
         }
@@ -2418,10 +2434,15 @@ void *flagcxProxyService(void *args) {
           closeConn = true;
       }
       if (closeConn) {
-        // Drain any remaining async ops for this peer
-        while (peers[i].asyncOps) {
-          asyncProxyOpDequeue(&peers[i], peers[i].asyncOps);
-          asyncOpCount--;
+        // A disconnected socket cannot receive replies, but accepted native
+        // requests still borrow these owners. Keep the slot until retirement.
+        if (peers[i].asyncOps != NULL)
+          flagcxProxyRecordAsyncError(comm->proxyState, flagcxRemoteError);
+        for (auto *op = peers[i].asyncOps; op != NULL; op = op->next) {
+          op->cleanupOnly = true;
+          if (!proxyCleanupOpType(op->type) &&
+              op->type != flagcxProxyMsgRegister)
+            flagcxProxyRecordConnectionError(op->connection, flagcxRemoteError);
         }
         flagcxSocketClose(&peers[i].sock);
         pollfds[i].fd = -1;
@@ -2432,7 +2453,6 @@ void *flagcxProxyService(void *args) {
              i, peers[i].tpRank, npeers);
         peers[i].tpRank = -1;
         peers[i].tpLocalRank = -1;
-        peers[i].asyncOps = NULL;
       }
     }
 

@@ -133,24 +133,27 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
 
 // Used for flagcxDeviceSemaphore to manage a buffer pool
 struct flagcxDeviceSemaphoreBufferPool {
-  int capacity;          // total slots
-  int slotId;            // slot index in the pool
-  int *signalsPool;      // Host-mapped memory region
-  void *dSignalsPool;    // Device alias
-  flagcxEvent_t *events; // store first event of each semaphore
+  struct Chunk {
+    Chunk *next;
+    int first, capacity, allocated;
+    int *signals, *inUse;
+    void *dSignals;
+  };
+  int capacity;
+  Chunk *chunks, *pending;
   std::mutex mutex;
-  std::vector<int> inUse;
-  flagcxResult_t initError;
 
   flagcxDeviceSemaphoreBufferPool();
   ~flagcxDeviceSemaphoreBufferPool();
   flagcxResult_t getSlotId(int *id);
-  flagcxResult_t initialize();
   void releaseSlot(int id);
   flagcxResult_t clear();
-  void setEvent(int id, flagcxEvent_t event);
   int *getHostPtr(int id);
   void *getDevicePtr(int id);
+
+private:
+  flagcxResult_t grow();
+  Chunk *findChunk(int id);
 };
 extern flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
 
@@ -227,10 +230,9 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
     initResult = deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
     if (initResult != flagcxSuccess)
       return nullptr;
-    // Set the first event to the pool
+    // Keep the first readiness event for the device completion kernel.
     if (events.size() == 1) {
       headEvent = event;
-      deviceSemaphoreBufferPool.setEvent(slotId, event);
     }
     return event;
   }
@@ -329,6 +331,7 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
 
   flagcxResult_t enqueueCompletion(flagcxStream_t launchStream);
   void markCompletionDrained() {
+    completionUnsafe = false;
     __atomic_store_n(&completionState, 2, __ATOMIC_RELEASE);
   }
   void markCompletionUnsafe() { completionUnsafe = true; }

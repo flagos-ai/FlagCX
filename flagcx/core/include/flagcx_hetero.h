@@ -193,9 +193,9 @@ struct flagcxRmaProxyState {
   flagcxWorkerPool::Worker *worker;
 
   // Optional internal test notification. Called by the thread entering a
-  // communicator-wide drain before it waits for accepted RMA operations.
-  void (*flushAllEnterForTest)(void *);
-  void *flushAllEnterContextForTest;
+  // RMA drain after capturing its targets, before waiting for accepted work.
+  void (*drainEnterForTest)(void *);
+  void *drainEnterContextForTest;
 };
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
