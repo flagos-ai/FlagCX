@@ -31,7 +31,18 @@ def config():
             platform = ADAPTOR_PLATFORMS.get(os.environ.get("FLAGCX_ADAPTOR", ""))
         if not platform:
             return {}
-        path = Path(__file__).resolve().parents[2] / "configs" / f"{platform}.yml"
+        config_root = Path(
+            os.environ.get(
+                "FLAGCX_CI_CONFIG_DIR",
+                Path(__file__).resolve().parents[2] / "configs",
+            )
+        )
+        path = config_root / f"{platform}.yml"
+        # Some lightweight test harnesses copy this helper without the full
+        # repository config tree. Keep their generic behavior unchanged; CI
+        # runners set FLAGCX_CI_CONFIG_DIR when platform exclusions are needed.
+        if not path.is_file():
+            return {}
         try:
             import yaml
 

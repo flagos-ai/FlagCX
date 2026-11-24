@@ -10,6 +10,7 @@ fi
 SET_ENV_SCRIPT=$1
 SUITE=$2
 PROJECT_ROOT=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
+export FLAGCX_CI_CONFIG_DIR="${FLAGCX_CI_CONFIG_DIR:-$PROJECT_ROOT/.github/configs}"
 MPI_RUNNER="$PROJECT_ROOT/.github/scripts/ci/run_mpi_with_timeout.sh"
 TEST_RUNNER="$PROJECT_ROOT/.github/scripts/ci/run_with_timeout.sh"
 
