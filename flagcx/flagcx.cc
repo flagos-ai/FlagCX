@@ -185,61 +185,101 @@ bool useHeteroComm() {
   return false;
 }
 
-flagcxResult_t flagcxDeviceHandleInit(flagcxDeviceHandle_t *devHandle) {
-  if (devHandle == NULL) {
-    WARN("flagcxDeviceHandleInit: devHandle is NULL");
-    return flagcxInvalidArgument;
-  }
-  flagcxResult_t res = flagcxSuccess;
-  res = flagcxDeviceAdaptorPluginInit();
-  if (res != flagcxSuccess)
-    return res;
-  flagcxCCLAdaptorPluginInit();
-  (*devHandle) = NULL;
-  FLAGCXCHECKGOTO(flagcxCalloc(devHandle, 1), res, fail);
-  **devHandle = globalDeviceHandle;
-  return flagcxSuccess;
+struct flagcxDeviceHandleOwner {
+  struct flagcxDeviceHandle handle;
+  bool devicePluginHeld;
+  bool cclPluginHeld;
+};
 
-fail:
-  if (*devHandle) {
-    free(*devHandle);
-    *devHandle = NULL;
+flagcxResult_t flagcxDeviceHandleInit(flagcxDeviceHandle_t *output) {
+  if (output == NULL)
+    return flagcxInvalidArgument;
+  *output = NULL;
+  struct flagcxDeviceHandleOwner *owner = NULL;
+  flagcxResult_t result = flagcxCalloc(&owner, 1);
+  if (result != flagcxSuccess)
+    return result;
+  *output = &owner->handle;
+  result = flagcxDeviceAdaptorPluginInit(&owner->devicePluginHeld);
+  if (result == flagcxSuccess)
+    result = flagcxCCLAdaptorPluginInit(&owner->cclPluginHeld);
+  owner->handle = globalDeviceHandle;
+  if (result != flagcxSuccess) {
+    flagcxResult_t cleanup = flagcxDeviceHandleFree(*output);
+    if (cleanup != flagcxSuccess)
+      return cleanup;
+    *output = NULL;
   }
-  flagcxCCLAdaptorPluginFinalize();
-  flagcxDeviceAdaptorPluginFinalize();
-  return res;
+  return result;
 }
 
-flagcxResult_t flagcxDeviceHandleFree(flagcxDeviceHandle_t devHandle) {
-  if (devHandle == NULL)
+flagcxResult_t flagcxDeviceHandleFree(flagcxDeviceHandle_t handle) {
+  if (handle == NULL)
     return flagcxSuccess;
-  free(devHandle);
-  flagcxCCLAdaptorPluginFinalize();
-  return flagcxDeviceAdaptorPluginFinalize();
+  struct flagcxDeviceHandleOwner *owner =
+      (struct flagcxDeviceHandleOwner *)handle;
+  if (owner->cclPluginHeld) {
+    flagcxResult_t result = flagcxCCLAdaptorPluginFinalize();
+    if (result != flagcxSuccess)
+      return result;
+    owner->cclPluginHeld = false;
+  }
+  if (owner->devicePluginHeld) {
+    flagcxResult_t result = flagcxDeviceAdaptorPluginFinalize();
+    if (result != flagcxSuccess)
+      return result;
+    owner->devicePluginHeld = false;
+  }
+  free(owner);
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxHandleInit(flagcxHandlerGroup_t *handler) {
-  flagcxResult_t res = flagcxSuccess;
-  (*handler) = NULL;
-  FLAGCXCHECKGOTO(flagcxCalloc(handler, 1), res, fail);
-  FLAGCXCHECKGOTO(flagcxDeviceHandleInit(&(*handler)->devHandle), res, fail);
-  return flagcxSuccess;
-
-fail:
-  if (*handler) {
+  if (handler == NULL)
+    return flagcxInvalidArgument;
+  *handler = NULL;
+  flagcxResult_t result = flagcxCalloc(handler, 1);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxDeviceHandleInit(&(*handler)->devHandle);
+  if (result != flagcxSuccess && (*handler)->devHandle == NULL) {
     free(*handler);
     *handler = NULL;
   }
-  return res;
+  return result;
 }
 
 flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
-  if (handler != NULL) {
-    flagcxDeviceHandleFree(handler->devHandle);
-    handler->devHandle = NULL;
-    handler->uniqueId = NULL;
-    handler->comm = NULL;
-    free(handler);
+  if (handler == NULL)
+    return flagcxSuccess;
+  flagcxResult_t result = flagcxDeviceHandleFree(handler->devHandle);
+  if (result != flagcxSuccess)
+    return result;
+  handler->devHandle = NULL;
+  handler->uniqueId = NULL;
+  handler->comm = NULL;
+  free(handler);
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxCommReleasePluginRefs(flagcxComm_t comm) {
+  if (comm->netPluginHeld) {
+    flagcxResult_t result = flagcxNetAdaptorPluginFinalize();
+    if (result != flagcxSuccess)
+      return result;
+    comm->netPluginHeld = false;
+  }
+  if (comm->cclPluginHeld) {
+    flagcxResult_t result = flagcxCCLAdaptorPluginFinalize();
+    if (result != flagcxSuccess)
+      return result;
+    comm->cclPluginHeld = false;
+  }
+  if (comm->devicePluginHeld) {
+    flagcxResult_t result = flagcxDeviceAdaptorPluginFinalize();
+    if (result != flagcxSuccess)
+      return result;
+    comm->devicePluginHeld = false;
   }
   return flagcxSuccess;
 }
@@ -2466,149 +2506,76 @@ flagcxValidateMemoryRange(void *buff, size_t size,
 flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
                                   size_t size, void **handle,
                                   flagcxMemAllocator_t allocator) {
-  if (comm != nullptr) {
-    FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  }
-
-  if (buff == NULL || size == 0 || handle == nullptr) {
-    WARN("Invalid buffer, size, or handle for buffer registration.");
+  if (handle == NULL || buff == NULL || size == 0)
     return flagcxInvalidArgument;
+  *handle = NULL;
+  if (comm != NULL) {
+    flagcxResult_t result = flagcxEnsureCommReady(comm);
+    if (result != flagcxSuccess)
+      return result;
   }
-  *handle = nullptr;
-  FLAGCXCHECK(flagcxValidateMemoryRange(buff, size, allocator));
-
-  // Step 1: Register in globalRegPool (both paths)
-  // Key: heteroComm if available (p2p/net downstream use it), else homoComm
-  // If comm is NULL, register in global pool only (GLOBAL_POOL_KEY)
-  void *regKey = nullptr;
-  if (comm != nullptr) {
-    regKey =
-        comm->heteroComm ? (void *)comm->heteroComm : (void *)comm->homoComm;
-  }
-  FLAGCXCHECK(globalRegPool.registerBuffer(regKey, buff, size));
-  flagcxRegItem *regItem = globalRegPool.getItem(regKey, buff);
-  if (regItem == nullptr) {
-    WARN("flagcxCommRegister: globalRegPool did not return a registration");
-    return flagcxInternalError;
-  }
-
-  *handle = reinterpret_cast<void *>(regItem);
-
-  // Null comm: pool-only registration, skip backend steps
-  if (comm == nullptr) {
-    return flagcxSuccess;
-  }
-
-  // SHMEM path: buffer is in the SHMEM symmetric heap,
-  // no IPC handles or MR registration needed.
-  if (allocator == flagcxMemSHMEM) {
-    return flagcxSuccess;
-  }
-
-  uintptr_t thisCommKey = reinterpret_cast<uintptr_t>(regKey);
-
-  flagcxResult_t res = flagcxSuccess;
-
-  // Step 2: Homo path — backend CCL registration. NCCL handles IPC/VMM
-  // internally via ncclCommRegister, so skip the hetero one-sided MR path.
-  if (useHomoComm(comm) && !useHeteroComm()) {
-    // Re-registration: this comm already completed homo backend init
-    if (regItem->homoRegHandles.count(thisCommKey)) {
-      return flagcxSuccess;
-    }
-    void *homoHandle = nullptr;
-    res = cclAdaptors[flagcxCCLAdaptorDevice]->commRegister(
-        comm->homoComm, buff, size, &homoHandle);
-    if (res != flagcxSuccess)
-      goto fail;
-    regItem->homoRegHandles[thisCommKey] = homoHandle;
-    return flagcxSuccess;
-  }
-
-  // Step 3: One-sided MR registration (hetero path only). IPC handles are
-  // exported lazily by each IPC consumer from the allocation base; a page
-  // registration item cannot safely own a single allocation handle.
-  {
-    flagcxResult_t regRes = flagcxOneSideRegisterInternal(
-        comm->heteroComm, buff, size,
-        flagcxOneSideRegistryRangeIsVmm(buff, size));
-    if (regRes != flagcxSuccess) {
-      INFO(FLAGCX_REG, "flagcxCommRegister: one-sided register skipped (%d)",
-           regRes);
+  flagcxResult_t result = flagcxValidateMemoryRange(buff, size, allocator);
+  if (result != flagcxSuccess)
+    return result;
+  void *key = comm == NULL
+                  ? NULL
+                  : (comm->heteroComm != NULL ? (void *)comm->heteroComm
+                                              : (void *)comm->homoComm);
+  flagcxRegItem *reg = NULL;
+  result = globalRegPool.registerBuffer(key, buff, size, &reg);
+  if (result != flagcxSuccess)
+    return result;
+  *handle = reg;
+  if (comm != NULL && allocator != flagcxMemSHMEM) {
+    if (useHomoComm(comm) && !useHeteroComm()) {
+      if (globalRegPool.getHomoHandle(reg, key) == NULL) {
+        // Reserve metadata before acquiring a native registration.
+        result = globalRegPool.reserveHomoHandle(reg, key);
+        if (result == flagcxSuccess) {
+          void *native = NULL;
+          result = cclAdaptors[flagcxCCLAdaptorDevice]->commRegister(
+              comm->homoComm, buff, size, &native);
+          flagcxResult_t saved = globalRegPool.setHomoHandle(reg, key, native);
+          if (saved != flagcxSuccess)
+            result = saved;
+        }
+      }
+    } else {
+      // Optional one-sided registration retains the existing FIFO fallback.
+      flagcxResult_t optional = flagcxOneSideRegisterInternal(
+          comm->heteroComm, buff, size,
+          flagcxOneSideRegistryRangeIsVmm(buff, size));
+      if (optional != flagcxSuccess)
+        INFO(FLAGCX_REG, "one-sided register skipped (%d)", optional);
     }
   }
-
-  return flagcxSuccess;
-
-fail:
-  // Undo Step 2a
-  if (useHomoComm(comm) && !useHeteroComm()) {
-    auto it = regItem->homoRegHandles.find(thisCommKey);
-    if (it != regItem->homoRegHandles.end()) {
-      cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homoComm,
-                                                          it->second);
-      regItem->homoRegHandles.erase(it);
-    }
+  globalRegPool.releaseItem(reg);
+  if (result != flagcxSuccess) {
+    flagcxResult_t cleanup = globalRegPool.deregisterBuffer(
+        key, reg, comm != NULL ? (void *)comm->homoComm : NULL);
+    if (cleanup != flagcxSuccess)
+      return cleanup;
+    *handle = NULL;
   }
-  // Undo Step 1
-  globalRegPool.deregisterBuffer(regKey, regItem);
-  *handle = nullptr;
-  return res;
+  return result;
 }
 
 flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle,
                                     flagcxMemAllocator_t allocator) {
-  if (comm != nullptr) {
-    FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  }
-  if (handle == nullptr)
+  (void)allocator;
+  if (handle == NULL)
     return flagcxSuccess;
-  flagcxRegItem *regItem = reinterpret_cast<flagcxRegItem *>(handle);
-
-  // Null comm: only valid if no backend handles exist on this item
-  // AND the item is not mapped under any comm-specific key
-  if (comm == nullptr) {
-    if (!regItem->homoRegHandles.empty() || !regItem->handles.empty()) {
-      WARN("flagcxCommDeregister: comm is nullptr but handle has backend "
-           "registrations that require a valid comm to clean up");
+  if (comm == NULL) {
+    if (!globalRegPool.isGlobalOnly(handle))
       return flagcxInvalidArgument;
-    }
-    // Check if item is mapped under any non-global commKey
-    auto &globalMap = globalRegPool.getGlobalMap();
-    for (auto &entry : globalMap) {
-      if (entry.first == flagcxRegPool::GLOBAL_POOL_KEY)
-        continue;
-      if (entry.second.find(regItem->beginAddr) != entry.second.end()) {
-        WARN("flagcxCommDeregister: comm is nullptr but handle has "
-             "comm-specific regMap entries that require a valid comm");
-        return flagcxInvalidArgument;
-      }
-    }
-    globalRegPool.deregisterBuffer(nullptr, handle);
-    return flagcxSuccess;
+    return globalRegPool.deregisterBuffer(NULL, handle);
   }
-
-  void *regKey =
-      comm->heteroComm ? (void *)comm->heteroComm : (void *)comm->homoComm;
-
-  // Backend-specific deregistration (homo path)
-  uintptr_t thisCommKey = reinterpret_cast<uintptr_t>(regKey);
-  if (useHomoComm(comm) && !useHeteroComm()) {
-    auto it = regItem->homoRegHandles.find(thisCommKey);
-    if (it != regItem->homoRegHandles.end()) {
-      cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homoComm,
-                                                          it->second);
-      regItem->homoRegHandles.erase(it);
-    }
-  }
-
-  // Remove this comm's net/p2p handles from the regItem
-  globalRegPool.removeRegItemNetHandles(regKey, regItem);
-  globalRegPool.removeRegItemP2pHandles(regKey, regItem);
-
-  // Clean up globalRegPool (refCount--, page mappings, item removal at 0)
-  globalRegPool.deregisterBuffer(regKey, handle);
-  return flagcxSuccess;
+  flagcxResult_t result = flagcxEnsureCommReady(comm);
+  if (result != flagcxSuccess)
+    return result;
+  void *key = comm->heteroComm != NULL ? (void *)comm->heteroComm
+                                       : (void *)comm->homoComm;
+  return globalRegPool.deregisterBuffer(key, handle, (void *)comm->homoComm);
 }
 
 static flagcxResult_t flagcxRollbackWindowRegistration(
@@ -3675,14 +3642,23 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     return flagcxInvalidArgument;
   }
 
-  // Ensure device/CCL plugins are loaded (idempotent, ref-counted)
-  flagcxResult_t pluginInitResult = flagcxDeviceAdaptorPluginInit();
+  *comm = NULL;
+  flagcxResult_t pluginInitResult = flagcxCalloc(comm, 1);
   if (pluginInitResult != flagcxSuccess)
     return pluginInitResult;
-  flagcxCCLAdaptorPluginInit();
-
-  (*comm) = NULL;
-  FLAGCXCHECK(flagcxCalloc(comm, 1));
+  (*comm)->pluginRollbackOnly = true;
+  pluginInitResult = flagcxDeviceAdaptorPluginInit(&(*comm)->devicePluginHeld);
+  if (pluginInitResult == flagcxSuccess)
+    pluginInitResult = flagcxCCLAdaptorPluginInit(&(*comm)->cclPluginHeld);
+  if (pluginInitResult != flagcxSuccess) {
+    flagcxResult_t cleanup = flagcxCommReleasePluginRefs(*comm);
+    if (cleanup != flagcxSuccess)
+      return cleanup;
+    free(*comm);
+    *comm = NULL;
+    return pluginInitResult;
+  }
+  (*comm)->pluginRollbackOnly = false;
   (*comm)->ipcTable = (*comm)->ipcTableInline;
   (*comm)->ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
   (*comm)->rank = rank;
@@ -4107,8 +4083,10 @@ flagcxResult_t flagcxDestroyHomoCommOwner(flagcxComm_t comm,
                                           flagcxInnerComm_t inner) {
   if (comm == NULL || inner == NULL)
     return flagcxInvalidArgument;
-  flagcxResult_t result =
-      cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(inner);
+  flagcxResult_t result = globalRegPool.releaseOwner(inner, inner);
+  if (result != flagcxSuccess)
+    return result;
+  result = cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(inner);
   if (result != flagcxSuccess)
     return result;
   if (comm->homoComm == inner)
@@ -4182,12 +4160,24 @@ static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
   if (stage == 0) {
     // Drain local producers before any rank enters transport shutdown.
     if (!useHomoComm(comm) || useHeteroComm())
-      FLAGCXCHECK(flagcxCommQuiesce(comm));
-    FLAGCXCHECK(flagcxFusedDrainPendingBuffers(comm));
+      do {
+        flagcxResult_t cleanupResult = flagcxCommQuiesce(comm);
+        if (cleanupResult != flagcxSuccess)
+          return cleanupResult;
+      } while (0);
+    do {
+      flagcxResult_t cleanupResult = flagcxFusedDrainPendingBuffers(comm);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    } while (0);
   }
   if (stage == 1) {
     if (!useHomoComm(comm) || useHeteroComm())
-      FLAGCXCHECK(flagcxCommCleanup(comm));
+      do {
+        flagcxResult_t cleanupResult = flagcxCommCleanup(comm);
+        if (cleanupResult != flagcxSuccess)
+          return cleanupResult;
+      } while (0);
   }
   if (stage == 2) {
     // A failed create rollback can exist for any Device API backend. Retry it
@@ -4207,7 +4197,12 @@ static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
       while (comm->activeDevComms != owner) {
         if (comm->activeDevComms == nullptr)
           return flagcxInvalidUsage;
-        FLAGCXCHECK(flagcxDevCommDestroy(comm, comm->activeDevComms));
+        do {
+          flagcxResult_t cleanupResult =
+              flagcxDevCommDestroy(comm, comm->activeDevComms);
+          if (cleanupResult != flagcxSuccess)
+            return cleanupResult;
+        } while (0);
       }
     }
     cleanupResult = flagcxDevCommStateDestroy(comm);
@@ -4221,11 +4216,20 @@ static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
     for (flagcxDevMem_t mem = comm->activeDevMems; mem != nullptr;) {
       flagcxDevMem_t next = mem->activeNext;
       if (!mem->runnerOwned)
-        FLAGCXCHECK(flagcxDevMemDestroy(comm, mem));
+        do {
+          flagcxResult_t cleanupResult = flagcxDevMemDestroy(comm, mem);
+          if (cleanupResult != flagcxSuccess)
+            return cleanupResult;
+        } while (0);
       mem = next;
     }
     while (comm->activeDevComms != nullptr)
-      FLAGCXCHECK(flagcxDevCommDestroy(comm, comm->activeDevComms));
+      do {
+        flagcxResult_t cleanupResult =
+            flagcxDevCommDestroy(comm, comm->activeDevComms);
+        if (cleanupResult != flagcxSuccess)
+          return cleanupResult;
+      } while (0);
 
     // Public vendor windows are not part of the symmetric-heap list.
     for (flagcxWindow_t win = comm->publicWindows; win != nullptr;
@@ -4303,20 +4307,42 @@ static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
         return result;
     }
     while (comm->activeDevMems != nullptr)
-      FLAGCXCHECK(flagcxDevMemDestroy(comm, comm->activeDevMems));
+      do {
+        flagcxResult_t cleanupResult =
+            flagcxDevMemDestroy(comm, comm->activeDevMems);
+        if (cleanupResult != flagcxSuccess)
+          return cleanupResult;
+      } while (0);
   }
 
   if (stage == 5) {
     // The proxy and UniRunner state are drained before the remaining IPC
     // table entries are closed.
-    FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
+    do {
+      flagcxResult_t cleanupResult = flagcxCommCleanupIpcTable(comm);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    } while (0);
   }
 
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (comm == NULL)
+    return flagcxInternalError;
+  if (comm->pluginRollbackOnly) {
+    flagcxResult_t result = flagcxCommReleasePluginRefs(comm);
+    if (result != flagcxSuccess)
+      return result;
+    free(comm);
+    return flagcxSuccess;
+  }
+  do {
+    flagcxResult_t cleanupResult = flagcxEnsureCommReady(comm);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
+  } while (0);
   flagcxResult_t destroyResult = flagcxSuccess;
   TRACE(FLAGCX_INIT,
         "flagcxCommDestroy begin comm=%p rank=%d tuner=%p homoComm=%p "
@@ -4339,7 +4365,12 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
       }
       flagcxResult_t common = local;
       if (comm->internalBuffersNeedPeerClose)
-        FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, local, &common));
+        do {
+          flagcxResult_t cleanupResult =
+              flagcxConvergeBootstrapStatus(comm, local, &common);
+          if (cleanupResult != flagcxSuccess)
+            return cleanupResult;
+        } while (0);
       if (common != flagcxSuccess)
         return common;
     }
@@ -4347,9 +4378,17 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     // A later allocation-free failure needs only a local destroy retry.
     comm->destroyPhase = 7;
   }
-  FLAGCXCHECK(flagcxCommFreeInternalBuffers(comm));
+  do {
+    flagcxResult_t cleanupResult = flagcxCommFreeInternalBuffers(comm);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
+  } while (0);
 
   if ((!useHomoComm(comm) || useHeteroComm()) && comm->heteroComm != NULL) {
+    if (comm->heteroComm->netPluginHeld) {
+      comm->netPluginHeld = true;
+      comm->heteroComm->netPluginHeld = false;
+    }
     destroyResult = flagcxHeteroCommDestroy(&comm->heteroComm);
     if (destroyResult != flagcxSuccess)
       return destroyResult;
@@ -4369,17 +4408,15 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     return destroyResult;
   comm->bootstrap = NULL;
 
-  // Destroy tuner
-  if (comm->tuner) {
-    comm->tuner->destroy(comm->tunerContext);
+  if (comm->tuner != NULL && comm->tunerContext != NULL) {
+    destroyResult = comm->tuner->destroy(comm->tunerContext);
+    if (destroyResult != flagcxSuccess)
+      return destroyResult;
+    comm->tunerContext = NULL;
   }
-
-  // Finalize net adaptor plugin (dlclose)
-  FLAGCXCHECK(flagcxNetAdaptorPluginFinalize());
-
-  // Finalize device/CCL adaptor plugins (ref-counted)
-  flagcxCCLAdaptorPluginFinalize();
-  flagcxResult_t devicePluginResult = flagcxDeviceAdaptorPluginFinalize();
+  destroyResult = flagcxCommReleasePluginRefs(comm);
+  if (destroyResult != flagcxSuccess)
+    return destroyResult;
 
   while (comm->publicWindows != nullptr) {
     flagcxWindow_t win = comm->publicWindows;
@@ -4389,7 +4426,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   if (comm->ipcTable != comm->ipcTableInline)
     free(comm->ipcTable);
   free(comm);
-  return destroyResult != flagcxSuccess ? destroyResult : devicePluginResult;
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {

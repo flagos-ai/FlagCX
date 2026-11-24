@@ -94,6 +94,7 @@ struct flagcxP2pSendComm {
   struct flagcxIbNetCommDevBase base;
   struct flagcxIbQp qp_list_[kFlagcxP2pMaxQpsPerEngine];
   struct flagcxSocket sock;
+  bool pdReleased;
   std::atomic<uint32_t> nextChannel{0};
   int numQps{
       0}; // resolved from flagcxP2pGlobalConfig().qpsPerConn at connect/accept
@@ -105,6 +106,7 @@ struct flagcxP2pRecvComm {
   struct flagcxIbNetCommDevBase base;
   struct flagcxIbQp qp_list_[kFlagcxP2pMaxQpsPerEngine];
   struct flagcxSocket sock;
+  bool pdReleased;
   std::atomic<uint32_t> nextChannel{0};
   int numQps{
       0}; // resolved from flagcxP2pGlobalConfig().qpsPerConn at connect/accept
@@ -434,7 +436,9 @@ flagcxP2pDestroyQps(int ibDevN, struct flagcxIbQp *qp_list, int numQps) {
   for (int i = 0; i < numQps; i++) {
     if (qp_list[i].qp) {
       flagcxP2pPoolUnregisterQp(ibDevN, qp_list[i].qp);
-      FLAGCXCHECK(flagcxWrapIbvDestroyQp(qp_list[i].qp));
+      flagcxResult_t result = flagcxWrapIbvDestroyQp(qp_list[i].qp);
+      if (result != flagcxSuccess)
+        return result;
       qp_list[i].qp = NULL;
     }
   }
@@ -1052,29 +1056,40 @@ static flagcxResult_t flagcxP2pTestBatch(void **requests, int nRequests,
 
 // Helper: decrement PD refcount, dealloc if last ref
 static flagcxResult_t flagcxP2pReleasePd(int ibDevN) {
-  struct flagcxIbDev *ibDev = flagcxIbDevs + ibDevN;
-  pthread_mutex_lock(&ibDev->lock);
-  if (0 == --ibDev->pdRefs) {
-    flagcxResult_t res = flagcxWrapIbvDeallocPd(ibDev->pd);
-    pthread_mutex_unlock(&ibDev->lock);
-    if (res != flagcxSuccess) {
-      INFO(FLAGCX_ALL,
-           "NET/IB_P2P : Failed to deallocate PD (non-fatal, may have "
-           "remaining resources)");
+  struct flagcxIbDev *dev = flagcxIbDevs + ibDevN;
+  pthread_mutex_lock(&dev->lock);
+  flagcxResult_t result = flagcxSuccess;
+  if (dev->pdRefs <= 0) {
+    result = flagcxInternalError;
+  } else if (dev->pdRefs == 1) {
+    result = flagcxWrapIbvDeallocPd(dev->pd);
+    if (result == flagcxSuccess) {
+      dev->pd = NULL;
+      dev->pdRefs = 0;
     }
-    return flagcxSuccess;
+  } else {
+    --dev->pdRefs;
   }
-  pthread_mutex_unlock(&ibDev->lock);
-  return flagcxSuccess;
+  pthread_mutex_unlock(&dev->lock);
+  return result;
 }
 
 static flagcxResult_t flagcxP2pCloseSend(void *sendComm) {
   struct flagcxP2pSendComm *comm = (struct flagcxP2pSendComm *)sendComm;
   if (comm) {
-    FLAGCXCHECK(
-        flagcxP2pDestroyQps(comm->ibDevN, comm->qp_list_, comm->numQps));
-    FLAGCXCHECK(flagcxP2pReleasePd(comm->ibDevN));
-    FLAGCXCHECK(flagcxSocketClose(&comm->sock));
+    flagcxResult_t result =
+        flagcxP2pDestroyQps(comm->ibDevN, comm->qp_list_, comm->numQps);
+    if (result != flagcxSuccess)
+      return result;
+    if (!comm->pdReleased) {
+      result = flagcxP2pReleasePd(comm->ibDevN);
+      if (result != flagcxSuccess)
+        return result;
+      comm->pdReleased = true;
+    }
+    result = flagcxSocketClose(&comm->sock);
+    if (result != flagcxSuccess)
+      return result;
     free(comm);
   }
   return flagcxSuccess;
@@ -1092,10 +1107,19 @@ flagcxResult_t flagcxNetIbP2pAbortSend(void *sendComm) {
 static flagcxResult_t flagcxP2pCloseRecv(void *recvComm) {
   struct flagcxP2pRecvComm *comm = (struct flagcxP2pRecvComm *)recvComm;
   if (comm) {
-    FLAGCXCHECK(
-        flagcxP2pDestroyQps(comm->ibDevN, comm->qp_list_, comm->numQps));
-    FLAGCXCHECK(flagcxP2pReleasePd(comm->ibDevN));
-    FLAGCXCHECK(flagcxSocketClose(&comm->sock));
+    flagcxResult_t result =
+        flagcxP2pDestroyQps(comm->ibDevN, comm->qp_list_, comm->numQps);
+    if (result != flagcxSuccess)
+      return result;
+    if (!comm->pdReleased) {
+      result = flagcxP2pReleasePd(comm->ibDevN);
+      if (result != flagcxSuccess)
+        return result;
+      comm->pdReleased = true;
+    }
+    result = flagcxSocketClose(&comm->sock);
+    if (result != flagcxSuccess)
+      return result;
     free(comm);
   }
   return flagcxSuccess;

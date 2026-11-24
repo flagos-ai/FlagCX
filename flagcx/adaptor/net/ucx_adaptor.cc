@@ -292,7 +292,7 @@ static void flagcxUcxDmaBufSupportInitOnce() {
   (void)flagcxWrapDirectIbvRegMr(pd, 0ULL /*addr*/, 0ULL /*len*/, 0 /*access*/);
   // ibv_reg_dmabuf_mr() will fail with EOPNOTSUPP/EPROTONOSUPPORT if not
   // supported (EBADF otherwise)
-  dev_fail |= (errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT);
+  devFail |= (errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT);
   FLAGCXCHECKGOTO(flagcxWrapIbvDeallocPd(pd), res, failure);
   // stop the search and goto failure
   if (devFail)
@@ -725,7 +725,7 @@ static flagcxResult_t flagcxUcxWorkerGetNetaddress(ucp_worker_h worker,
   }
 
   memcpy(*address, attr.address, attr.address_length);
-  *address_length = attr.address_length;
+  *addressLength = attr.address_length;
   free(attr.address);
 
   return flagcxSuccess;
@@ -1060,16 +1060,21 @@ flagcxResult_t flagcxUcxRegMr(void *comm, void *data, size_t size, int type,
 }
 
 flagcxResult_t flagcxUcxDeregMr(void *comm, void *mhandle) {
+  if (mhandle == NULL)
+    return flagcxSuccess;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
   flagcxUcxCtx_t *ctx = (flagcxUcxCtx_t *)comm;
-  flagcxUcxMhandle_t *mh = (flagcxUcxMhandle_t *)mhandle;
-
-  if (ctx->gpuFlush.enabled) {
-    ucp_rkey_destroy(mh->rkey);
+  flagcxUcxMhandle_t *handle = (flagcxUcxMhandle_t *)mhandle;
+  if (handle->rkey != NULL) {
+    ucp_rkey_destroy(handle->rkey);
+    handle->rkey = NULL;
   }
-
-  ucp_mem_unmap(ctx->flagcxUcxCtx, mh->ucpMemh);
-  free(mhandle);
-
+  ucs_status_t status = ucp_mem_unmap(ctx->flagcxUcxCtx, handle->ucpMemh);
+  if (status != UCS_OK)
+    return flagcxInternalError;
+  handle->ucpMemh = NULL;
+  free(handle);
   return flagcxSuccess;
 }
 
@@ -1402,69 +1407,70 @@ flagcxResult_t flagcxUcxTest(void *request, int *done, int *size) {
   return flagcxSuccess;
 }
 
-static void wait_close(ucp_worker_h worker, void *ucpReq) {
+static flagcxResult_t flagcxUcxCloseEndpoint(ucp_ep_h *endpoint,
+                                             ucp_worker_h worker) {
+  if (*endpoint == NULL)
+    return flagcxSuccess;
+  void *request = ucp_ep_close_nb(*endpoint, UCP_EP_CLOSE_MODE_FLUSH);
+  // UCX releases the endpoint on immediate errors as well as on completion.
+  *endpoint = NULL;
+  if (UCS_PTR_IS_ERR(request))
+    return flagcxInternalError;
+  if (request == NULL)
+    return flagcxSuccess;
   ucs_status_t status;
-
-  if (UCS_PTR_IS_PTR(ucpReq)) {
-    do {
-      ucp_worker_progress(worker);
-      status = ucp_request_check_status(ucpReq);
-    } while (status == UCS_INPROGRESS);
-    ucp_request_free(ucpReq);
-  } else if (ucpReq != NULL) {
-    WARN("Failed to close UCX endpoint");
-  }
+  do {
+    ucp_worker_progress(worker);
+    status = ucp_request_check_status(request);
+  } while (status == UCS_INPROGRESS);
+  ucp_request_free(request);
+  return status == UCS_OK ? flagcxSuccess : flagcxInternalError;
 }
 
-flagcxResult_t flagcxUcxCloseSend(void *send_comm) {
-  flagcxUcxComm_t *comm = (flagcxUcxComm_t *)send_comm;
-  void *closeReq;
-
-  if (comm) {
-    if (comm->ep) {
-      closeReq = ucp_ep_close_nb(comm->ep, UCP_EP_CLOSE_MODE_FLUSH);
-      wait_close(comm->ucxWorker->worker, closeReq);
-      int close = 1;
-      FLAGCXCHECK(flagcxSocketSend(&comm->sock, &close, sizeof(int)));
-    }
-    flagcxUcxFreeWorker(comm->ucxWorker);
-    free(comm);
+flagcxResult_t flagcxUcxCloseSend(void *sendComm) {
+  flagcxUcxComm_t *comm = (flagcxUcxComm_t *)sendComm;
+  if (comm == NULL)
+    return flagcxSuccess;
+  flagcxResult_t result =
+      flagcxUcxCloseEndpoint(&comm->ep, comm->ucxWorker->worker);
+  if (result != flagcxSuccess)
+    return result;
+  if (!comm->closeNotified) {
+    int close = 1;
+    result = flagcxSocketSend(&comm->sock, &close, sizeof(close));
+    if (result != flagcxSuccess)
+      return result;
+    comm->closeNotified = true;
   }
-
+  result = flagcxUcxFreeWorker(comm->ucxWorker);
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxUcxCloseRecv(void *recv_comm) {
-  flagcxUcxComm_t *comm = (flagcxUcxComm_t *)recv_comm;
-  void *closeReq;
-
-  if (comm) {
-    if (comm->gpuFlush.enabled) {
-      closeReq =
-          ucp_ep_close_nb(comm->gpuFlush.flushEp, UCP_EP_CLOSE_MODE_FLUSH);
-      wait_close(comm->ucxWorker->worker, closeReq);
-    }
-    if (comm->ep) {
-      closeReq = ucp_ep_close_nb(comm->ep, UCP_EP_CLOSE_MODE_FLUSH);
-      wait_close(comm->ucxWorker->worker, closeReq);
-      int close = 1;
-      FLAGCXCHECK(flagcxSocketSend(&comm->sock, &close, sizeof(int)));
-    }
-    flagcxUcxFreeWorker(comm->ucxWorker);
-    free(comm);
+flagcxResult_t flagcxUcxCloseRecv(void *recvComm) {
+  flagcxUcxComm_t *comm = (flagcxUcxComm_t *)recvComm;
+  if (comm == NULL)
+    return flagcxSuccess;
+  if (comm->gpuFlush.enabled) {
+    flagcxResult_t result = flagcxUcxCloseEndpoint(&comm->gpuFlush.flushEp,
+                                                   comm->ucxWorker->worker);
+    if (result != flagcxSuccess)
+      return result;
+    comm->gpuFlush.enabled = 0;
   }
-
-  return flagcxSuccess;
+  return flagcxUcxCloseSend(comm);
 }
 
-flagcxResult_t flagcxUcxCloseListen(void *listen_comm) {
-  flagcxUcxListenComm_t *comm = (flagcxUcxListenComm_t *)listen_comm;
-
-  if (comm) {
-    close(comm->sock.fd);
-    free(comm);
-  }
-
+flagcxResult_t flagcxUcxCloseListen(void *listenComm) {
+  flagcxUcxListenComm_t *comm = (flagcxUcxListenComm_t *)listenComm;
+  if (comm == NULL)
+    return flagcxSuccess;
+  flagcxResult_t result = flagcxSocketClose(&comm->sock);
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
   return flagcxSuccess;
 }
 

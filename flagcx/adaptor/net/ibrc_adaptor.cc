@@ -1014,54 +1014,34 @@ flagcxResult_t flagcxIbInitCommDevBase(int ibDevN,
 flagcxResult_t flagcxIbDestroyBase(struct flagcxIbNetCommDevBase *base) {
   if (base == NULL)
     return flagcxInvalidArgument;
-
-  flagcxResult_t res;
-
-  // Poll any remaining completions before destroying CQ
-  if (base->cq) {
-    struct ibv_wc wcs[64];
-    int nCqe = 0;
-    // Poll multiple times to drain all pending completions
-    for (int i = 0; i < 16; i++) {
-      flagcxWrapIbvPollCq(base->cq, 64, wcs, &nCqe);
-      if (nCqe == 0)
-        break;
-    }
-  }
-
   if (base->cq != NULL) {
-    FLAGCXCHECK(flagcxWrapIbvDestroyCq(base->cq));
+    flagcxResult_t result = flagcxWrapIbvDestroyCq(base->cq);
+    if (result != flagcxSuccess)
+      return result;
     base->cq = NULL;
   }
-
-  // A failed initialization already rolled its PD reference back.
   if (base->pd == NULL)
     return flagcxSuccess;
-
-  pthread_mutex_lock(&flagcxIbDevs[base->ibDevN].lock);
-  if (0 == --flagcxIbDevs[base->ibDevN].pdRefs) {
-    flagcxResult_t pd_result =
-        flagcxWrapIbvDeallocPd(flagcxIbDevs[base->ibDevN].pd);
-    if (pd_result != flagcxSuccess) {
-      // Log but don't fail - PD deallocation errors are often non-fatal
-      // (e.g., "Device or resource busy" when there are still resources using
-      // the PD)
-      if (flagcxDebugNoWarn == 0)
-        INFO(FLAGCX_ALL,
-             "Failed to deallocate PD: %d (non-fatal, may have remaining "
-             "resources)",
-             pd_result);
-      res = flagcxSuccess; // Continue cleanup even if PD deallocation fails
-    } else {
-      flagcxIbDevs[base->ibDevN].pd = NULL;
-      res = flagcxSuccess;
+  if (base->ibDevN < 0 || base->ibDevN >= flagcxNIbDevs)
+    return flagcxInternalError;
+  flagcxIbDev *dev = flagcxIbDevs + base->ibDevN;
+  pthread_mutex_lock(&dev->lock);
+  flagcxResult_t result = flagcxSuccess;
+  if (dev->pdRefs <= 0) {
+    result = flagcxInternalError;
+  } else if (dev->pdRefs == 1) {
+    result = flagcxWrapIbvDeallocPd(base->pd);
+    if (result == flagcxSuccess) {
+      dev->pdRefs = 0;
+      dev->pd = NULL;
     }
   } else {
-    res = flagcxSuccess;
+    --dev->pdRefs;
   }
-  pthread_mutex_unlock(&flagcxIbDevs[base->ibDevN].lock);
-  base->pd = NULL;
-  return res;
+  if (result == flagcxSuccess)
+    base->pd = NULL;
+  pthread_mutex_unlock(&dev->lock);
+  return result;
 }
 
 flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
@@ -2237,7 +2217,9 @@ flagcxResult_t flagcxIbDeregMrInternal(flagcxIbNetCommDevBase *base,
 
       // Keep the cache entry intact if verbs deregistration fails so cleanup
       // can be retried and the MR never becomes an untracked live resource.
-      FLAGCXCHECKGOTO(flagcxWrapIbvDeregMr(mhandle), res, returning);
+      res = flagcxWrapIbvDeregMr(mhandle);
+      if (res != flagcxSuccess)
+        goto returning;
       cache->population--;
       if (i < cache->population) {
         // Registration lookup assumes address-sorted cache entries.
@@ -3229,123 +3211,137 @@ flagcxResult_t flagcxIbTest(void *request, int *done, int *sizes) {
                                   sizes, &kIbrcTestOps);
 }
 
-flagcxResult_t flagcxIbCloseSend(void *sendComm) {
-  struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
-  if (comm) {
-    FLAGCXCHECK(flagcxIbDrainDeferredMrs(&comm->base));
-    FLAGCXCHECK(flagcxSocketClose(&comm->base.sock));
-
-    // First, poll all CQs to drain completions before destroying QPs
-    for (int i = 0; i < comm->base.ndevs; i++) {
-      struct flagcxIbSendCommDev *commDev = comm->devs + i;
-      if (commDev->base.cq) {
-        struct ibv_wc wcs[64];
-        int nCqe = 0;
-        // Poll multiple times to drain all pending completions
-        for (int j = 0; j < 16; j++) {
-          flagcxWrapIbvPollCq(commDev->base.cq, 64, wcs, &nCqe);
-          if (nCqe == 0)
-            break;
-        }
-      }
-    }
-
-    // 清理重传使用的资源：即使 runtime 期间禁用了 retrans，也可能已经
-    // 分配了 MR/ctrl QP，必须在 PD 释放前全部销毁
-    for (int i = 0; i < comm->base.ndevs; i++) {
-      struct flagcxIbSendCommDev *commDev = comm->devs + i;
-      if (commDev->ackMr) {
-        flagcxWrapIbvDeregMr(commDev->ackMr);
-        commDev->ackMr = NULL;
-      }
-      if (commDev->ackBuffer) {
-        free(commDev->ackBuffer);
-        commDev->ackBuffer = NULL;
-      }
-      flagcxIbDestroyCtrlQp(&commDev->ctrlQp);
-      if (i == 0 && comm->retransHdrMr) {
-        flagcxWrapIbvDeregMr(comm->retransHdrMr);
-        comm->retransHdrMr = NULL;
-      }
-    }
-    flagcxIbRetransDestroy(&comm->retrans);
-
-    for (int q = 0; q < comm->base.nqps; q++)
-      if (comm->base.qps[q].qp != NULL)
-        FLAGCXCHECK(flagcxWrapIbvDestroyQp(comm->base.qps[q].qp));
-
-    for (int i = 0; i < comm->base.ndevs; i++) {
-      struct flagcxIbSendCommDev *commDev = comm->devs + i;
-      if (commDev->fifoMr != NULL)
-        FLAGCXCHECK(flagcxWrapIbvDeregMr(commDev->fifoMr));
-      if (commDev->putSignalScratchpadMr != NULL)
-        FLAGCXCHECK(flagcxWrapIbvDeregMr(commDev->putSignalScratchpadMr));
-      if (comm->remSizesFifo.mrs[i] != NULL)
-        FLAGCXCHECK(flagcxWrapIbvDeregMr(comm->remSizesFifo.mrs[i]));
-      FLAGCXCHECK(flagcxIbDestroyBase(&commDev->base));
-    }
-    free(comm);
+flagcxResult_t flagcxIbCloseSend(void *opaque) {
+  struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)opaque;
+  if (comm == NULL)
+    return flagcxSuccess;
+  flagcxResult_t result = flagcxIbDrainDeferredMrs(&comm->base);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxSocketClose(&comm->base.sock);
+  if (result != flagcxSuccess)
+    return result;
+  for (int q = 0; q < comm->base.nqps; ++q) {
+    if (comm->base.qps[q].qp == NULL)
+      continue;
+    result = flagcxWrapIbvDestroyQp(comm->base.qps[q].qp);
+    if (result != flagcxSuccess)
+      return result;
+    comm->base.qps[q].qp = NULL;
   }
-  TIME_PRINT("IB");
+  for (int i = 0; i < comm->base.ndevs; ++i) {
+    result = flagcxIbDestroyCtrlQp(&comm->devs[i].ctrlQp);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  result = flagcxIbRetransDestroy(&comm->retrans);
+  if (result != flagcxSuccess)
+    return result;
+  for (int i = 0; i < comm->base.ndevs; ++i) {
+    struct flagcxIbSendCommDev *dev = comm->devs + i;
+    if (dev->ackMr != NULL) {
+      result = flagcxWrapIbvDeregMr(dev->ackMr);
+      if (result != flagcxSuccess)
+        return result;
+      dev->ackMr = NULL;
+    }
+    if (dev->fifoMr != NULL) {
+      result = flagcxWrapIbvDeregMr(dev->fifoMr);
+      if (result != flagcxSuccess)
+        return result;
+      dev->fifoMr = NULL;
+    }
+    if (dev->putSignalScratchpadMr != NULL) {
+      result = flagcxWrapIbvDeregMr(dev->putSignalScratchpadMr);
+      if (result != flagcxSuccess)
+        return result;
+      dev->putSignalScratchpadMr = NULL;
+    }
+    if (comm->remSizesFifo.mrs[i] != NULL) {
+      result = flagcxWrapIbvDeregMr(comm->remSizesFifo.mrs[i]);
+      if (result != flagcxSuccess)
+        return result;
+      comm->remSizesFifo.mrs[i] = NULL;
+    }
+    free(dev->ackBuffer);
+    dev->ackBuffer = NULL;
+  }
+  if (comm->retransHdrMr != NULL) {
+    result = flagcxWrapIbvDeregMr(comm->retransHdrMr);
+    if (result != flagcxSuccess)
+      return result;
+    comm->retransHdrMr = NULL;
+  }
+  for (int i = 0; i < comm->base.ndevs; ++i) {
+    result = flagcxIbDestroyBase(&comm->devs[i].base);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  free(comm);
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxIbCloseRecv(void *recvComm) {
-  struct flagcxIbRecvComm *comm = (struct flagcxIbRecvComm *)recvComm;
-  if (comm) {
-    FLAGCXCHECK(flagcxIbDrainDeferredMrs(&comm->base));
-    FLAGCXCHECK(flagcxSocketClose(&comm->base.sock));
-
-    // First, poll all CQs to drain completions before destroying QPs
-    for (int i = 0; i < comm->base.ndevs; i++) {
-      struct flagcxIbRecvCommDev *commDev = comm->devs + i;
-      if (commDev->base.cq) {
-        struct ibv_wc wcs[64];
-        int nCqe = 0;
-        // Poll multiple times to drain all pending completions
-        for (int j = 0; j < 16; j++) {
-          flagcxWrapIbvPollCq(commDev->base.cq, 64, wcs, &nCqe);
-          if (nCqe == 0)
-            break;
-        }
-      }
-    }
-
-    // Clean up retransmission resources regardless of enable flag
-    for (int i = 0; i < comm->base.ndevs; i++) {
-      struct flagcxIbRecvCommDev *commDev = comm->devs + i;
-      if (commDev->ackMr) {
-        flagcxWrapIbvDeregMr(commDev->ackMr);
-        commDev->ackMr = NULL;
-      }
-      if (commDev->ackBuffer) {
-        free(commDev->ackBuffer);
-        commDev->ackBuffer = NULL;
-      }
-      flagcxIbDestroyCtrlQp(&commDev->ctrlQp);
-    }
-
-    if (comm->srqMgr.srq != NULL) {
-      flagcxIbDestroySrq(&comm->srqMgr);
-    }
-    flagcxIbRetransDestroy(&comm->retrans);
-
-    for (int q = 0; q < comm->base.nqps; q++)
-      if (comm->base.qps[q].qp != NULL)
-        FLAGCXCHECK(flagcxWrapIbvDestroyQp(comm->base.qps[q].qp));
-
-    FLAGCXCHECK(flagcxIbDestroyFlushResources(comm));
-
-    for (int i = 0; i < comm->base.ndevs; i++) {
-      struct flagcxIbRecvCommDev *commDev = comm->devs + i;
-      if (commDev->fifoMr != NULL)
-        FLAGCXCHECK(flagcxWrapIbvDeregMr(commDev->fifoMr));
-      if (commDev->sizesFifoMr != NULL)
-        FLAGCXCHECK(flagcxWrapIbvDeregMr(commDev->sizesFifoMr));
-      FLAGCXCHECK(flagcxIbDestroyBase(&commDev->base));
-    }
-    free(comm);
+flagcxResult_t flagcxIbCloseRecv(void *opaque) {
+  struct flagcxIbRecvComm *comm = (struct flagcxIbRecvComm *)opaque;
+  if (comm == NULL)
+    return flagcxSuccess;
+  flagcxResult_t result = flagcxIbDrainDeferredMrs(&comm->base);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxSocketClose(&comm->base.sock);
+  if (result != flagcxSuccess)
+    return result;
+  for (int q = 0; q < comm->base.nqps; ++q) {
+    if (comm->base.qps[q].qp == NULL)
+      continue;
+    result = flagcxWrapIbvDestroyQp(comm->base.qps[q].qp);
+    if (result != flagcxSuccess)
+      return result;
+    comm->base.qps[q].qp = NULL;
   }
+  for (int i = 0; i < comm->base.ndevs; ++i) {
+    result = flagcxIbDestroyCtrlQp(&comm->devs[i].ctrlQp);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  result = flagcxIbDestroySrq(&comm->srqMgr);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxIbDestroyFlushResources(comm);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxIbRetransDestroy(&comm->retrans);
+  if (result != flagcxSuccess)
+    return result;
+  for (int i = 0; i < comm->base.ndevs; ++i) {
+    struct flagcxIbRecvCommDev *dev = comm->devs + i;
+    if (dev->ackMr != NULL) {
+      result = flagcxWrapIbvDeregMr(dev->ackMr);
+      if (result != flagcxSuccess)
+        return result;
+      dev->ackMr = NULL;
+    }
+    if (dev->fifoMr != NULL) {
+      result = flagcxWrapIbvDeregMr(dev->fifoMr);
+      if (result != flagcxSuccess)
+        return result;
+      dev->fifoMr = NULL;
+    }
+    if (dev->sizesFifoMr != NULL) {
+      result = flagcxWrapIbvDeregMr(dev->sizesFifoMr);
+      if (result != flagcxSuccess)
+        return result;
+      dev->sizesFifoMr = NULL;
+    }
+    free(dev->ackBuffer);
+    dev->ackBuffer = NULL;
+  }
+  for (int i = 0; i < comm->base.ndevs; ++i) {
+    result = flagcxIbDestroyBase(&comm->devs[i].base);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  free(comm);
   return flagcxSuccess;
 }
 

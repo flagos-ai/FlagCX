@@ -1605,6 +1605,9 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     }
   }
 
+  proxy->doneSeqsMapped = mmapDone;
+  proxy->readySeqsMapped = mmapReady;
+
   // If no CPU mapping available, allocate separate host memory for HOST_FUNC.
   if (proxy->doneSeqsCpu == NULL)
     proxy->doneSeqsCpu = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
@@ -1644,52 +1647,14 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
   if (workerResult != flagcxSuccess) {
     WARN("flagcxHeteroRmaProxyStart: RMA worker start failed res=%d",
          (int)workerResult);
-    // If initialization failed after pthread_create, start() normally joins
-    // the worker itself. Retain the proxy if a failed join left it running.
-    if (proxy->worker != NULL) {
-      flagcxResult_t retireResult = comm->workerPool->retire(&proxy->worker);
-      if (proxy->worker != NULL)
-        return retireResult;
-    }
-    if (createdWorkerPool) {
+    flagcxResult_t cleanup = flagcxHeteroRmaProxyStop(comm);
+    if (cleanup != flagcxSuccess)
+      return cleanup;
+    if (createdWorkerPool && comm->workerPool != NULL &&
+        comm->workerPool->workerCount() == 0) {
       delete comm->workerPool;
       comm->workerPool = NULL;
     }
-    if (proxy->useStreamOps && deviceAdaptor->gdrPtrMunmap != NULL) {
-      if (proxy->doneSeqsCpu != NULL)
-        deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
-                                    nRanks * sizeof(uint64_t));
-      if (proxy->readySeqsCpu != NULL)
-        deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
-                                    nRanks * sizeof(uint64_t));
-    } else {
-      free((void *)proxy->doneSeqsCpu);
-      free((void *)proxy->readySeqsCpu);
-    }
-    if (proxy->doneSeqsDev != NULL)
-      deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, NULL);
-    if (proxy->readySeqsDev != NULL)
-      deviceAdaptor->gdrMemFree(proxy->readySeqsDev, NULL);
-    for (int p = 0; p < nRanks; p++)
-      pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
-    pthread_cond_destroy(&proxy->doneCond);
-    pthread_mutex_destroy(&proxy->doneMutex);
-    free(proxy->circularBuffers);
-    free((void *)proxy->pis);
-    free((void *)proxy->cis);
-    free(proxy->inProgressQueues);
-    free(proxy->peerProducerMutexes);
-    free((void *)proxy->opSeqs);
-    free((void *)proxy->doneSeqs);
-    free((void *)proxy->inFlights);
-    free(proxy->completionScoreboards);
-    free(proxy->completionEntries);
-    free(proxy->getVisibilityDomains);
-    free(proxy->activeGetVisibilityDomains);
-    free(proxy->activeGetVisibilityCounts);
-    free((void *)proxy->groupSeqs);
-    free(proxy);
-    comm->rmaProxy = NULL;
     return workerResult;
   }
 
@@ -1702,40 +1667,83 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   if (proxy == NULL)
     return flagcxSuccess;
 
-  if (comm->workerPool == NULL || proxy->worker == NULL)
-    return flagcxInternalError;
-  flagcxResult_t workerResult = comm->workerPool->retire(&proxy->worker);
-  if (proxy->worker != NULL)
-    return workerResult;
-
-  // Free IPC state (D2D bypass peer pointers)
-  flagcxHeteroRmaIpcDestroy(comm);
-
-  for (int p = 0; p < proxy->nRanks; p++)
-    pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
-
-  pthread_cond_destroy(&proxy->doneCond);
-  pthread_mutex_destroy(&proxy->doneMutex);
-
-  // Free CPU mappings / host memory
-  if (proxy->useStreamOps && deviceAdaptor->gdrPtrMunmap != NULL) {
-    if (proxy->doneSeqsCpu != NULL)
-      deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
-                                  proxy->nRanks * sizeof(uint64_t));
-    if (proxy->readySeqsCpu != NULL)
-      deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
-                                  proxy->nRanks * sizeof(uint64_t));
-  } else {
-    free((void *)proxy->doneSeqsCpu);
-    free((void *)proxy->readySeqsCpu);
+  __atomic_store_n(&proxy->quiesced, 1, __ATOMIC_RELEASE);
+  if (proxy->doneSeqsMapped || proxy->readySeqsMapped ||
+      proxy->doneSeqsDev != NULL || proxy->readySeqsDev != NULL) {
+    flagcxResult_t result = deviceAdaptor->setDevice(comm->cudaDev);
+    if (result != flagcxSuccess)
+      return result;
   }
-
-  // Free device memory
-  if (proxy->doneSeqsDev != NULL)
-    deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, NULL);
-  if (proxy->readySeqsDev != NULL)
-    deviceAdaptor->gdrMemFree(proxy->readySeqsDev, NULL);
-
+  if (proxy->worker != NULL) {
+    if (comm->workerPool == NULL)
+      return flagcxInternalError;
+    flagcxResult_t result = comm->workerPool->retire(&proxy->worker);
+    if (proxy->worker != NULL)
+      return result != flagcxSuccess ? result : flagcxInProgress;
+    proxy->workerCleanupResult = result;
+    if (result != flagcxSuccess && comm->destroyProxyResult == flagcxSuccess)
+      comm->destroyProxyResult = result;
+  }
+  flagcxResult_t result = flagcxHeteroRmaIpcDestroy(comm);
+  if (result != flagcxSuccess)
+    return result;
+  if (proxy->doneSeqsCpu != NULL) {
+    if (proxy->doneSeqsMapped) {
+      if (deviceAdaptor->gdrPtrMunmap == NULL)
+        return flagcxNotSupported;
+      result = deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
+                                           proxy->nRanks * sizeof(uint64_t));
+      if (result != flagcxSuccess)
+        return result;
+    } else {
+      free((void *)proxy->doneSeqsCpu);
+    }
+    proxy->doneSeqsCpu = NULL;
+    proxy->doneSeqsMapped = false;
+  }
+  if (proxy->readySeqsCpu != NULL) {
+    if (proxy->readySeqsMapped) {
+      if (deviceAdaptor->gdrPtrMunmap == NULL)
+        return flagcxNotSupported;
+      result = deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
+                                           proxy->nRanks * sizeof(uint64_t));
+      if (result != flagcxSuccess)
+        return result;
+    } else {
+      free((void *)proxy->readySeqsCpu);
+    }
+    proxy->readySeqsCpu = NULL;
+    proxy->readySeqsMapped = false;
+  }
+  if (proxy->doneSeqsDev != NULL) {
+    result = deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, NULL);
+    if (result != flagcxSuccess)
+      return result;
+    proxy->doneSeqsDev = NULL;
+  }
+  if (proxy->readySeqsDev != NULL) {
+    result = deviceAdaptor->gdrMemFree(proxy->readySeqsDev, NULL);
+    if (result != flagcxSuccess)
+      return result;
+    proxy->readySeqsDev = NULL;
+  }
+  while (proxy->destroyedPeerMutexes < proxy->nRanks) {
+    if (pthread_mutex_destroy(
+            &proxy->peerProducerMutexes[proxy->destroyedPeerMutexes]) != 0)
+      return flagcxSystemError;
+    ++proxy->destroyedPeerMutexes;
+  }
+  if (!proxy->doneCondDestroyed) {
+    if (pthread_cond_destroy(&proxy->doneCond) != 0)
+      return flagcxSystemError;
+    proxy->doneCondDestroyed = true;
+  }
+  if (!proxy->doneMutexDestroyed) {
+    if (pthread_mutex_destroy(&proxy->doneMutex) != 0)
+      return flagcxSystemError;
+    proxy->doneMutexDestroyed = true;
+  }
+  flagcxResult_t workerResult = proxy->workerCleanupResult;
   free(proxy->circularBuffers);
   free((void *)proxy->pis);
   free((void *)proxy->cis);

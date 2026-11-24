@@ -650,9 +650,16 @@ flagcxResult_t flagcxNetSocketCloseListen(void *opaqueComm) {
       (struct flagcxNetSocketListenComm *)opaqueComm;
   if (comm) {
     int ready;
-    FLAGCXCHECK(flagcxSocketReady(&comm->sock, &ready));
-    if (ready)
-      FLAGCXCHECK(flagcxSocketClose(&comm->sock));
+    {
+      flagcxResult_t result = flagcxSocketReady(&comm->sock, &ready);
+      if (result != flagcxSuccess)
+        return result;
+    }
+    if (ready) {
+      flagcxResult_t result = flagcxSocketClose(&comm->sock);
+      if (result != flagcxSuccess)
+        return result;
+    }
     free(comm);
   }
   return flagcxSuccess;
@@ -668,18 +675,35 @@ flagcxResult_t flagcxNetSocketClose(void *opaqueComm) {
         res->stop = 1;
         pthread_cond_signal(&res->threadCond);
         pthread_mutex_unlock(&res->threadLock);
-        pthread_join(comm->helperThread[i], NULL);
+        if (pthread_join(comm->helperThread[i], NULL) != 0)
+          return flagcxSystemError;
+        comm->helperThread[i] = 0;
       }
       free(res->threadTaskQueue.tasks);
+      res->threadTaskQueue.tasks = NULL;
     }
     int ready;
-    FLAGCXCHECK(flagcxSocketReady(&comm->ctrlSock, &ready));
-    if (ready)
-      FLAGCXCHECK(flagcxSocketClose(&comm->ctrlSock));
+    {
+      flagcxResult_t result = flagcxSocketReady(&comm->ctrlSock, &ready);
+      if (result != flagcxSuccess)
+        return result;
+    }
+    if (ready) {
+      flagcxResult_t result = flagcxSocketClose(&comm->ctrlSock);
+      if (result != flagcxSuccess)
+        return result;
+    }
     for (int i = 0; i < comm->nSocks; i++) {
-      FLAGCXCHECK(flagcxSocketReady(&comm->socks[i], &ready));
-      if (ready)
-        FLAGCXCHECK(flagcxSocketClose(&comm->socks[i]));
+      {
+        flagcxResult_t result = flagcxSocketReady(&comm->socks[i], &ready);
+        if (result != flagcxSuccess)
+          return result;
+      }
+      if (ready) {
+        flagcxResult_t result = flagcxSocketClose(&comm->socks[i]);
+        if (result != flagcxSuccess)
+          return result;
+      }
     }
     free(comm);
   }

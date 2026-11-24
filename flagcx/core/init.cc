@@ -5,6 +5,7 @@
  ************************************************************************/
 
 #include "adaptor.h"
+#include "adaptor_plugin_load.h"
 #include "bootstrap.h"
 #include "check.h"
 #include "flagcx.h"
@@ -545,16 +546,25 @@ flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm) {
     if (result != flagcxSuccess)
       return result;
     // Clean up P2P/Net handles while proxy is still alive and peerSocks valid.
-    result = globalRegPool.removeAllP2pHandles(comm);
+    result = globalRegPool.releaseOwner(comm);
     if (result != flagcxSuccess)
       return result;
     result = globalRegPool.removeAllNetHandles(comm);
     if (result != flagcxSuccess)
       return result;
-    flagcxResult_t proxyStopResult = flagcxProxyStop(comm);
-    flagcxResult_t proxyDestroyResult = flagcxProxyDestroy(comm);
-    comm->destroyProxyResult =
-        proxyStopResult != flagcxSuccess ? proxyStopResult : proxyDestroyResult;
+    result = flagcxProxyStop(comm);
+    if (result != flagcxSuccess)
+      return result;
+    result = flagcxProxyDestroy(comm);
+    if (result != flagcxSuccess)
+      return result;
+#ifdef USE_IBUC
+    result = flagcxIbucDrainDeferredCleanup();
+    if (result != flagcxSuccess)
+      return result;
+#endif
+    if (comm->destroyProxyResult == flagcxSuccess)
+      comm->destroyProxyResult = comm->proxyState->workerCleanupResult;
     comm->destroyProxyComplete = true;
   }
   if (comm->proxyState->uniRunnerState.streamFlagsPool != NULL ||
@@ -595,6 +605,12 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t *owner) {
   if (result != flagcxSuccess)
     return result;
   flagcxResult_t proxyResult = comm->destroyProxyResult;
+  if (comm->netPluginHeld) {
+    result = flagcxNetAdaptorPluginFinalize();
+    if (result != flagcxSuccess)
+      return result;
+    comm->netPluginHeld = false;
+  }
   delete comm->workerPool;
   comm->workerPool = NULL;
   for (int i = 0; i < MAXCHANNELS; i++) {

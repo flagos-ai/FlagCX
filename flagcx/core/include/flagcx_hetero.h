@@ -102,6 +102,12 @@ struct flagcxRmaIpcState {
 // pending queues: producer = caller (proxy kernel thread), consumer = RMA
 // worker. inProgress queues: RMA worker only (no locking needed).
 struct flagcxRmaProxyState {
+  flagcxResult_t workerCleanupResult;
+  int destroyedPeerMutexes;
+  bool doneCondDestroyed;
+  bool doneMutexDestroyed;
+  bool doneSeqsMapped;
+  bool readySeqsMapped;
   uint32_t queueSize;                     // power of two
   uint32_t queueMask;                     // queueSize - 1
   struct flagcxRmaDesc **circularBuffers; // [nRanks * queueSize]

@@ -111,6 +111,7 @@ struct flagcxP2pResources {
   // owns a local allocation; the sender owns the raw base returned by
   // ipcMemHandleOpen.  Only these owner fields may be released at teardown.
   void *localRecvFifo;
+  bool localFifoUnpublished;
   void *importedRecvFifoBase;
   int cudaDev;
 };

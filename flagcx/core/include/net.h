@@ -43,6 +43,7 @@ extern struct flagcxNetAdaptor flagcxNetSocket;
 extern struct flagcxNetAdaptor flagcxNetIb;
 #ifdef USE_IBUC
 extern struct flagcxNetAdaptor flagcxNetIbuc;
+flagcxResult_t flagcxIbucDrainDeferredCleanup(void);
 #endif
 #ifdef USE_ACCL_BAREX
 extern struct flagcxNetAdaptor flagcxNetBarex;

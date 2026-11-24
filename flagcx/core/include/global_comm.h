@@ -63,6 +63,10 @@ flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
 flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm);
 
 struct flagcxComm {
+  bool devicePluginHeld;
+  bool cclPluginHeld;
+  bool netPluginHeld;
+  bool pluginRollbackOnly;
   // TODO: adjust code format
   // 0: active, 1: locally quiescent, 2: transport cleanup completed,
   // 3: local owners destroyed, 4: homo comms destroyed,
