@@ -77,9 +77,6 @@ flagcxResult_t hipAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t hipAdaptorSetDevice(int dev) {
-  int current = -1;
-  if (hipGetDevice(&current) == hipSuccess && current == dev)
-    return flagcxSuccess;
   DEVCHECK(hipSetDevice(dev));
   return flagcxSuccess;
 }

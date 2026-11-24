@@ -174,9 +174,6 @@ flagcxResult_t macaAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t macaAdaptorSetDevice(int dev) {
-  int current = -1;
-  if (mcGetDevice(&current) == mcSuccess && current == dev)
-    return flagcxSuccess;
   DEVCHECK(mcSetDevice(dev));
   return flagcxSuccess;
 }

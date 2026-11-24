@@ -148,9 +148,6 @@ flagcxResult_t musaAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t musaAdaptorSetDevice(int dev) {
-  int current = -1;
-  if (musaGetDevice(&current) == musaSuccess && current == dev)
-    return flagcxSuccess;
   DEVCHECK(musaSetDevice(dev));
   return flagcxSuccess;
 }

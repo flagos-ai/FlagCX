@@ -128,4 +128,4 @@ all: $(HOST_MPI_TARGET)
 
 .PHONY: check-sdk-contracts
 check-sdk-contracts:
-	@CXX="$(CXX)" PYTHONDONTWRITEBYTECODE=1 python3 $(PROJECT_ROOT)/test/script/test_ppu_adaptors.py SdkCompileTest DeviceSelectionTest PpuAdaptorTest.test_hggc_device_selection_queries_native_state_without_reselection
+	@CXX="$(CXX)" PYTHONDONTWRITEBYTECODE=1 python3 $(PROJECT_ROOT)/test/script/test_ppu_adaptors.py SdkCompileTest DeviceSelectionTest PpuAdaptorTest.test_hggc_device_selection_always_binds_native_context

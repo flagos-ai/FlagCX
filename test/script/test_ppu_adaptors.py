@@ -375,30 +375,31 @@ class DeviceSelectionTest(unittest.TestCase):
 using hipError_t = int;
 using tangError_t = int;
 static const int SUCCESS = 0;
-static int current = 2, queries = 0, selections = 0;
-static int queryStatus = SUCCESS, selectStatus = SUCCESS;
-static int QUERY(ORDINAL *device) {
-  ++queries; *device = current; return queryStatus;
-}
+static int current = 2, selections = 0;
+static int selectStatus = SUCCESS;
+static bool contextBound = false;
 static int SELECT(int device) {
   ++selections;
-  if (selectStatus == SUCCESS) current = device;
+  if (selectStatus == SUCCESS) {
+    current = device;
+    contextBound = true;
+  }
   return selectStatus;
 }
-""".replace("SUCCESS", success).replace("QUERY", native + "GetDevice")
+""".replace("SUCCESS", success)
                 mocks = mocks.replace("SELECT", native + "SetDevice")
-                mocks = mocks.replace("ORDINAL", "uint32_t" if native == "tx" else "int")
                 checks = r"""
-assert(SET(2) == flagcxSuccess && queries == 1 && selections == 0);
-assert(SET(3) == flagcxSuccess && queries == 2 && selections == 1 && current == 3);
+// A matching ordinal does not establish this thread's native context.
+assert(SET(2) == flagcxSuccess && contextBound && selections == 1);
+contextBound = false;
+assert(SET(2) == flagcxSuccess && contextBound && selections == 2);
+assert(SET(3) == flagcxSuccess && selections == 3 && current == 3);
 current = 2; // Applications may change device without going through FlagCX.
-assert(SET(3) == flagcxSuccess && selections == 2 && current == 3);
-queryStatus = 99;
-assert(SET(3) == flagcxSuccess && selections == 3);
+assert(SET(3) == flagcxSuccess && selections == 4 && current == 3);
 selectStatus = 98;
-assert(SET(3) == flagcxUnhandledDeviceError && selections == 4);
-queryStatus = 0;
-assert(SET(-1) == flagcxUnhandledDeviceError && selections == 5 && current == 3);
+contextBound = false;
+assert(SET(3) == flagcxUnhandledDeviceError && selections == 5 && !contextBound);
+assert(SET(-1) == flagcxUnhandledDeviceError && selections == 6 && current == 3);
 """.replace("SET", adaptor + "AdaptorSetDevice")
                 self.compile_selection(platform, adaptor, header, mocks, checks)
 
@@ -406,13 +407,9 @@ assert(SET(-1) == flagcxUnhandledDeviceError && selections == 5 && current == 3)
         mocks = r"""
 static const int cudaSuccess = 0;
 static int compatDevice = 2, nativeDevice = 2;
-static int compatQueries = 0, nativeQueries = 0, compatSets = 0, nativeSets = 0;
-static int compatQueryStatus = 0, nativeQueryStatus = 0;
+static int compatSets = 0, nativeSets = 0;
 static int compatSetStatus = 0, nativeSetStatus = 0;
 static bool compatBindsNative = false;
-static int cudaGetDevice(int *device) {
-  ++compatQueries; *device = compatDevice; return compatQueryStatus;
-}
 static int cudaSetDevice(int device) {
   ++compatSets;
   if (compatSetStatus == 0) {
@@ -420,9 +417,6 @@ static int cudaSetDevice(int device) {
     if (compatBindsNative) nativeDevice = device;
   }
   return compatSetStatus;
-}
-static int xpu_current_device(int *device) {
-  ++nativeQueries; *device = nativeDevice; return nativeQueryStatus;
 }
 static int xpu_set_device(int device) {
   ++nativeSets;
@@ -432,26 +426,27 @@ static int xpu_set_device(int device) {
 """
         checks = r"""
 assert(kunlunAdaptorSetDevice(2) == flagcxSuccess);
-assert(compatQueries == 1 && nativeQueries == 1 && compatSets == 0 && nativeSets == 0);
+assert(compatSets == 1 && nativeSets == 1);
 nativeDevice = 1;
-assert(kunlunAdaptorSetDevice(2) == flagcxSuccess && compatSets == 0 && nativeSets == 1);
+assert(kunlunAdaptorSetDevice(2) == flagcxSuccess && compatSets == 2 && nativeSets == 2);
+assert(nativeDevice == 2);
 compatDevice = 1;
-assert(kunlunAdaptorSetDevice(2) == flagcxSuccess && compatSets == 1 && nativeSets == 1);
-assert(kunlunAdaptorSetDevice(3) == flagcxSuccess && compatSets == 2 && nativeSets == 2);
+assert(kunlunAdaptorSetDevice(2) == flagcxSuccess && compatSets == 3 && nativeSets == 3);
+assert(compatDevice == 2);
+assert(kunlunAdaptorSetDevice(3) == flagcxSuccess && compatSets == 4 && nativeSets == 4);
 compatBindsNative = true;
-assert(kunlunAdaptorSetDevice(4) == flagcxSuccess && compatSets == 3 && nativeSets == 2);
-compatQueryStatus = 99;
-assert(kunlunAdaptorSetDevice(4) == flagcxSuccess && compatSets == 4 && nativeSets == 2);
-nativeQueryStatus = 99;
-assert(kunlunAdaptorSetDevice(4) == flagcxSuccess && compatSets == 5 && nativeSets == 3);
+assert(kunlunAdaptorSetDevice(4) == flagcxSuccess && compatSets == 5 && nativeSets == 5);
 compatSetStatus = 98;
-int queriesBefore = nativeQueries;
 assert(kunlunAdaptorSetDevice(4) == flagcxUnhandledDeviceError);
-assert(compatSets == 6 && nativeSets == 3 && nativeQueries == queriesBefore);
-compatQueryStatus = 0;
+assert(compatSets == 6 && nativeSets == 5);
+compatSetStatus = 0;
+compatBindsNative = false;
+nativeDevice = 1;
 nativeSetStatus = 98;
-assert(kunlunAdaptorSetDevice(4) == flagcxUnhandledDeviceError && nativeSets == 4);
-assert(compatDevice == 4 && nativeDevice == 4);
+assert(kunlunAdaptorSetDevice(4) == flagcxUnhandledDeviceError && nativeSets == 6);
+assert(compatDevice == 4 && nativeDevice == 1);
+nativeSetStatus = 0;
+assert(kunlunAdaptorSetDevice(4) == flagcxSuccess && nativeSets == 7 && nativeDevice == 4);
 """
         self.compile_selection("kunlunxin", "kunlun", "kunlunxin", mocks, checks)
 
@@ -1289,38 +1284,42 @@ int main() {
             self.assertFalse(output.exists())
 
 
-    def test_hggc_device_selection_queries_native_state_without_reselection(self):
+    def test_hggc_device_selection_always_binds_native_context(self):
         production = (ROOT / "flagcx/adaptor/device/hggc_adaptor.cc").read_text()
         start = production.index("flagcxResult_t hggcAdaptorSetDevice(int dev)")
         end = production.index("flagcxResult_t hggcAdaptorGetDevice(", start)
         source = '#include "ppu_adaptor.h"\n'
         source += r"""
-static int nativeDevice = 2, queryCalls = 0, selectCalls = 0;
-static hggcError_t queryResult = hggcSuccess, selectResult = hggcSuccess;
-static hggcError_t hggcGetDevice(int *dev) {
-  ++queryCalls; *dev = nativeDevice; return queryResult;
-}
+static int nativeDevice = 2, selectCalls = 0;
+static bool contextBound = false;
+static hggcError_t selectResult = hggcSuccess;
 static hggcError_t hggcSetDevice(int dev) {
   ++selectCalls;
-  if (selectResult == hggcSuccess) nativeDevice = dev;
+  if (selectResult == hggcSuccess) {
+    nativeDevice = dev;
+    contextBound = true;
+  }
   return selectResult;
 }
 """
         source += production[start:end] + r"""
 int main() {
   assert(hggcAdaptorSetDevice(2) == flagcxSuccess);
-  assert(queryCalls == 1 && selectCalls == 0);
+  assert(contextBound && selectCalls == 1);
+  contextBound = false;
+  assert(hggcAdaptorSetDevice(2) == flagcxSuccess);
+  assert(contextBound && selectCalls == 2);
   assert(hggcAdaptorSetDevice(3) == flagcxSuccess);
-  assert(queryCalls == 2 && selectCalls == 1 && nativeDevice == 3);
+  assert(selectCalls == 3 && nativeDevice == 3);
   nativeDevice = 2; // An application can switch devices outside FlagCX.
   assert(hggcAdaptorSetDevice(3) == flagcxSuccess);
-  assert(selectCalls == 2 && nativeDevice == 3);
-  queryResult = hggcErrorUnknown;
-  assert(hggcAdaptorSetDevice(3) == flagcxSuccess);
-  assert(selectCalls == 3);
-  selectResult = hggcErrorInvalidValue;
-  assert(hggcAdaptorSetDevice(-1) == flagcxUnhandledDeviceError);
   assert(selectCalls == 4 && nativeDevice == 3);
+  selectResult = hggcErrorInvalidValue;
+  contextBound = false;
+  assert(hggcAdaptorSetDevice(3) == flagcxUnhandledDeviceError);
+  assert(selectCalls == 5 && !contextBound);
+  assert(hggcAdaptorSetDevice(-1) == flagcxUnhandledDeviceError);
+  assert(selectCalls == 6 && nativeDevice == 3);
 }
 """
         self.compile_and_run(source)

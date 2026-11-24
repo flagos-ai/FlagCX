@@ -263,9 +263,6 @@ flagcxResult_t duhipAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t duhipAdaptorSetDevice(int dev) {
-  int current = -1;
-  if (hipGetDevice(&current) == hipSuccess && current == dev)
-    return flagcxSuccess;
   DEVCHECK(hipSetDevice(dev));
   return flagcxSuccess;
 }

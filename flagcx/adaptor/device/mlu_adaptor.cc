@@ -67,9 +67,6 @@ flagcxResult_t mluAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t mluAdaptorSetDevice(int dev) {
-  int current = -1;
-  if (cnrtGetDevice(&current) == cnrtSuccess && current == dev)
-    return flagcxSuccess;
   DEVCHECK(cnrtSetDevice(dev));
   return flagcxSuccess;
 }

@@ -92,12 +92,6 @@ flagcxResult_t hggcAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t hggcAdaptorSetDevice(int dev) {
-  // Re-selecting an already current device is unnecessary. Query the runtime
-  // rather than caching an ordinal: applications may select devices directly.
-  int current = -1;
-  if (hggcGetDevice(&current) == hggcSuccess && current == dev)
-    return flagcxSuccess;
-  // Preserve the original selection/error path if the query is unavailable.
   HGGCCHECK(hggcSetDevice(dev));
   return flagcxSuccess;
 }

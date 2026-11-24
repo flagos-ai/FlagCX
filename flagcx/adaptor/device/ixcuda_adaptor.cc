@@ -498,9 +498,6 @@ flagcxResult_t ixcudaAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t ixcudaAdaptorSetDevice(int dev) {
-  int current = -1;
-  if (cudaGetDevice(&current) == cudaSuccess && current == dev)
-    return flagcxSuccess;
   DEVCHECK(cudaSetDevice(dev));
   return flagcxSuccess;
 }
