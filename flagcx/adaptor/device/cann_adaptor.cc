@@ -655,42 +655,6 @@ flagcxResult_t cannAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
-static flagcxResult_t
-cannAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
-                                  flagcxStreamCaptureStatus_t *status) {
-  if (status == NULL)
-    return flagcxInvalidArgument;
-  *status = flagcxStreamCaptureInvalidated;
-#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
-  aclmdlRICaptureStatus nativeStatus = ACL_MODEL_RI_CAPTURE_STATUS_INVALIDATED;
-  aclmdlRI model = NULL;
-  int result = (int)aclmdlRICaptureGetInfo(stream ? stream->base : NULL,
-                                           &nativeStatus, &model);
-  if (result == ACL_ERROR_FEATURE_UNSUPPORTED ||
-      result == ACL_ERROR_RT_FEATURE_NOT_SUPPORT)
-    return flagcxNotSupported;
-  if (result != (int)ACL_SUCCESS)
-    return flagcxUnhandledDeviceError;
-  switch (nativeStatus) {
-    case ACL_MODEL_RI_CAPTURE_STATUS_NONE:
-      *status = flagcxStreamCaptureNone;
-      break;
-    case ACL_MODEL_RI_CAPTURE_STATUS_ACTIVE:
-      *status = flagcxStreamCaptureActive;
-      break;
-    case ACL_MODEL_RI_CAPTURE_STATUS_INVALIDATED:
-      *status = flagcxStreamCaptureInvalidated;
-      break;
-    default:
-      return flagcxInternalError;
-  }
-  return flagcxSuccess;
-#else
-  (void)stream;
-  return flagcxNotSupported;
-#endif
-}
-
 flagcxResult_t cannAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
   if (event == NULL)
@@ -1331,7 +1295,6 @@ struct flagcxDeviceAdaptor cannAdaptor {
       cannAdaptorSymFlatMapSegmentOne, cannAdaptorSymLsaGetCapacity,
       cannAdaptorSymLsaVaReserve, cannAdaptorSymLsaVaFree,
       cannAdaptorSymLsaMapBeginAt, NULL, NULL, NULL, NULL,
-      cannAdaptorStreamGetCaptureStatus
 };
 
 #endif // USE_ASCEND_ADAPTOR

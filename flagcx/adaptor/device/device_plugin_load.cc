@@ -62,11 +62,6 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
   }
   flagcxDeviceAdaptorUpgradeV1((const struct flagcxDeviceAdaptor_v1 *)plugin,
                                upgradedPluginAdaptor);
-  // Optional sidecar: only the plugin can unwrap its opaque stream.
-  // Absence preserves the existing v1 load and ordinary-operation contract.
-  upgradedPluginAdaptor->streamGetCaptureStatus =
-      (flagcxResult_t(*)(flagcxStream_t, flagcxStreamCaptureStatus_t *))dlsym(
-          devicePluginDlHandle, "flagcxDeviceAdaptorStreamCaptureStatus_v1");
   plugin = upgradedPluginAdaptor;
 
   // Validate function pointers that all built-in adaptors implement.

@@ -418,38 +418,6 @@ flagcxResult_t macaAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
-static flagcxResult_t
-macaAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
-                                  flagcxStreamCaptureStatus_t *status) {
-  if (status == NULL)
-    return flagcxInvalidArgument;
-  *status = flagcxStreamCaptureInvalidated;
-#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
-  mcStreamCaptureStatus nativeStatus = mcStreamCaptureStatusInvalidated;
-  int result =
-      (int)mcStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
-  if (result != (int)mcSuccess)
-    return flagcxUnhandledDeviceError;
-  switch (nativeStatus) {
-    case mcStreamCaptureStatusNone:
-      *status = flagcxStreamCaptureNone;
-      break;
-    case mcStreamCaptureStatusActive:
-      *status = flagcxStreamCaptureActive;
-      break;
-    case mcStreamCaptureStatusInvalidated:
-      *status = flagcxStreamCaptureInvalidated;
-      break;
-    default:
-      return flagcxInternalError;
-  }
-  return flagcxSuccess;
-#else
-  (void)stream;
-  return flagcxNotSupported;
-#endif
-}
-
 flagcxResult_t macaAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
   if (event == NULL)
@@ -1528,7 +1496,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorSymLsaVaReserve, macaAdaptorSymLsaVaFree,
       macaAdaptorSymLsaMapBeginAt, macaAdaptorSymLsaMulticastGranularity,
       macaAdaptorSymLsaMulticastMap, macaAdaptorSymLsaMulticastBind,
-      macaAdaptorSymLsaMulticastUnbind, macaAdaptorStreamGetCaptureStatus
+      macaAdaptorSymLsaMulticastUnbind,
 };
 
 #endif // USE_METAX_ADAPTOR

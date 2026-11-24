@@ -65,15 +65,3 @@ run-mpi: $(MPI_TARGET)
 run: run-unit run-mpi
 
 -include $(UNIT_DEPS) $(MPI_DEPS)
-
-CAPTURE_PLUGIN_DIR := $(OBJDIR)/capture-plugins
-CAPTURE_PLUGIN_LIBS := $(CAPTURE_PLUGIN_DIR)/legacy.so $(CAPTURE_PLUGIN_DIR)/with_query.so
-$(CAPTURE_PLUGIN_DIR)/legacy.so: fixtures/capture_device_plugin.cpp $(PROJECT_ROOT)/flagcx/adaptor/include/flagcx_device_adaptor.h
-	@mkdir -p $(dir $@)
-	@$(CXX) -std=c++17 -shared -fPIC $(FLAGCX_INCLUDES) $< -o $@
-$(CAPTURE_PLUGIN_DIR)/with_query.so: fixtures/capture_device_plugin.cpp $(PROJECT_ROOT)/flagcx/adaptor/include/flagcx_device_adaptor.h
-	@mkdir -p $(dir $@)
-	@$(CXX) -std=c++17 -shared -fPIC -DFLAGCX_TEST_CAPTURE_SIDECAR $(FLAGCX_INCLUDES) $< -o $@
-$(OBJDIR)/test_adaptor_capture_plugin.o: test_adaptor_capture_plugin.cpp $(CAPTURE_PLUGIN_LIBS)
-	@mkdir -p $(dir $@)
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) -DFLAGCX_TEST_CAPTURE_PLUGIN_DIR=\"$(CAPTURE_PLUGIN_DIR)\" $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(LOCAL_INCLUDE) -MMD -MP -MF $(@:.o=.d)

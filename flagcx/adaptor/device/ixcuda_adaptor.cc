@@ -626,38 +626,6 @@ flagcxResult_t ixcudaAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
-static flagcxResult_t
-ixcudaAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
-                                    flagcxStreamCaptureStatus_t *status) {
-  if (status == NULL)
-    return flagcxInvalidArgument;
-  *status = flagcxStreamCaptureInvalidated;
-#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
-  cudaStreamCaptureStatus nativeStatus = cudaStreamCaptureStatusInvalidated;
-  int result =
-      (int)cudaStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
-  if (result != (int)cudaSuccess)
-    return flagcxUnhandledDeviceError;
-  switch (nativeStatus) {
-    case cudaStreamCaptureStatusNone:
-      *status = flagcxStreamCaptureNone;
-      break;
-    case cudaStreamCaptureStatusActive:
-      *status = flagcxStreamCaptureActive;
-      break;
-    case cudaStreamCaptureStatusInvalidated:
-      *status = flagcxStreamCaptureInvalidated;
-      break;
-    default:
-      return flagcxInternalError;
-  }
-  return flagcxSuccess;
-#else
-  (void)stream;
-  return flagcxNotSupported;
-#endif
-}
-
 flagcxResult_t ixcudaAdaptorEventCreate(flagcxEvent_t *event,
                                         flagcxEventType_t eventType) {
   if (event == NULL)
@@ -1171,6 +1139,5 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
       NULL, NULL, NULL, NULL, NULL,
 #endif
-      ixcudaAdaptorStreamGetCaptureStatus
 };
 #endif // USE_ILUVATAR_ADAPTOR

@@ -230,38 +230,6 @@ flagcxResult_t kunlunAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
-static flagcxResult_t
-kunlunAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
-                                    flagcxStreamCaptureStatus_t *status) {
-  if (status == NULL)
-    return flagcxInvalidArgument;
-  *status = flagcxStreamCaptureInvalidated;
-#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
-  cudaStreamCaptureStatus nativeStatus = cudaStreamCaptureStatusInvalidated;
-  int result =
-      (int)cudaStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
-  if (result != (int)cudaSuccess)
-    return flagcxUnhandledDeviceError;
-  switch (nativeStatus) {
-    case cudaStreamCaptureStatusNone:
-      *status = flagcxStreamCaptureNone;
-      break;
-    case cudaStreamCaptureStatusActive:
-      *status = flagcxStreamCaptureActive;
-      break;
-    case cudaStreamCaptureStatusInvalidated:
-      *status = flagcxStreamCaptureInvalidated;
-      break;
-    default:
-      return flagcxInternalError;
-  }
-  return flagcxSuccess;
-#else
-  (void)stream;
-  return flagcxNotSupported;
-#endif
-}
-
 flagcxResult_t kunlunAdaptorEventCreate(flagcxEvent_t *event,
                                         flagcxEventType_t eventType) {
   if (event == NULL)
@@ -613,10 +581,6 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL, NULL, NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_UNKNOWN, NULL, NULL,
-      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-      NULL, NULL, NULL, NULL, NULL,
-
-      kunlunAdaptorStreamGetCaptureStatus
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
 };
 #endif // USE_KUNLUNXIN_ADAPTOR

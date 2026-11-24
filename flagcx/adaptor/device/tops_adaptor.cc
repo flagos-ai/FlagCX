@@ -188,38 +188,6 @@ flagcxResult_t topsAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
-static flagcxResult_t
-topsAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
-                                  flagcxStreamCaptureStatus_t *status) {
-  if (status == NULL)
-    return flagcxInvalidArgument;
-  *status = flagcxStreamCaptureInvalidated;
-#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
-  topsStreamCaptureStatus nativeStatus = topsStreamCaptureStatusInvalidated;
-  int result =
-      (int)topsStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
-  if (result != (int)topsSuccess)
-    return flagcxUnhandledDeviceError;
-  switch (nativeStatus) {
-    case topsStreamCaptureStatusNone:
-      *status = flagcxStreamCaptureNone;
-      break;
-    case topsStreamCaptureStatusActive:
-      *status = flagcxStreamCaptureActive;
-      break;
-    case topsStreamCaptureStatusInvalidated:
-      *status = flagcxStreamCaptureInvalidated;
-      break;
-    default:
-      return flagcxInternalError;
-  }
-  return flagcxSuccess;
-#else
-  (void)stream;
-  return flagcxNotSupported;
-#endif
-}
-
 flagcxResult_t topsAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
   if (event == NULL)
@@ -554,11 +522,7 @@ struct flagcxDeviceAdaptor topsAdaptor {
       NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_UNKNOWN, NULL, NULL,
-      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-      NULL, NULL, NULL, NULL, NULL,
-
-      topsAdaptorStreamGetCaptureStatus
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
 };
 
 #endif // USE_ENFLAME_ADAPTOR

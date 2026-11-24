@@ -182,38 +182,6 @@ flagcxResult_t hipAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
-static flagcxResult_t
-hipAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
-                                 flagcxStreamCaptureStatus_t *status) {
-  if (status == NULL)
-    return flagcxInvalidArgument;
-  *status = flagcxStreamCaptureInvalidated;
-#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
-  hipStreamCaptureStatus nativeStatus = hipStreamCaptureStatusInvalidated;
-  int result =
-      (int)hipStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
-  if (result != (int)hipSuccess)
-    return flagcxUnhandledDeviceError;
-  switch (nativeStatus) {
-    case hipStreamCaptureStatusNone:
-      *status = flagcxStreamCaptureNone;
-      break;
-    case hipStreamCaptureStatusActive:
-      *status = flagcxStreamCaptureActive;
-      break;
-    case hipStreamCaptureStatusInvalidated:
-      *status = flagcxStreamCaptureInvalidated;
-      break;
-    default:
-      return flagcxInternalError;
-  }
-  return flagcxSuccess;
-#else
-  (void)stream;
-  return flagcxNotSupported;
-#endif
-}
-
 flagcxResult_t hipAdaptorEventCreate(flagcxEvent_t *event,
                                      flagcxEventType_t eventType) {
   if (event == NULL)
@@ -519,11 +487,7 @@ struct flagcxDeviceAdaptor hipAdaptor {
       NULL, NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_UNKNOWN, NULL, NULL,
-      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-      NULL, NULL, NULL, NULL, NULL,
-
-      hipAdaptorStreamGetCaptureStatus
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
 };
 
 #endif // USE_AMD_ADAPTOR

@@ -235,11 +235,6 @@ else
 	HOST_CCL_ADAPTOR_FLAG = -DUSE_BOOTSTRAP_ADAPTOR
 endif
 
-CAPTURE_PROBE_ROOT := $(CURDIR)
-CAPTURE_PROBE_CXX := $(HOST_COMPILER)
-CAPTURE_PROBE_CPPFLAGS := $(CPPFLAGS) $(HOST_CXX_STANDARD) $(HOST_CXXFLAGS) $(ADAPTOR_FLAG) $(addprefix -I,$(DEVICE_INCLUDE))
-include makefiles/capture.mk
-
 # UCX network adaptor configuration
 ifeq ($(USE_UCX), 1)
 	UCX_LIB = $(UCX_HOME)/lib
@@ -580,12 +575,10 @@ $(BUILD_INCDIR)/device_utils.h: flagcx/adaptor/include/device_utils.h
 	@echo "Copying   $@"
 	@cp $< $@
 
-$(patsubst %.cc,$(OBJDIR)/%.o,$(wildcard flagcx/adaptor/device/*_adaptor.cc)): tools/probe_capture.py makefiles/capture.mk $(wildcard $(BUILDDIR)/capture-sdk.json)
-
 $(OBJDIR)/%.o: %.cc
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@"
-	@$(HOST_COMPILER) $(HOST_CXX_STANDARD) $(HOST_CXXFLAGS) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ACCL_BAREX_INCLUDE_FLAG) $(SHCA_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(CAPTURE_PROBE_DEFINE) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
+	@$(HOST_COMPILER) $(HOST_CXX_STANDARD) $(HOST_CXXFLAGS) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ACCL_BAREX_INCLUDE_FLAG) $(SHCA_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
 
 ifeq ($(COMPILE_KERNEL), 1)
 ifeq ($(DEVICE_NEEDS_DLINK), 1)

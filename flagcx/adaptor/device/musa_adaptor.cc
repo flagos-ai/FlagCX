@@ -271,40 +271,6 @@ flagcxResult_t musaAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
-static flagcxResult_t
-musaAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
-                                  flagcxStreamCaptureStatus_t *status) {
-  if (status == NULL)
-    return flagcxInvalidArgument;
-  *status = flagcxStreamCaptureInvalidated;
-#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
-  musaStreamCaptureStatus nativeStatus = musaStreamCaptureStatusInvalidated;
-  int result =
-      (int)musaStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
-  if (result == (int)musaErrorNotSupported)
-    return flagcxNotSupported;
-  if (result != (int)musaSuccess)
-    return flagcxUnhandledDeviceError;
-  switch (nativeStatus) {
-    case musaStreamCaptureStatusNone:
-      *status = flagcxStreamCaptureNone;
-      break;
-    case musaStreamCaptureStatusActive:
-      *status = flagcxStreamCaptureActive;
-      break;
-    case musaStreamCaptureStatusInvalidated:
-      *status = flagcxStreamCaptureInvalidated;
-      break;
-    default:
-      return flagcxInternalError;
-  }
-  return flagcxSuccess;
-#else
-  (void)stream;
-  return flagcxNotSupported;
-#endif
-}
-
 flagcxResult_t musaAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
   if (event == NULL)
@@ -760,10 +726,7 @@ struct flagcxDeviceAdaptor musaAdaptor {
       // A NIC completion alone does not establish GPU visibility. Require
       // the provider's acquire for both incoming WRITE and local GET results.
       FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
-      FLAGCX_GDR_DEVICE_MUSA, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-
-      musaAdaptorStreamGetCaptureStatus
+      FLAGCX_GDR_DEVICE_MUSA,
 };
 
 #endif // USE_MUSA_ADAPTOR

@@ -20,13 +20,6 @@ struct flagcxDevProps {
   int pciDomainId;
 };
 
-// Latest-only stream introspection; v1 plugins remain unchanged.
-typedef enum {
-  flagcxStreamCaptureNone = 0,
-  flagcxStreamCaptureActive = 1,
-  flagcxStreamCaptureInvalidated = 2
-} flagcxStreamCaptureStatus_t;
-
 // CUDA-compatible APIs are implemented by several vendors, but NVIDIA
 // compute-capability policy must only be applied to NVIDIA CUDA devices.
 typedef enum {
@@ -452,11 +445,6 @@ struct flagcxDeviceAdaptor_latest {
                                         const void *source, size_t size);
   flagcxResult_t (*symLsaMulticastUnbind)(void *mcHandle, size_t offset,
                                           size_t size);
-
-  // Optional latest-only query. Missing/unverified SDK capability returns
-  // NotSupported, never an invented inactive-capture result.
-  flagcxResult_t (*streamGetCaptureStatus)(flagcxStream_t stream,
-                                           flagcxStreamCaptureStatus_t *status);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest

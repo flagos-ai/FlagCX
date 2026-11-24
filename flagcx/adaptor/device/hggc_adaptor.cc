@@ -307,42 +307,6 @@ flagcxResult_t hggcAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
 #endif
 }
 
-static flagcxResult_t
-hggcAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
-                                  flagcxStreamCaptureStatus_t *status) {
-  if (status == NULL)
-    return flagcxInvalidArgument;
-  *status = flagcxStreamCaptureInvalidated;
-#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
-  hggcStreamCaptureStatus nativeStatus = hggcStreamCaptureStatusInvalidated;
-  int result =
-      (int)hggcStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
-  if (result == (int)hggcErrorNotReady)
-    return flagcxInProgress;
-  if (result == (int)hggcErrorNotSupported)
-    return flagcxNotSupported;
-  if (result != (int)hggcSuccess)
-    return flagcxUnhandledDeviceError;
-  switch (nativeStatus) {
-    case hggcStreamCaptureStatusNone:
-      *status = flagcxStreamCaptureNone;
-      break;
-    case hggcStreamCaptureStatusActive:
-      *status = flagcxStreamCaptureActive;
-      break;
-    case hggcStreamCaptureStatusInvalidated:
-      *status = flagcxStreamCaptureInvalidated;
-      break;
-    default:
-      return flagcxInternalError;
-  }
-  return flagcxSuccess;
-#else
-  (void)stream;
-  return flagcxNotSupported;
-#endif
-}
-
 flagcxResult_t hggcAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
   if (event == NULL)
@@ -1039,7 +1003,7 @@ struct flagcxDeviceAdaptor hggcAdaptor {
       hggcAdaptorSymFlatMapSegmentsBegin, hggcAdaptorSymFlatMapSegmentOne,
       hggcAdaptorSymLsaGetCapacity, hggcAdaptorSymLsaVaReserve,
       hggcAdaptorSymLsaVaFree, hggcAdaptorSymLsaMapBeginAt, NULL, NULL, NULL,
-      NULL, hggcAdaptorStreamGetCaptureStatus
+      NULL,
 };
 
 #endif // USE_PPU_ADAPTOR

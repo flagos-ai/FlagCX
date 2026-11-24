@@ -21,7 +21,7 @@ $(ADAPTOR_CONTRACTS): $(PROJECT_ROOT)/test/script/test_ppu_adaptors.py \
 	@PYTHONDONTWRITEBYTECODE=1 python3 $(PROJECT_ROOT)/test/script/test_ppu_adaptors.py --generate-contracts $(dir $@)
 	@touch $@
 
-$(OBJDIR)/test_device_event.o $(OBJDIR)/test_ccl_lifecycle.o $(OBJDIR)/test_host_staging_cleanup.o $(OBJDIR)/test_runtime_capture.o: $(ADAPTOR_CONTRACTS)
+$(OBJDIR)/test_device_event.o $(OBJDIR)/test_ccl_lifecycle.o $(OBJDIR)/test_host_staging_cleanup.o: $(ADAPTOR_CONTRACTS)
 
 # [mpi] tests: coll_*.cpp — requires MPI + GPUs
 MPI_SRCS   := $(wildcard coll_*.cpp)
@@ -51,7 +51,7 @@ all: $(ALL_TARGETS)
 $(UNIT_TARGET): $(UNIT_OBJS)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK) $(DEVICE_LINK)
+	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK)
 
 $(MPI_TARGET): $(MPI_OBJS)
 	@mkdir -p $(BINDIR)
@@ -129,7 +129,3 @@ all: $(HOST_MPI_TARGET)
 .PHONY: check-sdk-contracts
 check-sdk-contracts:
 	@CXX="$(CXX)" PYTHONDONTWRITEBYTECODE=1 python3 $(PROJECT_ROOT)/test/script/test_ppu_adaptors.py SdkCompileTest DeviceSelectionTest PpuAdaptorTest.test_hggc_device_selection_queries_native_state_without_reselection
-
-$(OBJDIR)/test_native_capture.o: test_native_capture.cpp $(PROJECT_ROOT)/flagcx/adaptor/include/flagcx_device_adaptor.h
-	@mkdir -p $(dir $@)
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) $(FLAGCX_INCLUDES) $(DEVICE_INCLUDE) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE)

@@ -500,40 +500,6 @@ flagcxResult_t cudaAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
   return flagcxUnhandledDeviceError;
 }
 
-static flagcxResult_t
-cudaAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
-                                  flagcxStreamCaptureStatus_t *status) {
-  if (status == NULL)
-    return flagcxInvalidArgument;
-  *status = flagcxStreamCaptureInvalidated;
-#if defined(FLAGCX_NATIVE_CAPTURE_QUERY) && FLAGCX_NATIVE_CAPTURE_QUERY
-  cudaStreamCaptureStatus nativeStatus = cudaStreamCaptureStatusInvalidated;
-  int result =
-      (int)cudaStreamIsCapturing(stream ? stream->base : NULL, &nativeStatus);
-  if (result == (int)cudaErrorNotSupported)
-    return flagcxNotSupported;
-  if (result != (int)cudaSuccess)
-    return flagcxUnhandledDeviceError;
-  switch (nativeStatus) {
-    case cudaStreamCaptureStatusNone:
-      *status = flagcxStreamCaptureNone;
-      break;
-    case cudaStreamCaptureStatusActive:
-      *status = flagcxStreamCaptureActive;
-      break;
-    case cudaStreamCaptureStatusInvalidated:
-      *status = flagcxStreamCaptureInvalidated;
-      break;
-    default:
-      return flagcxInternalError;
-  }
-  return flagcxSuccess;
-#else
-  (void)stream;
-  return flagcxNotSupported;
-#endif
-}
-
 flagcxResult_t cudaAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
   if (event == NULL)
@@ -1689,7 +1655,6 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
       NULL, NULL, NULL, NULL, NULL,
 #endif
-      cudaAdaptorStreamGetCaptureStatus
 };
 
 #endif // USE_NVIDIA_ADAPTOR
