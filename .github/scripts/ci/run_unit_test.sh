@@ -307,6 +307,8 @@ run_device_api_host() {
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
   FLAGCX_CI_TEST_LABEL="device_api_host unit tests" \
     "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+  FLAGCX_CI_TEST_MAX_ATTEMPTS=1 FLAGCX_CI_TEST_LABEL="device signal protocol model" \
+    "$TEST_RUNNER" make -C "$suite_dir" signal-kernel-test "${args[@]}"
 }
 
 flagcx_ci_device_api_intra_only() {
@@ -315,6 +317,8 @@ flagcx_ci_device_api_intra_only() {
 }
 
 run_device_api() {
+  local FLAGCX_CI_TEST_MAX_ATTEMPTS=1
+  export FLAGCX_CI_TEST_MAX_ATTEMPTS
   local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   local platform_name
   platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
@@ -372,6 +376,7 @@ run_device_api() {
   fi
 
   if [[ "${FLAGCX_CI_DEVICE_API_INTER:-1}" == 1 ]]; then
+    common_env+=(-x FLAGCX_TEST_SIGNAL_REPEATS=100 -x FLAGCX_TEST_SIGNAL_SKEW=10000)
     FLAGCX_CI_MPI_LABEL="device_api inter" \
       "$MPI_RUNNER" --allow-run-as-root \
       -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
@@ -387,7 +392,26 @@ run_device_api() {
   fi
 }
 
+# Use small payloads to repeat reset/signal/wait while exercising deliberate
+# context reuse. A failed attempt is final: a retry must not hide a race.
+run_device_signal_intra_regression() {
+  local np=$1
+  shift
+  [[ "${FLAGCX_CI_DEVICE_SIGNAL_REGRESSION:-1}" == 1 ]] || return 0
+  local contexts
+  for contexts in 1 2 3 4; do
+    FLAGCX_CI_TEST_MAX_ATTEMPTS=1 \
+    FLAGCX_CI_MPI_LABEL="signal ownership intra contexts=$contexts" \
+      "$MPI_RUNNER" -np "$np" --allow-run-as-root "$@" \
+      -x FLAGCX_TEST_CONTEXTS="$contexts" \
+      -x FLAGCX_TEST_SIGNAL_REPEATS=100 -x FLAGCX_TEST_SIGNAL_SKEW=10000 \
+      build/bin/test_device_ir_unified_intra -b 1K -e 1K -f 2 -R 1
+  done
+}
+
 run_device_api_unified_ir() {
+  local FLAGCX_CI_TEST_MAX_ATTEMPTS=1
+  export FLAGCX_CI_TEST_MAX_ATTEMPTS
   local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   local s16_skip_reason
   s16_skip_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
@@ -474,12 +498,14 @@ run_device_api_unified_ir() {
     FLAGCX_CI_MPI_LABEL="unified IR intra" \
       "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${intra_env[@]}" \
       build/bin/test_device_ir_unified_intra "${intra_flags[@]}"
+    run_device_signal_intra_regression "$FLAGCX_CI_INTRA_NP" "${intra_env[@]}"
     return
   fi
 
   FLAGCX_CI_MPI_LABEL="unified IR intra" \
     "$MPI_RUNNER" -np "${UNIFIED_IR_NP:-$FLAGCX_CI_INTRA_NP}" --allow-run-as-root "${intra_env[@]}" \
     build/bin/test_device_ir_unified_intra "${intra_flags[@]}"
+  run_device_signal_intra_regression "${UNIFIED_IR_NP:-$FLAGCX_CI_INTRA_NP}" "${intra_env[@]}"
 
   if flagcx_ci_device_api_intra_only; then
     echo "Skipping PPU unified IR inter and forced-Net runs: BAREX remote signal atomic is unavailable"
@@ -523,6 +549,26 @@ run_device_api_unified_ir() {
       "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
       build/bin/test_device_ir_unified_inter "${fallback_flags[@]}"
   fi
+  if [[ "${FLAGCX_CI_DEVICE_SIGNAL_REGRESSION:-1}" == 1 &&
+        "${FLAGCX_CI_UNIFIED_IR_INTER:-1}" == 1 ]]; then
+    local contexts forced
+    for contexts in 1 2 3 4; do
+      for forced in 0 1; do
+        FLAGCX_CI_TEST_MAX_ATTEMPTS=1 \
+        FLAGCX_CI_MPI_LABEL="signal ownership inter contexts=$contexts net=$forced" \
+          "$MPI_RUNNER" --allow-run-as-root \
+          -np "$FLAGCX_CI_NODE_NP" "${inter_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+          -x FLAGCX_TEST_CONTEXTS="$contexts" -x FLAGCX_TEST_SIGNAL_REPEATS=100 \
+          -x FLAGCX_TEST_SIGNAL_SKEW=10000 -x FLAGCX_DEVICE_ONE_SIDED_FORCE_NET="$forced" \
+          build/bin/test_device_ir_unified_inter -b 1K -e 1K -f 2 -R 1 \
+          : -np "$FLAGCX_CI_NODE_NP" "${inter_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+          -x FLAGCX_TEST_CONTEXTS="$contexts" -x FLAGCX_TEST_SIGNAL_REPEATS=100 \
+          -x FLAGCX_TEST_SIGNAL_SKEW=10000 -x FLAGCX_DEVICE_ONE_SIDED_FORCE_NET="$forced" \
+          build/bin/test_device_ir_unified_inter -b 1K -e 1K -f 2 -R 1
+      done
+    done
+  fi
+
 }
 
 run_suite() {

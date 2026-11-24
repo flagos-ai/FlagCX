@@ -25,6 +25,11 @@ FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSlotIdx() {
          flagcxTriggerMask(flagcxDeviceTriggerBitsSlotIdx);
 }
 
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getFormatVersion() {
+  return (trd >> flagcxDeviceTriggerOffFormatVersion) &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsFormatVersion);
+}
+
 // Backward compat alias
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getType() {
   return getPrim();
@@ -45,12 +50,15 @@ FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getCount() {
 
 // One-sided accessors (Put/PutSignal/PutValue)
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSrcMrIdx() {
-  return (trd >> flagcxDeviceTriggerOffSrcMrIdx) &
+  return (snd >> flagcxDeviceTriggerOffSrcMrIdx) &
          flagcxTriggerMask(flagcxDeviceTriggerBitsSrcMrIdx);
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getDstMrIdx() {
-  return (trd >> flagcxDeviceTriggerOffDstMrIdx) &
+  if (getPrim() == flagcxDevicePrimPutValue)
+    return (trd >> flagcxDeviceTriggerOffPutValueDstMrIdx) &
+           flagcxTriggerMask(flagcxDeviceTriggerBitsDstMrIdx);
+  return (snd >> flagcxDeviceTriggerOffDstMrIdx) &
          flagcxTriggerMask(flagcxDeviceTriggerBitsDstMrIdx);
 }
 
@@ -72,35 +80,23 @@ FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getDstOffset() {
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getValue() { return snd; }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSignalIdx() {
-  // PutSignal uses its compact field; standalone signal primitives share the
-  // Signal/WaitSignal index field.
-  uint64_t prim = getPrim();
-  if (prim == flagcxDevicePrimPutSignal) {
-    return (trd >> flagcxDeviceTriggerOffSignalIdx) &
-           flagcxTriggerMask(flagcxDeviceTriggerBitsSignalIdx);
-  }
-  // Signal, WaitSignal
-  return (trd >> flagcxDeviceTriggerOffSignalIdxSig) &
-         flagcxTriggerMask(flagcxDeviceTriggerBitsSignalIdxSig);
+  return (trd >> flagcxDeviceTriggerOffSignalIdx) &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsSignalIdx);
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSignalValue() {
-  // PutSignal stores a compact value in snd, PrimSignal stores it in trd,
-  // and PrimSignalValue owns all of snd.
+  // PutSignal owns snd[15:0]; both standalone signals own the whole word.
   uint64_t prim = getPrim();
   if (prim == flagcxDevicePrimPutSignal) {
     return (snd >> flagcxDeviceTriggerOffSignalValuePut) &
            flagcxTriggerMask(flagcxDeviceTriggerBitsSignalValuePut);
   }
-  if (prim == flagcxDevicePrimSignalValue)
-    return snd;
-  return (trd >> flagcxDeviceTriggerOffSignalValue) &
-         flagcxTriggerMask(flagcxDeviceTriggerBitsSignalValue);
+  return snd;
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getExpectedValue() {
-  return (trd >> flagcxDeviceTriggerOffSignalValue) &
-         flagcxTriggerMask(flagcxDeviceTriggerBitsSignalValue);
+  // The old WaitSignal primitive is a no-op; GPU waits access memory directly.
+  return (trd >> 6) & flagcxTriggerMask(flagcxDeviceTriggerBitsSignalValue);
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getBufferType() {

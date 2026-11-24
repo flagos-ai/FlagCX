@@ -82,6 +82,22 @@ UNIT_SRC := test_dev_comm_cleanup.cpp
 UNIT_OBJ := $(OBJDIR)/test_dev_comm_cleanup.o
 UNIT_TARGET := $(BINDIR)/test_dev_comm_cleanup
 
+# Completion ownership is testable without MPI, a device SDK or libflagcx.
+SIGNAL_LAYOUT_TARGET := $(BINDIR)/test_signal_layout
+$(SIGNAL_LAYOUT_TARGET): test_signal_layout.cpp $(KERNEL_DIR)/include/device_signal_test_layout.h
+	@mkdir -p $(BINDIR)
+	@$(HOST_CXX) -std=c++11 -Wall -Wextra -Werror -I$(KERNEL_DIR)/include -o $@ $<
+
+.PHONY: signal-layout-test signal-kernel-test fifo-completion-test
+signal-layout-test: $(SIGNAL_LAYOUT_TARGET)
+	@$(SIGNAL_LAYOUT_TARGET)
+
+signal-kernel-test:
+	@python3 check_signal_kernels.py --cxx "$(HOST_CXX)"
+
+fifo-completion-test:
+	@python3 check_fifo_completion.py --cxx "$(HOST_CXX)"
+
 # Provider dispatch is host-testable without a GPU or a FlagCX library link.
 PROVIDER_TEST_TARGET := $(BINDIR)/test_default_net_provider
 .PHONY: provider_test
@@ -203,7 +219,7 @@ ifneq ($(SKIPPED_TARGETS),)
 	@echo "Skipped unsupported targets on $(KERNEL_PLATFORM): $(SKIPPED_TARGETS)"
 endif
 
-unit: $(UNIT_TARGET) $(PROVIDER_UNIT_TARGET)
+unit: $(UNIT_TARGET) $(PROVIDER_UNIT_TARGET) $(SIGNAL_LAYOUT_TARGET) fifo-completion-test
 
 require-compile-kernel:
 	$(REQUIRE_COMPILE_KERNEL)
@@ -310,6 +326,7 @@ clean:
 	@rm -rf $(BUILDDIR)
 
 run-unit: unit
+	@$(SIGNAL_LAYOUT_TARGET)
 	@GTEST_DEATH_TEST_STYLE=threadsafe $(UNIT_TARGET)
 	@$(DEVICEPTR_ARGS_TARGET)
 ifneq ($(PROVIDER_UNIT_TARGET),)
@@ -427,3 +444,8 @@ run-mpi: run-mpi-intra run-mpi-inter run-mpi-unified-intra \
          run-mpi-unified-inter
 
 run: require-compile-kernel run-unit run-mpi
+
+$(OBJDIR)/test_device_api_inter.o $(OBJDIR)/test_device_ir_inter.o \
+$(OBJDIR)/test_device_ir_unified_intra.o $(OBJDIR)/test_device_ir_unified_inter.o: \
+    $(KERNEL_DIR)/include/device_signal_test_layout.h \
+    $(PROJECT_ROOT)/test/include/device_signal_test.h

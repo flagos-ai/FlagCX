@@ -90,6 +90,8 @@ FLAGCX_CI_DEVICE_API_INTER=0
 # cross-node unified IR is deferred to the T2 inter stage.  Both gates default
 # to 1 elsewhere, so this only narrows Ascend.
 FLAGCX_CI_UNIFIED_IR_INTER=0
+# Completion-based S20-S25 are compiled out on this device.
+FLAGCX_CI_DEVICE_SIGNAL_REGRESSION=0
 FLAGCX_CI_UNIFIED_IR_FALLBACK_INTRA=0
 
 # 910C hardware contract (measured 2026-11-17): AI-core scalar stores into

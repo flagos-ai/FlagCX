@@ -16,6 +16,7 @@
 #include <stdint.h>
 
 #include "device_api/flagcx_device_enums.h"
+#include "device_signal_test_layout.h"
 #include "device_utils.h"
 #include "flagcx.h"
 
@@ -179,12 +180,13 @@ void launchKernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   size_t countPerPeer, flagcxStream_t stream);
 
 // S5: Put + SigInc + CtrInc — PutS_RSigInc_LCtrInc + WaitSignalS + WaitCounterS
-// + FlushS
+// + FlushS. Four uint64_t results per CTA: counter delta, sent count + 1
+// (execution marker), signal delta, expected inbound signal delta.
 void launchKernelNetCounterPipelineS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
-    flagcxStream_t stream);
+    flagcxStream_t stream, uint64_t *results);
 
 // S6: Put(None) + Flush + Signal (FlushDecouple) — PutS + FlushS +
 // SignalSigIncS + WaitSignalS + FlushS
@@ -213,9 +215,11 @@ void launchKernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 void launchKernelNetWaitSignalMeetShadowS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flagcxStream_t stream);
 
-// S11: WaitSignal + Flush (standalone)
+// S11: per-CTA reset/signal/wait/flush; four uint64_t results per CTA
+// (reset value, final value, execution marker, observed completed CTAs).
 void launchKernelNetWaitSignalFlushS(
-    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flagcxStream_t stream);
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flagcxStream_t stream,
+    uint64_t *results, unsigned skew);
 
 // S12: Inter Barrier — stress test
 void launchKernelInterBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
@@ -259,12 +263,15 @@ void launchKernelDevGetIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *localMemPtr, int *devResult, size_t bytes,
     flagcxStream_t stream);
 
+// S21-S23 launch one variant per call; the host validates before buffer reuse.
+// bytes is the total per coop/team payload group, partitioned across four CTAs.
+// selectedVariant: 0/1 for S21/S22 and 0/1/2 for S23.
 // S21: DevPutSignalWait — INTRA + WORLD
 void launchKernelDevPutSignalWaitIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream);
+    flagcxStream_t stream, unsigned skew, int selectedVariant);
 
 // S16: DevBarrier — INTRA + WORLD
 void launchKernelDevBarrierIntraWorldS(
@@ -285,7 +292,7 @@ void launchKernelDevPutValueIntraWorldS(
 // S20: DevSignalStandalone — INTRA + WORLD
 void launchKernelDevSignalStandaloneIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
-    flagcxStream_t stream);
+    flagcxStream_t stream, unsigned skew = 0);
 
 // S17: DevTeamResolution — INTRA + WORLD
 void launchKernelDevTeamResolutionIntraWorldS(
@@ -318,7 +325,7 @@ void launchKernelDevPutSignalWaitInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream);
+    flagcxStream_t stream, unsigned skew, int selectedVariant);
 
 // S16: DevBarrier — INTER + WORLD
 void launchKernelDevBarrierInterWorldS(
@@ -339,7 +346,7 @@ void launchKernelDevPutValueInterWorldS(
 // S20: DevSignalStandalone — INTER + WORLD
 void launchKernelDevSignalStandaloneInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
-    flagcxStream_t stream);
+    flagcxStream_t stream, unsigned skew = 0);
 
 // S17: DevTeamResolution — INTER + WORLD
 void launchKernelDevTeamResolutionInterWorldS(
@@ -357,14 +364,14 @@ void launchKernelDevPutRSigIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream);
+    flagcxStream_t stream, unsigned skew, int selectedVariant);
 
 // S22: DevPut_RSigInc + DevPut_RSigAdd — INTER + WORLD
 void launchKernelDevPutRSigInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream);
+    flagcxStream_t stream, unsigned skew, int selectedVariant);
 
 // S23: DevPut_LCtrInc + DevPut_RSigInc_LCtrInc + DevPut_RSigAdd_LCtrInc — INTRA
 // + WORLD
@@ -372,7 +379,7 @@ void launchKernelDevPutCounterIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream);
+    flagcxStream_t stream, unsigned skew, int selectedVariant);
 
 // S23: DevPut_LCtrInc + DevPut_RSigInc_LCtrInc + DevPut_RSigAdd_LCtrInc — INTER
 // + WORLD
@@ -380,30 +387,35 @@ void launchKernelDevPutCounterInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream);
+    flagcxStream_t stream, unsigned skew, int selectedVariant);
 
 // S24: DevPutValue_RSigInc + DevPutValue_RSigAdd — INTRA + WORLD
 void launchKernelDevPutValueRSigIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream);
+    flagcxStream_t stream, unsigned skew = 0);
 
 // S24: DevPutValue_RSigInc + DevPutValue_RSigAdd — INTER + WORLD
 void launchKernelDevPutValueRSigInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr, int *devResult, size_t bytes,
-    flagcxStream_t stream);
+    flagcxStream_t stream, unsigned skew = 0);
 
 // S25: DevIncreaseSignalShadow + DevWaitSignalMeetShadow + DevFlush — INTRA +
 // WORLD
 void launchKernelDevSignalShadowFlushIntraWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
-    flagcxStream_t stream);
+    flagcxStream_t stream, unsigned skew = 0);
 
 // S25: DevIncreaseSignalShadow + DevWaitSignalMeetShadow + DevFlush — INTER +
 // WORLD
 void launchKernelDevSignalShadowFlushInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+    flagcxStream_t stream, unsigned skew = 0);
+
+// Test-only query; no public Device API ABI changes.
+void launchKernelSignalTestContextCountS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result,
     flagcxStream_t stream);
 
 #endif // TEST_KERNEL_DEVICE_IR_H_

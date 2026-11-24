@@ -81,7 +81,7 @@ int main(int argc, char *argv[]) {
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-  reqs.interSignalCount = 1;
+  reqs.interSignalCount = legacySignalCount(FLAGCX_DEVICE_CTA_COUNT);
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 

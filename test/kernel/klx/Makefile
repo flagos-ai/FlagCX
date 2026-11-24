@@ -69,3 +69,6 @@ dlink.o dlink_api.o dlink_ir.o:
 
 clean:
 	@rm -rf $(BUILDDIR)
+
+$(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o: \
+    ../include/device_signal_test_layout.h ../include/device_api.h ../include/device_ir.h
