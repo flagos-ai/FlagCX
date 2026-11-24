@@ -244,7 +244,9 @@ flagcxResult_t flagcxHeteroCommCount(const flagcxHeteroComm_t comm, int *count);
 flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
                                         int *rank);
 
-flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm);
+// A non-success result can report a cached proxy error after release. The
+// owner is cleared only when the communicator has actually been freed.
+flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t *owner);
 flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm);
 
 flagcxResult_t flagcxHeteroRmaProxyQuiesce(flagcxHeteroComm_t comm);

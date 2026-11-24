@@ -4103,6 +4103,80 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxDestroyHomoCommOwner(flagcxComm_t comm,
+                                          flagcxInnerComm_t inner) {
+  if (comm == NULL || inner == NULL)
+    return flagcxInvalidArgument;
+  flagcxResult_t result =
+      cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(inner);
+  if (result != flagcxSuccess)
+    return result;
+  if (comm->homoComm == inner)
+    comm->homoComm = NULL;
+  if (comm->homoInterComm == inner)
+    comm->homoInterComm = NULL;
+  if (comm->tunerInnerComm == inner)
+    comm->tunerInnerComm = NULL;
+  if (!comm->homoCommMap.empty())
+    for (auto &item : comm->homoCommMap)
+      if (item.second == inner)
+        item.second = NULL;
+  if (!comm->commMap.empty())
+    for (auto &item : comm->commMap)
+      if (item.second == inner)
+        item.second = NULL;
+  if (!comm->homoBestCommMap.empty())
+    for (auto &item : comm->homoBestCommMap)
+      if (item.second == inner)
+        item.second = NULL;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxCommDestroyNativeOwners(flagcxComm_t comm) {
+  // Maps may alias each other and the selected homogeneous communicator.
+  // Clear every alias only after the provider has actually released the owner.
+  while (true) {
+    // Preserve stable map order even if ranks selected different aliases.
+    flagcxInnerComm_t inner = NULL;
+    if (!comm->homoCommMap.empty())
+      for (const auto &item : comm->homoCommMap)
+        if (item.second != NULL) {
+          inner = item.second;
+          break;
+        }
+    if (inner == NULL && !comm->commMap.empty())
+      for (const auto &item : comm->commMap)
+        if (item.second != NULL) {
+          inner = item.second;
+          break;
+        }
+    if (inner == NULL && !comm->homoBestCommMap.empty())
+      for (const auto &item : comm->homoBestCommMap)
+        if (item.second != NULL) {
+          inner = item.second;
+          break;
+        }
+    if (inner == NULL)
+      inner = comm->homoComm;
+    if (inner == NULL)
+      inner = comm->homoInterComm;
+    if (inner == NULL)
+      inner = comm->tunerInnerComm;
+    if (inner == NULL) {
+      if (!comm->homoCommMap.empty())
+        comm->homoCommMap.clear();
+      if (!comm->commMap.empty())
+        comm->commMap.clear();
+      if (!comm->homoBestCommMap.empty())
+        comm->homoBestCommMap.clear();
+      return flagcxSuccess;
+    }
+    flagcxResult_t result = flagcxDestroyHomoCommOwner(comm, inner);
+    if (result != flagcxSuccess)
+      return result;
+  }
+}
+
 static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
                                                     int stage) {
   if (stage == 0) {
@@ -4216,30 +4290,18 @@ static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
     comm->clusterInterRanks = NULL;
 
     TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup begin comm=%p", comm);
-    if (comm->tuner) {
-      size_t homoCommIndex = 0;
-      for (auto &item : comm->homoCommMap) {
-        if (item.second != nullptr) {
-          TRACE(FLAGCX_INIT,
-                "flagcxCommDestroy homo comm begin comm=%p index=%zu inner=%p",
-                comm, homoCommIndex, item.second);
-          FLAGCXCHECK(
-              cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(item.second));
-          item.second = nullptr;
-        }
-        homoCommIndex++;
-      }
-    } else if (comm->homoComm != nullptr) {
-      FLAGCXCHECK(
-          cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoComm));
-      comm->homoComm = nullptr;
-    }
+    flagcxResult_t nativeResult = flagcxCommDestroyNativeOwners(comm);
+    if (nativeResult != flagcxSuccess)
+      return nativeResult;
     TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup end comm=%p", comm);
   }
 
   if (stage == 4) {
-    if (!useHomoComm(comm) || useHeteroComm())
-      FLAGCXCHECK(flagcxHeteroCommPrepareDestroy(comm->heteroComm));
+    if (!useHomoComm(comm) || useHeteroComm()) {
+      flagcxResult_t result = flagcxHeteroCommPrepareDestroy(comm->heteroComm);
+      if (result != flagcxSuccess)
+        return result;
+    }
     while (comm->activeDevMems != nullptr)
       FLAGCXCHECK(flagcxDevMemDestroy(comm, comm->activeDevMems));
   }
@@ -4287,27 +4349,25 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   }
   FLAGCXCHECK(flagcxCommFreeInternalBuffers(comm));
 
-  if (!useHomoComm(comm) || useHeteroComm()) {
-    // The proxy and UniRunner resources were prepared above.
-    TRACE(FLAGCX_INIT,
-          "flagcxCommDestroy backend cleanup begin comm=%p heteroComm=%p", comm,
-          comm->heteroComm);
-    // Release the retained host state after all fallible device frees.
-    TRACE(FLAGCX_INIT,
-          "flagcxCommDestroy hetero cleanup begin comm=%p heteroComm=%p", comm,
-          comm->heteroComm);
-    destroyResult = flagcxHeteroCommDestroy(comm->heteroComm);
-    TRACE(FLAGCX_INIT, "flagcxCommDestroy hetero cleanup end comm=%p result=%d",
-          comm, destroyResult);
-    // Destroy host comm
-    if (useHostComm()) {
-      FLAGCXCHECK(
-          cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->hostComm));
-    }
+  if ((!useHomoComm(comm) || useHeteroComm()) && comm->heteroComm != NULL) {
+    destroyResult = flagcxHeteroCommDestroy(&comm->heteroComm);
+    if (destroyResult != flagcxSuccess)
+      return destroyResult;
+  }
+  // Automatic fallback also owns a host communicator without USE_HOST_COMM.
+  if (comm->hostComm != NULL) {
+    destroyResult =
+        cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->hostComm);
+    if (destroyResult != flagcxSuccess)
+      return destroyResult;
+    comm->hostComm = NULL;
   }
 
   // Destroy bootstrap state and net
-  bootstrapClose(comm->bootstrap);
+  destroyResult = bootstrapClose(comm->bootstrap);
+  if (destroyResult != flagcxSuccess)
+    return destroyResult;
+  comm->bootstrap = NULL;
 
   // Destroy tuner
   if (comm->tuner) {

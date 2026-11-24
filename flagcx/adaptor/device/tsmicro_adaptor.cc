@@ -176,9 +176,18 @@ flagcxResult_t tsmicroAdaptorStreamWaitEvent(flagcxStream_t stream,
 
 flagcxResult_t tsmicroAdaptorEventCreate(flagcxEvent_t *event,
                                          flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
-  DEVCHECK(txEventCreate(&(*event)->base));
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
+  (void)eventType;
+  if (txEventCreate(&wrapper->base) != TX_SUCCESS) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 

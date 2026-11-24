@@ -71,8 +71,11 @@ static flagcxResult_t ecclDevApiCommDestroy(flagcxComm_t comm,
     flagcxInnerComm_t innerComm = comm->homoComm;
     if (innerComm != nullptr &&
         cclAdaptors[flagcxCCLAdaptorDevice]->devCommDestroy != NULL) {
-      cclAdaptors[flagcxCCLAdaptorDevice]->devCommDestroy(innerComm,
-                                                          devComm->devComm);
+      flagcxResult_t result =
+          cclAdaptors[flagcxCCLAdaptorDevice]->devCommDestroy(innerComm,
+                                                              devComm->devComm);
+      if (result != flagcxSuccess)
+        return result;
       devComm->devComm = nullptr;
     }
   }

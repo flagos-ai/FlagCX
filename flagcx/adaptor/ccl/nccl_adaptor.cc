@@ -121,13 +121,17 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 flagcxResult_t ncclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  FLAGCXCHECK((flagcxResult_t)ncclCommFinalize(comm->base));
-  free(comm);
-  return flagcxSuccess;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  return (flagcxResult_t)ncclCommFinalize(comm->base);
 }
 
 flagcxResult_t ncclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  FLAGCXCHECK((flagcxResult_t)ncclCommDestroy(comm->base));
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  flagcxResult_t result = (flagcxResult_t)ncclCommDestroy(comm->base);
+  if (result != flagcxSuccess)
+    return result;
   free(comm);
   return flagcxSuccess;
 }
@@ -464,8 +468,10 @@ flagcxResult_t ncclAdaptorDevCommDestroy(flagcxInnerComm_t comm,
   if (!devComm)
     return flagcxSuccess;
   flagcxResult_t ret = ncclDevCommDestroyHelper(comm->base, &devComm->base);
+  if (ret != flagcxSuccess)
+    return ret;
   free(devComm);
-  return ret;
+  return flagcxSuccess;
 #else
   return flagcxNotSupported;
 #endif
