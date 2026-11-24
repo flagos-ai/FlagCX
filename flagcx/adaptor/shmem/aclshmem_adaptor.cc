@@ -159,9 +159,8 @@ aclshmemAdaptorDevCommCreate(flagcxComm_t comm,
   // measured on this soc (asc_dcci + __gm__ uint32), so no 64-bit word is
   // assumed anywhere below.
   if (sc->signalCount > 0) {
-    size_t signalWords =
-        (size_t)contextCount * (size_t)sc->signalCount *
-        (size_t)FLAGCX_ACLSHMEM_SIGNAL_SLOTS;
+    size_t signalWords = (size_t)contextCount * (size_t)sc->signalCount *
+                         (size_t)FLAGCX_ACLSHMEM_SIGNAL_SLOTS;
     size_t signalBytes = signalWords * sizeof(uint32_t);
     sc->signalBuffer = (uint64_t *)aclshmem_malloc(signalBytes);
     if (sc->signalBuffer == nullptr)
@@ -234,8 +233,7 @@ fail:
   return flagcxSystemError;
 }
 
-static flagcxResult_t
-aclshmemAdaptorDevCommDestroy(flagcxShmemComm_t comm) {
+static flagcxResult_t aclshmemAdaptorDevCommDestroy(flagcxShmemComm_t comm) {
   if (comm == nullptr)
     return flagcxSuccess;
   if (comm->signalBuffer)

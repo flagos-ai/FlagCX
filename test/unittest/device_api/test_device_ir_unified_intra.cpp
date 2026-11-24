@@ -362,8 +362,8 @@ int main(int argc, char *argv[]) {
         for (size_t i = 0; i < count && s18Pass; i++) {
           float expected = (float)(senderRank * 1000 + off + i);
           if (hostRecv[off + i] != expected) {
-            RPRINTF("  S18A mismatch combo=%d i=%zu exp=%.1f got=%.1f\n",
-                    combo, i, (double)expected, (double)hostRecv[off + i]);
+            RPRINTF("  S18A mismatch combo=%d i=%zu exp=%.1f got=%.1f\n", combo,
+                    i, (double)expected, (double)hostRecv[off + i]);
             s18Pass = false;
           }
         }
@@ -391,9 +391,8 @@ int main(int argc, char *argv[]) {
           kPutValueStrideBytes / sizeof(uint64_t);
       // 0xAA sentinel, not 0: an untouched slot must be distinguishable from
       // a transfer that landed carrying a zero.
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0xAA,
-                                          6 * kPutValueStrideBytes,
-                                          flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemset(
+          recvBuff, 0xAA, 6 * kPutValueStrideBytes, flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
@@ -433,9 +432,9 @@ int main(int argc, char *argv[]) {
       // posted on, so a transfer still in flight shows up as the sentinel.
       if (!s18bOk) {
         usleep(200000);
-        FLAGCXCHECK(devHandle->deviceMemcpy(
-            hostRecvV, recvBuff, 6 * kPutValueStrideBytes,
-            flagcxMemcpyDeviceToHost, stream));
+        FLAGCXCHECK(devHandle->deviceMemcpy(hostRecvV, recvBuff,
+                                            6 * kPutValueStrideBytes,
+                                            flagcxMemcpyDeviceToHost, stream));
         for (int combo = 0; combo < 6; combo++) {
           int teamIdx = combo % 2;
           int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;

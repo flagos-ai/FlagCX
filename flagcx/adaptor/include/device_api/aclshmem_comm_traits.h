@@ -33,8 +33,8 @@
 #include <shmem.h>
 
 #if defined(__CCE_IS_AICORE__)
-#include "gm2gm/shmem_device_cc.h"
 #include "gm2gm/engine/shmem_device_mte.hpp"
+#include "gm2gm/shmem_device_cc.h"
 #else
 #include "host/data_plane/shmem_host_p2p_sync.h"
 #endif
@@ -119,8 +119,8 @@ FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemRequireCompletionBits(int bits) {
 
 // Circular comparison: wrap is well defined while the outstanding distance
 // stays below 2^31, the documented range of a 32-bit sequence number.
-FLAGCX_DEVICE_INLINE_DECORATOR bool
-aclshmemCompletionBefore(uint32_t current, uint32_t target) {
+FLAGCX_DEVICE_INLINE_DECORATOR bool aclshmemCompletionBefore(uint32_t current,
+                                                             uint32_t target) {
   return (int)(current - target) < 0;
 }
 
@@ -151,9 +151,9 @@ aclshmemPutMemNbi(FLAGCX_ACLSHMEM_GM void *dst, FLAGCX_ACLSHMEM_GM void *src,
 
 FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemQuiet();
 
-FLAGCX_DEVICE_INLINE_DECORATOR void
-aclshmemGetMem(FLAGCX_ACLSHMEM_GM void *dst, FLAGCX_ACLSHMEM_GM void *src,
-               uint32_t bytes, int pe) {
+FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemGetMem(FLAGCX_ACLSHMEM_GM void *dst,
+                                                   FLAGCX_ACLSHMEM_GM void *src,
+                                                   uint32_t bytes, int pe) {
 #if defined(__CCE_IS_AICORE__)
   aclshmem_getmem(dst, src, bytes, (int32_t)pe);
   // The vendor's get RMA pairs its nbi copy with mte_quiet (see
@@ -242,8 +242,8 @@ struct CommTraits<AclshmemBackend> {
 
     // Peer access is MTE-only: a peer address is never published, so the
     // unified dispatch falls through to the Net path.
-    FLAGCX_DEVICE_INLINE_DECORATOR void *
-    getPeerPointer(size_t, const Team &, int) const {
+    FLAGCX_DEVICE_INLINE_DECORATOR void *getPeerPointer(size_t, const Team &,
+                                                        int) const {
       return nullptr;
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *
@@ -364,8 +364,7 @@ struct CommTraits<AclshmemBackend> {
       typename PlatformTraits<AscendPlatform>::template CoopTile<N>;
   using CoopThread = typename PlatformTraits<AscendPlatform>::CoopThread;
   using CoopWarp = typename PlatformTraits<AscendPlatform>::CoopWarp;
-  using CoopTileSpan =
-      typename PlatformTraits<AscendPlatform>::CoopTileSpan;
+  using CoopTileSpan = typename PlatformTraits<AscendPlatform>::CoopTileSpan;
   using CoopLanes = typename PlatformTraits<AscendPlatform>::CoopLanes;
   using CoopAny = typename PlatformTraits<AscendPlatform>::CoopAny;
 
@@ -404,8 +403,8 @@ struct CommTraits<AclshmemBackend> {
       return _contextId;
     }
 
-    static FLAGCX_DEVICE_INLINE_DECORATOR int
-    resolvePE(const Comm &dc, Team team, int peer) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR int resolvePE(const Comm &dc,
+                                                        Team team, int peer) {
       int base = dc.rank - team.rank * team.stride;
       return base + peer * team.stride;
     }
@@ -511,8 +510,8 @@ struct CommTraits<AclshmemBackend> {
     // queue, which is the only way a Relaxed flush can guarantee that the
     // data written before it has left the core.
     template <typename Coop>
-    FLAGCX_DEVICE_INLINE_DECORATOR void
-    flush(Coop coop, flagcxDeviceMemoryOrder_t) const {
+    FLAGCX_DEVICE_INLINE_DECORATOR void flush(Coop coop,
+                                              flagcxDeviceMemoryOrder_t) const {
       coop.sync();
       if (coop.threadRank() == 0)
         aclshmemQuiet();
@@ -552,8 +551,8 @@ struct CommTraits<AclshmemBackend> {
       coop.sync();
       if (coop.threadRank() == 0) {
         uint32_t shadow = aclshmemGmLoad32(shadowWord(signalId));
-        uint32_t target = aclshmemCompletionValue((uint64_t)shadow +
-                                                  (uint64_t)leastDelta);
+        uint32_t target =
+            aclshmemCompletionValue((uint64_t)shadow + (uint64_t)leastDelta);
         uint32_t current = spinSignal(signalId, target);
         if (before)
           *before = (Uint)shadow;
@@ -566,13 +565,12 @@ struct CommTraits<AclshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     increaseSignalShadow(flagcxDevSignal_t signalId, uint64_t delta) const {
       FLAGCX_ACLSHMEM_GM volatile uint32_t *p = shadowWord(signalId);
-      aclshmemGmStore32(p, aclshmemGmLoad32(p) +
-                              aclshmemCompletionValue(delta));
+      aclshmemGmStore32(p,
+                        aclshmemGmLoad32(p) + aclshmemCompletionValue(delta));
     }
 
-    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readSignal(flagcxDevSignal_t signalId, int bits,
-               flagcxDeviceMemoryOrder_t) const {
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readSignal(
+        flagcxDevSignal_t signalId, int bits, flagcxDeviceMemoryOrder_t) const {
       aclshmemRequireCompletionBits(bits);
       return (uint64_t)signalValue(signalId);
     }
@@ -617,8 +615,8 @@ struct CommTraits<AclshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     completeCounter(flagcxDevCounter_t counterId, uint64_t delta) const {
       FLAGCX_ACLSHMEM_GM volatile uint32_t *p = counterWord(counterId);
-      aclshmemGmStore32(p, aclshmemGmLoad32(p) +
-                              aclshmemCompletionValue(delta));
+      aclshmemGmStore32(p,
+                        aclshmemGmLoad32(p) + aclshmemCompletionValue(delta));
     }
 
     // ---- Two-sided stubs (one-sided backend) ----
@@ -627,13 +625,15 @@ struct CommTraits<AclshmemBackend> {
     // sees flagcxNotSupported instead of a success that transmitted
     // nothing (MC952 review P1).
     template <typename Coop>
-    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
-    send(Coop, Window, size_t, size_t, flagcxDataType_t, int) const {
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t send(Coop, Window, size_t,
+                                                       size_t, flagcxDataType_t,
+                                                       int) const {
       return flagcxNotSupported;
     }
     template <typename Coop>
-    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
-    recv(Coop, Window, size_t, size_t, flagcxDataType_t, int) const {
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t recv(Coop, Window, size_t,
+                                                       size_t, flagcxDataType_t,
+                                                       int) const {
       return flagcxNotSupported;
     }
     template <typename Coop>
@@ -649,9 +649,9 @@ struct CommTraits<AclshmemBackend> {
     // Base 32-bit word of one (context, signal) ticket block.
     FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_ACLSHMEM_GM uint32_t *
     signalWords(flagcxDevSignal_t signalId) const {
-      size_t word = ((size_t)_contextId * (size_t)_dc.signalCount +
-                     (size_t)signalId) *
-                    (size_t)FLAGCX_ACLSHMEM_SIGNAL_SLOTS;
+      size_t word =
+          ((size_t)_contextId * (size_t)_dc.signalCount + (size_t)signalId) *
+          (size_t)FLAGCX_ACLSHMEM_SIGNAL_SLOTS;
       return (FLAGCX_ACLSHMEM_GM uint32_t *)_dc.signalBuffer + word;
     }
     FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_ACLSHMEM_GM volatile uint32_t *
@@ -708,7 +708,8 @@ struct CommTraits<AclshmemBackend> {
       aclshmemGmStore32(sent, ticket);
       // dst is this PE's slot at the same offset; cann-shmem translates it
       // to the peer's copy.
-      FLAGCX_ACLSHMEM_GM void *dst = (FLAGCX_ACLSHMEM_GM void *)(base + _dc.rank);
+      FLAGCX_ACLSHMEM_GM void *dst =
+          (FLAGCX_ACLSHMEM_GM void *)(base + _dc.rank);
       aclshmemPutMemNbi(dst, (FLAGCX_ACLSHMEM_GM void *)sent, 4u, pe);
       // A posted 4B put can be dropped outright (measured as the np=2 S16
       // barrier-ticket hang). The ticket is the absolute count, so a
@@ -723,8 +724,8 @@ struct CommTraits<AclshmemBackend> {
       // trap note), so a transport that keeps dropping makes the kernel
       // not return instead of letting the caller signal success it did not
       // observe (MC952 review P1).
-      FLAGCX_ACLSHMEM_GM volatile uint32_t *remote = aclshmemPeerWord(
-          (FLAGCX_ACLSHMEM_GM uint32_t *)dst, pe);
+      FLAGCX_ACLSHMEM_GM volatile uint32_t *remote =
+          aclshmemPeerWord((FLAGCX_ACLSHMEM_GM uint32_t *)dst, pe);
       for (int spins = 0;; ++spins) {
         if (aclshmemGmLoad32(remote) == ticket)
           return;
@@ -754,9 +755,9 @@ struct CommTraits<AclshmemBackend> {
     // observe (MC952 review P1).  Sub-word and odd-tail transfers return
     // after quiet: they have no 4B probe, and their completion is the
     // ticket as well.
-    FLAGCX_DEVICE_INLINE_DECORATOR void
-    putData(FLAGCX_ACLSHMEM_GM void *dst, FLAGCX_ACLSHMEM_GM void *src,
-            size_t bytes, int pe) const {
+    FLAGCX_DEVICE_INLINE_DECORATOR void putData(FLAGCX_ACLSHMEM_GM void *dst,
+                                                FLAGCX_ACLSHMEM_GM void *src,
+                                                size_t bytes, int pe) const {
 #if defined(__CCE_IS_AICORE__)
       asc_dcci_entire_out();
 #endif
@@ -874,8 +875,8 @@ struct Barrier<AclshmemBackend, flagcxTeamTagIntra, Coop> {
         _stride(1) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
-  Barrier(Coop coop, const Comm &dc, Team team, uint32_t index,
-          bool = false, const Multimem & = {})
+  Barrier(Coop coop, const Comm &dc, Team team, uint32_t index, bool = false,
+          const Multimem & = {})
       : _coop(coop), _state(aclshmemBarrierState(dc.gridSyncState, 0, index)),
         _base(0), _teamSize(team.nRanks), _teamRank(team.rank),
         _stride(team.stride) {

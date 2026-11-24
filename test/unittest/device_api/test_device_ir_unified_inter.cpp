@@ -375,9 +375,8 @@ int main(int argc, char *argv[]) {
       constexpr size_t kPutValueStrideWords =
           kPutValueStrideBytes / sizeof(uint64_t);
       // 0xAA sentinel: an untouched slot must not look like a landed zero.
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0xAA,
-                                          6 * kPutValueStrideBytes,
-                                          flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemset(
+          recvBuff, 0xAA, 6 * kPutValueStrideBytes, flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));

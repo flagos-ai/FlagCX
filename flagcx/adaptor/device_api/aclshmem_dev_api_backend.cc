@@ -5,8 +5,8 @@
  * Linked instead of default_dev_api_backend.cc when USE_SHMEM=1.
  ************************************************************************/
 
-#include "adaptor.h"
 #include "aclshmem_adaptor.h"
+#include "adaptor.h"
 #include "dev_api_backend.h"
 #include "device_api/aclshmem_comm_traits.h"
 #include "device_api/flagcx_device.h"
@@ -43,7 +43,8 @@ aclshmemDevApiCommCreate(flagcxComm_t comm,
   if (ret != flagcxSuccess)
     return ret;
 
-  flagcxDevCommRequirements shmemReqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  flagcxDevCommRequirements shmemReqs =
+      FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   size_t copySize = reqsSize < sizeof(shmemReqs) ? reqsSize : sizeof(shmemReqs);
   memcpy(&shmemReqs, reqs, copySize);
   // The common layer owns the context count; metadata must be partitioned
@@ -201,8 +202,7 @@ fail:
   return res;
 }
 
-static flagcxResult_t
-aclshmemDevApiCommFreeDevicePtr(flagcxDevComm_t devComm) {
+static flagcxResult_t aclshmemDevApiCommFreeDevicePtr(flagcxDevComm_t devComm) {
   if (!devComm)
     return flagcxSuccess;
   pthread_mutex_lock(&devComm->cachedPtrMutex);
