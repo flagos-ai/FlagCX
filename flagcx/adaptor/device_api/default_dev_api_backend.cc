@@ -265,14 +265,10 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
         snprintf(peerPath, sizeof(peerPath),
                  "/dev/shm/flagcx_barrier_%016llx_%d",
                  (unsigned long long)comm->magic, globalR);
-        void *peerPtr = nullptr;
-        flagcxShmHandle_t peerHandle = nullptr;
-        res = flagcxShmOpen(peerPath, sizeof(peerPath), barrierSize, &peerPtr,
-                            nullptr, -1, &peerHandle);
-        peerCpuPtrs[lr] = peerPtr;
-        peerShmHandles[lr] = peerHandle;
-        if (res != flagcxSuccess)
-          goto fail_peer_shm;
+        FLAGCXCHECKGOTO(flagcxShmOpen(peerPath, sizeof(peerPath), barrierSize,
+                                      &peerCpuPtrs[lr], nullptr, -1,
+                                      &peerShmHandles[lr]),
+                        res, fail_peer_shm);
       }
     }
 
@@ -999,18 +995,14 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
         devComm->peerShmHandles[lr] = NULL;
       if (devComm->peerShmHandles[lr] == NULL)
         continue;
-      flagcxResult_t result = flagcxShmClose(devComm->peerShmHandles[lr]);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxShmClose(devComm->peerShmHandles[lr]));
       devComm->peerShmHandles[lr] = NULL;
     }
     free(devComm->peerShmHandles);
     devComm->peerShmHandles = NULL;
   }
   if (devComm->myShmHandle != NULL) {
-    flagcxResult_t result = flagcxShmClose(devComm->myShmHandle);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxShmClose(devComm->myShmHandle));
     devComm->myShmHandle = NULL;
   }
   devComm->localBarrierShmPtr = NULL;
@@ -1038,18 +1030,14 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
         devComm->peerSignalShmHandles[lr] = NULL;
       if (devComm->peerSignalShmHandles[lr] == NULL)
         continue;
-      flagcxResult_t result = flagcxShmClose(devComm->peerSignalShmHandles[lr]);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxShmClose(devComm->peerSignalShmHandles[lr]));
       devComm->peerSignalShmHandles[lr] = NULL;
     }
     free(devComm->peerSignalShmHandles);
     devComm->peerSignalShmHandles = NULL;
   }
   if (devComm->mySignalShmHandle != NULL) {
-    flagcxResult_t result = flagcxShmClose(devComm->mySignalShmHandle);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxShmClose(devComm->mySignalShmHandle));
     devComm->mySignalShmHandle = NULL;
   }
   devComm->signalHostBuffer = NULL;

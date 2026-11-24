@@ -650,15 +650,9 @@ flagcxResult_t flagcxNetSocketCloseListen(void *opaqueComm) {
       (struct flagcxNetSocketListenComm *)opaqueComm;
   if (comm) {
     int ready;
-    {
-      flagcxResult_t result = flagcxSocketReady(&comm->sock, &ready);
-      if (result != flagcxSuccess)
-        return result;
-    }
+    FLAGCXCHECK(flagcxSocketReady(&comm->sock, &ready));
     if (ready) {
-      flagcxResult_t result = flagcxSocketClose(&comm->sock);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxSocketClose(&comm->sock));
     }
     free(comm);
   }
@@ -683,26 +677,14 @@ flagcxResult_t flagcxNetSocketClose(void *opaqueComm) {
       res->threadTaskQueue.tasks = NULL;
     }
     int ready;
-    {
-      flagcxResult_t result = flagcxSocketReady(&comm->ctrlSock, &ready);
-      if (result != flagcxSuccess)
-        return result;
-    }
+    FLAGCXCHECK(flagcxSocketReady(&comm->ctrlSock, &ready));
     if (ready) {
-      flagcxResult_t result = flagcxSocketClose(&comm->ctrlSock);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxSocketClose(&comm->ctrlSock));
     }
     for (int i = 0; i < comm->nSocks; i++) {
-      {
-        flagcxResult_t result = flagcxSocketReady(&comm->socks[i], &ready);
-        if (result != flagcxSuccess)
-          return result;
-      }
+      FLAGCXCHECK(flagcxSocketReady(&comm->socks[i], &ready));
       if (ready) {
-        flagcxResult_t result = flagcxSocketClose(&comm->socks[i]);
-        if (result != flagcxSuccess)
-          return result;
+        FLAGCXCHECK(flagcxSocketClose(&comm->socks[i]));
       }
     }
     free(comm);

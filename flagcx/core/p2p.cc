@@ -1091,10 +1091,8 @@ p2pRegisterBuffer(flagcxHeteroComm *comm, const void *userbuff, size_t buffsize,
       return flagcxInProgress;
     }
     if (existingInfo != nullptr) {
-      flagcxResult_t result = globalRegPool.addP2pHandle(
-          comm, regItem, existingInfo, existingInfo->ipcProxyconn);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(globalRegPool.addP2pHandle(comm, regItem, existingInfo,
+                                             existingInfo->ipcProxyconn));
     }
 
     if (existingInfo &&
@@ -1600,11 +1598,7 @@ flagcxResult_t flagcxP2pReleaseLocalFifo(struct flagcxP2pResources *resources,
   }
 
   uint64_t startNs = 0;
-  do {
-    flagcxResult_t cleanupResult = flagcxP2pMonotonicTimeNs(&startNs);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
-  } while (0);
+  FLAGCXCHECK(flagcxP2pMonotonicTimeNs(&startNs));
   uint64_t timeoutNs = 0;
   if (timeoutMs > 0) {
     timeoutNs = (uint64_t)timeoutMs > UINT64_MAX / 1000000ULL
@@ -1614,11 +1608,7 @@ flagcxResult_t flagcxP2pReleaseLocalFifo(struct flagcxP2pResources *resources,
   while (__atomic_load_n(&resources->shm->fifoImportClosed, __ATOMIC_ACQUIRE) !=
          flagcxP2pFifoImportClosed) {
     uint64_t nowNs = 0;
-    do {
-      flagcxResult_t cleanupResult = flagcxP2pMonotonicTimeNs(&nowNs);
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-    } while (0);
+    FLAGCXCHECK(flagcxP2pMonotonicTimeNs(&nowNs));
     if (timeoutNs == 0 || nowNs - startNs >= timeoutNs) {
       WARN("P2P FIFO free: timed out waiting for peer to close the import of "
            "local base %p; preserving the allocation",
@@ -1671,9 +1661,7 @@ flagcxResult_t flagcxP2pSendProxyFree(struct flagcxP2pResources *resources) {
     resources->proxyInfo.stream = NULL;
   }
   if (resources->proxyInfo.desc.handle != NULL) {
-    result = flagcxShmIpcClose(&resources->proxyInfo.desc);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxShmIpcClose(&resources->proxyInfo.desc));
     resources->proxyInfo.shm = NULL;
   }
   return flagcxSuccess;
@@ -1703,9 +1691,7 @@ flagcxResult_t flagcxP2pRecvProxyFree(struct flagcxP2pResources *resources) {
     resources->proxyInfo.stream = NULL;
   }
   if (resources->desc.handle != NULL) {
-    result = flagcxShmIpcClose(&resources->desc);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxShmIpcClose(&resources->desc));
     resources->shm = NULL;
     resources->proxyInfo.shm = NULL;
   }

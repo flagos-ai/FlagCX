@@ -43,18 +43,14 @@ static flagcxResult_t flagcxNetAdaptorPluginLoad() {
     WARN("ADAPTOR/Plugin: Failed to find symbol 'flagcxNetAdaptorPlugin_v1' in "
          "'%s': %s",
          envValue, dlerror());
-    flagcxResult_t closeResult = flagcxAdaptorClosePluginLib(netPluginDlHandle);
-    if (closeResult != flagcxSuccess)
-      return closeResult;
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(netPluginDlHandle));
     netPluginDlHandle = NULL;
     return flagcxSuccess;
   }
 
   if (flagcxCalloc(&upgradedNetPluginAdaptor, 1) != flagcxSuccess) {
     WARN("ADAPTOR/Plugin: Failed to allocate upgraded net adaptor struct");
-    flagcxResult_t closeResult = flagcxAdaptorClosePluginLib(netPluginDlHandle);
-    if (closeResult != flagcxSuccess)
-      return closeResult;
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(netPluginDlHandle));
     netPluginDlHandle = NULL;
     return flagcxSystemError;
   }
@@ -77,9 +73,7 @@ static flagcxResult_t flagcxNetAdaptorPluginLoad() {
          envValue);
     free(upgradedNetPluginAdaptor);
     upgradedNetPluginAdaptor = NULL;
-    flagcxResult_t closeResult = flagcxAdaptorClosePluginLib(netPluginDlHandle);
-    if (closeResult != flagcxSuccess)
-      return closeResult;
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(netPluginDlHandle));
     netPluginDlHandle = NULL;
     return flagcxSuccess;
   }
@@ -91,9 +85,7 @@ static flagcxResult_t flagcxNetAdaptorPluginLoad() {
 }
 
 static flagcxResult_t flagcxNetAdaptorPluginUnload() {
-  flagcxResult_t result = flagcxAdaptorClosePluginLib(netPluginDlHandle);
-  if (result != flagcxSuccess)
-    return result;
+  FLAGCXCHECK(flagcxAdaptorClosePluginLib(netPluginDlHandle));
   flagcxNetAdaptors[0] = NULL;
   flagcxNetStates[0] = flagcxNetStateInit;
   free(upgradedNetPluginAdaptor);
@@ -122,9 +114,7 @@ flagcxResult_t flagcxNetAdaptorPluginFinalize() {
   if (netPluginRefCount == 0)
     return flagcxSuccess;
   if (netPluginRefCount == 1) {
-    flagcxResult_t result = flagcxNetAdaptorPluginUnload();
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxNetAdaptorPluginUnload());
   }
   --netPluginRefCount;
   return flagcxSuccess;

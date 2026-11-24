@@ -606,9 +606,7 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t *owner) {
     return result;
   flagcxResult_t proxyResult = comm->destroyProxyResult;
   if (comm->netPluginHeld) {
-    result = flagcxNetAdaptorPluginFinalize();
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxNetAdaptorPluginFinalize());
     comm->netPluginHeld = false;
   }
   delete comm->workerPool;

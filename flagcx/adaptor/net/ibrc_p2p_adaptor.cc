@@ -436,9 +436,7 @@ flagcxP2pDestroyQps(int ibDevN, struct flagcxIbQp *qp_list, int numQps) {
   for (int i = 0; i < numQps; i++) {
     if (qp_list[i].qp) {
       flagcxP2pPoolUnregisterQp(ibDevN, qp_list[i].qp);
-      flagcxResult_t result = flagcxWrapIbvDestroyQp(qp_list[i].qp);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxWrapIbvDestroyQp(qp_list[i].qp));
       qp_list[i].qp = NULL;
     }
   }
@@ -1077,19 +1075,13 @@ static flagcxResult_t flagcxP2pReleasePd(int ibDevN) {
 static flagcxResult_t flagcxP2pCloseSend(void *sendComm) {
   struct flagcxP2pSendComm *comm = (struct flagcxP2pSendComm *)sendComm;
   if (comm) {
-    flagcxResult_t result =
-        flagcxP2pDestroyQps(comm->ibDevN, comm->qp_list_, comm->numQps);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(
+        flagcxP2pDestroyQps(comm->ibDevN, comm->qp_list_, comm->numQps));
     if (!comm->pdReleased) {
-      result = flagcxP2pReleasePd(comm->ibDevN);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxP2pReleasePd(comm->ibDevN));
       comm->pdReleased = true;
     }
-    result = flagcxSocketClose(&comm->sock);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxSocketClose(&comm->sock));
     free(comm);
   }
   return flagcxSuccess;
@@ -1107,19 +1099,13 @@ flagcxResult_t flagcxNetIbP2pAbortSend(void *sendComm) {
 static flagcxResult_t flagcxP2pCloseRecv(void *recvComm) {
   struct flagcxP2pRecvComm *comm = (struct flagcxP2pRecvComm *)recvComm;
   if (comm) {
-    flagcxResult_t result =
-        flagcxP2pDestroyQps(comm->ibDevN, comm->qp_list_, comm->numQps);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(
+        flagcxP2pDestroyQps(comm->ibDevN, comm->qp_list_, comm->numQps));
     if (!comm->pdReleased) {
-      result = flagcxP2pReleasePd(comm->ibDevN);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxP2pReleasePd(comm->ibDevN));
       comm->pdReleased = true;
     }
-    result = flagcxSocketClose(&comm->sock);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxSocketClose(&comm->sock));
     free(comm);
   }
   return flagcxSuccess;

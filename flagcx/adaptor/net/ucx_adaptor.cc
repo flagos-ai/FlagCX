@@ -1431,20 +1431,13 @@ flagcxResult_t flagcxUcxCloseSend(void *sendComm) {
   flagcxUcxComm_t *comm = (flagcxUcxComm_t *)sendComm;
   if (comm == NULL)
     return flagcxSuccess;
-  flagcxResult_t result =
-      flagcxUcxCloseEndpoint(&comm->ep, comm->ucxWorker->worker);
-  if (result != flagcxSuccess)
-    return result;
+  FLAGCXCHECK(flagcxUcxCloseEndpoint(&comm->ep, comm->ucxWorker->worker));
   if (!comm->closeNotified) {
     int close = 1;
-    result = flagcxSocketSend(&comm->sock, &close, sizeof(close));
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxSocketSend(&comm->sock, &close, sizeof(close)));
     comm->closeNotified = true;
   }
-  result = flagcxUcxFreeWorker(comm->ucxWorker);
-  if (result != flagcxSuccess)
-    return result;
+  FLAGCXCHECK(flagcxUcxFreeWorker(comm->ucxWorker));
   free(comm);
   return flagcxSuccess;
 }
@@ -1454,10 +1447,8 @@ flagcxResult_t flagcxUcxCloseRecv(void *recvComm) {
   if (comm == NULL)
     return flagcxSuccess;
   if (comm->gpuFlush.enabled) {
-    flagcxResult_t result = flagcxUcxCloseEndpoint(&comm->gpuFlush.flushEp,
-                                                   comm->ucxWorker->worker);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxUcxCloseEndpoint(&comm->gpuFlush.flushEp,
+                                       comm->ucxWorker->worker));
     comm->gpuFlush.enabled = 0;
   }
   return flagcxUcxCloseSend(comm);
@@ -1467,9 +1458,7 @@ flagcxResult_t flagcxUcxCloseListen(void *listenComm) {
   flagcxUcxListenComm_t *comm = (flagcxUcxListenComm_t *)listenComm;
   if (comm == NULL)
     return flagcxSuccess;
-  flagcxResult_t result = flagcxSocketClose(&comm->sock);
-  if (result != flagcxSuccess)
-    return result;
+  FLAGCXCHECK(flagcxSocketClose(&comm->sock));
   free(comm);
   return flagcxSuccess;
 }

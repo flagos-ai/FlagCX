@@ -545,10 +545,12 @@ flagcxResult_t flagcxProxyCallAsync(struct flagcxHeteroComm *comm,
 
 // This function will internally call flagcxProxyCallAsync() and spin until
 // flagcxPollProxyResponse() confirms the result is received
+// responseReceived distinguishes a complete error reply from a lost reply.
 flagcxResult_t flagcxProxyCallBlocking(struct flagcxHeteroComm *comm,
                                        struct flagcxProxyConnector *proxyConn,
                                        int type, void *reqBuff, int reqSize,
-                                       void *respBuff, int respSize);
+                                       void *respBuff, int respSize,
+                                       bool *responseReceived = NULL);
 flagcxResult_t flagcxPollProxyResponse(struct flagcxHeteroComm *comm,
                                        struct flagcxProxyConnector *proxyConn,
                                        void *respBuff, void *opId);

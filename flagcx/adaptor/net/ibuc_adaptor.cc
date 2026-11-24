@@ -2079,9 +2079,7 @@ flagcxResult_t flagcxIbucDeregMrInternal(flagcxIbNetCommDevBase *base,
 
       // Keep the cache entry intact if deregistration fails so the owner can
       // retry and the live MR cannot become detached from its wrapper.
-      res = flagcxWrapIbvDeregMr(mhandle);
-      if (res != flagcxSuccess)
-        goto returning;
+      FLAGCXCHECKGOTO(flagcxWrapIbvDeregMr(mhandle), res, returning);
       cache->population--;
       if (i < cache->population) {
         memmove(&cache->slots[i], &cache->slots[i + 1],
@@ -2941,9 +2939,7 @@ flagcxResult_t flagcxIbucCloseListen(void *listenComm) {
     if (result != flagcxSuccess)
       return result;
   }
-  flagcxResult_t result = flagcxSocketClose(&comm->sock);
-  if (result != flagcxSuccess)
-    return result;
+  FLAGCXCHECK(flagcxSocketClose(&comm->sock));
   free(comm->stage.buffer);
   comm->stage.buffer = NULL;
   free(comm);

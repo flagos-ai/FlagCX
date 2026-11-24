@@ -151,7 +151,10 @@ static flagcxResult_t proxyServiceCompleteOp(struct flagcxProxyLocalPeer *peer,
     // permit the source to overwrite the relay-owned buffer.
     op->respBuff[0] = result == flagcxSuccess ? 1 : 0;
   } else if (result != flagcxSuccess && op->respBuff != NULL &&
-             op->respSize > 0) {
+             op->respSize > 0 &&
+             !(op->type == flagcxProxyMsgRegister && op->connection != NULL &&
+               op->connection->transport == TRANSPORT_NET &&
+               op->respSize == sizeof(void *))) {
     memset(op->respBuff, 0, op->respSize);
   }
 
@@ -1160,7 +1163,6 @@ static flagcxResult_t
 flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
                       struct flagcxProxyState *proxyState, void *reqBuff,
                       int reqSize, void *respBuff, int respSize, int *done) {
-  (void)proxyState;
   (void)reqSize;
   if (connection == NULL || connection->transportResources == NULL ||
       done == NULL)
@@ -1171,7 +1173,8 @@ flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
     struct sendNetResources *resources =
         (struct sendNetResources *)connection->transportResources;
     if (resources->relayIpcBuffer) {
-      if (respBuff == NULL || respSize != sizeof(flagcxNetRelayBufferInfo))
+      if (proxyState == NULL || respBuff == NULL ||
+          respSize != sizeof(flagcxNetRelayBufferInfo))
         return flagcxInvalidArgument;
     } else if (respSize != 0) {
       return flagcxInvalidArgument;
@@ -1295,20 +1298,24 @@ flagcxNetProxyRegister(struct flagcxProxyConnection *connection,
           : ((struct recvNetResources *)connection->transportResources)
                 ->netAdaptor;
 
+  flagcxResult_t result;
   if (dmaBufferSupport) {
     int dmabufFd;
     FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
         &dmabufFd, (void *)info->buffer, info->size, 0));
-    flagcxResult_t result =
+    result =
         netAdaptor->regMrDmaBuf(netComm, (void *)info->buffer, info->size,
                                 FLAGCX_PTR_CUDA, 0ULL, dmabufFd, 0, &handle);
     (void)close(dmabufFd);
-    FLAGCXCHECK(result);
   } else {
-    FLAGCXCHECK(netAdaptor->regMr(netComm, (void *)info->buffer, info->size,
-                                  FLAGCX_PTR_CUDA, 0, &handle));
+    result = netAdaptor->regMr(netComm, (void *)info->buffer, info->size,
+                               FLAGCX_PTR_CUDA, 0, &handle);
   }
+  // A provider may retain an allocation on failure. Return its handle so the
+  // registration owner can retry deregistration instead of losing it.
   memcpy(respBuff, &handle, sizeof(handle));
+  if (result != flagcxSuccess)
+    return result;
   *done = 1;
   return flagcxSuccess;
 }
@@ -1388,9 +1395,9 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
     } else if (op->type == flagcxProxyMsgConnect) {
       if (tcomm->proxyConnect == NULL)
         return flagcxNotSupported;
-      FLAGCXCHECK(tcomm->proxyConnect(op->connection, NULL, op->reqBuff,
-                                      op->reqSize, op->respBuff, op->respSize,
-                                      &done));
+      FLAGCXCHECK(tcomm->proxyConnect(op->connection, comm->proxyState,
+                                      op->reqBuff, op->reqSize, op->respBuff,
+                                      op->respSize, &done));
     } else if (op->type == flagcxProxyMsgRegister) {
       if (tcomm->proxyRegister == NULL)
         return flagcxNotSupported;
@@ -1695,7 +1702,8 @@ proxyServiceInitOp(int type, struct flagcxProxyLocalPeer *peer,
   (*asyncOpCount)++;
   ret = proxyProgressAsync(peer, asyncOp, asyncOpCount, connectionPool, comm);
   if (ret != flagcxSuccess && ret != flagcxInProgress) {
-    if (!proxyCleanupOpType(type))
+    // A rejected registration does not invalidate the established connection.
+    if (!proxyCleanupOpType(type) && type != flagcxProxyMsgRegister)
       flagcxProxyRecordConnectionError(asyncOp->connection, ret);
     flagcxResult_t responseResult =
         proxyServiceCompleteOp(peer, asyncOp, asyncOpCount, ret);
@@ -1715,17 +1723,23 @@ fail:
 flagcxResult_t flagcxProxyCallBlocking(struct flagcxHeteroComm *comm,
                                        struct flagcxProxyConnector *proxyConn,
                                        int type, void *reqBuff, int reqSize,
-                                       void *respBuff, int respSize) {
+                                       void *respBuff, int respSize,
+                                       bool *responseReceived) {
+  if (responseReceived != NULL)
+    *responseReceived = false;
   // Alloc some memory to act as a handle
   flagcxResult_t res = flagcxSuccess;
   void *opId = malloc(1);
+  if (opId == NULL)
+    return flagcxSystemError;
 
   FLAGCXCHECKGOTO(flagcxProxyCallAsync(comm, proxyConn, type, reqBuff, reqSize,
                                        respSize, opId),
                   res, fail);
 
   do {
-    res = flagcxPollProxyResponse(comm, proxyConn, respBuff, opId);
+    res = flagcxPollProxyResponseWithStatus(comm, proxyConn, respBuff, opId,
+                                            responseReceived);
   } while (res == flagcxInProgress);
 
   if (!proxyConn->sameProcess && proxyConn->remoteConnection != NULL &&
@@ -2066,9 +2080,7 @@ static flagcxResult_t flagcxProxyCleanupLocal(struct flagcxHeteroComm *comm) {
       auto *peer = state->servicePeers + i;
       while (peer->asyncOps != NULL)
         asyncProxyOpDequeue(peer, peer->asyncOps);
-      result = flagcxSocketClose(&peer->sock);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxSocketClose(&peer->sock));
     }
   }
   result = flagcxProxyFreeConnections(state->connectionPool, comm);
@@ -2082,9 +2094,7 @@ static flagcxResult_t flagcxProxyCleanupLocal(struct flagcxHeteroComm *comm) {
   state->servicePollFds = NULL;
   state->nServicePeers = 0;
   if (state->initialized == 1) {
-    result = flagcxSocketClose(&state->listenSock);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxSocketClose(&state->listenSock));
   }
   return flagcxSuccess;
 }
@@ -2173,7 +2183,8 @@ void *flagcxProxyService(void *args) {
           WARN("[Service thread] Error encountered progressing operation with "
                "res=%d",
                res);
-          if (!proxyCleanupOpType(op->type))
+          if (!proxyCleanupOpType(op->type) &&
+              op->type != flagcxProxyMsgRegister)
             flagcxProxyRecordConnectionError(op->connection, res);
           flagcxResult_t responseResult =
               proxyServiceCompleteOp(peer, op, &asyncOpCount, res);

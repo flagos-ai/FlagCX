@@ -835,9 +835,7 @@ flagcxResult_t flagcxNetInit(struct flagcxHeteroComm *comm) {
     // This populates flagcxNetAdaptors[0] with the plugin.
     // Must be called before the selection loop below.
     if (!comm->netPluginHeld) {
-      flagcxResult_t result = flagcxNetAdaptorPluginInit(&comm->netPluginHeld);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxNetAdaptorPluginInit(&comm->netPluginHeld));
     }
   }
 
@@ -1687,14 +1685,14 @@ static flagcxResult_t netRegisterBuffer(flagcxHeteroComm *comm,
             globalRegPool.reserveNetHandle(regRecord, comm, peerProxyConn);
         if (result != flagcxSuccess)
           return result;
-        result = flagcxProxyCallBlocking(
-            comm, peerProxyConn, flagcxProxyMsgRegister, &info,
-            sizeof(struct netRegInfo), &handle, sizeof(void *));
-        flagcxResult_t saved = globalRegPool.addNetHandle(
-            comm, regRecord, handle, peerProxyConn,
-            result == flagcxSuccess || handle != NULL);
-        if (saved != flagcxSuccess)
-          return saved;
+        bool responseReceived = false;
+        result =
+            flagcxProxyCallBlocking(comm, peerProxyConn, flagcxProxyMsgRegister,
+                                    &info, sizeof(struct netRegInfo), &handle,
+                                    sizeof(void *), &responseReceived);
+        FLAGCXCHECK(
+            globalRegPool.addNetHandle(comm, regRecord, handle, peerProxyConn,
+                                       responseReceived || handle != NULL));
         if (result != flagcxSuccess)
           return result;
         if (handle) {

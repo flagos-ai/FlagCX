@@ -1015,9 +1015,7 @@ flagcxResult_t flagcxIbDestroyBase(struct flagcxIbNetCommDevBase *base) {
   if (base == NULL)
     return flagcxInvalidArgument;
   if (base->cq != NULL) {
-    flagcxResult_t result = flagcxWrapIbvDestroyCq(base->cq);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxWrapIbvDestroyCq(base->cq));
     base->cq = NULL;
   }
   if (base->pd == NULL)
@@ -2217,9 +2215,7 @@ flagcxResult_t flagcxIbDeregMrInternal(flagcxIbNetCommDevBase *base,
 
       // Keep the cache entry intact if verbs deregistration fails so cleanup
       // can be retried and the MR never becomes an untracked live resource.
-      res = flagcxWrapIbvDeregMr(mhandle);
-      if (res != flagcxSuccess)
-        goto returning;
+      FLAGCXCHECKGOTO(flagcxWrapIbvDeregMr(mhandle), res, returning);
       cache->population--;
       if (i < cache->population) {
         // Registration lookup assumes address-sorted cache entries.
@@ -3215,67 +3211,45 @@ flagcxResult_t flagcxIbCloseSend(void *opaque) {
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)opaque;
   if (comm == NULL)
     return flagcxSuccess;
-  flagcxResult_t result = flagcxIbDrainDeferredMrs(&comm->base);
-  if (result != flagcxSuccess)
-    return result;
-  result = flagcxSocketClose(&comm->base.sock);
-  if (result != flagcxSuccess)
-    return result;
+  FLAGCXCHECK(flagcxIbDrainDeferredMrs(&comm->base));
+  FLAGCXCHECK(flagcxSocketClose(&comm->base.sock));
   for (int q = 0; q < comm->base.nqps; ++q) {
     if (comm->base.qps[q].qp == NULL)
       continue;
-    result = flagcxWrapIbvDestroyQp(comm->base.qps[q].qp);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxWrapIbvDestroyQp(comm->base.qps[q].qp));
     comm->base.qps[q].qp = NULL;
   }
   for (int i = 0; i < comm->base.ndevs; ++i) {
-    result = flagcxIbDestroyCtrlQp(&comm->devs[i].ctrlQp);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxIbDestroyCtrlQp(&comm->devs[i].ctrlQp));
   }
-  result = flagcxIbRetransDestroy(&comm->retrans);
-  if (result != flagcxSuccess)
-    return result;
+  FLAGCXCHECK(flagcxIbRetransDestroy(&comm->retrans));
   for (int i = 0; i < comm->base.ndevs; ++i) {
     struct flagcxIbSendCommDev *dev = comm->devs + i;
     if (dev->ackMr != NULL) {
-      result = flagcxWrapIbvDeregMr(dev->ackMr);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxWrapIbvDeregMr(dev->ackMr));
       dev->ackMr = NULL;
     }
     if (dev->fifoMr != NULL) {
-      result = flagcxWrapIbvDeregMr(dev->fifoMr);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxWrapIbvDeregMr(dev->fifoMr));
       dev->fifoMr = NULL;
     }
     if (dev->putSignalScratchpadMr != NULL) {
-      result = flagcxWrapIbvDeregMr(dev->putSignalScratchpadMr);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxWrapIbvDeregMr(dev->putSignalScratchpadMr));
       dev->putSignalScratchpadMr = NULL;
     }
     if (comm->remSizesFifo.mrs[i] != NULL) {
-      result = flagcxWrapIbvDeregMr(comm->remSizesFifo.mrs[i]);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxWrapIbvDeregMr(comm->remSizesFifo.mrs[i]));
       comm->remSizesFifo.mrs[i] = NULL;
     }
     free(dev->ackBuffer);
     dev->ackBuffer = NULL;
   }
   if (comm->retransHdrMr != NULL) {
-    result = flagcxWrapIbvDeregMr(comm->retransHdrMr);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxWrapIbvDeregMr(comm->retransHdrMr));
     comm->retransHdrMr = NULL;
   }
   for (int i = 0; i < comm->base.ndevs; ++i) {
-    result = flagcxIbDestroyBase(&comm->devs[i].base);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxIbDestroyBase(&comm->devs[i].base));
   }
   free(comm);
   return flagcxSuccess;
@@ -3285,61 +3259,39 @@ flagcxResult_t flagcxIbCloseRecv(void *opaque) {
   struct flagcxIbRecvComm *comm = (struct flagcxIbRecvComm *)opaque;
   if (comm == NULL)
     return flagcxSuccess;
-  flagcxResult_t result = flagcxIbDrainDeferredMrs(&comm->base);
-  if (result != flagcxSuccess)
-    return result;
-  result = flagcxSocketClose(&comm->base.sock);
-  if (result != flagcxSuccess)
-    return result;
+  FLAGCXCHECK(flagcxIbDrainDeferredMrs(&comm->base));
+  FLAGCXCHECK(flagcxSocketClose(&comm->base.sock));
   for (int q = 0; q < comm->base.nqps; ++q) {
     if (comm->base.qps[q].qp == NULL)
       continue;
-    result = flagcxWrapIbvDestroyQp(comm->base.qps[q].qp);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxWrapIbvDestroyQp(comm->base.qps[q].qp));
     comm->base.qps[q].qp = NULL;
   }
   for (int i = 0; i < comm->base.ndevs; ++i) {
-    result = flagcxIbDestroyCtrlQp(&comm->devs[i].ctrlQp);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxIbDestroyCtrlQp(&comm->devs[i].ctrlQp));
   }
-  result = flagcxIbDestroySrq(&comm->srqMgr);
-  if (result != flagcxSuccess)
-    return result;
-  result = flagcxIbDestroyFlushResources(comm);
-  if (result != flagcxSuccess)
-    return result;
-  result = flagcxIbRetransDestroy(&comm->retrans);
-  if (result != flagcxSuccess)
-    return result;
+  FLAGCXCHECK(flagcxIbDestroySrq(&comm->srqMgr));
+  FLAGCXCHECK(flagcxIbDestroyFlushResources(comm));
+  FLAGCXCHECK(flagcxIbRetransDestroy(&comm->retrans));
   for (int i = 0; i < comm->base.ndevs; ++i) {
     struct flagcxIbRecvCommDev *dev = comm->devs + i;
     if (dev->ackMr != NULL) {
-      result = flagcxWrapIbvDeregMr(dev->ackMr);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxWrapIbvDeregMr(dev->ackMr));
       dev->ackMr = NULL;
     }
     if (dev->fifoMr != NULL) {
-      result = flagcxWrapIbvDeregMr(dev->fifoMr);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxWrapIbvDeregMr(dev->fifoMr));
       dev->fifoMr = NULL;
     }
     if (dev->sizesFifoMr != NULL) {
-      result = flagcxWrapIbvDeregMr(dev->sizesFifoMr);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxWrapIbvDeregMr(dev->sizesFifoMr));
       dev->sizesFifoMr = NULL;
     }
     free(dev->ackBuffer);
     dev->ackBuffer = NULL;
   }
   for (int i = 0; i < comm->base.ndevs; ++i) {
-    result = flagcxIbDestroyBase(&comm->devs[i].base);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxIbDestroyBase(&comm->devs[i].base));
   }
   free(comm);
   return flagcxSuccess;

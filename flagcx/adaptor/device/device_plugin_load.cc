@@ -47,10 +47,7 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
     WARN("ADAPTOR/Plugin: Failed to find symbol 'flagcxDeviceAdaptorPlugin_v1' "
          "in '%s': %s",
          envValue, dlerror());
-    flagcxResult_t closeResult =
-        flagcxAdaptorClosePluginLib(devicePluginDlHandle);
-    if (closeResult != flagcxSuccess)
-      return closeResult;
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(devicePluginDlHandle));
     devicePluginDlHandle = NULL;
     return flagcxSuccess;
   }
@@ -59,10 +56,7 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
   // _latest is an internal-only struct.
   if (flagcxCalloc(&upgradedPluginAdaptor, 1) != flagcxSuccess) {
     WARN("ADAPTOR/Plugin: Failed to allocate upgraded adaptor struct");
-    flagcxResult_t closeResult =
-        flagcxAdaptorClosePluginLib(devicePluginDlHandle);
-    if (closeResult != flagcxSuccess)
-      return closeResult;
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(devicePluginDlHandle));
     devicePluginDlHandle = NULL;
     return flagcxSystemError;
   }
@@ -98,10 +92,7 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
          envValue);
     free(upgradedPluginAdaptor);
     upgradedPluginAdaptor = NULL;
-    flagcxResult_t closeResult =
-        flagcxAdaptorClosePluginLib(devicePluginDlHandle);
-    if (closeResult != flagcxSuccess)
-      return closeResult;
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(devicePluginDlHandle));
     devicePluginDlHandle = NULL;
     return flagcxSuccess;
   }
@@ -112,10 +103,7 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
   if (poolResult != flagcxSuccess) {
     free(upgradedPluginAdaptor);
     upgradedPluginAdaptor = NULL;
-    flagcxResult_t closeResult =
-        flagcxAdaptorClosePluginLib(devicePluginDlHandle);
-    if (closeResult != flagcxSuccess)
-      return closeResult;
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(devicePluginDlHandle));
     devicePluginDlHandle = NULL;
     return poolResult;
   }
@@ -133,9 +121,7 @@ flagcxResult_t flagcxDeviceAdaptorPluginUnload() {
   flagcxResult_t result = streamValueBufferPool.clear();
   if (result != flagcxSuccess)
     return result;
-  result = flagcxAdaptorClosePluginLib(devicePluginDlHandle);
-  if (result != flagcxSuccess)
-    return result;
+  FLAGCXCHECK(flagcxAdaptorClosePluginLib(devicePluginDlHandle));
   flagcxClearStreamValueProbeCache();
   if (defaultDeviceAdaptor != NULL) {
     deviceAdaptor = defaultDeviceAdaptor;

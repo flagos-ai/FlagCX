@@ -45,9 +45,7 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
     WARN("ADAPTOR/Plugin: Failed to find symbol "
          "'flagcxCCLAdaptorPlugin_v1' in '%s': %s",
          envValue, dlerror());
-    flagcxResult_t closeResult = flagcxAdaptorClosePluginLib(cclPluginDlHandle);
-    if (closeResult != flagcxSuccess)
-      return closeResult;
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(cclPluginDlHandle));
     cclPluginDlHandle = NULL;
     return flagcxSuccess;
   }
@@ -55,9 +53,7 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
   cclUpgradedPlugin =
       (struct flagcxCCLAdaptor *)malloc(sizeof(struct flagcxCCLAdaptor));
   if (cclUpgradedPlugin == NULL) {
-    flagcxResult_t closeResult = flagcxAdaptorClosePluginLib(cclPluginDlHandle);
-    if (closeResult != flagcxSuccess)
-      return closeResult;
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(cclPluginDlHandle));
     cclPluginDlHandle = NULL;
     return flagcxSystemError;
   }
@@ -88,9 +84,7 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
          envValue);
     free(cclUpgradedPlugin);
     cclUpgradedPlugin = NULL;
-    flagcxResult_t closeResult = flagcxAdaptorClosePluginLib(cclPluginDlHandle);
-    if (closeResult != flagcxSuccess)
-      return closeResult;
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(cclPluginDlHandle));
     cclPluginDlHandle = NULL;
     return flagcxSuccess;
   }
@@ -103,9 +97,7 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
 }
 
 flagcxResult_t flagcxCCLAdaptorPluginUnload() {
-  flagcxResult_t result = flagcxAdaptorClosePluginLib(cclPluginDlHandle);
-  if (result != flagcxSuccess)
-    return result;
+  FLAGCXCHECK(flagcxAdaptorClosePluginLib(cclPluginDlHandle));
   if (cclDefaultDeviceAdaptor != NULL) {
     cclAdaptors[flagcxCCLAdaptorDevice] = cclDefaultDeviceAdaptor;
     cclDefaultDeviceAdaptor = NULL;
@@ -136,9 +128,7 @@ flagcxResult_t flagcxCCLAdaptorPluginFinalize() {
   if (cclPluginRefCount == 0)
     return flagcxSuccess;
   if (cclPluginRefCount == 1) {
-    flagcxResult_t result = flagcxCCLAdaptorPluginUnload();
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxCCLAdaptorPluginUnload());
   }
   --cclPluginRefCount;
   return flagcxSuccess;

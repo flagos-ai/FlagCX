@@ -152,9 +152,7 @@ flagcxResult_t flagcxShmClose(flagcxShmHandle_t handle) {
   if (state->shmPath != NULL) {
     if (state->shmPtr == NULL ||
         (state->refcount != NULL && *state->refcount > 0)) {
-      flagcxResult_t result = flagcxShmUnlink(handle);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(flagcxShmUnlink(handle));
     } else {
       state->shmPath = NULL;
     }
@@ -221,9 +219,7 @@ flagcxResult_t flagcxShmImportShareableBuffer(flagcxShmIpcDesc_t *desc,
 
 flagcxResult_t flagcxShmIpcClose(flagcxShmIpcDesc_t *desc) {
   if (desc) {
-    flagcxResult_t result = flagcxShmClose(desc->handle);
-    if (result != flagcxSuccess)
-      return result;
+    FLAGCXCHECK(flagcxShmClose(desc->handle));
     desc->handle = NULL;
   }
   return flagcxSuccess;
