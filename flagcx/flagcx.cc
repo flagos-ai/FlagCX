@@ -4297,8 +4297,11 @@ static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
   }
 
   if (stage == 4) {
-    if (!useHomoComm(comm) || useHeteroComm())
-      FLAGCXCHECK(flagcxHeteroCommPrepareDestroy(comm->heteroComm));
+    if (!useHomoComm(comm) || useHeteroComm()) {
+      flagcxResult_t result = flagcxHeteroCommPrepareDestroy(comm->heteroComm);
+      if (result != flagcxSuccess)
+        return result;
+    }
     while (comm->activeDevMems != nullptr)
       FLAGCXCHECK(flagcxDevMemDestroy(comm, comm->activeDevMems));
   }
@@ -4347,10 +4350,9 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxCommFreeInternalBuffers(comm));
 
   if ((!useHomoComm(comm) || useHeteroComm()) && comm->heteroComm != NULL) {
-    destroyResult = flagcxHeteroCommDestroy(comm->heteroComm);
+    destroyResult = flagcxHeteroCommDestroy(&comm->heteroComm);
     if (destroyResult != flagcxSuccess)
       return destroyResult;
-    comm->heteroComm = NULL;
   }
   // Automatic fallback also owns a host communicator without USE_HOST_COMM.
   if (comm->hostComm != NULL) {
