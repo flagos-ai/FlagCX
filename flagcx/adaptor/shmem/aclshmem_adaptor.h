@@ -22,6 +22,7 @@ struct flagcxShmemCommInternal {
 
   uint64_t *gridSyncState; // symmetric heap; 3 barrier kinds x slots
   uint64_t *scratchBuffer; // symmetric heap; putValue staging, 8B per ctx
+  int barrierCapacity;     // granted (kind, index) channels per barrier kind
 };
 
 #endif // FLAGCX_ACLSHMEM_ADAPTOR_H_

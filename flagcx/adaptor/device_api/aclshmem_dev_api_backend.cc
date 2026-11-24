@@ -29,6 +29,9 @@ static_assert(offsetof(flagcxShmemCommInternal, gridSyncState) ==
 static_assert(offsetof(flagcxShmemCommInternal, scratchBuffer) ==
                   offsetof(CommTraits<AclshmemBackend>::Comm, scratchBuffer),
               "scratchBuffer offset mismatch");
+static_assert(offsetof(flagcxShmemCommInternal, barrierCapacity) ==
+                  offsetof(CommTraits<AclshmemBackend>::Comm, barrierCapacity),
+              "barrierCapacity offset mismatch");
 
 static flagcxResult_t
 aclshmemDevApiCommCreate(flagcxComm_t comm,

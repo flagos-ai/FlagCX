@@ -144,6 +144,16 @@ aclshmemAdaptorDevCommCreate(flagcxComm_t comm,
     return flagcxInvalidArgument;
   *shmemComm = nullptr;
 
+  // Barrier channels: each count is the channel count of its kind
+  // (barrierCount = World, intraBarrierCount = Intra, interBarrierCount =
+  // Inter).  The device-side (kind, index) planes are sized from the largest
+  // request at creation and the device constructor traps beyond that capacity,
+  // so the reservation is honored rather than silently over-allocated; the
+  // unified IR's four indices are the floor (MC952 review P1).
+  if (reqs->barrierCount < 0 || reqs->intraBarrierCount < 0 ||
+      reqs->interBarrierCount < 0)
+    return flagcxInvalidArgument;
+
   auto *sc = new flagcxShmemCommInternal();
   memset(sc, 0, sizeof(*sc));
   sc->rank = comm->rank;
@@ -154,6 +164,15 @@ aclshmemAdaptorDevCommCreate(flagcxComm_t comm,
   sc->signalCount = reqs->interSignalCount;
   sc->counterCount = reqs->interCounterCount;
   int contextCount = reqs->interContextCount > 0 ? reqs->interContextCount : 1;
+
+  int barrierChannels = reqs->barrierCount;
+  if (reqs->intraBarrierCount > barrierChannels)
+    barrierChannels = reqs->intraBarrierCount;
+  if (reqs->interBarrierCount > barrierChannels)
+    barrierChannels = reqs->interBarrierCount;
+  if (barrierChannels < FLAGCX_ACLSHMEM_BARRIER_INDICES)
+    barrierChannels = FLAGCX_ACLSHMEM_BARRIER_INDICES;
+  sc->barrierCapacity = barrierChannels;
 
   // All state words are 32-bit: that is the only ordered read/write channel
   // measured on this soc (asc_dcci + __gm__ uint32), so no 64-bit word is
@@ -196,7 +215,7 @@ aclshmemAdaptorDevCommCreate(flagcxComm_t comm,
   // must live in the symmetric heap.
   {
     size_t gridWords = (size_t)FLAGCX_ACLSHMEM_BARRIER_KINDS *
-                       (size_t)FLAGCX_ACLSHMEM_BARRIER_INDICES *
+                       (size_t)sc->barrierCapacity *
                        (size_t)FLAGCX_ACLSHMEM_BARRIER_SLOTS;
     size_t gridBytes = gridWords * sizeof(uint32_t);
     sc->gridSyncState = (uint64_t *)aclshmem_malloc(gridBytes);

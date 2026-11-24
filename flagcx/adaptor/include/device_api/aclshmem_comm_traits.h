@@ -294,6 +294,19 @@ struct CommTraits<AclshmemBackend> {
 
     FLAGCX_ACLSHMEM_GM uint64_t *gridSyncState; // symmetric heap, 3 kinds
     FLAGCX_ACLSHMEM_GM uint64_t *scratchBuffer; // symmetric putValue source
+    int barrierCapacity; // granted (kind, index) channels; set at creation
+
+    // Barrier plane for one channel; see the Barriers section comment.  The
+    // planes are allocated to the capacity granted at communicator creation,
+    // so an index beyond it traps instead of aliasing another channel.
+    FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_ACLSHMEM_GM uint32_t *
+    barrierState(int kind, uint32_t index) const {
+      if (barrierCapacity <= 0 || index >= (uint32_t)barrierCapacity)
+        FLAGCX_DEVICE_TRAP();
+      return (FLAGCX_ACLSHMEM_GM uint32_t *)gridSyncState +
+             ((size_t)kind * (size_t)barrierCapacity + (size_t)index) *
+                 FLAGCX_ACLSHMEM_BARRIER_SLOTS;
+    }
 
     FLAGCX_DEVICE_INLINE_DECORATOR int getIntraRank() const {
       return intraRank;
@@ -354,6 +367,7 @@ struct CommTraits<AclshmemBackend> {
 #endif
       dc.gridSyncState = nullptr;
       dc.scratchBuffer = nullptr;
+      dc.barrierCapacity = FLAGCX_ACLSHMEM_BARRIER_INDICES;
     }
   };
 
@@ -551,8 +565,12 @@ struct CommTraits<AclshmemBackend> {
       coop.sync();
       if (coop.threadRank() == 0) {
         uint32_t shadow = aclshmemGmLoad32(shadowWord(signalId));
+        // Range-check the delta alone, then advance in the 32-bit domain:
+        // shadow + delta may be a valid sequence-number rollover while the
+        // outstanding distance stays below 2^31, so the widened sum must
+        // not be validated (MC952 review P2; default_completion.h advance).
         uint32_t target =
-            aclshmemCompletionValue((uint64_t)shadow + (uint64_t)leastDelta);
+            shadow + aclshmemCompletionValue((uint64_t)leastDelta);
         uint32_t current = spinSignal(signalId, target);
         if (before)
           *before = (Uint)shadow;
@@ -833,9 +851,10 @@ struct CommTraits<AclshmemBackend> {
 // scan of the team members' slots, read from the owner's own memory.  The
 // index is a channel dimension: concurrent Coop groups use distinct
 // indices (flagcx_device_core.h, flagcxDevBarrier), so each index owns its
-// own generation plane and two indices never alias.  Indices are
-// FLAGCX_ACLSHMEM_BARRIER_INDICES wide; anything beyond that is rejected
-// rather than folded onto another channel (MC952 review P1).
+// own generation plane and two indices never alias.  The channel width is
+// the largest count requested at communicator creation (floor:
+// FLAGCX_ACLSHMEM_BARRIER_INDICES); anything beyond the granted capacity is
+// rejected rather than folded onto another channel (MC952 review P1).
 // ============================================================
 // Tickets are pulled, never pushed.  A posted MTE put can be dropped; at
 // np=2 a 4B barrier ticket was lost after its sender had already passed the
@@ -844,17 +863,6 @@ struct CommTraits<AclshmemBackend> {
 // barrier has the same shape this file now uses: each PE stores its
 // generation in its own slot with a local store and peers poll that slot
 // through aclshmem_ptr(), a read being the one direction that cannot lose.
-
-// One state block per (kind, index); see the section comment above.
-FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_ACLSHMEM_GM uint32_t *
-aclshmemBarrierState(FLAGCX_ACLSHMEM_GM uint64_t *base, int kind,
-                     uint32_t index) {
-  if (index >= FLAGCX_ACLSHMEM_BARRIER_INDICES)
-    FLAGCX_DEVICE_TRAP();
-  return (FLAGCX_ACLSHMEM_GM uint32_t *)base +
-         ((size_t)kind * FLAGCX_ACLSHMEM_BARRIER_INDICES + (size_t)index) *
-             FLAGCX_ACLSHMEM_BARRIER_SLOTS;
-}
 
 template <typename Coop>
 struct Barrier<AclshmemBackend, flagcxTeamTagIntra, Coop> {
@@ -877,7 +885,7 @@ struct Barrier<AclshmemBackend, flagcxTeamTagIntra, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, const Comm &dc, Team team, uint32_t index, bool = false,
           const Multimem & = {})
-      : _coop(coop), _state(aclshmemBarrierState(dc.gridSyncState, 0, index)),
+      : _coop(coop), _state(dc.barrierState(0, index)),
         _base(0), _teamSize(team.nRanks), _teamRank(team.rank),
         _stride(team.stride) {
     _base = dc.rank - team.rank * team.stride;
@@ -940,7 +948,7 @@ struct Barrier<AclshmemBackend, flagcxTeamTagInter, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, const Net &, const Comm &dc, Team team, uint32_t index,
           int = 0)
-      : _coop(coop), _state(aclshmemBarrierState(dc.gridSyncState, 1, index)),
+      : _coop(coop), _state(dc.barrierState(1, index)),
         _base(dc.rank - team.rank * team.stride), _teamSize(team.nRanks),
         _teamRank(team.rank), _stride(team.stride) {}
 
@@ -1005,21 +1013,21 @@ struct Barrier<AclshmemBackend, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagWorld, const Net &, const Comm &dc,
           uint32_t index, bool, int)
-      : _coop(coop), _state(aclshmemBarrierState(dc.gridSyncState, 2, index)),
+      : _coop(coop), _state(dc.barrierState(2, index)),
         _base(0), _teamSize(dc.nRanks), _teamRank(dc.rank), _stride(1) {}
 
   // Intra-only form of the world barrier.
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagIntra, const Net &, const Comm &dc,
           uint32_t index, bool, int)
-      : _coop(coop), _state(aclshmemBarrierState(dc.gridSyncState, 2, index)),
+      : _coop(coop), _state(dc.barrierState(2, index)),
         _base(dc.rank - dc.intraRank), _teamSize(dc.intraSize),
         _teamRank(dc.intraRank), _stride(1) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagInter, const Net &, const Comm &dc,
           uint32_t index, bool, int)
-      : _coop(coop), _state(aclshmemBarrierState(dc.gridSyncState, 2, index)),
+      : _coop(coop), _state(dc.barrierState(2, index)),
         _base(dc.rank), _teamSize(1), _teamRank(0), _stride(1) {
     (void)dc;
   }

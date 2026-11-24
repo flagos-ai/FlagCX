@@ -39,9 +39,11 @@
 // Per barrier (kind, index): [0] local generation, [1, MAX_PES] arrival
 // slots.  The index names an independent channel - concurrent Coop groups
 // use different indices (flagcx_device_core.h, flagcxDevBarrier) - so every
-// index owns its own block instead of sharing one generation plane.  Four
-// covers the unified IR's per-block indices (S16 runs b = 0..3); a larger
-// index is rejected in the Barrier constructor, never aliased.
+// index owns its own block instead of sharing one generation plane.  The
+// plane width per kind is granted at communicator creation from the largest
+// requested barrier count, with FLAGCX_ACLSHMEM_BARRIER_INDICES as the floor
+// (it covers the unified IR's per-block indices, S16 runs b = 0..3); an index
+// beyond the granted capacity traps in the Barrier constructor, never aliased.
 #define FLAGCX_ACLSHMEM_BARRIER_SLOTS (1 + FLAGCX_ACLSHMEM_MAX_PES)
 #define FLAGCX_ACLSHMEM_BARRIER_KINDS 3
 #define FLAGCX_ACLSHMEM_BARRIER_INDICES 4
