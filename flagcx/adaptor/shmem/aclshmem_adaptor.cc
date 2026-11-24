@@ -69,12 +69,23 @@ static flagcxResult_t aclshmemAdaptorInit(int rank, int nranks, void *handle) {
     return flagcxSuccess;
   }
 
-  aclshmemx_init_attr_t attr;
+  // A bare declaration leaves the option fields the library validates
+  // (timeouts, data-op engine) as stack garbage; a remote node then rejects
+  // the init with ACLSHMEM_SMEM_ERROR. Mirror the vendor's cross-host example
+  // (notifywait): value-init, legacy attr version, MTE engine, and a zeroed
+  // uniqueid in comm_args (DEFAULT mode still prefers ip_port).
+  aclshmemx_init_attr_t attr{};
   attr.my_pe = rank;
   attr.n_pes = nranks;
   aclshmemDefaultIpPort(attr.ip_port, sizeof(attr.ip_port));
   attr.local_mem_size = aclshmemLocalHeapBytes();
-  attr.comm_args = nullptr;
+  attr.option_attr.version =
+      static_cast<int32_t>((1 << 16) + sizeof(aclshmemx_init_attr_t));
+  attr.option_attr.data_op_engine_type = ACLSHMEM_DATA_OP_MTE;
+  static aclshmemx_uniqueid_t uid;
+  uid.my_pe = rank;
+  uid.n_pes = nranks;
+  attr.comm_args = &uid;
   aclshmemSetSessionId(attr.ip_port);
 
   int ret = aclshmemx_init_attr(ACLSHMEMX_INIT_WITH_DEFAULT, &attr);
