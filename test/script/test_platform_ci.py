@@ -217,6 +217,29 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                     )
                     self.assertEqual(bool(result.stdout.strip()), should_skip)
 
+    def test_ignore_helper_resolves_platform_from_adaptor(self):
+        helper = REPO_ROOT / ".github/scripts/ci/ignore_test.py"
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("FLAGCX_CI_IGNORE_TEST", "FLAGCX_CI_PLATFORM")}
+        result = subprocess.run(
+            ["python3", str(helper), "perf", "homogeneous"],
+            env={**env, "FLAGCX_ADAPTOR": "metax"},
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(result.stdout.strip(), "allreduce reducescatter")
+
+        result = subprocess.run(
+            ["python3", str(helper), "phase", "symmem", "vmm-net-data"],
+            env={**env, "FLAGCX_ADAPTOR": "musa"},
+            capture_output=True, text=True, check=True,
+        )
+        self.assertIn("MUSA advertises neither", result.stdout)
+
+    def test_unit_runner_sets_platform_from_environment_script_name(self):
+        runner = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        self.assertIn('platform_from_script=$(basename "$SET_ENV_SCRIPT" .sh)', runner)
+        self.assertIn('export FLAGCX_CI_PLATFORM="${FLAGCX_CI_PLATFORM:-$platform_from_script}"', runner)
+
     def test_run_override_distinguishes_completion_failure_and_real_skip(self):
         source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
         run = source[source.index("run_suite() {"):

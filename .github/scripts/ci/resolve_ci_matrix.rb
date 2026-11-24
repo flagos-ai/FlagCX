@@ -118,10 +118,6 @@ when "pull_request"
   else
     selection = select_paths.call
   end
-  if level == "L3" && route_labels.empty?
-    selection = platform_names
-    routing_reason << "level:L3 label selected the full platform matrix"
-  end
 when "issue_comment"
   permission = context.fetch("permission", "none")
   comment = context.fetch("comment", "").to_s.strip
@@ -133,10 +129,6 @@ when "issue_comment"
   elsif command[1].nil?
     route_labels = labels.select { |label| label.start_with?("platform:") }
     selection = route_labels.empty? ? select_paths.call : parse_selection.call(route_labels.map { |label| label.delete_prefix("platform:") }.join(","))
-    if level == "L3" && route_labels.empty?
-      selection = platform_names
-      routing_reason << "level:L3 label selected the full platform matrix"
-    end
     routing_reason << "Authorized /test request used PR routing"
   else
     selection = parse_selection.call(command[1])
@@ -157,14 +149,21 @@ else
   abort "Unsupported event: #{event_name}"
 end
 
+if active && level == "L3" && selection != platform_names
+  selection = platform_names
+  routing_reason << "level:L3 selected the full platform matrix"
+end
+
 selected = platforms.select { |entry| selection.include?(entry.fetch("platform")) }
 ignore_entries = selected.flat_map do |entry|
   entry.fetch("ignore_test").flat_map do |section, value|
     (value.is_a?(Array) ? value : [value]).filter_map do |item|
       next unless item.is_a?(Hash)
       name = item["name"] || item["test"] || item["phase"] || item["suite"] || section
-      {"platform" => entry.fetch("platform"), "kind" => section, "name" => name,
-       "reason" => item["reason"] || "configured platform exclusion"}
+      {"platform" => entry.fetch("platform"), "kind" => section}.merge(item).merge(
+        "name" => name,
+        "reason" => item["reason"] || "configured platform exclusion"
+      )
     end
   end
 end
@@ -225,7 +224,10 @@ if summary_path && !summary_path.empty?
     if ignore_entries.empty?
       summary.puts "- None"
     else
-      ignore_entries.each { |entry| summary.puts "- **#{entry["platform"]}/#{entry["kind"]}/#{entry["name"]}:** #{entry["reason"]}" }
+      ignore_entries.each do |entry|
+        selector = entry.reject { |key, _value| %w[platform kind reason].include?(key) }
+        summary.puts "- **#{entry["platform"]}/#{entry["kind"]}/#{entry["name"]}:** #{entry["reason"]} (selector: `#{JSON.generate(selector)}`)"
+      end
     end
     summary.puts
     summary.puts "### Blocked work"

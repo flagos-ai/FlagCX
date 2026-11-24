@@ -260,6 +260,39 @@ class CiMatrixRoutingTest(unittest.TestCase):
         })
         self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
+    def test_l3_selects_full_matrix_after_platform_routing(self):
+        cases = (
+            {"event_name": "pull_request", "labels": ["level:L3", "platform:cuda"]},
+            {"event_name": "workflow_dispatch", "selection": "cuda", "level": "L3"},
+            {"event_name": "issue_comment", "comment": "/test cuda", "level": "L3",
+             "is_pull_request": True, "permission": "write"},
+        )
+        for context in cases:
+            with self.subTest(context=context):
+                outputs, _ = self.resolve(context)
+                self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+
+    def test_l3_ignore_test_projection_preserves_selectors(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context_path = Path(temp_dir) / "context.json"
+            output_path = Path(temp_dir) / "github-output"
+            plan_path = Path(temp_dir) / "plan.json"
+            summary_path = Path(temp_dir) / "summary.md"
+            context_path.write_text(json.dumps({
+                "event_name": "workflow_dispatch", "selection": "metax", "level": "L2"
+            }))
+            env = dict(os.environ, GITHUB_OUTPUT=str(output_path),
+                       FLAGCX_CI_PLAN_PATH=str(plan_path),
+                       GITHUB_STEP_SUMMARY=str(summary_path))
+            subprocess.run(
+                ["ruby", str(MATRIX_SCRIPT), str(CONFIG_DIR), str(context_path)],
+                check=True, capture_output=True, text=True, env=env,
+            )
+            entry = json.loads(plan_path.read_text())["ignore_test"][0]
+            self.assertEqual(entry["modes"], ["homogeneous"])
+            self.assertEqual(entry["operations"], ["allreduce", "reducescatter"])
+            self.assertIn('"modes":["homogeneous"]', summary_path.read_text())
+
     def test_mixed_platform_and_unknown_changes_run_all_platforms(self):
         outputs, _ = self.resolve(
             {"event_name": "pull_request", "files": [

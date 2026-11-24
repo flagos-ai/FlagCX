@@ -8,12 +8,27 @@ import sys
 from pathlib import Path
 
 
+ADAPTOR_PLATFORMS = {
+    "nvidia": "cuda",
+    "du": "hygon",
+    "iluvatar": "iluvatar",
+    "metax": "metax",
+    "klx": "kunlunxin",
+    "musa": "mthreads",
+    "ppu": "ppu",
+    "ascend": "ascend",
+    "enflame": "enflame",
+}
+
+
 def config():
     raw = os.environ.get("FLAGCX_CI_IGNORE_TEST")
     if raw is None:
         # Local execution can read YAML directly. Hardware jobs receive JSON
         # from load_platform_config.rb and need no YAML package in the image.
         platform = os.environ.get("FLAGCX_CI_PLATFORM")
+        if not platform:
+            platform = ADAPTOR_PLATFORMS.get(os.environ.get("FLAGCX_ADAPTOR", ""))
         if not platform:
             return {}
         path = Path(__file__).resolve().parents[2] / "configs" / f"{platform}.yml"

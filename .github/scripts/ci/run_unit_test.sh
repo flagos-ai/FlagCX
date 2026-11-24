@@ -18,6 +18,9 @@ if [[ ! -f "$SET_ENV_SCRIPT" ]]; then
   exit 1
 fi
 
+platform_from_script=$(basename "$SET_ENV_SCRIPT" .sh)
+export FLAGCX_CI_PLATFORM="${FLAGCX_CI_PLATFORM:-$platform_from_script}"
+
 # The platform script owns accelerator-specific compiler flags and device
 # topology. It is sourced (rather than executed) so it can provide arrays and
 # hook functions without unsafe string evaluation.
