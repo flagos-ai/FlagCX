@@ -542,6 +542,9 @@ flagcxResult_t cannAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t cannAdaptorSetDevice(int dev) {
+  int current = -1;
+  if (aclrtGetDevice(&current) == ACL_SUCCESS && current == dev)
+    return flagcxSuccess;
   DEVCHECK(aclrtSetDevice(dev));
   return flagcxSuccess;
 }

@@ -83,6 +83,9 @@ flagcxResult_t topsAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t topsAdaptorSetDevice(int dev) {
+  int current = -1;
+  if (topsGetDevice(&current) == topsSuccess && current == dev)
+    return flagcxSuccess;
   DEVCHECK(topsSetDevice(dev));
   return flagcxSuccess;
 }

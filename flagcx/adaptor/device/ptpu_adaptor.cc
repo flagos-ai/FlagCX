@@ -71,6 +71,9 @@ flagcxResult_t ptpuAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t ptpuAdaptorSetDevice(int dev) {
+  int current = -1;
+  if (tangGetDevice(&current) == tangSuccess && current == dev)
+    return flagcxSuccess;
   DEVCHECK(tangSetDevice(dev));
   return flagcxSuccess;
 }

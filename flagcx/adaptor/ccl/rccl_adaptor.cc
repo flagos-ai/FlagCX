@@ -44,8 +44,8 @@ flagcxResult_t rcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                           *(ncclUniqueId *)commId, rank);
 }
 
-#define FLAGCX_NCCL_FINALIZE rcclAdaptorCommFinalize
-#define FLAGCX_NCCL_DESTROY rcclAdaptorCommDestroy
+#define FLAGCX_CCL_FINALIZE rcclAdaptorCommFinalize
+#define FLAGCX_CCL_DESTROY rcclAdaptorCommDestroy
 #include "nccl_comm_lifecycle.h"
 
 flagcxResult_t rcclAdaptorCommAbort(flagcxInnerComm_t comm) {

@@ -73,6 +73,9 @@ flagcxResult_t tsmicroAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 }
 
 flagcxResult_t tsmicroAdaptorSetDevice(int dev) {
+  int current = -1;
+  if (txGetDevice((uint32_t *)&current) == TX_SUCCESS && current == dev)
+    return flagcxSuccess;
   DEVCHECK(txSetDevice(dev));
   return flagcxSuccess;
 }

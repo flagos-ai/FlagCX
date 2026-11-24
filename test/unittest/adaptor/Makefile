@@ -34,10 +34,10 @@ ifneq ($(strip $(MPI_XML_DIR)),)
 MPI_TEST_CMD = bash $(PROJECT_ROOT)/.github/scripts/ci/run_gtest_rank_xml.sh $(MPI_XML_DIR) $(MPI_TARGET)
 endif
 
-.PHONY: all clean run-unit run-mpi run compile-sunrise compile-platform-traits
+.PHONY: all clean run-unit run-mpi run compile-sunrise compile-platform-traits check-device-selection check-native-lifecycle
 
 ALL_TARGETS :=
-ALL_TARGETS += compile-sunrise compile-platform-traits $(HOST_MPI_TARGET)
+ALL_TARGETS += compile-sunrise compile-platform-traits check-device-selection check-native-lifecycle $(HOST_MPI_TARGET)
 ifneq ($(UNIT_SRCS),)
 ALL_TARGETS += $(UNIT_TARGET)
 endif
@@ -70,13 +70,23 @@ $(OBJDIR)/coll_%.o: coll_%.cpp
 clean:
 	@rm -rf $(BUILDDIR)
 
-run-unit: compile-sunrise compile-platform-traits $(UNIT_TARGET)
+run-unit: compile-sunrise compile-platform-traits check-device-selection check-native-lifecycle $(UNIT_TARGET)
 	@$(UNIT_TARGET)
 
 run-mpi: $(MPI_TARGET)
 	@$(MPIRUN) --allow-run-as-root -np $(MPI_NP) $(MPI_ENV) $(MPI_TEST_CMD)
 
 run: run-unit run-mpi
+
+# Exercise actual native selection callbacks with deterministic SDK failures.
+# These host contracts run for every platform, including SDKs absent on the host.
+check-device-selection:
+	@CXX="$(CXX)" PYTHONDONTWRITEBYTECODE=1 python3 $(PROJECT_ROOT)/test/script/test_ppu_adaptors.py \
+	  DeviceSelectionTest \
+	  PpuAdaptorTest.test_hggc_device_selection_queries_native_state_without_reselection
+
+check-native-lifecycle:
+	@CXX="$(CXX)" PYTHONDONTWRITEBYTECODE=1 python3 $(PROJECT_ROOT)/test/script/test_ppu_adaptors.py MusaLifecycleTest
 
 # Compile the real guarded translation unit on every host CI platform. SDK
 # declarations are intentionally isolated from the real vendor includes; this

@@ -1,7 +1,7 @@
 """Host contract tests for native adaptor conversions and async allocation.
 
 SDK stubs deliberately use different enum values from FlagCX. These tests
-check API wiring and error propagation; PPU CI checks the actual SDK ABI and
+check API wiring and error propagation; platform CI checks the actual SDK ABI and
 device execution.
 """
 import os
@@ -177,6 +177,229 @@ template <class T> flagcxResult_t flagcxCalloc(T **p, size_t n) {
 inline bool flagcxCCLAdaptorNeedSendrecv(size_t n) { return n != 0; }
 inline size_t getFlagcxDataTypeSize(flagcxDataType_t) { return 4; }
 """
+
+
+@unittest.skipUnless(CXX, "C++ compiler required")
+class DeviceSelectionTest(unittest.TestCase):
+    def compile_selection(self, platform, adaptor, header, mocks, checks):
+        # Compile the production function and error macro, with SDK calls mocked.
+        production = (ROOT / f"flagcx/adaptor/device/{platform}_adaptor.cc").read_text()
+        start = production.index(f"flagcxResult_t {adaptor}AdaptorSetDevice(int dev)")
+        opening = production.index("{", start)
+        depth = 1
+        end = opening + 1
+        while depth:
+            depth += (production[end] == "{") - (production[end] == "}")
+            end += 1
+        lines = (INCLUDE / f"{header}_adaptor.h").read_text().splitlines()
+        first = next(i for i, line in enumerate(lines)
+                     if line.startswith("#define DEVCHECK(func)"))
+        last = first
+        while lines[last].endswith("\\"):
+            last += 1
+        source = '#include <cassert>\n#include "flagcx.h"\n'
+        source += '#define WARN(...) ((void)0)\n'
+        source += mocks + "\n" + "\n".join(lines[first:last + 1]) + "\n"
+        source += production[start:end] + "\nint main() {\n" + checks + "\n}\n"
+        with tempfile.TemporaryDirectory() as folder:
+            cpp = Path(folder) / "selection.cc"
+            binary = Path(folder) / "selection"
+            cpp.write_text(source)
+            result = subprocess.run(
+                [CXX, "-std=c++11", f"-I{ROOT / 'flagcx/include'}", str(cpp),
+                 "-o", str(binary)], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run([str(binary)], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_native_device_selection(self):
+        # PPU's existing contract below tests its native error conversion too.
+        platforms = (
+            ("cuda", "cuda", "nvidia", "cuda", "cudaSuccess"),
+            ("musa", "musa", "musa", "musa", "musaSuccess"),
+            ("hip", "hip", "amd", "hip", "hipSuccess"),
+            ("duhip", "duhip", "du", "hip", "hipSuccess"),
+            ("ixcuda", "ixcuda", "iluvatar", "cuda", "cudaSuccess"),
+            ("maca", "maca", "metax", "mc", "mcSuccess"),
+            ("mlu", "mlu", "cambricon", "cnrt", "cnrtSuccess"),
+            ("tops", "tops", "enflame", "tops", "topsSuccess"),
+            ("ptpu", "ptpu", "sunrise", "tang", "tangSuccess"),
+            ("tsmicro", "tsmicro", "tsmicro", "tx", "TX_SUCCESS"),
+            ("cann", "cann", "ascend", "aclrt", "ACL_SUCCESS"),
+        )
+        for platform, adaptor, header, native, success in platforms:
+            with self.subTest(platform=platform):
+                mocks = r"""
+using hipError_t = int;
+using tangError_t = int;
+static const int SUCCESS = 0;
+static int current = 2, queries = 0, selections = 0;
+static int queryStatus = SUCCESS, selectStatus = SUCCESS;
+static int QUERY(ORDINAL *device) {
+  ++queries; *device = current; return queryStatus;
+}
+static int SELECT(int device) {
+  ++selections;
+  if (selectStatus == SUCCESS) current = device;
+  return selectStatus;
+}
+""".replace("SUCCESS", success).replace("QUERY", native + "GetDevice")
+                mocks = mocks.replace("SELECT", native + "SetDevice")
+                mocks = mocks.replace("ORDINAL", "uint32_t" if native == "tx" else "int")
+                checks = r"""
+assert(SET(2) == flagcxSuccess && queries == 1 && selections == 0);
+assert(SET(3) == flagcxSuccess && queries == 2 && selections == 1 && current == 3);
+current = 2; // Applications may change device without going through FlagCX.
+assert(SET(3) == flagcxSuccess && selections == 2 && current == 3);
+queryStatus = 99;
+assert(SET(3) == flagcxSuccess && selections == 3);
+selectStatus = 98;
+assert(SET(3) == flagcxUnhandledDeviceError && selections == 4);
+queryStatus = 0;
+assert(SET(-1) == flagcxUnhandledDeviceError && selections == 5 && current == 3);
+""".replace("SET", adaptor + "AdaptorSetDevice")
+                self.compile_selection(platform, adaptor, header, mocks, checks)
+
+    def test_kunlun_device_selection_checks_both_contexts(self):
+        mocks = r"""
+static const int cudaSuccess = 0;
+static int compatDevice = 2, nativeDevice = 2;
+static int compatQueries = 0, nativeQueries = 0, compatSets = 0, nativeSets = 0;
+static int compatQueryStatus = 0, nativeQueryStatus = 0;
+static int compatSetStatus = 0, nativeSetStatus = 0;
+static bool compatBindsNative = false;
+static int cudaGetDevice(int *device) {
+  ++compatQueries; *device = compatDevice; return compatQueryStatus;
+}
+static int cudaSetDevice(int device) {
+  ++compatSets;
+  if (compatSetStatus == 0) {
+    compatDevice = device;
+    if (compatBindsNative) nativeDevice = device;
+  }
+  return compatSetStatus;
+}
+static int xpu_current_device(int *device) {
+  ++nativeQueries; *device = nativeDevice; return nativeQueryStatus;
+}
+static int xpu_set_device(int device) {
+  ++nativeSets;
+  if (nativeSetStatus == 0) nativeDevice = device;
+  return nativeSetStatus;
+}
+"""
+        checks = r"""
+assert(kunlunAdaptorSetDevice(2) == flagcxSuccess);
+assert(compatQueries == 1 && nativeQueries == 1 && compatSets == 0 && nativeSets == 0);
+nativeDevice = 1;
+assert(kunlunAdaptorSetDevice(2) == flagcxSuccess && compatSets == 0 && nativeSets == 1);
+compatDevice = 1;
+assert(kunlunAdaptorSetDevice(2) == flagcxSuccess && compatSets == 1 && nativeSets == 1);
+assert(kunlunAdaptorSetDevice(3) == flagcxSuccess && compatSets == 2 && nativeSets == 2);
+compatBindsNative = true;
+assert(kunlunAdaptorSetDevice(4) == flagcxSuccess && compatSets == 3 && nativeSets == 2);
+compatQueryStatus = 99;
+assert(kunlunAdaptorSetDevice(4) == flagcxSuccess && compatSets == 4 && nativeSets == 2);
+nativeQueryStatus = 99;
+assert(kunlunAdaptorSetDevice(4) == flagcxSuccess && compatSets == 5 && nativeSets == 3);
+compatSetStatus = 98;
+int queriesBefore = nativeQueries;
+assert(kunlunAdaptorSetDevice(4) == flagcxUnhandledDeviceError);
+assert(compatSets == 6 && nativeSets == 3 && nativeQueries == queriesBefore);
+compatQueryStatus = 0;
+nativeSetStatus = 98;
+assert(kunlunAdaptorSetDevice(4) == flagcxUnhandledDeviceError && nativeSets == 4);
+assert(compatDevice == 4 && nativeDevice == 4);
+"""
+        self.compile_selection("kunlunxin", "kunlun", "kunlunxin", mocks, checks)
+
+
+@unittest.skipUnless(CXX, "C++ compiler required")
+class MusaLifecycleTest(unittest.TestCase):
+    def test_production_finalize_retains_native_until_local_destroy(self):
+        production = (ROOT / "flagcx/adaptor/ccl/musa_mccl_adaptor.cc").read_text()
+        start = production.index("flagcxResult_t mcclAdaptorCommInitRank(")
+        start = production.index("\n}\n", start) + 3
+        end = production.index("flagcxResult_t mcclAdaptorCommAbort(", start)
+        lifecycle = production[start:end]
+        start = production.index("flagcxResult_t mcclAdaptorCommGetAsyncError(")
+        end = production.index("\n}\n", start) + 3
+        query = production[start:end]
+        source = r"""
+#include <cassert>
+#include "flagcx.h"
+typedef flagcxResult_t mcclResult_t;
+struct NativeContext {};
+struct Wrapper { NativeContext *base; int frees; };
+typedef Wrapper *flagcxInnerComm_t;
+static NativeContext native;
+static int finalizeCalls = 0, destroyCalls = 0, queryCalls = 0;
+static mcclResult_t finalizeResult = flagcxSuccess, destroyResult = flagcxSuccess;
+static mcclResult_t queryResult = flagcxSuccess, asyncResult = flagcxSuccess;
+static mcclResult_t mcclCommFinalize(NativeContext *comm) {
+  assert(comm == &native); ++finalizeCalls; return finalizeResult;
+}
+static mcclResult_t mcclCommDestroy(NativeContext *comm) {
+  assert(comm == &native); ++destroyCalls; return destroyResult;
+}
+static mcclResult_t mcclCommGetAsyncError(NativeContext *comm, mcclResult_t *status) {
+  assert(comm == &native); ++queryCalls; *status = asyncResult; return queryResult;
+}
+static void releaseWrapper(void *comm) { ((Wrapper *)comm)->frees++; }
+#define free releaseWrapper
+#define FLAGCXCHECK(call) do { \
+  flagcxResult_t result = (call); \
+  if (result != flagcxSuccess && result != flagcxInProgress) return result; \
+} while (0)
+""" + lifecycle + query + r"""
+int main() {
+  Wrapper wrapper = {&native, 0};
+  assert(mcclAdaptorCommFinalize(nullptr) == flagcxInvalidArgument);
+  assert(mcclAdaptorCommDestroy(nullptr) == flagcxInvalidArgument);
+  finalizeResult = flagcxRemoteError;
+  assert(mcclAdaptorCommFinalize(&wrapper) == flagcxRemoteError);
+  assert(finalizeCalls == 1 && destroyCalls == 0 && wrapper.frees == 0);
+  finalizeResult = flagcxInProgress;
+  assert(mcclAdaptorCommFinalize(&wrapper) == flagcxInProgress);
+  flagcxResult_t status = flagcxSuccess;
+  asyncResult = flagcxInProgress;
+  assert(mcclAdaptorCommGetAsyncError(&wrapper, &status) == flagcxSuccess);
+  assert(status == flagcxInProgress);
+  queryResult = flagcxSystemError;
+  assert(mcclAdaptorCommGetAsyncError(&wrapper, &status) == flagcxSystemError);
+  queryResult = flagcxSuccess;
+  asyncResult = flagcxRemoteError;
+  assert(mcclAdaptorCommGetAsyncError(&wrapper, &status) == flagcxSuccess);
+  assert(status == flagcxRemoteError);
+  asyncResult = flagcxSuccess;
+  assert(mcclAdaptorCommGetAsyncError(&wrapper, &status) == flagcxSuccess);
+  assert(status == flagcxSuccess && queryCalls == 4);
+  assert(finalizeCalls == 2 && destroyCalls == 0);
+  assert(wrapper.base == &native && wrapper.frees == 0);
+  finalizeResult = flagcxSuccess;
+  assert(mcclAdaptorCommFinalize(&wrapper) == flagcxSuccess);
+  assert(finalizeCalls == 3 && destroyCalls == 0 && wrapper.base == &native);
+  for (flagcxResult_t result : {flagcxInProgress, flagcxRemoteError}) {
+    destroyResult = result;
+    assert(mcclAdaptorCommDestroy(&wrapper) == result);
+    assert(wrapper.base == &native && wrapper.frees == 0);
+  }
+  destroyResult = flagcxSuccess;
+  assert(mcclAdaptorCommDestroy(&wrapper) == flagcxSuccess);
+  assert(destroyCalls == 3 && wrapper.frees == 1 && finalizeCalls == 3);
+}
+"""
+        with tempfile.TemporaryDirectory() as folder:
+            cpp = Path(folder) / "lifecycle.cc"
+            binary = Path(folder) / "lifecycle"
+            cpp.write_text('#include <initializer_list>\n' + source)
+            result = subprocess.run(
+                [CXX, "-std=c++11", f"-I{ROOT / 'flagcx/include'}",
+                 f"-I{ROOT / 'flagcx/adaptor/ccl'}", str(cpp), "-o", str(binary)],
+                text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run([str(binary)], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 @unittest.skipUnless(CXX, "C++ compiler required")

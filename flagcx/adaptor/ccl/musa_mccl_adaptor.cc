@@ -45,13 +45,12 @@ flagcxResult_t mcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                           *(mcclUniqueId *)commId, rank);
 }
 
-// This SDK has no separate native Finalize. Close native state in the final
-// vendor phase; retain the wrapper until local Destroy.
-#define FLAGCX_COMPAT_FINALIZE mcclAdaptorCommFinalize
-#define FLAGCX_COMPAT_DESTROY mcclAdaptorCommDestroy
-#define FLAGCX_COMPAT_CLOSE_NATIVE(comm)                                       \
-  (flagcxResult_t) mcclCommDestroy((comm)->base)
-#include "compat_comm_lifecycle.h"
+// Like NCCL, keep the native context alive until local Destroy succeeds.
+#define FLAGCX_CCL_FINALIZE mcclAdaptorCommFinalize
+#define FLAGCX_CCL_DESTROY mcclAdaptorCommDestroy
+#define FLAGCX_CCL_NATIVE_FINALIZE mcclCommFinalize
+#define FLAGCX_CCL_NATIVE_DESTROY mcclCommDestroy
+#include "nccl_comm_lifecycle.h"
 
 flagcxResult_t mcclAdaptorCommAbort(flagcxInnerComm_t comm) {
   if (comm != NULL && comm->base == NULL)
