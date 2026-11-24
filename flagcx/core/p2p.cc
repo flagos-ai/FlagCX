@@ -384,11 +384,12 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
               "P2P proxy copy direction=send plan=write op_id=%d src=%p "
               "dst=%p bytes=%zu stream=%p",
               args->opId, data, rmtAddr, size, resources->proxyInfo.stream);
+        args->copyUncertain = true;
         FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
             rmtAddr, data, size, flagcxMemcpyDeviceToDevice,
             resources->proxyInfo.stream, NULL));
-        FLAGCXCHECK(deviceAdaptor->eventRecord(resources->proxyInfo.events[0],
-                                               resources->proxyInfo.stream));
+        FLAGCXCHECK(flagcxProxyRecordCopy(args, resources->proxyInfo.events[0],
+                                          resources->proxyInfo.stream));
         args->copied = args->chunkSteps;
         args->totalCopySize = size;
       }
@@ -462,6 +463,7 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
               args->opId, args->copied, step,
               (char *)data + args->totalCopySize, args->subs[step].stepBuff,
               args->subs[step].stepSize, resources->proxyInfo.stream);
+        args->copyUncertain = true;
         flagcxResult_t copyResult = deviceAdaptor->deviceMemcpy(
             args->subs[step].stepBuff, (char *)data + args->totalCopySize,
             args->subs[step].stepSize, flagcxMemcpyDeviceToDevice,
@@ -477,8 +479,9 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
               "slot=%d stage=event-record-enter event=%p stream=%p",
               args->opId, args->copied, step, resources->proxyInfo.events[step],
               resources->proxyInfo.stream);
-        flagcxResult_t recordResult = deviceAdaptor->eventRecord(
-            resources->proxyInfo.events[step], resources->proxyInfo.stream);
+        flagcxResult_t recordResult =
+            flagcxProxyRecordCopy(args, resources->proxyInfo.events[step],
+                                  resources->proxyInfo.stream);
         TRACE(FLAGCX_P2P,
               "P2P proxy copy direction=send plan=fifo op_id=%d chunk=%d "
               "slot=%d stage=event-record-return result=%d",
@@ -613,11 +616,12 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
               "P2P proxy copy direction=recv plan=read op_id=%d src=%p "
               "dst=%p bytes=%zu stream=%p",
               args->opId, rmtAddr, data, size, resources->proxyInfo.stream);
+        args->copyUncertain = true;
         FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
             data, rmtAddr, size, flagcxMemcpyDeviceToDevice,
             resources->proxyInfo.stream, NULL));
-        FLAGCXCHECK(deviceAdaptor->eventRecord(resources->proxyInfo.events[0],
-                                               resources->proxyInfo.stream));
+        FLAGCXCHECK(flagcxProxyRecordCopy(args, resources->proxyInfo.events[0],
+                                          resources->proxyInfo.stream));
         args->copied = args->chunkSteps;
         args->totalCopySize = size;
       }
@@ -672,6 +676,7 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
               args->opId, args->copied, step, args->subs[step].stepBuff,
               (char *)data + args->totalCopySize, args->subs[step].stepSize,
               resources->proxyInfo.stream);
+        args->copyUncertain = true;
         flagcxResult_t copyResult = deviceAdaptor->deviceMemcpy(
             (char *)data + args->totalCopySize, args->subs[step].stepBuff,
             args->subs[step].stepSize, flagcxMemcpyDeviceToDevice,
@@ -686,8 +691,9 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
               "slot=%d stage=event-record-enter event=%p stream=%p",
               args->opId, args->copied, step, resources->proxyInfo.events[step],
               resources->proxyInfo.stream);
-        flagcxResult_t recordResult = deviceAdaptor->eventRecord(
-            resources->proxyInfo.events[step], resources->proxyInfo.stream);
+        flagcxResult_t recordResult =
+            flagcxProxyRecordCopy(args, resources->proxyInfo.events[step],
+                                  resources->proxyInfo.stream);
         TRACE(FLAGCX_P2P,
               "P2P proxy copy direction=recv plan=fifo op_id=%d chunk=%d "
               "slot=%d stage=event-record-return result=%d",
@@ -757,12 +763,13 @@ flagcxResult_t flagcxP2pProxySelfCopy(struct flagcxP2pResources *resources,
   if (args->transmitted < args->chunkSteps) {
     // Perform single copy step
     if (args->copied < args->chunkSteps) {
+      args->copyUncertain = true;
       FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
           recvData, sendData, size, flagcxMemcpyDeviceToDevice,
           resources->proxyInfo.stream, NULL));
       FLAGCXCHECK(
-          deviceAdaptor->eventRecord(resources->proxyInfo.events[args->copied],
-                                     resources->proxyInfo.stream));
+          flagcxProxyRecordCopy(args, resources->proxyInfo.events[args->copied],
+                                resources->proxyInfo.stream));
       args->copied++;
     }
 
@@ -1034,6 +1041,10 @@ flagcxResult_t flagcxP2pImportShareableBuffer(struct flagcxHeteroComm *comm,
   return flagcxSuccess;
 }
 
+static flagcxResult_t p2pDeregisterBuffer(flagcxHeteroComm *comm,
+                                          flagcxIpcRegInfo *info,
+                                          bool ownsReservation);
+
 static flagcxResult_t
 p2pRegisterBuffer(flagcxHeteroComm *comm, const void *userbuff, size_t buffsize,
                   int *peerRanks, int nPeers, flagcxReg *regRecord,
@@ -1088,7 +1099,8 @@ p2pRegisterBuffer(flagcxHeteroComm *comm, const void *userbuff, size_t buffsize,
         *fallbackRequired = 1;
         return flagcxSuccess;
       }
-      return flagcxInProgress;
+      if (__atomic_load_n(&existingInfo->registrationPending, __ATOMIC_ACQUIRE))
+        return flagcxInProgress;
     }
     if (existingInfo != nullptr) {
       FLAGCXCHECK(globalRegPool.addP2pHandle(comm, regItem, existingInfo,
@@ -1198,34 +1210,54 @@ p2pRegisterBuffer(flagcxHeteroComm *comm, const void *userbuff, size_t buffsize,
       ipcExpInfo.handleSize = handleSize;
       ipcExpInfo.allocationSize = allocationSize;
 
-      struct flagcxIpcRegInfo *newInfo =
-          (flagcxIpcRegInfo *)calloc(1, sizeof(flagcxIpcRegInfo));
+      struct flagcxIpcRegInfo *newInfo = existingInfo;
+      if (newInfo == NULL)
+        newInfo = (flagcxIpcRegInfo *)calloc(1, sizeof(flagcxIpcRegInfo));
       if (newInfo == NULL) {
         ret = flagcxSystemError;
         goto fail;
       }
-      newInfo->peerRank = peerRank;
-      newInfo->allocationBase = allocationBase;
-      newInfo->allocationSize = allocationSize;
-      newInfo->ipcProxyconn = proxyConn;
-      newInfo->sameProcess = sameProcess;
-      newInfo->impInfo.legacyIpcCap = true;
-      newInfo->registrationPending = true;
+      if (existingInfo == NULL) {
+        newInfo->peerRank = peerRank;
+        newInfo->allocationBase = allocationBase;
+        newInfo->allocationSize = allocationSize;
+        newInfo->ipcProxyconn = proxyConn;
+        newInfo->sameProcess = sameProcess;
+        newInfo->impInfo.legacyIpcCap = true;
+      }
       ret = globalRegPool.addP2pHandle(comm, regItem, newInfo, proxyConn);
       if (ret != flagcxSuccess) {
-        free(newInfo);
+        if (existingInfo == NULL)
+          free(newInfo);
         goto fail;
       }
+      ret = globalRegPool.reserveP2pRegistration(comm, regItem, newInfo);
+      if (ret != flagcxSuccess)
+        goto fail;
+      // A definitive failure may still carry an import that needs cleanup.
+      // This reservation excludes another retry until it has been closed.
+      ret = p2pDeregisterBuffer(comm, newInfo, true);
+      if (ret != flagcxSuccess) {
+        __atomic_store_n(&newInfo->registrationPending, false,
+                         __ATOMIC_RELEASE);
+        goto fail;
+      }
+      bool responseReceived = false;
       ret = flagcxProxyCallBlocking(comm, proxyConn, flagcxProxyMsgRegister,
                                     &ipcExpInfo, sizeof(struct p2pIpcExpInfo),
                                     &newInfo->impInfo.importedBase,
-                                    sizeof(void *));
-      if (ret != flagcxSuccess)
+                                    sizeof(void *), &responseReceived);
+      if (ret != flagcxSuccess) {
+        if (responseReceived)
+          __atomic_store_n(&newInfo->registrationPending, false,
+                           __ATOMIC_RELEASE);
         goto fail;
-      newInfo->registrationPending = false;
+      }
       void *importedBase = newInfo->impInfo.importedBase;
       if (importedBase != NULL) {
         __atomic_store_n(&newInfo->handleReady, true, __ATOMIC_RELEASE);
+        __atomic_store_n(&newInfo->registrationPending, false,
+                         __ATOMIC_RELEASE);
         existingInfo = newInfo;
         regRecord->state |= IPC_REG_COMPLETE;
         void *peerAddress = nullptr;
@@ -1242,6 +1274,8 @@ p2pRegisterBuffer(flagcxHeteroComm *comm, const void *userbuff, size_t buffsize,
              comm->rank, peerRank, importedBase, userOffset, *peerRmtAddrsOut);
       } else {
         __atomic_store_n(&newInfo->rejected, true, __ATOMIC_RELEASE);
+        __atomic_store_n(&newInfo->registrationPending, false,
+                         __ATOMIC_RELEASE);
         INFO(FLAGCX_REG,
              "rank %d - peer %d could not import IPC allocation %p; "
              "forcing FIFO on both sides",
@@ -1324,13 +1358,15 @@ flagcxResult_t flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
-                                         flagcxIpcRegInfo *info) {
+static flagcxResult_t p2pDeregisterBuffer(flagcxHeteroComm *comm,
+                                          flagcxIpcRegInfo *info,
+                                          bool ownsReservation) {
   if (comm == NULL || info == NULL) {
     return flagcxSuccess;
   }
   // A lost reply is not proof that the peer opened no import.
-  if (info->registrationPending)
+  if (!ownsReservation &&
+      __atomic_load_n(&info->registrationPending, __ATOMIC_ACQUIRE))
     return flagcxRemoteError;
   INFO(FLAGCX_REG,
        "P2P deregister buffer: comm=%p peerRank=%d allocationBase=%p "
@@ -1373,6 +1409,11 @@ flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
     // sameProcess: no handle to close
   }
   return flagcxSuccess;
+}
+
+flagcxResult_t flagcxP2pDeregisterBuffer(flagcxHeteroComm *comm,
+                                         flagcxIpcRegInfo *info) {
+  return p2pDeregisterBuffer(comm, info, false);
 }
 
 /*

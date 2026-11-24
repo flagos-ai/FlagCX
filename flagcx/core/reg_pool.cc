@@ -39,22 +39,30 @@ bool flagcxRegPool::contains(void *handle) {
 flagcxResult_t
 flagcxRegPool::addNetHandle(void *comm, flagcxRegItem *reg, void *handle,
                             struct flagcxProxyConnector *proxyConn,
-                            bool complete) {
+                            bool complete, bool usable) {
   std::lock_guard<std::mutex> lock(mutex);
   if (reg == nullptr || comm == nullptr)
     return flagcxSuccess;
-  if (cleaning || !contains(reg) || reg->closingOwners.count((uintptr_t)comm))
+  if (cleaning || !contains(reg) || reg->closing ||
+      reg->closingOwners.count((uintptr_t)comm))
     return flagcxInvalidUsage;
   for (auto &pair : reg->handles) {
     if (pair.first.proxyConn == proxyConn && pair.first.ownerComm == comm) {
       pair.first.handle = handle;
-      pair.first.registering = !complete;
+      pair.first.state = !complete           ? flagcxRegNetPending
+                         : handle == nullptr ? flagcxRegNetEmpty
+                         : usable            ? flagcxRegNetReady
+                                             : flagcxRegNetCleanupOnly;
       return flagcxSuccess;
     }
   }
   try {
-    reg->handles.push_back(
-        {{handle, proxyConn, comm}, {nullptr, nullptr, nullptr}});
+    reg->handles.push_back({{handle, proxyConn, comm,
+                             !complete           ? flagcxRegNetPending
+                             : handle == nullptr ? flagcxRegNetEmpty
+                             : usable            ? flagcxRegNetReady
+                                                 : flagcxRegNetCleanupOnly},
+                            {nullptr, nullptr, nullptr}});
   } catch (const std::bad_alloc &) {
     return flagcxSystemError;
   }
@@ -64,34 +72,66 @@ flagcxRegPool::addNetHandle(void *comm, flagcxRegItem *reg, void *handle,
 flagcxResult_t
 flagcxRegPool::reserveNetHandle(flagcxRegItem *reg, void *comm,
                                 struct flagcxProxyConnector *connector) {
-  std::lock_guard<std::mutex> lock(mutex);
-  if (cleaning || !contains(reg) || reg->closingOwners.count((uintptr_t)comm))
+  std::unique_lock<std::mutex> lock(mutex);
+  if (cleaning || !contains(reg) || reg->closing ||
+      reg->closingOwners.count((uintptr_t)comm))
     return flagcxInvalidUsage;
   for (auto &pair : reg->handles) {
     if (pair.first.ownerComm != comm || pair.first.proxyConn != connector)
       continue;
-    if (pair.first.registering || pair.first.handle != nullptr)
+    if (pair.first.state == flagcxRegNetPending ||
+        pair.first.state == flagcxRegNetReady)
       return flagcxInProgress;
-    pair.first.registering = true;
+    void *cleanupHandle = pair.first.handle;
+    pair.first.state = flagcxRegNetPending;
+    if (cleanupHandle != nullptr) {
+      // Keep the metadata pinned while retrying a failed registration's
+      // cleanup. Other submissions see Pending, never a usable handle.
+      ++readers;
+      lock.unlock();
+      flagcxResult_t result =
+          flagcxNetDeregisterBuffer(comm, connector, cleanupHandle);
+      lock.lock();
+      --readers;
+      // The vector may have grown while the SDK/proxy call ran.
+      for (auto &entry : reg->handles) {
+        if (entry.first.ownerComm != comm || entry.first.proxyConn != connector)
+          continue;
+        if (result != flagcxSuccess) {
+          entry.first.state = flagcxRegNetCleanupOnly;
+          return result;
+        }
+        entry.first.handle = nullptr;
+        return flagcxSuccess;
+      }
+      return flagcxInternalError;
+    }
     return flagcxSuccess;
   }
   try {
-    reg->handles.push_back(
-        {{nullptr, connector, comm, true}, {nullptr, nullptr, nullptr}});
+    reg->handles.push_back({{nullptr, connector, comm, flagcxRegNetPending},
+                            {nullptr, nullptr, nullptr}});
   } catch (const std::bad_alloc &) {
     return flagcxSystemError;
   }
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxRegPool::reserveHomoHandle(flagcxRegItem *reg,
-                                                void *comm) {
+flagcxResult_t flagcxRegPool::reserveHomoHandle(flagcxRegItem *reg, void *comm,
+                                                void *nativeComm) {
   std::lock_guard<std::mutex> lock(mutex);
-  if (cleaning || !contains(reg))
+  if (cleaning || !contains(reg) || reg->closing)
     return flagcxInvalidUsage;
   try {
     if (!reg->homoRegHandles.emplace((uintptr_t)comm, nullptr).second)
       return flagcxInProgress;
+    try {
+      reg->homoRegComms.emplace((uintptr_t)comm,
+                                nativeComm != nullptr ? nativeComm : comm);
+    } catch (...) {
+      reg->homoRegHandles.erase((uintptr_t)comm);
+      throw;
+    }
   } catch (const std::bad_alloc &) {
     return flagcxSystemError;
   }
@@ -101,10 +141,12 @@ flagcxResult_t flagcxRegPool::reserveHomoHandle(flagcxRegItem *reg,
 void *flagcxRegPool::getNetHandle(flagcxRegItem *reg, void *comm,
                                   struct flagcxProxyConnector *connector) {
   std::lock_guard<std::mutex> lock(mutex);
-  if (cleaning || !contains(reg))
+  if (cleaning || !contains(reg) || reg->closing ||
+      reg->closingOwners.count((uintptr_t)comm))
     return nullptr;
   for (auto &pair : reg->handles)
-    if (pair.first.ownerComm == comm && pair.first.proxyConn == connector)
+    if (pair.first.ownerComm == comm && pair.first.proxyConn == connector &&
+        pair.first.state == flagcxRegNetReady)
       return pair.first.handle;
   return nullptr;
 }
@@ -116,7 +158,8 @@ flagcxRegPool::addP2pHandle(void *comm, flagcxRegItem *reg,
   std::lock_guard<std::mutex> lock(mutex);
   if (reg == nullptr || comm == nullptr || handle == nullptr)
     return flagcxSuccess;
-  if (cleaning || !contains(reg) || reg->closingOwners.count((uintptr_t)comm))
+  if (cleaning || !contains(reg) || reg->closing ||
+      reg->closingOwners.count((uintptr_t)comm))
     return flagcxInvalidUsage;
   for (auto &pair : reg->handles)
     if (pair.second.handle == handle && pair.second.ownerComm == comm)
@@ -149,21 +192,53 @@ flagcxIpcRegInfo *flagcxRegPool::findP2pHandle(void *comm, int peerRank,
     return nullptr;
   auto it =
       p2pIpcCache.find({(uintptr_t)comm, peerRank, (uintptr_t)allocationBase});
+  if (it != p2pIpcCache.end()) {
+    // A shared IPC cache entry must not bypass a registration's close gate.
+    for (const auto &item : regPool[GLOBAL_POOL_KEY]) {
+      const auto *reg = item.second.get();
+      if (!reg->closing && !reg->closingOwners.count((uintptr_t)comm))
+        continue;
+      for (const auto &entry : reg->handles)
+        if (entry.second.ownerComm == comm && entry.second.handle == it->second)
+          return nullptr;
+    }
+  }
   return it == p2pIpcCache.end() ? nullptr : it->second;
 }
 
 void *flagcxRegPool::getHomoHandle(flagcxRegItem *reg, void *comm) {
   std::lock_guard<std::mutex> lock(mutex);
-  if (cleaning || !contains(reg))
+  if (cleaning || !contains(reg) || reg->closing ||
+      reg->closingOwners.count((uintptr_t)comm))
     return nullptr;
   auto it = reg->homoRegHandles.find((uintptr_t)comm);
   return it == reg->homoRegHandles.end() ? nullptr : it->second;
 }
 
+flagcxResult_t flagcxRegPool::reserveP2pRegistration(void *comm,
+                                                     flagcxRegItem *reg,
+                                                     flagcxIpcRegInfo *info) {
+  std::lock_guard<std::mutex> lock(mutex);
+  if (cleaning || !contains(reg) || reg->closing || info == nullptr ||
+      reg->closingOwners.count((uintptr_t)comm))
+    return flagcxInvalidUsage;
+  auto cached = p2pIpcCache.find(
+      {(uintptr_t)comm, info->peerRank, (uintptr_t)info->allocationBase});
+  if (cached == p2pIpcCache.end() || cached->second != info)
+    return flagcxInvalidUsage;
+  bool pending = false;
+  if (__atomic_load_n(&info->handleReady, __ATOMIC_ACQUIRE) ||
+      __atomic_load_n(&info->rejected, __ATOMIC_ACQUIRE) ||
+      !__atomic_compare_exchange_n(&info->registrationPending, &pending, true,
+                                   false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return flagcxInProgress;
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxRegPool::setHomoHandle(flagcxRegItem *reg, void *comm,
                                             void *handle) {
   std::lock_guard<std::mutex> lock(mutex);
-  if (cleaning || !contains(reg))
+  if (cleaning || !contains(reg) || reg->closing)
     return flagcxInvalidUsage;
   auto entry = reg->homoRegHandles.find((uintptr_t)comm);
   if (entry == reg->homoRegHandles.end())
@@ -178,7 +253,7 @@ flagcxResult_t flagcxRegPool::removeHandles(void *comm, flagcxRegItem *reg,
                                             bool p2p) {
   for (size_t i = 0; i < reg->handles.size();) {
     auto &entry = reg->handles[i];
-    if (!p2p && entry.first.registering &&
+    if (!p2p && entry.first.state == flagcxRegNetPending &&
         (comm == nullptr || entry.first.ownerComm == comm))
       return flagcxRemoteError;
     if (!p2p && entry.first.handle != nullptr &&
@@ -212,7 +287,7 @@ flagcxResult_t flagcxRegPool::removeHandles(void *comm, flagcxRegItem *reg,
       entry.second = {nullptr, nullptr, nullptr};
     }
     if (entry.first.handle == nullptr && entry.second.handle == nullptr &&
-        !entry.first.registering) {
+        entry.first.state != flagcxRegNetPending) {
       reg->handles[i] = reg->handles.back();
       reg->handles.pop_back();
     } else {
@@ -315,7 +390,7 @@ flagcxResult_t flagcxRegPool::registerBuffer(void *comm, void *data,
     uintptr_t first = reg == nullptr ? begin : std::min(begin, reg->beginAddr);
     uintptr_t last = reg == nullptr ? end : std::max(end, reg->endAddr);
     if (reg != nullptr) {
-      if (reg->closingOwners.count(key))
+      if (reg->closing || reg->closingOwners.count(key))
         return flagcxInvalidUsage;
       if (readers != 0 && (first != reg->beginAddr || last != reg->endAddr))
         return flagcxInProgress;
@@ -386,7 +461,9 @@ flagcxRegItem *flagcxRegPool::findItem(const void *comm, void *data) {
     if (mapIt != regMap.end()) {
       auto it = mapIt->second.find(beginAddr);
       if (it != mapIt->second.end()) {
-        return it->second;
+        return it->second->closing || it->second->closingOwners.count(commKey)
+                   ? nullptr
+                   : it->second;
       }
     }
   }
@@ -396,7 +473,10 @@ flagcxRegItem *flagcxRegPool::findItem(const void *comm, void *data) {
   if (globalMapIt != regMap.end()) {
     auto it = globalMapIt->second.find(beginAddr);
     if (it != globalMapIt->second.end()) {
-      return it->second;
+      return it->second->closing ||
+                     it->second->closingOwners.count((uintptr_t)comm)
+                 ? nullptr
+                 : it->second;
     }
   }
 
@@ -480,24 +560,40 @@ flagcxResult_t flagcxRegPool::releaseRegistration(void *comm,
     return flagcxSuccess;
   }
   reg->closingOwners.insert(key);
-  auto homo = reg->homoRegHandles.find(key);
-  if (homo != reg->homoRegHandles.end()) {
+  const bool lastRegistration =
+      owner != reg->ownerRefs.end() && reg->refCount == (int)owner->second;
+  if (lastRegistration)
+    reg->closing = true;
+  for (auto homo = reg->homoRegHandles.begin();
+       homo != reg->homoRegHandles.end();) {
+    if (!lastRegistration && homo->first != key) {
+      ++homo;
+      continue;
+    }
     if (homo->second != nullptr) {
-      if (nativeComm == nullptr)
+      void *context = homo->first == key ? nativeComm : nullptr;
+      if (context == nullptr) {
+        auto saved = reg->homoRegComms.find(homo->first);
+        if (saved != reg->homoRegComms.end())
+          context = saved->second;
+      }
+      if (context == nullptr)
         return flagcxInvalidUsage;
       flagcxResult_t result =
           cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(
-              (flagcxInnerComm_t)nativeComm, homo->second);
+              (flagcxInnerComm_t)context, homo->second);
       if (result != flagcxSuccess)
         return result;
     }
-    reg->homoRegHandles.erase(homo);
+    reg->homoRegComms.erase(homo->first);
+    homo = reg->homoRegHandles.erase(homo);
   }
-  if (comm != nullptr) {
-    flagcxResult_t result = removeHandles(comm, reg, true);
+  if (comm != nullptr || lastRegistration) {
+    void *handleOwner = lastRegistration ? nullptr : comm;
+    flagcxResult_t result = removeHandles(handleOwner, reg, true);
     if (result != flagcxSuccess)
       return result;
-    result = removeHandles(comm, reg, false);
+    result = removeHandles(handleOwner, reg, false);
     if (result != flagcxSuccess)
       return result;
   }

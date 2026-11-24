@@ -335,10 +335,14 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
  * will change to flagcxSuccess when the communicator is globally quiescent and
  * related resources are freed; then, calling flagcxCommDestroy can locally free
  * the rest of the resources (e.g. communicator itself) without blocking. */
+// Close submission admission and drain work accepted through FlagCX host APIs.
+// Application-launched Device API kernels and captured graph replays must be
+// completed by the caller first; graph capture/replay is not tracked here.
+// A failure retains the communicator and cleanup progress for retry.
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm);
 
-/* Frees local resources associated with communicator object.
-   The comm pointer is invalidated and must not be accessed after this call. */
+/* Frees resources associated with communicator object. The pointer is
+   invalidated only on success; on failure retain it for a cleanup retry. */
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm);
 
 /* Frees resources associated with communicator object and aborts any operations

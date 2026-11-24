@@ -99,7 +99,11 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
 
   // A built-in adaptor may have been used before this valid plugin was
   // requested. Release its cached signals before switching adaptors.
-  flagcxResult_t poolResult = streamValueBufferPool.clear();
+  flagcxResult_t poolResult = flagcxStreamValueProbeCleanup();
+  if (poolResult == flagcxSuccess)
+    poolResult = streamValueBufferPool.clear();
+  if (poolResult == flagcxSuccess)
+    poolResult = deviceSemaphoreBufferPool.clear();
   if (poolResult != flagcxSuccess) {
     free(upgradedPluginAdaptor);
     upgradedPluginAdaptor = NULL;
@@ -118,7 +122,11 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
 }
 
 flagcxResult_t flagcxDeviceAdaptorPluginUnload() {
-  flagcxResult_t result = streamValueBufferPool.clear();
+  flagcxResult_t result = flagcxStreamValueProbeCleanup();
+  if (result == flagcxSuccess)
+    result = streamValueBufferPool.clear();
+  if (result == flagcxSuccess)
+    result = deviceSemaphoreBufferPool.clear();
   if (result != flagcxSuccess)
     return result;
   FLAGCXCHECK(flagcxAdaptorClosePluginLib(devicePluginDlHandle));

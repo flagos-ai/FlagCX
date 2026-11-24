@@ -28,6 +28,7 @@ extern struct flagcxRunner *flagcxRunners[];
 // Retry release of fused invocation buffers retained after an uncertain
 // stream drain. Called before communicator teardown frees the runner state.
 flagcxResult_t flagcxFusedDrainPendingBuffers(flagcxComm_t comm);
+flagcxResult_t flagcxC2cDrainPendingResources(flagcxComm_t comm, int wait);
 
 struct flagcxRunner {
   // Communication functions

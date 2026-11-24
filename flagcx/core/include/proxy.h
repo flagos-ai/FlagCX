@@ -100,6 +100,9 @@ struct flagcxProxySubArgs {
 };
 
 struct flagcxProxyArgs {
+  flagcxEvent_t pendingCopyEvents[FLAGCX_NET_MAX_STEPS] = {};
+  bool copyUncertain = false;
+  bool nativeUncertain = false;
   struct flagcxProxySubArgs subs[FLAGCX_NET_MAX_STEPS];
   proxyProgressFunc_t progress;
   int nsubs;
@@ -314,6 +317,7 @@ struct flagcxExpectedProxyResponse {
 struct flagcxProxyAsyncOp {
   int type;
   bool done;
+  bool cleanupOnly;
   flagcxProxyArgs args;
   struct flagcxProxyConnection *connection;
   int reqSize, respSize;
@@ -492,6 +496,9 @@ void *flagcxProxyService(void *args);
 flagcxResult_t flagcxProxySaveOp(struct flagcxHeteroComm *comm,
                                  struct flagcxProxyOp *proxyOp,
                                  bool *justInquire = NULL);
+flagcxResult_t flagcxProxyRecordCopy(struct flagcxProxyArgs *args,
+                                     flagcxEvent_t event,
+                                     flagcxStream_t stream);
 flagcxResult_t flagcxProxyRecordAsyncError(struct flagcxProxyState *proxyState,
                                            flagcxResult_t result);
 flagcxResult_t flagcxProxyFailProgressQueue(

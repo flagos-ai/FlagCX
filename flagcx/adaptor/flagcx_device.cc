@@ -228,12 +228,13 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
       (comm == nullptr || devComm->devCommId != comm->devCommCount ||
        comm->activeDevComms != devComm))
     return flagcxInvalidUsage;
-  if (deviceAdaptor != nullptr && deviceAdaptor->deviceSynchronize != nullptr)
-    do {
-      flagcxResult_t cleanupResult = deviceAdaptor->deviceSynchronize();
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-    } while (0);
+  devComm->cleanupStarted = true;
+  if (comm != NULL) {
+    flagcxResult_t result =
+        flagcxCommDrainSnapshot(comm, &devComm->cleanupWork);
+    if (result != flagcxSuccess)
+      return result;
+  }
 
   // Stop the proxy from acquiring a new reference while the backend tears
   // down fields reachable through DevComm. Restore publication on failure so
@@ -285,6 +286,7 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     --comm->devCommCount;
   if (comm != nullptr && comm->activeDevComms == devComm)
     comm->activeDevComms = devComm->previousActive;
+  flagcxWorkSnapshotRelease(&devComm->cleanupWork);
   free(devComm);
   return flagcxSuccess;
 }
@@ -323,6 +325,8 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
       }
     }
   }
+  if (localPrepare == flagcxSuccess && win != NULL && win->cleanupStarted)
+    localPrepare = flagcxInvalidUsage;
   if (localPrepare == flagcxSuccess) {
     handle->rawPtr = buff;
     handle->ipcIndex = -1;
@@ -457,12 +461,14 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
   if (comm == nullptr)
     return flagcxInvalidArgument;
 
-  if (deviceAdaptor != nullptr && deviceAdaptor->deviceSynchronize != nullptr)
-    do {
-      flagcxResult_t cleanupResult = deviceAdaptor->deviceSynchronize();
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-    } while (0);
+  devMem->cleanupStarted = true;
+  // Runner-owned views are released only after its invocation fences have
+  // completed; during state construction no work uses the previous views.
+  if (!devMem->runnerOwned) {
+    flagcxResult_t drain = flagcxCommDrainSnapshot(comm, &devMem->cleanupWork);
+    if (drain != flagcxSuccess)
+      return drain;
+  }
   if (!devMem->backendDestroyed) {
     do {
       flagcxResult_t cleanupResult = devApiBackend->devMemDestroy(comm, devMem);
@@ -518,6 +524,7 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
   if (*link == devMem)
     *link = devMem->activeNext;
   pthread_mutex_destroy(&devMem->cachedPtrMutex);
+  flagcxWorkSnapshotRelease(&devMem->cleanupWork);
   free(devMem);
   return flagcxSuccess;
 }
@@ -528,6 +535,8 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
 
 extern "C" flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
                                                     void **devPtr) {
+  if (devComm != NULL && devComm->cleanupStarted)
+    return flagcxInvalidUsage;
   return devApiBackend->devCommGetDevicePtr(devComm, devPtr);
 }
 
@@ -537,6 +546,8 @@ extern "C" flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm) {
 
 extern "C" flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem,
                                                    void **devPtr) {
+  if (devMem != NULL && devMem->cleanupStarted)
+    return flagcxInvalidUsage;
   return devApiBackend->devMemGetDevicePtr(devMem, devPtr);
 }
 

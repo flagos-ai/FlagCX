@@ -82,6 +82,33 @@ ensureUniRunnerReduceTypeSupported(flagcxDataType_t datatype) {
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+finishUniRunnerScratch(flagcxComm_t comm, flagcxFusedInvocationBuffers *buffers,
+                       bool initialized, flagcxResult_t result) {
+  if (buffers == NULL)
+    return result;
+  flagcxResult_t cleanup = initialized ? cleanupUniRunner(comm) : flagcxSuccess;
+  buffers->runnerCleanupPending = cleanup != flagcxSuccess;
+  if (result == flagcxSuccess)
+    result = cleanup;
+  if (cleanup == flagcxSuccess && buffers->workspace != NULL) {
+    cleanup =
+        deviceAdaptor->deviceFree(buffers->workspace, flagcxMemDevice, NULL);
+    if (cleanup == flagcxSuccess)
+      buffers->workspace = NULL;
+    if (result == flagcxSuccess)
+      result = cleanup;
+  }
+  if (buffers->workspace != NULL || buffers->runnerCleanupPending) {
+    auto *state = &comm->heteroComm->proxyState->uniRunnerState;
+    buffers->next = state->pendingFusedBuffers;
+    state->pendingFusedBuffers = buffers;
+  } else {
+    free(buffers);
+  }
+  return result;
+}
+
 flagcxResult_t uniRunnerReduce(const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
                                flagcxRedOp_t op, int root, flagcxComm_t comm,
@@ -93,6 +120,7 @@ flagcxResult_t uniRunnerReduce(const void *sendbuff, void *recvbuff,
   flagcxResult_t res = flagcxSuccess;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
+  flagcxFusedInvocationBuffers *scratchOwner = nullptr;
   void *scratchbuff = nullptr;
   bool initialized = false;
   size_t scratchBytes = 0;
@@ -100,10 +128,14 @@ flagcxResult_t uniRunnerReduce(const void *sendbuff, void *recvbuff,
   FLAGCXCHECK(validateUniRunnerReduceArgs(count, datatype, op));
   FLAGCXCHECK(validateUniRunnerLaunchConfig(flagcxCommOpReduce));
   FLAGCXCHECK(checkedUniRunnerTypeBytes(count, 2, datatype, &scratchBytes));
-  res = deviceAdaptor->deviceMalloc(&scratchbuff, scratchBytes, flagcxMemDevice,
-                                    stream);
+  res = flagcxCalloc(&scratchOwner, 1);
   if (res != flagcxSuccess)
     return res;
+  res = deviceAdaptor->deviceMalloc(&scratchOwner->workspace, scratchBytes,
+                                    flagcxMemDevice, stream);
+  scratchbuff = scratchOwner->workspace;
+  if (res != flagcxSuccess)
+    return finishUniRunnerScratch(comm, scratchOwner, false, res);
   res = initUniRunner(comm, stream);
   if (res != flagcxSuccess)
     goto out;
@@ -114,12 +146,7 @@ flagcxResult_t uniRunnerReduce(const void *sendbuff, void *recvbuff,
                   res, out);
   FLAGCXCHECKGOTO(runUniRunner(comm), res, out);
 out:
-  if (initialized)
-    flagcxRunnerRecordFirstError(cleanupUniRunner(comm), &res);
-  if (scratchbuff != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->deviceFree(scratchbuff, flagcxMemDevice, stream), &res);
-  return res;
+  return finishUniRunnerScratch(comm, scratchOwner, initialized, res);
 }
 
 flagcxResult_t uniRunnerGather(const void *sendbuff, void *recvbuff,
@@ -208,6 +235,7 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
   flagcxResult_t res = flagcxSuccess;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
+  flagcxFusedInvocationBuffers *scratchOwner = nullptr;
   void *scratchbuff = nullptr;
   size_t scratchBytes = 0;
   UniRunnerAlgorithm algorithm = uniRunnerAlgorithmRingAR;
@@ -269,9 +297,12 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
       FLAGCXCHECKGOTO(
           checkedUniRunnerTypeBytes(count, 1, datatype, &scratchBytes), res,
           out);
-      FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&scratchbuff, scratchBytes,
-                                                  flagcxMemDevice, stream),
+      FLAGCXCHECKGOTO(flagcxCalloc(&scratchOwner, 1), res, out);
+      FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&scratchOwner->workspace,
+                                                  scratchBytes, flagcxMemDevice,
+                                                  stream),
                       res, out);
+      scratchbuff = scratchOwner->workspace;
       FLAGCXCHECKGOTO(initUniRunnerStateHierarchicalSlicedAR(
                           runnerState, sendbuff, recvbuff, scratchbuff, count,
                           datatype, op, comm, groupSize),
@@ -300,12 +331,11 @@ out:
   if (algorithm == uniRunnerAlgorithmIpcRingAR && res != flagcxSuccess) {
     runnerState->ipcRingResourcesDirty = true;
   }
-  flagcxRunnerRecordFirstError(cleanupUniRunner(comm), &res);
-  if (scratchbuff != nullptr) {
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->deviceFree(scratchbuff, flagcxMemDevice, stream), &res);
+  if (scratchOwner == NULL) {
+    flagcxRunnerRecordFirstError(cleanupUniRunner(comm), &res);
+    return res;
   }
-  return res;
+  return finishUniRunnerScratch(comm, scratchOwner, true, res);
 }
 
 flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
@@ -320,6 +350,7 @@ flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
   flagcxResult_t res = flagcxSuccess;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
+  flagcxFusedInvocationBuffers *scratchOwner = nullptr;
   void *scratchbuff = nullptr;
   bool initialized = false;
   size_t scratchBytes = 0;
@@ -328,10 +359,14 @@ flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
   FLAGCXCHECK(validateUniRunnerLaunchConfig(flagcxCommOpReduceScatter));
   FLAGCXCHECK(checkedUniRunnerTypeBytes(recvcount, comm->nranks, datatype,
                                         &scratchBytes));
-  res = deviceAdaptor->deviceMalloc(&scratchbuff, scratchBytes, flagcxMemDevice,
-                                    stream);
+  res = flagcxCalloc(&scratchOwner, 1);
   if (res != flagcxSuccess)
     return res;
+  res = deviceAdaptor->deviceMalloc(&scratchOwner->workspace, scratchBytes,
+                                    flagcxMemDevice, stream);
+  scratchbuff = scratchOwner->workspace;
+  if (res != flagcxSuccess)
+    return finishUniRunnerScratch(comm, scratchOwner, false, res);
   res = initUniRunner(comm, stream);
   if (res != flagcxSuccess)
     goto out;
@@ -342,12 +377,7 @@ flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
                   res, out);
   FLAGCXCHECKGOTO(runUniRunner(comm), res, out);
 out:
-  if (initialized)
-    flagcxRunnerRecordFirstError(cleanupUniRunner(comm), &res);
-  if (scratchbuff != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->deviceFree(scratchbuff, flagcxMemDevice, stream), &res);
-  return res;
+  return finishUniRunnerScratch(comm, scratchOwner, initialized, res);
 }
 
 static flagcxResult_t
