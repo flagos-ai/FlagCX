@@ -41,20 +41,26 @@ CCL_INCLUDE := $(CCL_HOME)/include
 CCL_LINK    := -leccl
 ADAPTOR_FLAG := -DUSE_ENFLAME_ADAPTOR
 
-# --- Device API backend selection ---
-# ECCL is the only backend Enflame supports for now
+# --- Optional device API backend selection ---
+# The public ECCL runtime package does not ship the ECCL device headers.
+# Enable this backend only in environments that provide the complete SDK.
+ENFLAME_DEVICE_API ?= 0
 ifeq ($(USE_SHMEM), 1)
-  $(warning USE_SHMEM=1 is not supported on Enflame and fallback to ECCL backend)
+  $(warning USE_SHMEM=1 is not supported on Enflame)
 endif
 ifeq ($(FORCE_DEFAULT_PATH), 1)
-  $(warning FORCE_DEFAULT_PATH=1 is not supported on Enflame and fallback to ECCL backend)
+  $(warning FORCE_DEFAULT_PATH=1 is not supported on Enflame)
 endif
 
-ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_CCL
-PLATFORM_EXTRA_SRCS := flagcx/adaptor/device_api/eccl_dev_api_backend.cc
+ifeq ($(ENFLAME_DEVICE_API), 1)
+  ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_CCL -DFLAGCX_ENFLAME_DEVICE_API
+  PLATFORM_EXTRA_SRCS := flagcx/adaptor/device_api/eccl_dev_api_backend.cc
+  PLATFORM_KERNEL_DIR := flagcx/adaptor/kernel/enflame
+  PLATFORM_KERNEL_SRCS := $(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENSION))
+else
+  PLATFORM_EXTRA_SRCS := flagcx/adaptor/device_api/default_dev_api_backend.cc
+  PLATFORM_KERNEL_DIR :=
+  PLATFORM_KERNEL_SRCS :=
+endif
 
 DEVICE_NEEDS_DLINK := 0
-
-# --- Kernel sources ---
-PLATFORM_KERNEL_DIR  := flagcx/adaptor/kernel/enflame
-PLATFORM_KERNEL_SRCS := $(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENSION))

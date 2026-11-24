@@ -43,7 +43,12 @@ def main():
     if args.kind == "phase":
         match = next(
             (entry for entry in data
-             if entry.get("suite") == args.suite and entry.get("name") == args.mode),
+             if entry.get("suite") == args.suite
+             and entry.get("name") == args.mode
+             and all(
+                 os.environ.get(key) == str(value)
+                 for key, value in entry.get("when", {}).items()
+             )),
             None,
         )
         print(match.get("reason", "") if match else "")
