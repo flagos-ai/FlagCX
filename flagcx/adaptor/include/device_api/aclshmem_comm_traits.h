@@ -160,13 +160,16 @@ FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemQuiet() {
 #endif
 }
 
-// The peer's address of one symmetric word: reads are the lossless direction
-// (see the barrier design comment below), so both the barrier wait and the
-// putValue read-back go through here.
-FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_ACLSHMEM_GM volatile uint32_t *
-aclshmemPeerWord(FLAGCX_ACLSHMEM_GM uint32_t *local, int pe) {
+// The peer's address of one symmetric element: reads are the lossless
+// direction (see the barrier design comment below), so the barrier wait,
+// the putValue read-back and the test kernels' peer scans all go through
+// here. Templated only so a caller can index the element type it stored;
+// the translation is the same aclshmem_ptr for every type.
+template <typename T>
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_ACLSHMEM_GM volatile T *
+aclshmemPeerWord(FLAGCX_ACLSHMEM_GM T *local, int pe) {
 #if defined(__CCE_IS_AICORE__)
-  return (FLAGCX_ACLSHMEM_GM volatile uint32_t *)aclshmem_ptr(
+  return (FLAGCX_ACLSHMEM_GM volatile T *)aclshmem_ptr(
       (FLAGCX_ACLSHMEM_GM void *)local, pe);
 #else
   (void)pe;

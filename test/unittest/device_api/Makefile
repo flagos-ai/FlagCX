@@ -151,8 +151,9 @@ endif
 
 # Ascend/CANN.  Two suites build.  test_device_api_intra keeps its launchers
 # in test/kernel/ascend/device_api.asc and the switches that compile out the
-# cases this hardware cannot satisfy (peer memory, coop groups, the block
-# barrier).  test_device_ir_unified_intra is the Device IR suite: its
+# cases the selected backend cannot satisfy (peer memory and coop groups on
+# both; the intra barrier only on the IPC build, since cann-shmem has the
+# transport for it).  test_device_ir_unified_intra is the Device IR suite: its
 # launchers live in test/kernel/ascend/device_ir.asc (S16-S25; the net half
 # only under USE_SHMEM=1), which is
 # build-gated by the in--c device link - an undefined trap reference fails
@@ -185,7 +186,6 @@ ifeq ($(KERNEL_PLATFORM), ascend)
   IR_TARGETS      := $(ASCEND_IR_TARGETS)
   API_TARGETS     := $(ASCEND_API_TARGETS)
   CXXFLAGS += -DFLAGCX_TEST_NO_COOP_GROUPS -DFLAGCX_TEST_NO_PEER_POINTER \
-              -DFLAGCX_TEST_NO_INTRA_BARRIER \
               -DFLAGCX_ASCEND_PUTVALUE_LINE_STRIDE
   # NO_CROSS_RANK_COMM skips S16-S18 outright: the measured peer-store
   # fault freeze (ascend.sh) makes cross-rank rendezvous inoperable, and
@@ -196,12 +196,15 @@ ifeq ($(KERNEL_PLATFORM), ascend)
   # kernel writes; every other platform keeps the packed 8-byte default).
   ifeq ($(USE_SHMEM),1)
     # cann-shmem supplies the cross-rank transport (MTE puts, MTE gets and
-    # local polling) that the peer-VA path cannot: S16-S25 are runnable.
+    # local polling) that the peer-VA path cannot: S16-S25 are runnable,
+    # and so are K8/K9/K10 (device_api.asc: the INTRA barrier plus peer
+    # reads through aclshmem_ptr, both proven on this backend).
     # Everything else this platform lacks is unchanged.
   else
     CXXFLAGS += -DFLAGCX_TEST_NO_CROSS_RANK_COMM \
                 -DFLAGCX_TEST_NO_REMOTE_READ \
-                -DFLAGCX_TEST_NO_ATOMIC_COMPLETION
+                -DFLAGCX_TEST_NO_ATOMIC_COMPLETION \
+                -DFLAGCX_TEST_NO_INTRA_BARRIER
   endif
 endif
 
