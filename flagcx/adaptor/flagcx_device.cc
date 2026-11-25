@@ -295,7 +295,7 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   devComm->cleanupStarted = true;
   bool collectiveGdaDrain = false;
   collectiveGdaDrain =
-      devComm->gdaHostOwner != nullptr &&
+      devComm->gdaHostOwner != nullptr && !devComm->gdaQuiesced &&
       ((comm != nullptr && comm->devNetCommHandle == devComm) ||
        devComm->gdaDraining);
   if (comm != nullptr) {

@@ -248,12 +248,21 @@ int main() {
 }
 """)
 
-    def test_gda_destroy_retries_keep_collectives_before_local_cleanup(self):
+    def test_gda_finalize_retries_retire_qps_before_local_cleanup(self):
         lifecycle = (ROOT / "flagcx/adaptor/flagcx_device.cc").read_text()
         source = (ROOT / "flagcx/flagcx.cc").read_text()
-        destroy = function(source, "flagcxCommDestroy")
-        stages = destroy[destroy.index("  if (comm->destroyPhase < 7)"):
-                         destroy.index("  FLAGCXCHECK(flagcxCommFreeInternalBuffers")]
+        finalize = function(source, "flagcxCommFinalize")
+        loop_start = finalize.index("  while (state->commonPhase <")
+        stages = finalize[loop_start:finalize.index(
+            "  __atomic_store_n(&state->lastResult", loop_start)]
+        destroy = function(lifecycle[lifecycle.index(
+            'extern "C" flagcxResult_t flagcxDevCommDestroy('):],
+            "flagcxDevCommDestroy")
+        snapshot = destroy[destroy.index("  devComm->cleanupStarted = true;"):
+                           destroy.index("  // Stop the proxy")]
+        header = (ROOT / "flagcx/core/include/comm_lifecycle.h").read_text()
+        phases = header[header.index("enum flagcxFinalizePhase {"):
+                        header.index("enum flagcxNativeFinalizeScope {")]
         program = r"""
 #include <cassert>
 #include <chrono>
@@ -263,14 +272,28 @@ int main() {
 #include <vector>
 enum flagcxResult_t { flagcxSuccess, flagcxRemoteError };
 struct DevComm {
+  bool cleanupStarted;
+  int cleanupWork;
   void *gdaHostOwner;
   int gdaDraining, gdaQuiesced;
   DevComm *previousActive;
 };
 typedef DevComm *flagcxDevComm_t;
+""" + phases + r"""
+struct FinalizeState {
+  flagcxFinalizePhase commonPhase;
+  unsigned localDoneMask, vendorCount;
+  void **vendorOwners;
+};
+struct Hetero {
+  struct { int importsClosedConfirmed, phase; } finalizeState;
+};
 struct Comm {
-  int rank, destroyPhase;
-  bool internalBuffersNeedPeerClose;
+  int rank, deviceOrdinal;
+  bool deviceOrdinalValid;
+  FinalizeState finalizeState;
+  Hetero *heteroComm;
+  void *activeDevMems;
   DevComm *devNetCommHandle, *pendingDevCommCleanup, *activeDevComms;
 };
 typedef Comm *flagcxComm_t;
@@ -301,11 +324,13 @@ struct Rendezvous {
   }
 };
 static Rendezvous *rendezvous;
+static bool localOnly;
 static int scenario, prepareCalls[2], retired[2], released[2];
 static bool failed[2];
 static thread_local Comm *current;
 flagcxResult_t flagcxConvergeBootstrapStatus(Comm *, flagcxResult_t local,
                                             flagcxResult_t *common) {
+  assert(!localOnly && "Finalize-complete cleanup must remain rank-local");
   return rendezvous->converge(local, common);
 }
 flagcxResult_t prepare(DevComm *dev) {
@@ -331,7 +356,7 @@ flagcxResult_t prepare(DevComm *dev) {
 struct Adaptor { flagcxResult_t (*prepareCommDestroy)(DevComm *); };
 static Adaptor devNetAdaptor = {prepare};
 """ + function(lifecycle, "flagcxCommPrepareGdaDestroy") + r"""
-flagcxResult_t flagcxCommPrepareDestroyStage(Comm *comm, int stage) {
+flagcxResult_t flagcxCommPrepareFinalizeStage(Comm *comm, int stage) {
   if (stage != 2) return flagcxSuccess;
   int rank = comm->rank;
   // A rank-local DevMem sync/free fails before DevComm destruction.
@@ -360,8 +385,38 @@ flagcxResult_t flagcxCommPrepareDestroyStage(Comm *comm, int stage) {
   }
   return flagcxSuccess;
 }
-flagcxResult_t destroy(Comm *comm) {
+typedef void *flagcxInnerComm_t;
+struct RegPool {
+  flagcxResult_t releaseOwner(void *, void *) { return flagcxSuccess; }
+} globalRegPool;
+struct DeviceAdaptor { flagcxResult_t (*setDevice)(int); };
+static DeviceAdaptor *deviceAdaptor;
+static const int flagcxHeteroFinalizeComplete = 1;
+#define INFO(...) ((void)0)
+#define FLAGCX_INIT 0
+flagcxResult_t flagcxCommFinalizeStatus(Comm *comm, int, flagcxResult_t local) {
+  flagcxResult_t common;
+  FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, local, &common));
+  return common;
+}
+flagcxResult_t flagcxCommCatalogNativeOwners(Comm *) { return flagcxSuccess; }
+flagcxResult_t flagcxHeteroCommCloseRelayImports(Hetero *) { return flagcxSuccess; }
+flagcxResult_t flagcxHeteroCommPrepareDestroy(Hetero *) { return flagcxSuccess; }
+flagcxResult_t flagcxCommCleanupIpcTable(Comm *) { return flagcxSuccess; }
+flagcxResult_t flagcxCommFinalizeNativeOwners(Comm *) { return flagcxSuccess; }
+flagcxResult_t flagcxDevMemDestroy(Comm *, void *) { return flagcxSuccess; }
+flagcxResult_t finalize(Comm *comm) {
+  auto *state = &comm->finalizeState;
+  flagcxResult_t result = flagcxSuccess;
 """ + stages + r"""
+  return result;
+}
+static bool failSnapshot;
+flagcxResult_t flagcxCommDrainSnapshot(Comm *comm, int *) {
+  return failSnapshot && comm->rank == 0 ? flagcxRemoteError : flagcxSuccess;
+}
+flagcxResult_t drainBeforeDestroy(Comm *comm, DevComm *devComm) {
+""" + snapshot + r"""
   return flagcxSuccess;
 }
 int main() {
@@ -376,7 +431,6 @@ int main() {
       gda[rank].gdaHostOwner = &gda[rank];
       proxy[rank].previousActive = &gda[rank];
       comm[rank].rank = rank;
-      comm[rank].internalBuffersNeedPeerClose = true;
       comm[rank].activeDevComms = &proxy[rank];
       comm[rank].devNetCommHandle = &gda[rank];
       if (scenario == 4) {
@@ -395,7 +449,7 @@ int main() {
       for (int rank = 0; rank != 2; ++rank)
         ranks[rank] = std::thread([&, rank] {
           current = &comm[rank];
-          assert(destroy(current) == expected);
+          assert(finalize(current) == expected);
         });
       for (auto &rank : ranks) rank.join();
     };
@@ -408,7 +462,7 @@ int main() {
     }
     run(flagcxSuccess);
     for (int rank = 0; rank != 2; ++rank) {
-      assert(comm[rank].destroyPhase == 7);
+      assert(comm[rank].finalizeState.commonPhase == flagcxFinalizeComplete);
       assert(comm[rank].devNetCommHandle == nullptr);
       assert(comm[rank].pendingDevCommCleanup == nullptr);
       assert(prepareCalls[rank] == (scenario == 5 ? 0 :
@@ -416,6 +470,37 @@ int main() {
       assert(retired[rank] == (scenario == 5 ? 0 : 1));
       assert(released[rank] == (scenario == 5 ? 0 : 1));
     }
+  }
+  // A snapshot failure must be agreed before either rank can retire GDA.
+  {
+    Rendezvous exchange; rendezvous = &exchange;
+    Comm comm[2]{};
+    DevComm dev[2]{};
+    failSnapshot = true;
+    std::thread ranks[2];
+    for (int rank = 0; rank != 2; ++rank) {
+      comm[rank].rank = rank;
+      comm[rank].devNetCommHandle = &dev[rank];
+      dev[rank].gdaHostOwner = &dev[rank];
+      ranks[rank] = std::thread([&, rank] {
+        assert(drainBeforeDestroy(&comm[rank], &dev[rank]) == flagcxRemoteError);
+      });
+    }
+    for (auto &rank : ranks) rank.join();
+    failSnapshot = false;
+    for (auto &view : dev) assert(view.cleanupStarted && !view.gdaQuiesced);
+  }
+  // Once QPs have retired collectively, destroy can proceed serially per rank.
+  // Exercise the real snapshot admission block without a peer rendezvous.
+  localOnly = true;
+  for (int rank = 0; rank != 2; ++rank) {
+    Comm comm{};
+    DevComm dev{};
+    comm.devNetCommHandle = &dev;
+    dev.gdaHostOwner = &dev;
+    dev.gdaDraining = dev.gdaQuiesced = 1;
+    assert(drainBeforeDestroy(&comm, &dev) == flagcxSuccess);
+    assert(dev.cleanupStarted);
   }
 }
 """

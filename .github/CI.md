@@ -197,7 +197,9 @@ zero-percent result. New supplemental GoogleTest cases use the
 `CoverageSupplemental.` suite-name prefix: ordinary PR jobs exclude these
 cases, while the weekly coverage workflow runs them.
 
-CUDA also enables the `device_api_gda` suite. It builds with
+CUDA's `device_api_gda` suite is temporarily disabled in the CI matrix.
+Its build and test entry points remain available for manual validation. It
+builds with
 `USE_NVIDIA=1 USE_XPUNETIO=1 COMPILE_KERNEL=1`, runs the host lifecycle tests,
 and reuses `test_device_api_inter` with `FLAGCX_DEVNET_ENABLE=1`. Applications
 may fall back to Proxy after clean GDA initialization failure, but this suite

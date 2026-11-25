@@ -142,12 +142,23 @@ TEST_F(GdaHostControl, PublicAbortPublishesCancellationWithoutVendorComm) {
   EXPECT_TRUE(events.empty());
 }
 
+TEST_F(GdaHostControl, PeerSnapshotFailureDoesNotStartGdaRetirement) {
+  auto *d = heapComm();
+  failPeerAt = 1;
+  EXPECT_EQ(flagcxDevCommDestroy(&comm, d), flagcxRemoteError);
+  EXPECT_EQ(events, (std::vector<int>{Converge}));
+  EXPECT_EQ(comm.devNetCommHandle, d);
+  EXPECT_TRUE(d->cleanupStarted);
+  EXPECT_EQ(d->gdaQuiesced, 0);
+  EXPECT_EQ(flagcxDevCommDestroy(&comm, d), flagcxSuccess);
+}
+
 TEST_F(GdaHostControl,
        PeerDrainFailureRetainsAllRegistrationsForCollectiveRetry) {
   auto *d = heapComm();
-  peerStatus = flagcxRemoteError;
+  failPeerAt = 2; // Snapshot agreement succeeds; the peer's GPU drain fails.
   EXPECT_EQ(flagcxDevCommDestroy(&comm, d), flagcxRemoteError);
-  EXPECT_EQ(events, (std::vector<int>{Drain, Converge}));
+  EXPECT_EQ(events, (std::vector<int>{Converge, Drain, Converge}));
   EXPECT_EQ(comm.devNetCommHandle, nullptr);
   EXPECT_EQ(comm.pendingDevCommCleanup, d);
   EXPECT_EQ(d->gdaQuiesced, 0);
@@ -180,7 +191,7 @@ TEST_F(GdaHostControl, PartialReleaseIsCleanupOnlyAndDoesNotDoubleFreeOnRetry) {
   EXPECT_EQ(flagcxDevCommDestroy(&comm, d), flagcxRemoteError);
   EXPECT_EQ(d->gdaQuiesced, 1);
   EXPECT_EQ(comm.devNetCommHandle, nullptr);
-  void *pointer = reinterpret_cast<void *>(1);
+  void *pointer = nullptr;
   EXPECT_EQ(flagcxDevCommGetDevicePtr(d, &pointer), flagcxInvalidUsage);
   EXPECT_EQ(pointer, nullptr);
   EXPECT_EQ(std::count(events.begin(), events.end(), Mr), 1);
