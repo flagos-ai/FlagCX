@@ -1884,6 +1884,7 @@ fail_info:
 
 flagcxResult_t flagcxOneSideRegister(flagcxComm_t comm, void *buff,
                                      size_t size) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (comm->heteroComm == nullptr)
     return flagcxNotSupported;
@@ -2215,6 +2216,7 @@ fail_mr:
 
 flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
                                            size_t size, int ptrType) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   const bool isVmmAllocation =
       ptrType == FLAGCX_PTR_CUDA && flagcxOneSideRegistryRangeIsVmm(buff, size);
   return flagcxOneSideSignalRegisterInternal(comm, buff, size, ptrType,
@@ -2256,6 +2258,7 @@ flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
 
 flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
                                             size_t size) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
     return flagcxSuccess;
   }
@@ -3674,17 +3677,9 @@ static flagcxResult_t initUniRunnerCapabilities(flagcxComm_t comm) {
   return result;
 }
 
-flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
-                                  flagcxUniqueId_t commId, int rank) {
-  if (nranks < 1 || rank < 0 || rank >= nranks) {
-    WARN("Invalid rank requested : %d/%d", rank, nranks);
-    return flagcxInvalidArgument;
-  }
-  if (commId == NULL || comm == NULL) {
-    WARN("flagcxCommInitRank: commId or comm is NULL");
-    return flagcxInvalidArgument;
-  }
-
+static flagcxResult_t flagcxCommInitRankInternal(flagcxComm_t *comm, int nranks,
+                                                 flagcxUniqueId_t commId,
+                                                 int rank) {
   *comm = NULL;
   FLAGCXCHECK(flagcxCalloc(comm, 1));
   (*comm)->pluginRollbackOnly = true;
@@ -4135,6 +4130,31 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   }
 
   return flagcxSuccess;
+}
+
+flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
+                                  flagcxUniqueId_t commId, int rank) {
+  if (nranks < 1 || rank < 0 || rank >= nranks) {
+    WARN("Invalid rank requested : %d/%d", rank, nranks);
+    return flagcxInvalidArgument;
+  }
+  if (commId == NULL || comm == NULL) {
+    WARN("flagcxCommInitRank: commId or comm is NULL");
+    return flagcxInvalidArgument;
+  }
+  flagcxResult_t result =
+      flagcxCommInitRankInternal(comm, nranks, commId, rank);
+  if (result != flagcxSuccess && *comm != NULL) {
+    // All failed outputs retain a cleanup owner, including errors before
+    // finalize policy initialization. Plugin-only rollback stays separate.
+    if (!(*comm)->pluginRollbackOnly)
+      (*comm)->initRollbackPending = true;
+    __atomic_store_n(&(*comm)->finalizeState.lastResult, result,
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&(*comm)->finalizeState.lifecycle, flagcxCommDestroying,
+                     __ATOMIC_RELEASE);
+  }
+  return result;
 }
 
 flagcxResult_t flagcxDestroyHomoCommOwner(flagcxComm_t comm,
