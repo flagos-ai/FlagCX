@@ -130,9 +130,11 @@ if [[ "${FLAGCX_CI_ASCEND_SHMEM:-1}" == 1 ]]; then
     # (device_api_unified_ir) and its own runner path (MC952 review P1).
     UNIFIED_IR_NP=$FLAGCX_CI_INTRA_NP
     export UNIFIED_IR_NP
-    echo "cann-shmem backend enabled: SHMEM_HOME=$SHMEM_HOME"
+    # Informational only: keep stdout clean, consumers capture it as the
+    # FLAGCX_CI_IGNORE_TEST JSON (test/script/test_platform_ci.py).
+    echo "cann-shmem backend enabled: SHMEM_HOME=$SHMEM_HOME" >&2
   else
-    echo "::warning title=Ascend shmem backend not exercised::cann-shmem runtime not found in the CI image; the IPC-gated build runs and the shmem cross-rank cases stay skipped"
+    echo "::warning title=Ascend shmem backend not exercised::cann-shmem runtime not found in the CI image; the IPC-gated build runs and the shmem cross-rank cases stay skipped" >&2
     if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
       printf -- '- **Ascend shmem backend not exercised:** cann-shmem runtime not found in the CI image\n' \
         >> "$GITHUB_STEP_SUMMARY"
