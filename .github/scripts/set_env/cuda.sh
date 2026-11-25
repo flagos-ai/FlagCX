@@ -83,6 +83,14 @@ flagcx_ci_configure_suite() {
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
       ;;
+    device_api_gda)
+      export GDA_PROVIDER_HOME=${GDA_PROVIDER_HOME:-/usr/local}
+      FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 USE_XPUNETIO=1
+        "GDA_PROVIDER_HOME=$GDA_PROVIDER_HOME")
+      FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1 USE_XPUNETIO=1
+        "GDA_PROVIDER_HOME=$GDA_PROVIDER_HOME")
+      export LD_LIBRARY_PATH="$GDA_PROVIDER_HOME/lib:$GDA_PROVIDER_HOME/lib64:${LD_LIBRARY_PATH:-}"
+      ;;
   esac
 }
 
@@ -93,6 +101,14 @@ flagcx_ci_prepare() {
   command -v mpirun
   mpirun --version
   nvidia-smi
+  if [[ "$suite" == device_api_gda ]]; then
+    if [[ ! -f "$GDA_PROVIDER_HOME/include/xpu_netio/device_api.cuh" ||
+          ( ! -f "$GDA_PROVIDER_HOME/lib/libxpu_netio.so" &&
+            ! -f "$GDA_PROVIDER_HOME/lib64/libxpu_netio.so" ) ]]; then
+      echo "device_api_gda requires an installed XPU NetIO SDK in GDA_PROVIDER_HOME=$GDA_PROVIDER_HOME (headers and libxpu_netio.so)." >&2
+      return 1
+    fi
+  fi
 }
 
 flagcx_ci_validate_rdma() {

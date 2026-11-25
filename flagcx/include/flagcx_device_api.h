@@ -84,16 +84,20 @@ flagcxDevCommCreateSized(flagcxComm_t comm,
                          size_t reqsSize, flagcxDevComm_t *devComm);
 
 // Complete application-launched Device API kernels and graph replays before
-// destroying their handles. FlagCX tracks its own host submissions and does
-// not synchronize the whole device. On failure the handle remains owned and
+// destroying their handles. FlagCX tracks its own host submissions.
+// On failure the handle remains owned and
 // must be retried; getters reject a handle whose cleanup has started.
 // Internal exporter allocations belong to the parent Comm. Destroying a view
 // closes its imports locally; backing is released by CommDestroy after Finalize
 // has confirmed peer import closure.
+// A published GDA DevComm is destroyed collectively: callers stop submissions
+// and all ranks retire their QPs before any GDA MR is released. A failed
+// teardown retains the handle for cleanup-only retries.
 flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm, flagcxDevComm_t devComm);
 
 // Local view construction; cross-rank Window resources must already have
 // been registered by flagcxCommWindowRegister or an internal preparation step.
+// A GDA Window whose teardown has started cannot be bound again.
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
                                   flagcxWindow_t win, flagcxDevMem_t *devMem);
 // A non-null view must be destroyed with the communicator that created it.

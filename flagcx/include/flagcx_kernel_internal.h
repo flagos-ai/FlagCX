@@ -209,6 +209,9 @@ flagcxResult_t flagcxConvergeBootstrapStatus(flagcxComm_t comm,
                                              flagcxResult_t local,
                                              flagcxResult_t *common);
 
+// Collective GDA retirement before communicator destruction frees local owners.
+flagcxResult_t flagcxCommPrepareGdaDestroy(flagcxComm_t comm);
+
 // Release data buffer resources (MR, network connections, handle arrays).
 flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm);
 

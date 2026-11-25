@@ -657,7 +657,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 //   * FLAGCX_DEVICE_TRAP() - the shared "this cannot be reached" marker -
 //     becomes __builtin_unreachable(): noreturn, no symbol, and defensible
 //     here because the Default backend rejects the GDA provider long before a
-//     device view is published (DefaultNetGdaProvider::isValid() returns false
+//     device view is published (DefaultNetProvider::isValid() returns false
 //     at :86-92, supportsBarrierFence() accepts only Relaxed at :80-84), so a
 //     guarded call cannot exist at runtime. Replacing even this with a real
 //     trap instruction is an open measurement.

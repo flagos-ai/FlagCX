@@ -196,3 +196,24 @@ backend; skipped suites include an explicit reason rather than a fabricated
 zero-percent result. New supplemental GoogleTest cases use the
 `CoverageSupplemental.` suite-name prefix: ordinary PR jobs exclude these
 cases, while the weekly coverage workflow runs them.
+
+CUDA's `device_api_gda` suite is temporarily disabled in the CI matrix.
+Its build and test entry points remain available for manual validation. It
+builds with
+`USE_NVIDIA=1 USE_XPUNETIO=1 COMPILE_KERNEL=1`, runs the host lifecycle tests,
+and reuses `test_device_api_inter` with `FLAGCX_DEVNET_ENABLE=1`. Applications
+may fall back to Proxy after clean GDA initialization failure, but this suite
+requires an actual GDA DevComm. It executes the supported inter cases, including
+Inter/World Barriers and repeated K14
+AlltoAll. Unsupported counter, get, VA-signal and multiple-context cases are
+reported as SKIP; implementing their public contracts and enabling their
+cases in this same suite remains a TODO. A run with no aligned AlltoAll case
+fails rather than passing through skips.
+
+The CUDA CI image must contain the XPU NetIO SDK headers and
+`libxpu_netio.so` under `GDA_PROVIDER_HOME` (default `/usr/local`); the suite
+fails its prerequisite check if they are missing. `FLAGCX_XPU_NETIO_PROVIDER`
+may select the SDK's internal provider. The CUDA topology configuration uses
+two logical nodes with two GPUs each; this exercises Inter-team mapping on
+one runner and does not replace physical multi-node validation. Other
+platforms do not enable `device_api_gda` yet.

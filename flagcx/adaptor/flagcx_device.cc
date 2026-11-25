@@ -9,6 +9,7 @@
 #include "device_api/flagcx_device.h"
 #include "alloc.h"
 #include "comm.h"
+#include "device_api/devnet/flagcx_dev_net_adaptor.h"
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
 #include "mem_alloc_registry.h"
@@ -231,6 +232,8 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
   if (hetero != nullptr) {
     hetero->devCommHandle = handle;
   }
+  if (handle->netUseGda)
+    comm->devNetCommHandle = handle;
 
   return flagcxSuccess;
 }
@@ -254,6 +257,28 @@ flagcxDevCommCreateSized(flagcxComm_t comm,
   return flagcxDevCommCreateInternal(comm, reqs, reqsSize, devComm);
 }
 
+flagcxResult_t flagcxCommPrepareGdaDestroy(flagcxComm_t comm) {
+  // A failed drain has already revoked publication. Keep finding that owner
+  // through the active list (or a standalone destroy's retained cleanup).
+  flagcxDevComm_t devComm = comm->devNetCommHandle;
+  if (devComm == nullptr && comm->pendingDevCommCleanup != nullptr &&
+      comm->pendingDevCommCleanup->gdaDraining)
+    devComm = comm->pendingDevCommCleanup;
+  for (flagcxDevComm_t active = comm->activeDevComms;
+       devComm == nullptr && active != nullptr; active = active->previousActive)
+    if (active->gdaDraining && active->gdaHostOwner != nullptr)
+      devComm = active;
+  if (devComm == nullptr || devComm->gdaHostOwner == nullptr ||
+      devComm->gdaQuiesced)
+    return flagcxSuccess;
+
+  if (comm->devNetCommHandle == devComm)
+    comm->devNetCommHandle = nullptr;
+  // Do not release the DevComm or put it ahead of newer owners in pending
+  // cleanup. Stage 2 keeps the original LIFO destruction order.
+  return devNetAdaptor.prepareCommDestroy(devComm);
+}
+
 extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
                                                flagcxDevComm_t devComm) {
   if (devComm == nullptr) {
@@ -268,26 +293,54 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
        comm->activeDevComms != devComm))
     return flagcxInvalidUsage;
   devComm->cleanupStarted = true;
-  if (comm != NULL) {
+  bool collectiveGdaDrain = false;
+  collectiveGdaDrain =
+      devComm->gdaHostOwner != nullptr && !devComm->gdaQuiesced &&
+      ((comm != nullptr && comm->devNetCommHandle == devComm) ||
+       devComm->gdaDraining);
+  if (comm != nullptr) {
     flagcxResult_t result =
         flagcxCommDrainSnapshot(comm, &devComm->cleanupWork);
+    // Every participant must observe snapshot failure before entering the
+    // collective GDA retirement path; retain the snapshot for a retry.
+    if (collectiveGdaDrain) {
+      flagcxResult_t common = flagcxSuccess;
+      FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, result, &common));
+      result = common;
+    }
     if (result != flagcxSuccess)
       return result;
   }
 
   // Stop the proxy from acquiring a new reference while the backend tears
-  // down fields reachable through DevComm. Restore publication on failure so
-  // the still-owned object remains retryable.
+  // down fields reachable through DevComm. Proxy can restore publication on
+  // failure; a draining GDA owner is retained for cleanup-only retries.
   const bool wasPublished = comm != nullptr && comm->heteroComm != nullptr &&
                             comm->heteroComm->devCommHandle == devComm;
   if (wasPublished)
     comm->heteroComm->devCommHandle = devComm->previousActive;
+  const bool gdaPublished =
+      comm != nullptr && comm->devNetCommHandle == devComm;
+  if (gdaPublished)
+    comm->devNetCommHandle = nullptr;
+  if (devComm->gdaHostOwner != nullptr &&
+      (gdaPublished || devComm->gdaDraining)) {
+    flagcxResult_t result = devComm->gdaQuiesced
+                                ? flagcxSuccess
+                                : devNetAdaptor.prepareCommDestroy(devComm);
+    if (comm != nullptr)
+      comm->pendingDevCommCleanup = devComm;
+    if (result != flagcxSuccess)
+      return result;
+  }
 
   if (!devComm->backendDestroyed) {
     flagcxResult_t result = devApiBackend->devCommDestroy(comm, devComm);
     if (result != flagcxSuccess) {
-      if (wasPublished)
+      if (wasPublished && !devComm->gdaDraining)
         comm->heteroComm->devCommHandle = devComm;
+      if (gdaPublished && !devComm->gdaDraining)
+        comm->devNetCommHandle = devComm;
       return result;
     }
     devComm->backendDestroyed = true;
@@ -320,6 +373,8 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   if (comm != nullptr && comm->activeDevComms == devComm)
     comm->activeDevComms = devComm->previousActive;
   flagcxWorkSnapshotRelease(&devComm->cleanupWork);
+  if (comm != nullptr && comm->pendingDevCommCleanup == devComm)
+    comm->pendingDevCommCleanup = nullptr;
   free(devComm);
   return flagcxSuccess;
 }
@@ -363,6 +418,7 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
     localPrepare = flagcxInvalidUsage;
   if (localPrepare == flagcxSuccess) {
     handle->rawPtr = buff;
+    handle->viewSize = size;
     handle->ipcIndex = -1;
     handle->runnerOwned = preparedIpcSlot >= 0;
   }
@@ -443,6 +499,10 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
     }
   }
 
+  if (win != nullptr) {
+    handle->gdaWindowNext = win->devMemViews;
+    win->devMemViews = handle;
+  }
   *devMem = handle;
   return flagcxSuccess;
 }
@@ -510,6 +570,16 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
         return cleanupResult;
     } while (0);
     devMem->backendDestroyed = true;
+  }
+
+  flagcxWindow_t hostWindow = devMem->boundWindow;
+  if (hostWindow != nullptr) {
+    flagcxDevMem_t *link = &hostWindow->devMemViews;
+    while (*link != nullptr && *link != devMem)
+      link = &(*link)->gdaWindowNext;
+    if (*link == devMem)
+      *link = devMem->gdaWindowNext;
+    devMem->gdaWindowNext = nullptr;
   }
 
   if (devMem->ipcIndex >= 0) {

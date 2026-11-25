@@ -6,6 +6,7 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "bootstrap.h"
 #include "dev_api_backend.h"
 #include "device_api/completion_word.h"
 #include "device_api/flagcx_device.h"
@@ -549,22 +550,77 @@ TEST_F(DefaultDevCommCleanupTest, EarlyCreateFailureDoesNotPublishHandle) {
 
 TEST_F(DefaultDevCommCleanupTest,
        RelayCreationDeclaresWorldCleanupBeforeAllocation) {
-  testDeviceAdaptor.deviceMalloc = injectDeviceMallocFailure;
-  failDeviceMallocCall = 1;
-  flagcxHeteroComm heteroComm = {};
-  heteroComm.nRanks = heteroComm.nNodes = 2;
-  heteroComm.relayInitialized = true;
-  heteroComm.nInterPeers = 1;
-  flagcxComm comm = {};
-  comm.nranks = 2;
-  comm.localRanks = 1;
-  comm.heteroComm = &heteroComm;
+  struct BootstrapOwners {
+    bootstrapState *states[2] = {};
+    volatile uint32_t abortFlags[2] = {};
+    ~BootstrapOwners() {
+      for (auto *state : states)
+        if (state != nullptr)
+          EXPECT_EQ(bootstrapClose(state), flagcxSuccess);
+    }
+  } bootstrap;
+  ASSERT_EQ(bootstrapNetInit(), flagcxSuccess);
+  flagcxBootstrapHandle handle;
+  ASSERT_EQ(bootstrapGetUniqueId(&handle), flagcxSuccess);
+  flagcxResult_t results[2] = {};
+  std::thread ranks[2];
+  for (int rank = 0; rank < 2; ++rank)
+    ranks[rank] = std::thread([&, rank] {
+      results[rank] = bootstrapCollInit(&handle, rank, 2, handle.magic,
+                                        &bootstrap.abortFlags[rank],
+                                        &bootstrap.states[rank]);
+      if (results[rank] != flagcxSuccess)
+        for (auto &flag : bootstrap.abortFlags)
+          __atomic_store_n(&flag, 1u, __ATOMIC_RELEASE);
+    });
+  for (auto &rank : ranks)
+    rank.join();
+  for (auto result : results)
+    ASSERT_EQ(result, flagcxSuccess);
+
+  struct AllocationFailure {
+    flagcxComm_t comm;
+    int calls;
+    bool cleanupDeclared;
+  } failures[2] = {};
+  static thread_local AllocationFailure *failure = nullptr;
+  testDeviceAdaptor.deviceMalloc = [](void **ptr, size_t, flagcxMemType_t,
+                                      flagcxStream_t) {
+    *ptr = nullptr;
+    ++failure->calls;
+    failure->cleanupDeclared =
+        failure->comm->nativeFinalizeScope == flagcxNativeFinalizeComm;
+    return flagcxSystemError;
+  };
+  flagcxHeteroComm heteroComm[2] = {};
+  flagcxComm comm[2] = {};
   flagcxDevCommRequirements reqs = {};
-  flagcxDevCommInternal devComm = {};
-  EXPECT_EQ(devApiBackend->devCommCreate(&comm, &reqs, sizeof(reqs), &devComm),
-            flagcxSystemError);
-  EXPECT_EQ(comm.nativeFinalizeScope, flagcxNativeFinalizeComm);
-  EXPECT_EQ(deviceMallocCallCount, 1);
+  flagcxDevCommInternal devComm[2] = {};
+  for (int rank = 0; rank < 2; ++rank) {
+    heteroComm[rank].nRanks = heteroComm[rank].nNodes = 2;
+    heteroComm[rank].node = rank;
+    heteroComm[rank].relayInitialized = true;
+    heteroComm[rank].nInterPeers = 1;
+    comm[rank].rank = rank;
+    comm[rank].nranks = 2;
+    comm[rank].localRanks = 1;
+    comm[rank].heteroComm = &heteroComm[rank];
+    comm[rank].bootstrap = bootstrap.states[rank];
+    failures[rank].comm = &comm[rank];
+    ranks[rank] = std::thread([&, rank] {
+      failure = &failures[rank];
+      results[rank] = devApiBackend->devCommCreate(
+          &comm[rank], &reqs, sizeof(reqs), &devComm[rank]);
+    });
+  }
+  for (auto &rank : ranks)
+    rank.join();
+  for (int rank = 0; rank < 2; ++rank) {
+    EXPECT_EQ(results[rank], flagcxSystemError);
+    EXPECT_EQ(comm[rank].nativeFinalizeScope, flagcxNativeFinalizeComm);
+    EXPECT_EQ(failures[rank].calls, 1);
+    EXPECT_TRUE(failures[rank].cleanupDeclared);
+  }
   EXPECT_TRUE(allocatedPtrs.empty());
 }
 

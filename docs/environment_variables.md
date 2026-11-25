@@ -10,6 +10,7 @@ This document provides a comprehensive reference for all environment variables u
   - [Communication Mode](#communication-mode)
   - [Buffer and Memory](#buffer-and-memory)
   - [Proxy and Runtime](#proxy-and-runtime)
+  - [Device API Net](#device-api-net)
   - [Topology Configuration](#topology-configuration)
   - [Tuner Configuration](#tuner-configuration)
   - [HybridRunner Configuration](#hybridrunner-configuration)
@@ -79,6 +80,21 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_DEVICE_FUNC_PATH` | None | Path to device function library for async kernel loading |
 | `FLAGCX_RMA_QUEUE_SIZE` | 256 | Per-peer circular buffer depth for the RMA proxy thread. Must be a power of two. Increasing this allows more in-flight RDMA descriptors per peer before the producer blocks |
 | `FLAGCX_RMA_BATCH_MAX` | 256 | Maximum number of RDMA PUT descriptors batched into a single `iputBatch` call by the RMA proxy thread. Capped internally at 256. Set to 1 to disable batching and fall back to one-at-a-time `iput` |
+
+---
+
+## Device API Net
+
+The default Device API backend always includes the existing Proxy FIFO path. The build may additionally bind one GDA implementation: `USE_XPUNETIO=1` supplies NVIDIA XPUNetIO GDA; the None binding supplies no GDA candidate. A DevComm selects Proxy or the compiled GDA during creation. Vendor Device API backends retain their own behavior. The CCL adaptor remains independent.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLAGCX_DEVNET_ENABLE` | 1 | `0` skips GDA initialization and uses Proxy. `1` attempts the compiled GDA when Net resources are requested; an unavailable candidate falls back to Proxy only after all ranks confirm successful cleanup. All ranks must agree. |
+| `FLAGCX_XPU_NETIO_PROVIDER` | `mlx5` | Internal XPU NetIO SDK provider passed to `xpu_netio_load_provider`. It does not select another FlagCX GDA implementation. |
+
+`FLAGCX_DEVNET_TYPE` has been removed. The GDA implementation is fixed at build time. Missing or incompatible compiled GDA candidates across ranks select Proxy before GDA initialization. Configuration/argument errors and incomplete cleanup remain errors. A DevComm never switches paths after publication or retries an already submitted request through Proxy. An XPUNetIO build still requires its linked SDK shared libraries at process startup; runtime fallback cannot recover a dynamic-loader failure.
+
+The current XPUNetIO MLX5 adapter supports Put, PutValue, Flush, indexed SignalInc/Add and Relaxed Barrier operations. Get, counters, VA signals and multiple contexts remain unsupported. GDA does not offer two-sided `send`/`recv`/`term`/`wait`; unsupported requests do not use Proxy FIFOs. The inter suite runs its supported cases, including repeated K14 AlltoAll.
 
 ---
 

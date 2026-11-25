@@ -52,6 +52,8 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) $(IR_INCLUDE) $(PLATFORM_INCLUDES) \
     $(KERNEL_INCLUDE) $(PERF_INCLUDE) $(MPI_INCLUDE) $(DEVICE_INCLUDE) $(CCL_INCLUDE)
 
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
+DEVICE_TEST_CONFIG_STAMP := $(OBJDIR)/.device_test_config
+DEVICE_TEST_CONFIG = $(CXX) $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) $(ALL_INCLUDES) $(ALL_LINK) $(DEVICE_COMPILER) $(DEVICE_COMPILER_GENCODE)
 
 # DU kernel objects contain absolute host relocations. Link their test
 # executables without PIE so the host linker accepts those relocations.
@@ -98,12 +100,31 @@ ifeq ($(KERNEL_PLATFORM),nvidia)
 PROVIDER_UNIT_TARGET := $(PROVIDER_TEST_TARGET)
 endif
 
+GDA_HOST_TARGET :=
+ifeq ($(USE_XPUNETIO)$(KERNEL_PLATFORM),1nvidia)
+GDA_HOST_TARGET := $(BINDIR)/test_net_gda_host_control
+$(GDA_HOST_TARGET): test_net_gda_host_control.cpp \
+    $(PROJECT_ROOT)/flagcx/adaptor/device_api/devnet/xpu_netio_gda_host.cc \
+    $(DEVICE_TEST_CONFIG_STAMP)
+	@mkdir -p $(BINDIR) $(OBJDIR)
+	@$(HOST_CXX) -std=c++17 $(HOST_ADAPTOR_DEFINE) $(FLAGCX_INCLUDES) \
+	    $(GTEST_INCLUDE) $(DEVICE_INCLUDE) -I$(PROJECT_ROOT)/flagcx/adaptor/device_api \
+	    -MMD -MP -MF $(OBJDIR)/test_net_gda_host_control.d -MT $@ \
+	    $< -o $@ -Wl,--export-dynamic $(FLAGCX_LINK) $(DEVICE_LINK) $(GTEST_LINK)
+-include $(OBJDIR)/test_net_gda_host_control.d
+endif
+
 # This host-only test must not select device CommTraits: KLX's SHMEM traits are
 # compiled by xpu-clang, not g++. Pass only the allocator choice needed by the
 # provenance assertions.
 UNIT_CXXFLAGS := $(filter-out -DCOMPILE_KERNEL -fgpu-rdc,$(CXXFLAGS))
+UNIT_CXXFLAGS += $(filter -DFLAGCX_USE_XPU_NETIO,$(HOST_ADAPTOR_DEFINE))
 UNIT_INCLUDES := $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) \
                  -I$(PROJECT_ROOT)/flagcx/adaptor/device_api
+ifneq ($(filter -DFLAGCX_USE_XPU_NETIO,$(HOST_ADAPTOR_DEFINE)),)
+UNIT_INCLUDES += $(DEVICE_INCLUDE)
+endif
+UNIT_CONFIG_STAMP := $(OBJDIR)/.test_dev_comm_cleanup_config
 
 # Device API tests link test/kernel/<platform>/device_api.o. IR tests need a
 # device_ir.<ext> kernel. KLX exercises the backend through the two unified IR
@@ -203,7 +224,7 @@ ifneq ($(SKIPPED_TARGETS),)
 	@echo "Skipped unsupported targets on $(KERNEL_PLATFORM): $(SKIPPED_TARGETS)"
 endif
 
-unit: $(UNIT_TARGET) $(PROVIDER_UNIT_TARGET)
+unit: $(UNIT_TARGET) $(PROVIDER_UNIT_TARGET) $(GDA_HOST_TARGET)
 
 require-compile-kernel:
 	$(REQUIRE_COMPILE_KERNEL)
@@ -226,18 +247,29 @@ KERNEL_API_TARGETS += dlink_api.o
 KERNEL_IR_TARGETS  += dlink_ir.o
 endif
 
-$(DEVICE_API_OBJ) $(DLINK_API_OBJ): $(KERNEL_API_SRCS)
+$(DEVICE_API_OBJ) $(DLINK_API_OBJ): $(KERNEL_API_SRCS) $(DEVICE_TEST_CONFIG_STAMP)
 	@$(MAKE) -C $(KERNEL_DIR) $(KERNEL_API_TARGETS)
 
-$(DEVICE_IR_OBJ) $(DLINK_IR_OBJ): $(KERNEL_IR_SRCS)
+$(DEVICE_IR_OBJ) $(DLINK_IR_OBJ): $(KERNEL_IR_SRCS) $(DEVICE_TEST_CONFIG_STAMP)
 	@$(MAKE) -C $(KERNEL_DIR) $(KERNEL_IR_TARGETS)
 
-$(TOOLS_OBJ): $(TOOLS_SRC)
+$(TOOLS_OBJ): $(TOOLS_SRC) $(DEVICE_TEST_CONFIG_STAMP)
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling tools.cc"
 	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) $(ALL_INCLUDES)
 
-$(UNIT_OBJ): $(OBJDIR)/%.o: %.cpp
+.PHONY: unit_config_force
+$(DEVICE_TEST_CONFIG_STAMP): unit_config_force
+	@mkdir -p $(OBJDIR)
+	@printf '%s\n' '$(DEVICE_TEST_CONFIG)' | cmp -s - $@ || \
+	  printf '%s\n' '$(DEVICE_TEST_CONFIG)' > $@
+
+$(UNIT_CONFIG_STAMP): unit_config_force
+	@mkdir -p $(OBJDIR)
+	@printf '%s\n' '$(UNIT_CXXFLAGS) $(UNIT_INCLUDES)' | cmp -s - $@ || \
+	  printf '%s\n' '$(UNIT_CXXFLAGS) $(UNIT_INCLUDES)' > $@
+
+$(UNIT_OBJ): $(OBJDIR)/%.o: %.cpp $(UNIT_CONFIG_STAMP)
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
 	@$(HOST_CXX) $< -o $@ -c $(UNIT_CXXFLAGS) $(UNIT_INCLUDES)
@@ -250,7 +282,7 @@ $(UNIT_TARGET): $(UNIT_OBJ)
 # HIPCC treats object files as HIP source when a .cpp input is present in the
 # same link invocation. Compile each test entry point first so links receive
 # object files only. This also keeps the host sources out of device linking.
-$(OBJDIR)/test_device_%.o: test_device_%.cpp | require-compile-kernel
+$(OBJDIR)/test_device_%.o: test_device_%.cpp $(DEVICE_TEST_CONFIG_STAMP) | require-compile-kernel
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
 	@$(CXX) $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) -c -o $@ $< $(ALL_INCLUDES)
@@ -314,6 +346,9 @@ run-unit: unit
 	@$(DEVICEPTR_ARGS_TARGET)
 ifneq ($(PROVIDER_UNIT_TARGET),)
 	@$(PROVIDER_UNIT_TARGET)
+endif
+ifneq ($(GDA_HOST_TARGET),)
+	@$(GDA_HOST_TARGET)
 endif
 
 # Use the same backend selection as the library and device kernels. Default
@@ -425,5 +460,26 @@ endif
 
 run-mpi: run-mpi-intra run-mpi-inter run-mpi-unified-intra \
          run-mpi-unified-inter
+
+# Run the same inter API suite with the compiled GDA provider. Unsupported
+# operations are explicit SKIPs until their public Net contracts are implemented.
+.PHONY: run-mpi-gda
+GDA_RANKS_PER_NODE ?= 1
+GDA_NODE0_ENV ?= $(INTER_NODE0_ENV) $(MPI_ENV_FLAG) CUDA_VISIBLE_DEVICES=0
+GDA_NODE1_ENV ?= $(INTER_NODE1_ENV) $(MPI_ENV_FLAG) CUDA_VISIBLE_DEVICES=1
+GDA_TEST_ARGS ?= -b 16K -e 1M -f 2 -R 2 -n 64
+ifeq ($(USE_XPUNETIO)$(KERNEL_PLATFORM),1nvidia)
+run-mpi-gda: $(BINDIR)/test_device_api_inter
+	$(MPIRUN) $(MPI_ROOT_ARGS) \
+		-n $(GDA_RANKS_PER_NODE) $(INTER_ENV) $(GDA_NODE0_ENV) \
+		$(MPI_ENV_FLAG) FLAGCX_DEVNET_ENABLE=1 \
+		$(BINDIR)/test_device_api_inter $(GDA_TEST_ARGS) \
+		: -n $(GDA_RANKS_PER_NODE) $(INTER_ENV) $(GDA_NODE1_ENV) \
+		$(MPI_ENV_FLAG) FLAGCX_DEVNET_ENABLE=1 \
+		$(BINDIR)/test_device_api_inter $(GDA_TEST_ARGS)
+else
+run-mpi-gda:
+	@echo "Net GDA test requires USE_NVIDIA=1 USE_XPUNETIO=1"
+endif
 
 run: require-compile-kernel run-unit run-mpi

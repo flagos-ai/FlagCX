@@ -27,10 +27,15 @@
  ************************************************************************/
 
 #include "device_api/flagcx_device.h"
-#include "nvidia_adaptor.h"
-#include "global_comm.h"
 #include "flagcx_kernel.h"
+#include "global_comm.h"
+#include "nvidia_adaptor.h"
+#include <algorithm>
 #include <cuda_runtime.h>
+#if defined(FLAGCX_USE_XPU_NETIO)
+#include "device_api/devnet/xpu_netio_gda_host.h"
+#include "net_gda_test.h"
+#endif
 
 // Datatype size helper (moved from flagcx/kernels/flagcx_kernel_device.cu)
 FLAGCX_DEVICE_DECORATOR size_t
@@ -252,6 +257,150 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   bar.sync(flagcxDeviceMemoryOrderRelaxed);
 }
 
+#if defined(FLAGCX_USE_XPU_NETIO)
+FLAGCX_GLOBAL_DECORATOR void
+flagcxInterGdaAlltoAllKernel(flagcxDevMem send, flagcxDevMem recv,
+                             size_t bytesPerPeer, size_t chunkBytes,
+                             flagcxDevComm comm, uint32_t *errorFlag, int round,
+                             flagcxNetGdaVisibilityResult *validation) {
+  // One CTA owns context 0 and Barrier channel 0.
+  const int rank = comm.getRank();
+  const int nranks = comm.getSize();
+  if (nranks <= 0 || rank < 0 || rank >= nranks ||
+      comm.getContextCount() <= 0 || comm.interBarrierCount <= 0 ||
+      comm._commBase.barrierSignalBase <= 0 ||
+      bytesPerPeer > SIZE_MAX / static_cast<size_t>(nranks) ||
+      errorFlag == nullptr || chunkBytes == 0) {
+    FLAGCX_DEVICE_TRAP();
+    return;
+  }
+
+  flagcxCoopBlock block;
+  flagcxDevNet net(comm, 0);
+  if (!net.isValid() || !net.context().useGda) {
+    FLAGCX_DEVICE_TRAP();
+    return;
+  }
+
+  const flagcxTeam team = flagcxTeamWorld(comm);
+  const size_t rankOffset = static_cast<size_t>(rank) * bytesPerPeer;
+  const uint64_t before = net.readSignal(0);
+  const uint64_t chunks =
+      bytesPerPeer == 0 ? 0 : (bytesPerPeer - 1) / chunkBytes + 1;
+  if (chunks &&
+      static_cast<uint64_t>(nranks - 1) > (UINT64_MAX - before) / chunks) {
+    FLAGCX_DEVICE_TRAP();
+    return;
+  }
+  const uint64_t expected = before + chunks * static_cast<uint64_t>(nranks - 1);
+  const size_t totalBytes = bytesPerPeer * static_cast<size_t>(nranks);
+  if (validation != nullptr) {
+    uint64_t sum = 0;
+    const uint8_t *recvBytes = static_cast<const uint8_t *>(recv.getRawPtr());
+    for (size_t i = block.threadRank(); i < totalBytes; i += block.size())
+      sum += DeviceAPI::CoopOps::load<uint8_t, Scalar, flagcxDeviceMemoryGlobal,
+                                      flagcxDeviceMemoryOrderWeak>(
+          DeviceAPI::CoopThread{}, recvBytes + i);
+    DeviceAPI::Atomic::fetchAdd(&validation->preReadChecksum, sum,
+                                flagcxDeviceMemoryOrderRelaxed);
+    block.sync();
+  }
+
+  if (bytesPerPeer != 0) {
+    uint8_t *dst = static_cast<uint8_t *>(recv.getRawPtr());
+    const uint8_t *src = static_cast<const uint8_t *>(send.getRawPtr());
+    if (dst == nullptr || src == nullptr) {
+      FLAGCX_DEVICE_TRAP();
+      return;
+    }
+    DeviceAPI::CoopOps::copy(block._base, dst + rankOffset, src + rankOffset,
+                             bytesPerPeer);
+  }
+  block.sync();
+
+  flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> barrier(
+      block, flagcxTeamTagWorld{}, net, 0);
+  // All ranks must finish stream-ordered buffer initialization before a peer
+  // can post a write. Reuse this channel for the completion rendezvous below.
+  barrier.sync(flagcxDeviceMemoryOrderAcqRel, flagcxDevNetFenceLevel::Relaxed);
+
+  if (DeviceAPI::Atomic::load(errorFlag, flagcxDeviceMemoryOrderAcquire) != 0)
+    return;
+
+  // The first thread submits each peer's chunks in order. The GDA adapter
+  // maps each Net::put to the peer's QP and reports posting failures.
+  if (block.threadRank() == 0 && bytesPerPeer != 0) {
+    for (int peer = 0; peer < nranks; ++peer) {
+      if (peer == rank)
+        continue;
+      const size_t peerOffset = static_cast<size_t>(peer) * bytesPerPeer;
+      for (size_t done = 0; done < bytesPerPeer;) {
+        const size_t remaining = bytesPerPeer - done;
+        const size_t bytes = remaining < chunkBytes ? remaining : chunkBytes;
+        net.put(team, peer, recv, rankOffset + done, send, peerOffset + done,
+                bytes, flagcxDevNet_SignalInc{0}, flagcxDevNet_None{},
+                flagcxCoopThread{});
+        if (DeviceAPI::Atomic::load(errorFlag,
+                                    flagcxDeviceMemoryOrderAcquire) != 0)
+          break;
+        done += bytes;
+      }
+      if (DeviceAPI::Atomic::load(errorFlag, flagcxDeviceMemoryOrderAcquire) !=
+          0)
+        break;
+    }
+  }
+  block.sync();
+  if (DeviceAPI::Atomic::load(errorFlag, flagcxDeviceMemoryOrderAcquire) != 0)
+    return;
+
+  net.waitSignal(block, 0, expected);
+  if (DeviceAPI::Atomic::load(errorFlag, flagcxDeviceMemoryOrderAcquire) != 0)
+    return;
+  // Ordinary cached loads immediately after the data notification, before
+  // flush or the final Barrier, detect stale data and stale cache lines.
+  if (validation != nullptr) {
+    uint64_t checked = 0, mismatches = 0;
+    const uint8_t *recvBytes = static_cast<const uint8_t *>(recv.getRawPtr());
+    for (size_t i = block.threadRank(); i < totalBytes; i += block.size()) {
+      const int source = static_cast<int>(i / bytesPerPeer);
+      const size_t element = (i % bytesPerPeer) / sizeof(float);
+      const float wanted = static_cast<float>(
+          source * 1000 + rank * 100 + static_cast<int>(element) + round * 17);
+      const uint8_t byte =
+          reinterpret_cast<const uint8_t *>(&wanted)[i % sizeof(float)];
+      const uint8_t actual =
+          DeviceAPI::CoopOps::load<uint8_t, Scalar, flagcxDeviceMemoryGlobal,
+                                   flagcxDeviceMemoryOrderWeak>(
+              DeviceAPI::CoopThread{}, recvBytes + i);
+      ++checked;
+      if (actual != byte) {
+        ++mismatches;
+        uint64_t empty = UINT64_MAX;
+        DeviceAPI::Atomic::compareExchange(&validation->firstMismatchOffset,
+                                           empty, static_cast<uint64_t>(i),
+                                           flagcxDeviceMemoryOrderRelaxed);
+      }
+    }
+    DeviceAPI::Atomic::fetchAdd(&validation->checkedBytes, checked,
+                                flagcxDeviceMemoryOrderRelaxed);
+    DeviceAPI::Atomic::fetchAdd(&validation->mismatchCount, mismatches,
+                                flagcxDeviceMemoryOrderRelaxed);
+    block.sync();
+  }
+  net.flush(block);
+  barrier.sync(flagcxDeviceMemoryOrderAcqRel, flagcxDevNetFenceLevel::Relaxed);
+}
+#endif
+
+static unsigned interSignalGrid(flagcxDevComm_t comm) {
+#if defined(FLAGCX_USE_XPU_NETIO)
+  if (comm->netUseGda != 0)
+    return 1;
+#endif
+  return FLAGCX_DEVICE_CTA_COUNT;
+}
+
 // Host-side one-sided AlltoAll function.
 flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
                                            flagcxDevMem_t recvMem, size_t count,
@@ -265,14 +414,65 @@ flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
 
-  flagcxInterOneSidedAlltoAllKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
+#if defined(FLAGCX_USE_XPU_NETIO)
+  if (devComm->netUseGda)
+    return launchKernelNetOneSidedAlltoAll(sendMem, recvMem, count, datatype,
+                                           devComm, stream, 0, 0, nullptr);
+#endif
+
+  flagcxInterOneSidedAlltoAllKernel<<<FLAGCX_DEVICE_CTA_COUNT,
+                                      FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                      *(cudaStream_t *)stream>>>(sm, rm, count,
+                                                                 datatype, dc);
 
   cudaError_t err = cudaGetLastError();
 
   return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
+
+#if defined(FLAGCX_USE_XPU_NETIO)
+flagcxResult_t
+launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
+                                size_t count, flagcxDataType_t datatype,
+                                flagcxDevComm_t devComm, flagcxStream_t stream,
+                                int round, size_t requestedChunk,
+                                flagcxNetGdaVisibilityResult *validation) {
+  if (!sendMem || !recvMem || !devComm || !stream ||
+      !devComm->netUseGda || devComm->gdaDeviceContext == nullptr || round < 0 ||
+      (validation && datatype != flagcxFloat))
+    return flagcxInvalidArgument;
+  flagcxDevComm dc(*devComm);
+  flagcxDevMem sm(*sendMem), rm(*recvMem);
+  const size_t elementSize = getFlagcxDataTypeSize(datatype);
+  if (elementSize == 0 || count > SIZE_MAX / elementSize ||
+      devComm->interBarrierCount <= 0 || devComm->barrierSignalBase <= 0)
+    return flagcxInvalidArgument;
+  const size_t bytes = count * elementSize;
+  unsigned capabilities = 0, alignment = 0;
+  uint64_t maxChunkBytes = 0;
+  uint32_t *errorFlag = nullptr;
+  FLAGCXCHECK(XpuNetioGda::queryComm(devComm, &capabilities, &errorFlag,
+                                     &maxChunkBytes, &alignment));
+  const unsigned required = DefaultNetGdaPut | DefaultNetGdaSignal |
+                            DefaultNetGdaSignalCompletion | DefaultNetGdaFlush |
+                            DefaultNetGdaBarrier;
+  if ((capabilities & required) != required)
+    return flagcxNotSupported;
+  if (alignment == 0 || maxChunkBytes < alignment || bytes % alignment != 0 ||
+      errorFlag == nullptr)
+    return flagcxNotSupported;
+  const size_t maxChunk = static_cast<size_t>(
+      (std::min<uint64_t>(maxChunkBytes, bytes) / alignment) * alignment);
+  const size_t chunkBytes = requestedChunk == 0 ? maxChunk : requestedChunk;
+  if (chunkBytes == 0 || chunkBytes > maxChunk || chunkBytes % alignment != 0)
+    return flagcxInvalidArgument;
+  flagcxInterGdaAlltoAllKernel<<<1, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                 *(cudaStream_t *)stream>>>(
+      sm, rm, bytes, chunkBytes, dc, errorFlag, round, validation);
+  return cudaGetLastError() == cudaSuccess ? flagcxSuccess
+                                           : flagcxUnhandledDeviceError;
+}
+#endif
 
 // Host-side two-sided AlltoAll function.
 flagcxResult_t launchKernelNetTwoSidedAlltoAll(flagcxDevMem_t sendMem,
@@ -808,9 +1008,10 @@ flagcxResult_t launchKernelNetPutSignalInc(flagcxDevMem_t sendMem,
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
 
-  flagcxInterTestPutSignalIncKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
+  flagcxInterTestPutSignalIncKernel<<<interSignalGrid(devComm),
+                                      FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                      *(cudaStream_t *)stream>>>(sm, rm, count,
+                                                                 datatype, dc);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     return flagcxUnhandledDeviceError;
@@ -826,9 +1027,10 @@ flagcxResult_t launchKernelNetPutSignalAdd(flagcxDevMem_t sendMem,
   if (!devComm || !sendMem || !recvMem) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
-  flagcxInterTestPutSignalAddDecoupledKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
+  flagcxInterTestPutSignalAddDecoupledKernel<<<interSignalGrid(devComm),
+                                               FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                               *(cudaStream_t *)stream>>>(
+      sm, rm, count, datatype, dc);
   cudaError_t err = cudaGetLastError();
   return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -872,9 +1074,10 @@ flagcxResult_t launchKernelNetPutValue(flagcxDevMem_t recvMem,
   if (!devComm || !recvMem) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
   flagcxDevMem rm(*recvMem);
-  flagcxInterTestPutValueKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(rm, dc, putValBase);
+  flagcxInterTestPutValueKernel<<<interSignalGrid(devComm),
+                                  FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                  *(cudaStream_t *)stream>>>(rm, dc,
+                                                             putValBase);
   cudaError_t err = cudaGetLastError();
   return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -883,9 +1086,9 @@ flagcxResult_t launchKernelNetSignal(flagcxDevComm_t devComm,
                                          flagcxStream_t stream) {
   if (!devComm) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
-  flagcxInterTestSignalKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(dc);
+  flagcxInterTestSignalKernel<<<interSignalGrid(devComm),
+                                FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                *(cudaStream_t *)stream>>>(dc);
   cudaError_t err = cudaGetLastError();
   return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -899,9 +1102,10 @@ flagcxResult_t launchKernelNetFlushDecouple(flagcxDevMem_t sendMem,
   if (!devComm || !sendMem || !recvMem) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
-  flagcxInterTestFlushDecoupleKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
+  flagcxInterTestFlushDecoupleKernel<<<interSignalGrid(devComm),
+                                       FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                       *(cudaStream_t *)stream>>>(sm, rm, count,
+                                                                  datatype, dc);
   cudaError_t err = cudaGetLastError();
   return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -1417,8 +1621,12 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
         flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
 
-    // Reset signal slot 0
-    net.resetSignal(0);
+    // GDA uses cumulative indexed counters; ResetSignal is not part of its
+    // initial contract. Preserve the existing reset on other Net paths.
+#if defined(FLAGCX_USE_XPU_NETIO)
+    if (!net.context().useGda)
+#endif
+      net.resetSignal(0);
     uint64_t s0 = net.readSignal(0);
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
 
@@ -1450,9 +1658,9 @@ flagcxResult_t launchKernelNetWaitSignalFlush(flagcxDevComm_t devComm,
                                               flagcxStream_t stream) {
   if (!devComm) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
-  flagcxInterTestWaitSignalFlushKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(dc);
+  flagcxInterTestWaitSignalFlushKernel<<<interSignalGrid(devComm),
+                                         FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                         *(cudaStream_t *)stream>>>(dc);
   cudaError_t err = cudaGetLastError();
   return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -1550,7 +1758,7 @@ flagcxResult_t launchKernelWorldBarrier(flagcxDevComm_t devComm,
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(1)
     flagcxDevNetGetFromCommKernel(flagcxDevComm devComm, int *results) {
   flagcxDevNet net(devComm, 0);
-  results[0] = (devComm.getContextCount() > 0) ? 1 : 0;
+  results[0] = (devComm.getContextCount() > 0 && net.isValid()) ? 1 : 0;
   results[1] = devComm.getIntraSize();
 }
 

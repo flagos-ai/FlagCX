@@ -337,6 +337,14 @@ LIBSRCFILES:= \
 
 # Platform .mk provides extra sources (device_api backend, shmem adaptor)
 LIBSRCFILES += $(PLATFORM_EXTRA_SRCS)
+LIBSRCFILES += flagcx/adaptor/device_api/devnet/dev_net.cc
+ifeq ($(USE_XPUNETIO),1)
+ifneq ($(USE_NVIDIA),1)
+$(error USE_XPUNETIO=1 currently requires USE_NVIDIA=1)
+endif
+else
+LIBSRCFILES += flagcx/adaptor/device_api/devnet/dev_net_none.cc
+endif
 
 # The legacy and shared implementations export the same public flagcx_p2p.h
 # symbols and therefore must never be linked into one library together.
@@ -475,7 +483,7 @@ endif
 
 .PHONY: device_bitcode
 device_bitcode: all
-	$(MAKE) -C bindings/ir/$(DEVICE_BITCODE_DIR) BUILDDIR=$(abspath $(BUILDDIR)) $(DEVICE_BITCODE_ARCH_ARG) ADAPTOR_FLAG='$(ADAPTOR_FLAG)' DEVICE_HOME=$(DEVICE_HOME) CCL_HOME=$(CCL_HOME) SHMEM_HOME=$(SHMEM_HOME) EMIT_LLVM_IR=1 $(DEVICE_BITCODE_EXTRA_ARG) llvm_ir
+	$(MAKE) -C bindings/ir/$(DEVICE_BITCODE_DIR) BUILDDIR=$(abspath $(BUILDDIR)) $(DEVICE_BITCODE_ARCH_ARG) ADAPTOR_FLAG='$(ADAPTOR_FLAG)' DEVICE_HOME=$(DEVICE_HOME) CCL_HOME=$(CCL_HOME) SHMEM_HOME=$(SHMEM_HOME) GDA_PROVIDER_HOME=$(GDA_PROVIDER_HOME) EMIT_LLVM_IR=1 $(DEVICE_BITCODE_EXTRA_ARG) llvm_ir
 
 print_var:
 	@echo "USE_KUNLUNXIN : $(USE_KUNLUNXIN)"
@@ -534,6 +542,9 @@ LINKER_FLAGS  :=
 ifeq ($(USE_DU),1)
   LINKER := $(DEVICE_LINKER)
   LINKER_FLAGS := $(DEVICE_LINK_FLAG)
+endif
+ifeq ($(USE_XPUNETIO),1)
+  LINKER_FLAGS += -Wl,-rpath,$(GDA_PROVIDER_HOME)/lib -Wl,-rpath,$(GDA_PROVIDER_HOME)/lib64
 endif
 
 # MUSA's generated image symbol is WEAK DEFAULT. Without local binding, a

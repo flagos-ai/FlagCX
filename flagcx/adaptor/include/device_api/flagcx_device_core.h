@@ -901,11 +901,16 @@ struct flagcxDevNet : DeviceAPI::Net {
   int _nInterPeers;
   FLAGCX_DEVICE_GLOBAL_PTR unsigned int *_gridBarrierState;
 
+  // The default allows all callers on this device to share the Net resources.
+  // Block/Thread are caller ownership promises and do not select an owner.
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxDevNet(const flagcxDevComm &devComm, int idx)
-      : DeviceAPI::Net(devComm._commBase, devComm._contextCount > 0
-                                              ? idx % devComm._contextCount
-                                              : 0),
+  flagcxDevNet(const flagcxDevComm &devComm, int idx,
+               flagcxDevNetResourceSharingMode_t sharingMode =
+                   flagcxDevNetResourceSharingDevice)
+      : DeviceAPI::Net(devComm._commBase,
+                       devComm._contextCount > 0 ? idx % devComm._contextCount
+                                                 : 0,
+                       sharingMode),
         _nInterPeers(devComm._nInterPeers),
         _gridBarrierState(devComm._gridBarrierState) {
     // Guard against division by zero if contextCount is 0

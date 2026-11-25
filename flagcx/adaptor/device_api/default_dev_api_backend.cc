@@ -14,6 +14,7 @@
 #include "bootstrap.h"
 #include "dev_api_backend.h"
 #include "device_api/completion_word.h"
+#include "device_api/devnet/flagcx_dev_net_adaptor.h"
 #include "device_api/flagcx_device.h"
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
@@ -34,6 +35,7 @@
 #include <new>
 #include <sched.h>
 #include <unistd.h>
+#include <vector>
 
 using DefaultCompletionWord = typename DeviceAPI::CompletionWord;
 
@@ -500,17 +502,28 @@ static flagcxResult_t
 defaultDevApiCommCreate(flagcxComm_t comm,
                         const struct flagcxDevCommRequirements *reqs,
                         size_t reqsSize, flagcxDevComm_t devComm) {
-  // The default backend consumes only fields in the frozen prefix.
-  (void)reqsSize;
+  (void)reqsSize; // Older callers may pass a larger requirements tail.
+  const bool forceOneSidedNet = flagcxParamDeviceOneSidedForceNet() != 0;
+  const bool oneSidedRequested =
+      reqs->interSignalCount > 0 || reqs->interCounterCount > 0;
+  const bool needsCompletionResources =
+      oneSidedRequested || reqs->interBarrierCount > 0;
+  const bool hasRemoteNodes =
+      comm->heteroComm != nullptr && comm->heteroComm->nNodes > 1;
+  // Forced local fallback is Net traffic too: it participates in the same
+  // GDA eligibility check as communication across nodes.
+  const bool needsNet =
+      reqs->interForceEnable || reqs->interBarrierCount > 0 ||
+      ((hasRemoteNodes || forceOneSidedNet) && needsCompletionResources);
+  bool attemptGda = false;
+  FLAGCXCHECK(
+      flagcxDevNetConfigure(comm, needsNet, forceOneSidedNet, &attemptGda));
   if (reqs->interBarrierCount < 0)
     return flagcxInvalidArgument;
   devComm->interBarrierCount = reqs->interBarrierCount;
-  const bool forceOneSidedNet = flagcxParamDeviceOneSidedForceNet() != 0;
   const bool hostMappedSignals =
       flagcxParamSignalHostEnable() != 0 &&
       sizeof(DefaultCompletionWord) == sizeof(uint64_t);
-  const bool oneSidedRequested =
-      reqs->interSignalCount > 0 || reqs->interCounterCount > 0;
   // IPC barrier layer
   if (reqs->intraBarrierCount > 0 || reqs->interBarrierCount > 0) {
     flagcxResult_t res = setupIpcBarriers(comm, devComm);
@@ -563,8 +576,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
        "defaultDevApiCommCreate: nInterPeers=%d interSignalCount=%d "
        "interCounterCount=%d",
        devComm->nInterPeers, reqs->interSignalCount, reqs->interCounterCount);
-  if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0 ||
-      reqs->interBarrierCount > 0) {
+  if (needsCompletionResources) {
     int bufCtxCount =
         (comm->heteroComm != nullptr && comm->heteroComm->proxyState != nullptr)
             ? comm->heteroComm->proxyState->kernelState.contextCount
@@ -581,15 +593,18 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       // Expand signalCount to include barrier slots:
       // Each barrier channel reserves one signal slot per Inter team rank.
       int userSignals = reqs->interSignalCount;
-      if (devComm->nTeamRanks < 0 || reqs->interBarrierCount < 0 ||
+      int barrierRanks = devComm->nTeamRanks;
+      if (barrierRanks < 0 || reqs->interBarrierCount < 0 ||
           (reqs->interBarrierCount > 0 &&
-           devComm->nTeamRanks >
+           barrierRanks >
                std::numeric_limits<int>::max() / reqs->interBarrierCount)) {
-        WARN("barrierSignalBase overflow: nTeamRanks=%d interBarrierCount=%d",
-             devComm->nTeamRanks, reqs->interBarrierCount);
+        WARN("barrierSignalBase overflow: barrierRanks=%d interBarrierCount=%d",
+             barrierRanks, reqs->interBarrierCount);
         return flagcxInternalError;
       }
-      int barrierSlots = devComm->nTeamRanks * reqs->interBarrierCount;
+      // Inter and World barriers share the same Inter-team slot layout;
+      // World composes an Inter phase with the existing intra-node phase.
+      int barrierSlots = barrierRanks * reqs->interBarrierCount;
       if (userSignals < 0 || barrierSlots < 0 ||
           userSignals > std::numeric_limits<int>::max() - barrierSlots ||
           bufCtxCount <= 0 ||
@@ -724,10 +739,15 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       }
     }
 
-    // Prepare the Net fallback even on a single node.  IPC setup can fail for
-    // an otherwise valid local allocation, and PutValue then needs this
-    // registered staging source to make the fallback complete.
-    if (comm->heteroComm != nullptr) {
+    // Select the DevComm's one Net backend before preparing Proxy-only MRs.
+    // An unavailable GDA candidate may fall back here after cleanup, before
+    // the device view or a request is published.
+    if (attemptGda)
+      FLAGCXCHECK(flagcxDevNetCreateComm(comm, devComm, reqs));
+
+    // Proxy PutValue needs a registered staging source when IPC is unavailable.
+    // GDA owns its own Window and signal registrations.
+    if (comm->heteroComm != nullptr && !devComm->netUseGda) {
       devComm->putValueStagingSlotCount = FLAGCX_KERNEL_PROXY_PUT_VALUE_SLOTS;
       devComm->putValueStagingContextCount = bufCtxCount;
       size_t stagingSize = 0;
@@ -833,6 +853,11 @@ defaultDevApiCommCreate(flagcxComm_t comm,
          devComm->signalCount, devComm->counterCount, devComm->contextCount);
   }
 
+  // A Net request without completion storage still validates the candidate
+  // before choosing the final path.
+  if (attemptGda && !needsCompletionResources)
+    FLAGCXCHECK(flagcxDevNetCreateComm(comm, devComm, reqs));
+
   // ==========================================================================
   // P2P signal/counter IPC setup (intra-node direct atomic fast path)
   // The direct completion plane is ordinary device memory so it can be
@@ -879,7 +904,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
             : (devComm->nInterPeers == 0 && devComm->signalIpcSlot >= 0);
   }
 
-  if (devComm->signalBuffer &&
+  if (devComm->signalBuffer && !devComm->netUseGda &&
       (devComm->nInterPeers > 0 || !devComm->useP2pSignals ||
        forceOneSidedNet) &&
       !devComm->netSignalReady) {
@@ -887,23 +912,32 @@ defaultDevApiCommCreate(flagcxComm_t comm,
          "available");
     return flagcxNotSupported;
   }
-  if (oneSidedRequested && forceOneSidedNet && !devComm->netPutValueReady) {
+  if (oneSidedRequested && forceOneSidedNet && !devComm->netUseGda &&
+      !devComm->netPutValueReady) {
     WARN("defaultDevApiCommCreate: forced Net fallback requested but "
          "PutValue staging is not registered");
     return flagcxNotSupported;
   }
 
-  // Pre-establish full-mesh connections from main thread
-  INFO(FLAGCX_INIT, "defaultDevApiCommCreate: calling preconnectFullMesh");
-  {
+  // The Proxy backend needs the host transport mesh. GDA creates its own
+  // connections and never sends two-sided requests through this FIFO.
+  if (!devComm->netUseGda) {
+    INFO(FLAGCX_INIT, "defaultDevApiCommCreate: calling preconnectFullMesh");
     flagcxResult_t res = preconnectFullMesh(comm);
     if (res != flagcxSuccess) {
       WARN("defaultDevApiCommCreate: preconnectFullMesh failed (%d)", res);
       return res;
     }
+    INFO(FLAGCX_INIT, "defaultDevApiCommCreate: preconnectFullMesh OK");
   }
-  INFO(FLAGCX_INIT, "defaultDevApiCommCreate: preconnectFullMesh OK");
-  if (comm->heteroComm != nullptr && comm->heteroComm->oneSideHandleCount > 0 &&
+  // GDA readiness comes from its published device context, not Proxy FIFOs.
+  if (devComm->netUseGda) {
+    if (devComm->gdaDeviceContext == nullptr || devComm->contextCount <= 0)
+      return flagcxInternalError;
+    devComm->netOneSidedReady = 1;
+  }
+  if (!devComm->netUseGda && comm->heteroComm != nullptr &&
+      comm->heteroComm->oneSideHandleCount > 0 &&
       comm->heteroComm->oneSideHandles[0] != nullptr &&
       comm->heteroComm->oneSideHandles[0]->fullSendComms != nullptr) {
     devComm->netOneSidedReady = 1;
@@ -914,12 +948,13 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       }
     }
   }
-  if (oneSidedRequested && forceOneSidedNet && !devComm->netOneSidedReady) {
+  if (!devComm->netUseGda && oneSidedRequested && forceOneSidedNet &&
+      !devComm->netOneSidedReady) {
     WARN("defaultDevApiCommCreate: Net one-sided full mesh/FIFO is not ready");
     return flagcxNotSupported;
   }
-  if (reqs->interBarrierCount > 0 && devComm->nInterPeers > 0 &&
-      !devComm->netOneSidedReady) {
+  if (reqs->interBarrierCount > 0 && !devComm->netUseGda &&
+      devComm->nInterPeers > 0 && !devComm->netOneSidedReady) {
     WARN("defaultDevApiCommCreate: Inter barrier Proxy FIFO is not ready");
     return flagcxNotSupported;
   }
@@ -940,6 +975,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
 static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
                                                flagcxDevComm_t devComm) {
+  FLAGCXCHECK(devNetAdaptor.destroyComm(devComm));
   // Deregister communicator-level MRs before freeing their backing buffers.
   // Check handle identity so rollback cannot remove a registration owned by
   // another DevComm.
@@ -1115,6 +1151,10 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
 static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
                                              flagcxDevMem_t devMem) {
+  if (win != nullptr && win->gdaRegistrationActive &&
+      win->gdaDeviceView == nullptr)
+    return flagcxInvalidUsage;
+
   // ---- Per-comm MR layer: lookup buff in heteroComm->oneSideHandles ----
   devMem->mrIndex = -1;
   devMem->mrBase = 0;
@@ -1223,12 +1263,24 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
     flagcxDevComm_t dc = (comm != nullptr && comm->heteroComm != nullptr)
                              ? comm->heteroComm->devCommHandle
                              : nullptr;
+    if (comm != nullptr && comm->devNetCommHandle != nullptr)
+      dc = comm->devNetCommHandle;
+    if (flagcxParamDeviceOneSidedForceNet() && dc != nullptr &&
+        dc->gdaDeviceContext != nullptr && win == nullptr) {
+      WARN("flagcxDevMemCreate: forced GDA Net requires a registered Window "
+           "for buff %p",
+           buff);
+      delete kWin;
+      return flagcxInvalidUsage;
+    }
     bool hasRemotePeers = comm != nullptr && comm->heteroComm != nullptr &&
                           comm->heteroComm->nNodes > 1;
     bool needsNetFallback = !hasP2pAccess || hasRemotePeers;
     if (win != nullptr && win->isSymmetricDefault && needsNetFallback) {
-      bool netFallbackReady = dc != nullptr && dc->netOneSidedReady &&
-                              dc->netPutValueReady && devMem->mrIndex >= 0;
+      bool netFallbackReady =
+          dc != nullptr && (dc->gdaDeviceContext != nullptr ||
+                            (dc->netOneSidedReady && dc->netPutValueReady &&
+                             devMem->mrIndex >= 0));
       if (!netFallbackReady) {
         WARN("flagcxDevMemCreate: Net fallback is required but incomplete "
              "(mrIndex=%d, net=%d, putValue=%d)",
@@ -1240,6 +1292,9 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
     }
     devMem->window = kWin;
     devMem->hasWindow = kWin->hasAccess();
+    if (dc != nullptr && dc->gdaDeviceContext != nullptr && win != nullptr &&
+        win->gdaWindowOwner != nullptr)
+      devMem->hasWindow = true;
 
     if (!devMem->hasWindow && win != nullptr && win->isSymmetricDefault) {
       flagcxSymWindow_t d = win->defaultBase;
@@ -1257,8 +1312,9 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
     }
 
     if (flagcxParamDeviceOneSidedForceNet()) {
-      if (devMem->mrIndex < 0 || dc == nullptr || !dc->netOneSidedReady ||
-          !dc->netPutValueReady) {
+      if (dc == nullptr || (dc->gdaDeviceContext == nullptr &&
+                            (devMem->mrIndex < 0 || !dc->netOneSidedReady ||
+                             !dc->netPutValueReady))) {
         WARN("flagcxDevMemCreate: forced Net fallback is incomplete for buff "
              "%p (mrIndex=%d, net=%d, putValue=%d)",
              buff, devMem->mrIndex, dc ? dc->netOneSidedReady : 0,
@@ -1312,6 +1368,21 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       kWin->symPeerLayouts = (typename DeviceAPI::SymPeerLayout *)deviceLayouts;
       devMem->segmentedPeerLayouts = deviceLayouts;
     }
+    if (dc != nullptr && dc->gdaDeviceContext != nullptr && win != nullptr) {
+      flagcxResult_t gdaResult =
+          devNetAdaptor.bindDevMem(win, devMem, size, kWin);
+      if (gdaResult != flagcxSuccess) {
+        if (devMem->segmentedPeerLayouts != nullptr) {
+          deviceAdaptor->deviceFree(devMem->segmentedPeerLayouts,
+                                    flagcxMemDevice, nullptr);
+          devMem->segmentedPeerLayouts = nullptr;
+        }
+        delete kWin;
+        devMem->window = nullptr;
+        return gdaResult;
+      }
+      devMem->hasWindow = kWin->hasAccess();
+    }
   }
 
   return flagcxSuccess;
@@ -1323,6 +1394,7 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
 
 static flagcxResult_t defaultDevApiMemDestroy(flagcxComm_t comm,
                                               flagcxDevMem_t devMem) {
+  FLAGCXCHECK(devNetAdaptor.unbindDevMem(devMem));
   // Free window allocation if present
   if (devMem->window != nullptr) {
     delete static_cast<typename DeviceAPI::Window *>(devMem->window);
@@ -1343,6 +1415,9 @@ static flagcxResult_t defaultDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
                                                     void **devPtr) {
   if (!devComm || !devPtr)
     return flagcxInvalidArgument;
+  *devPtr = nullptr;
+  if (devComm->gdaDraining)
+    return flagcxInvalidUsage;
 
   pthread_mutex_lock(&devComm->cachedPtrMutex);
 
@@ -1448,6 +1523,11 @@ static flagcxResult_t defaultDevApiMemGetDevicePtr(flagcxDevMem_t devMem,
                                                    void **devPtr) {
   if (!devMem || !devPtr)
     return flagcxInvalidArgument;
+  *devPtr = nullptr;
+  flagcxWindow_t window = static_cast<flagcxWindow_t>(devMem->winHandle);
+  if (window != nullptr && window->gdaRegistrationActive &&
+      window->gdaDeviceView == nullptr)
+    return flagcxInvalidUsage;
 
   pthread_mutex_lock(&devMem->cachedPtrMutex);
 
