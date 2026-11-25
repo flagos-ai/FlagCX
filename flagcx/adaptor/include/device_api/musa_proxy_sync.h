@@ -9,8 +9,8 @@
  *      - per-op dispatch: picks the Coop argument (fixed index per op),
  *        Signal/Reset get their special completion handling
  *   3. DefaultNetDispatch<MusaPlatform>
- *      - full specialization; only the Proxy provider path is wrapped,
- *        the GDA provider and the primary template stay unchanged
+ *      - inherits common validity, Barrier control and GDA dispatch;
+ *        only the Proxy provider path is wrapped
  *   4. flagcxMusaCompleteProxy
  *      - rank0 fifoFlush, first-error capture via CAS into the terminal
  *        status word, then a terminal-status check
@@ -116,42 +116,19 @@ struct flagcxMusaProxyOperation<Net, Operation,
 // generic dispatch, operation implementations, and device-view layout are
 // shared unchanged. Only the Proxy call is wrapped here.
 template <>
-struct DefaultNetDispatch<MusaPlatform> {
-  template <typename Net>
-  FLAGCX_DEVICE_INLINE_DECORATOR static bool
-  isValid(DefaultNetContext context, const Net &net, bool proxyReady) {
-    switch (context.provider) {
-      case DefaultNetProviderProxy:
-        return proxyReady;
-      case DefaultNetProviderGda:
-        return DefaultNetGdaProvider<MusaPlatform>::compiled(
-                   context.providerId) &&
-               context.handle != nullptr &&
-               DefaultNetGdaProvider<MusaPlatform>::isValid(context, net);
-      default:
-        return false;
-    }
-  }
-
+struct DefaultNetDispatch<MusaPlatform> : DefaultNetDispatchBase<MusaPlatform> {
   template <typename Operation, typename Net, typename... Args>
   FLAGCX_DEVICE_INLINE_DECORATOR static auto
   call(DefaultNetContext context, const Net &net, Args &&...args)
       -> decltype(Operation::proxy(context, net,
                                    static_cast<Args &&>(args)...)) {
-    switch (context.provider) {
-      case DefaultNetProviderProxy:
-        return flagcxMusaProxyOperation<Net, Operation>::call(
-            context, net, static_cast<Args &&>(args)...);
-      case DefaultNetProviderGda:
-        if (!DefaultNetGdaProvider<MusaPlatform>::compiled(
-                context.providerId) ||
-            context.handle == nullptr)
-          FLAGCX_DEVICE_TRAP();
-        return DefaultNetGdaProvider<MusaPlatform>::template call<Operation>(
-            context, net, static_cast<Args &&>(args)...);
-      default:
-        FLAGCX_DEVICE_TRAP();
-    }
+    if (context.useGda)
+      return DefaultNetDispatchBase<MusaPlatform>::template call<Operation>(
+          context, net, static_cast<Args &&>(args)...);
+    if (!flagcxDevNetResourceSharingModeValid(context.resourceSharingMode))
+      FLAGCX_DEVICE_TRAP();
+    return flagcxMusaProxyOperation<Net, Operation>::call(
+        context, net, static_cast<Args &&>(args)...);
   }
 };
 

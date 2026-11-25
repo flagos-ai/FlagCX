@@ -799,7 +799,8 @@ struct Barrier<NcclBackend, flagcxTeamTagWorld, Coop> {
 using DeviceAPI = CommTraits<NcclBackend>;
 
 #else
-// NCCL version too old — fall back to default
+// NCCL version too old or default path explicitly requested.
+#include "default_comm_traits.h"
 #include "devnet/nvidia_net_provider.h"
 #undef FLAGCX_DEVICE_API_VENDOR
 using DeviceAPI = CommTraits<DefaultBackend<NvidiaPlatform>>;

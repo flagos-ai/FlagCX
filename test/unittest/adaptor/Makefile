@@ -97,9 +97,10 @@ compile-platform-traits:
 	@mkdir -p $(OBJDIR)/traits-sdk/tops
 	@printf '%s\n' '#pragma once' 'typedef void *musaStream_t;' > $(OBJDIR)/traits-sdk/musa_runtime.h
 	@printf '%s\n' '#pragma once' 'typedef void *topsStream_t;' > $(OBJDIR)/traits-sdk/tops/tops_runtime.h
-	@set -e; for binding in ASCEND:AscendPlatform MUSA:MusaPlatform ENFLAME:EnflamePlatform; do \
-	  platform=$${binding%%:*}; expected=$${binding#*:}; \
-	  echo "Checking $$platform host Device API selection"; \
+	@set -e; for binding in ASCEND:AscendPlatform:1 MUSA:MusaPlatform:0 MUSA:MusaPlatform:1 ENFLAME:EnflamePlatform:1; do \
+	  platform=$${binding%%:*}; options=$${binding#*:}; \
+	  expected=$${options%%:*}; proxy_sync=$${options#*:}; \
+	  echo "Checking $$platform host Device API selection (MUSA Proxy sync=$$proxy_sync)"; \
 	  printf '%s\n' \
 	    '#include "device_api/flagcx_device.h"' \
 	    '#include "device_api/completion_word.h"' \
@@ -107,8 +108,17 @@ compile-platform-traits:
 	    'static_assert(std::is_same<DeviceAPI, CommTraits<DefaultBackend<FLAGCX_TEST_PLATFORM>>>::value, "wrong Device API platform");' \
 	    'static_assert(std::is_same<flagcxCompletionWord_t, DeviceAPI::CompletionWord>::value, "wrong FIFO control word");' \
 	    'flagcxCompletionWord_t *control(uint64_t *p) { return flagcxFifoControlPtr(p, flagcxFifoIdxProduced); }' \
+	    'void barriers(DeviceAPI::Comm &comm) {' \
+	    '  using Coop = DeviceAPI::CoopThread;' \
+	    '  DeviceAPI::Net net(comm, 0);' \
+	    '  DeviceAPI::Barrier<flagcxTeamTagIntra, Coop> intra; intra.sync();' \
+	    '  DeviceAPI::Barrier<flagcxTeamTagInter, Coop> inter; inter.sync();' \
+	    '  DeviceAPI::Barrier<flagcxTeamTagWorld, Coop> world(Coop{}, flagcxTeamTagWorld{}, net, comm, 0, false, 0);' \
+	    '  world.sync();' \
+	    '}' \
 	    | $(CXX) $(filter-out -DUSE_%_ADAPTOR -DCOMPILE_KERNEL% -DFLAGCX_COMM_TRAITS_% -DFLAGCX_ENFLAME_DEVICE_API,$(CXXFLAGS)) \
 	      -DUSE_$${platform}_ADAPTOR -DFLAGCX_COMM_TRAITS_DEFAULT \
+	      -DFLAGCX_MUSA_PROXY_COMPLETION_SYNC=$$proxy_sync \
 	      -DFLAGCX_TEST_PLATFORM=$$expected -I$(OBJDIR)/traits-sdk $(FLAGCX_INCLUDES) \
 	      -x c++ -fsyntax-only -; \
 	done

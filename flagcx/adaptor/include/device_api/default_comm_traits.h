@@ -102,7 +102,7 @@ struct DefaultNetProvider {
 
 // Runtime selection is limited to Proxy vs the single compiled GDA candidate.
 template <typename PlatformTag>
-struct DefaultNetDispatch {
+struct DefaultNetDispatchBase {
   template <typename NetT>
   FLAGCX_DEVICE_INLINE_DECORATOR static bool
   isValid(DefaultNetContext ctx, const NetT &net, bool proxyReady) {
@@ -147,6 +147,11 @@ struct DefaultNetDispatch {
                                                static_cast<Args &&>(args)...);
   }
 };
+
+// Platforms may wrap Proxy calls while inheriting the common validity,
+// Barrier control and GDA dispatch contract.
+template <typename PlatformTag>
+struct DefaultNetDispatch : DefaultNetDispatchBase<PlatformTag> {};
 
 template <typename PlatformTag>
 struct DefaultNetProviderPolicy {
