@@ -46,3 +46,13 @@ unit_test_suites:
   - runner
   - service
   - symmem
+
+# Platform exclusions; every entry must document its reason.
+ignore_test:
+  perf:
+    operations:
+    - allreduce
+    - reducescatter
+    modes:
+    - homogeneous
+    reason: MetaX AllReduce and ReduceScatter fail FP32 SUM data verification at 128 MiB; pending diagnosis

@@ -12,6 +12,7 @@ perf_bin=$2
 shift 2
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+export FLAGCX_CI_CONFIG_DIR="${FLAGCX_CI_CONFIG_DIR:-$script_dir/../../configs}"
 mpi_runner="$script_dir/run_mpi_with_timeout.sh"
 platform=${FLAGCX_CI_PERF_PLATFORM:-platform}
 mpi_np=${FLAGCX_CI_PERF_NP:-4}
