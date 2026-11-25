@@ -294,9 +294,8 @@ build_project() {
 build_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
   if [[ "$SUITE" == rdma_atomic_probe ]]; then
-    make -C "$suite_dir" --jobs="$(nproc)" "${FLAGCX_CI_TEST_MAKE_ARGS[@]}"
-    make -C "$PROJECT_ROOT/test/unittest/device_api" --jobs="$(nproc)" mpi \
-      "${FLAGCX_CI_TEST_MAKE_ARGS[@]}"
+    # The supervisor builds each worker independently and saves build failures
+    # before running the remaining allocation/transport controls.
     return
   fi
   if [[ "$SUITE" == device_traits ]]; then
@@ -600,9 +599,16 @@ run_suite() {
   case "$SUITE" in
     rdma_atomic_probe)
       local probe_log_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}"
+      local -a probe_build_args=()
+      local probe_arg
+      for probe_arg in "${FLAGCX_CI_TEST_MAKE_ARGS[@]}"; do
+        probe_build_args+=("--make-arg=$probe_arg")
+      done
       python3 "$PROJECT_ROOT/.github/scripts/ci/run_rdma_atomic_probe.py" \
-        --binary "$PROJECT_ROOT/test/unittest/rdma_atomic_probe/build/bin/rdma_atomic_probe" \
+        --native-binary "$PROJECT_ROOT/test/unittest/rdma_atomic_probe/build/bin/rdma_atomic_native_probe" \
+        --adaptor-binary "$PROJECT_ROOT/test/unittest/rdma_atomic_probe/build/bin/rdma_atomic_adaptor_probe" \
         --barrier "$PROJECT_ROOT/test/unittest/device_api/build/bin/test_device_ir_unified_inter" \
+        --build-root "$PROJECT_ROOT" --jobs "$(nproc)" "${probe_build_args[@]}" \
         --output "$probe_log_root/rdma_atomic_probe"
       ;;
     adaptor)

@@ -3,11 +3,42 @@
  ************************************************************************/
 #include "probe.h"
 
+#include "adaptor.h"
 #include "flagcx_net.h"
 #include "ib_transport.h"
+#include "ibvwrap.h"
 #include "onesided_types.h"
 
 namespace {
+void describeQp(const Options &o, ibv_qp *qp) {
+  ibv_qp_attr attr = {};
+  ibv_qp_init_attr init = {};
+  const int query = int(flagcxWrapIbvQueryQp(
+      qp, &attr,
+      IBV_QP_STATE | IBV_QP_ACCESS_FLAGS | IBV_QP_PORT | IBV_QP_AV |
+          IBV_QP_DEST_QPN | IBV_QP_MAX_QP_RD_ATOMIC | IBV_QP_MAX_DEST_RD_ATOMIC,
+      &init));
+  ibv_device_attr device = {};
+  const int capability = int(flagcxWrapIbvQueryDevice(qp->context, &device));
+  emit(o,
+       {{"event", "qp_state"},
+        {"qpn", qp->qp_num},
+        {"hca", flagcxWrapIbvGetDeviceName(qp->context->device)},
+        {"query_code", query},
+        {"capability_code", capability},
+        {"atomic_cap", int(device.atomic_cap)},
+        {"firmware", device.fw_ver},
+        {"state", int(attr.qp_state)},
+        {"access", attr.qp_access_flags},
+        {"port", attr.port_num},
+        {"remote_qpn", attr.dest_qp_num},
+        {"initiator_depth", attr.max_rd_atomic},
+        {"responder_depth", attr.max_dest_rd_atomic},
+        {"gid_index", attr.ah_attr.grh.sgid_index},
+        {"remote_gid", std::vector<uint8_t>(attr.ah_attr.grh.dgid.raw,
+                                            attr.ah_attr.grh.dgid.raw + 16)}});
+}
+
 struct WindowRecord {
   uintptr_t address;
   size_t size;

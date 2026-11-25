@@ -60,10 +60,26 @@ FLAGCX_CI_TEST_LABEL="symmem unit tests" \
 echo ""
 echo ""
 echo "=== Running bootstrap IPC lifetime fault tests (four independent processes) ==="
-lifecycle_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}/symmem-lifecycle"
+lifecycle_log_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}"
+lifecycle_root="$lifecycle_log_root/symmem-lifecycle"
 mkdir -p "$lifecycle_root"
 lifecycle_xml=$(mktemp -d "$lifecycle_root/results.XXXXXX")
-chmod 755 "$lifecycle_xml"
+# Explicit modes are needed for the host artifact uploader: mktemp ignores
+# umask for directory permissions and the tests run in a root container.
+chmod 0755 "$lifecycle_log_root" "$lifecycle_root" "$lifecycle_xml"
+publish_lifecycle_xml() {
+  local original_status=$? permission_status=0 report
+  trap - EXIT
+  for report in "$lifecycle_xml"/rank-*.xml; do
+    [[ -f "$report" ]] || continue
+    chmod 0644 "$report" || permission_status=$?
+  done
+  if ((original_status != 0)); then
+    exit "$original_status"
+  fi
+  exit "$permission_status"
+}
+trap publish_lifecycle_xml EXIT
 FLAGCX_CI_MPI_LABEL="symmem bootstrap lifetime" \
   "$MPI_RUNNER" -np 4 --allow-run-as-root \
     bash "$PROJECT_ROOT/.github/scripts/ci/run_gtest_rank_xml.sh" "$lifecycle_xml" \
@@ -71,8 +87,9 @@ FLAGCX_CI_MPI_LABEL="symmem bootstrap lifetime" \
 reports=("$lifecycle_xml"/rank-*.xml)
 if [[ ! -f "${reports[0]}" || ${#reports[@]} -ne 4 ]]; then
   echo "Missing per-rank IPC lifetime reports in $lifecycle_xml" >&2
-  test_status=1
+  if ((test_status == 0)); then test_status=1; fi
 else
+  lifecycle_check_status=0
   python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
     --case HeteroFinalizeMpi.DelayedImportAndEmptyRanksConfirmBeforeLocalDestroy \
     --case HeteroFinalizeMpi.FailedImportRetainsExporterUntilCollectiveRetry \
@@ -83,7 +100,8 @@ else
     --case HeteroFinalizeMpi.OuterFinalizeRetriesClosureThenEveryRankDestroysLocally \
     --case HeteroFinalizeMpi.CrossNodeRelayDrainFailureConvergesBeforeCleanup \
     --case HeteroFinalizeMpi.CrossNodeRelayDeviceFailureConvergesBeforeCleanup \
-    "${reports[@]}" || test_status=$?
+    "${reports[@]}" || lifecycle_check_status=$?
+  if ((test_status == 0)); then test_status=$lifecycle_check_status; fi
 fi
 
 echo "=== Running symmem IPC-local MPI tests (np=$LOCAL_NP) ==="

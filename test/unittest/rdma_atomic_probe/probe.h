@@ -3,7 +3,6 @@
  ************************************************************************/
 #pragma once
 
-#include <infiniband/verbs.h>
 #include <mcr/mc_runtime.h>
 #include <mpi.h>
 #include <nlohmann/json.hpp>
@@ -22,8 +21,8 @@
 #include <unistd.h>
 #include <vector>
 
-#include "adaptor.h"
 #include "allocation_modes.h"
+#include "flagcx.h"
 
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
@@ -122,35 +121,6 @@ inline Clock::time_point until(const Options &o) {
   return Clock::now() + std::chrono::milliseconds(int(o.timeout * 1000));
 }
 
-inline void describeQp(const Options &o, ibv_qp *qp) {
-  ibv_qp_attr attr = {};
-  ibv_qp_init_attr init = {};
-  const int query = ibv_query_qp(
-      qp, &attr,
-      IBV_QP_STATE | IBV_QP_ACCESS_FLAGS | IBV_QP_PORT | IBV_QP_AV |
-          IBV_QP_DEST_QPN | IBV_QP_MAX_QP_RD_ATOMIC | IBV_QP_MAX_DEST_RD_ATOMIC,
-      &init);
-  ibv_device_attr device = {};
-  const int capability = ibv_query_device(qp->context, &device);
-  emit(o,
-       {{"event", "qp_state"},
-        {"qpn", qp->qp_num},
-        {"hca", ibv_get_device_name(qp->context->device)},
-        {"query_code", query},
-        {"capability_code", capability},
-        {"atomic_cap", int(device.atomic_cap)},
-        {"firmware", device.fw_ver},
-        {"state", int(attr.qp_state)},
-        {"access", attr.qp_access_flags},
-        {"port", attr.port_num},
-        {"remote_qpn", attr.dest_qp_num},
-        {"initiator_depth", attr.max_rd_atomic},
-        {"responder_depth", attr.max_dest_rd_atomic},
-        {"gid_index", attr.ah_attr.grh.sgid_index},
-        {"remote_gid", std::vector<uint8_t>(attr.ah_attr.grh.dgid.raw,
-                                            attr.ah_attr.grh.dgid.raw + 16)}});
-}
-
 inline void loadedLibraries(const Options &o) {
   std::ifstream maps("/proc/self/maps");
   std::string line;
@@ -175,6 +145,9 @@ inline uint64_t initial(const Options &o) {
   return kInitial;
 }
 
+flagcxResult_t probeGdrAlloc(void **ptr, size_t bytes);
+flagcxResult_t probeGdrFree(void *ptr);
+
 struct Allocation {
   void *ptr = nullptr;
   bool gdr = false;
@@ -190,7 +163,7 @@ struct Allocation {
              {"gdr_interface", gdr}});
     if (gdr) {
       // Exercise the actual allocator, including its SyncMemops attribute.
-      const auto result = macaAdaptor.gdrMemAlloc(&ptr, o.bytes, nullptr);
+      const auto result = probeGdrAlloc(&ptr, o.bytes);
       emit(o, {{"event", "gdr_alloc_result"},
                {"code", int(result)},
                {"address", reinterpret_cast<uintptr_t>(ptr)}});
@@ -236,8 +209,7 @@ struct Allocation {
   }
   void release(const Options &o) {
     if (gdr)
-      checkFlagcx(o, "gdrMemFree", macaAdaptor.gdrMemFree(ptr, nullptr),
-                  "CLEANUP_ERROR");
+      checkFlagcx(o, "gdrMemFree", probeGdrFree(ptr), "CLEANUP_ERROR");
     else
       checkMaca(o, "free", mcFree(ptr), "CLEANUP_ERROR");
     ptr = nullptr;
@@ -259,6 +231,11 @@ inline void verify(const Options &o, Allocation &allocation, int totalPosts) {
          "GPU target or destination value mismatch");
 }
 
+struct ProbePort {
+  std::string hca;
+  int port;
+};
+std::vector<ProbePort> probePorts();
 Json inventory();
 void runNative(const Options &, Allocation &);
 void runAdaptor(const Options &, Allocation &);

@@ -20,6 +20,16 @@ spec.loader.exec_module(probe)
 
 
 class MetaXAtomicProbeTest(unittest.TestCase):
+    def worker_arguments(self, root):
+        arguments = []
+        for worker, option in (("native", "--native-binary"), ("adaptor", "--adaptor-binary"),
+                               ("barrier", "--barrier")):
+            binary = root / worker
+            binary.touch()
+            binary.chmod(0o755)
+            arguments += [option, str(binary)]
+        return arguments
+
     def test_allocation_flags_and_real_gdr_have_full_baselines(self):
         self.assertEqual(len(probe.MODES), 10)
         matrix = probe.build_matrix(["bnxt_roce0:1", "bnxt_roce1:1"], 4096)
@@ -127,8 +137,8 @@ class MetaXAtomicProbeTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "results"
-            arguments = [str(SCRIPT), "--binary", str(Path(temporary) / "probe"),
-                         "--barrier", str(Path(temporary) / "barrier"), "--output", str(output)]
+            arguments = [str(SCRIPT)] + self.worker_arguments(Path(temporary)) + [
+                "--output", str(output)]
             with mock.patch.object(sys, "argv", arguments), \
                  mock.patch.object(probe, "build_matrix", return_value=cases), \
                  mock.patch.object(probe, "collect_provenance", return_value=[]), \
@@ -142,6 +152,66 @@ class MetaXAtomicProbeTest(unittest.TestCase):
             self.assertNotIn(("native", 0), calls)
             self.assertIn(("adaptor", 9), calls)
             self.assertNotIn("PENDING", (output / "summary.md").read_text())
+
+    def test_worker_build_failure_preserves_other_layers_and_build_evidence(self):
+        for failed in ("native", "adaptor", "barrier"):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                output = root / "results"
+                # These executable files deliberately survive a failed build:
+                # an old worker must never be mistaken for a successful build.
+                arguments = [str(SCRIPT)] + self.worker_arguments(root) + [
+                    "--build-root", str(root), "--output", str(output)]
+                full_matrix = probe.build_matrix(["bnxt_roce0:1"], 4096)
+                cases = [c for c in full_matrix if c["layer"] == "allocation"]
+                cases += [next(c for c in full_matrix if c["layer"] == layer)
+                          for layer in ("native", "adaptor", "barrier")]
+                built, executed = [], []
+
+                def child(command, log, timeout, env=None, **kwargs):
+                    outcome = dict(returncode=0, timed_out=False, reaped=True)
+                    if command[0] == "make":
+                        worker = Path(command[4]).name
+                        built.append(worker)
+                        log.write_text(f"build {worker}\n")
+                        outcome["returncode"] = 7 if worker == failed else 0
+                    elif "--inventory" in command:
+                        log.write_text('PROBE_JSON ' + json.dumps(dict(
+                            event="inventory", ports=["bnxt_roce0:1"],
+                            gpu_count=4, gpu_count_code=0)) + '\n')
+                    else:
+                        worker = ("barrier" if "--layer" not in command else
+                                  Path(command[command.index("--layer") - 1]).name)
+                        executed.append(worker)
+                        if worker == "barrier":
+                            log.write_text("=== Final Result: ALL PASS ===\n")
+                        else:
+                            log.write_text(''.join('PROBE_JSON ' + json.dumps(dict(
+                                event="result", status="PASS", rank=rank)) + '\n'
+                                for rank in (0, 1)))
+                    return outcome
+
+                with mock.patch.object(sys, "argv", arguments), \
+                     mock.patch.object(probe, "build_matrix", return_value=cases), \
+                     mock.patch.object(probe, "collect_provenance", return_value=[]), \
+                     mock.patch.object(probe, "run_child", side_effect=child), \
+                     mock.patch.object(probe.signal, "signal"), \
+                     mock.patch.dict(os.environ, GITHUB_STEP_SUMMARY=""):
+                    self.assertEqual(probe.main(), 1)
+                self.assertEqual(built, ["native", "adaptor", "barrier"])
+                self.assertNotIn(failed, executed)
+                self.assertTrue(set(built) - {failed} <= set(executed))
+                builds = json.loads((output / "build.json").read_text())
+                report = json.loads((output / "results.json").read_text())
+                for worker in built:
+                    self.assertTrue((output / "build" / f"{worker}.log").is_file())
+                    self.assertEqual(builds[worker]["status"],
+                                     "BUILD_ERROR" if worker == failed else "READY")
+                for case in report["cases"]:
+                    self.assertEqual(case["status"],
+                                     "BUILD_ERROR" if case["layer"] == failed else "PASS")
+                self.assertEqual(len([c for c in report["cases"]
+                                      if c["layer"] == "allocation"]), 20)
 
 
 if __name__ == "__main__":

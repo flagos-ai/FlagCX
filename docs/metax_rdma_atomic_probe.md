@@ -33,6 +33,13 @@ subsequent stage failures are retained.
 
 ## Layers and matrix
 
+The transports use separate executables: `rdma_atomic_native_probe` includes
+the system verbs headers and calls libibverbs directly;
+`rdma_atomic_adaptor_probe` uses FlagCX's compatible headers and
+`flagcxWrapIbv*` queries. Their shared interface contains no verbs types. A
+separate bridge calls the real GDR allocator without passing verbs objects
+between the two implementations.
+
 1. **Native verbs:** directly establish RC QPs and register the selected GPU
    allocation. Test 8-byte RDMA WRITE, RDMA READ and FetchAdd. Validate both
    the final GPU word and the native atomic return values, including the
@@ -79,6 +86,15 @@ deadline, terminates the MPI process group and marked descendants (including
 reparented workers on Linux), and bounds reaping. Core dumps are disabled.
 Internal CQ/connection loops have independent deadlines.
 
+The supervisor independently builds native, adaptor and barrier workers,
+retaining each command, exit status and log. A failed build marks only that
+worker's cases `BUILD_ERROR`; other workers still build and run. Allocation
+checks and inventory prefer the native worker and use the adaptor worker if
+needed. A stale executable left by a failed build is never used. If both
+probe workers fail to build, the planned cases explicitly report that no
+allocation/inventory worker is available; compilation cannot produce hardware
+allocation results. Partial build failure still fails the overall suite.
+
 An allocation failure blocks only network cases with that allocation mode and
 size, naming the prerequisite case. Other allocations and sizes continue.
 An unreapable worker blocks remaining cases explicitly. No blocked or absent
@@ -90,25 +106,28 @@ With four active HCA/ports the default matrix contains **469 cases**. Defaults:
 - Per worker group: 10 seconds, plus at most 1.25 seconds for termination/reap.
 - Each barrier control: 180 seconds plus termination/reap.
 - Supervisor budget: 6,000 seconds (100 minutes), inside the existing 120-minute
-  hardware job limit; project and test compilation run before the supervisor.
+  hardware job limit. Project compilation runs before the supervisor; worker
+  builds run inside it, each with a 300-second timeout by default.
 
-Before testing, the supervisor checks the full worst-case matrix budget,
-including cleanup and setup margin. An insufficient budget produces a setup
-failure with all remaining entries explicitly blocked, rather than starting
-a matrix it cannot finish. `FLAGCX_CI_RDMA_PROBE_CASE_TIMEOUT` and
+Before testing, the supervisor checks the full worst-case matrix budget for
+available workers, including elapsed build time, cleanup and setup margin.
+An insufficient budget produces a setup failure with all remaining entries
+explicitly blocked, rather than starting a matrix it cannot finish.
+`FLAGCX_CI_RDMA_PROBE_CASE_TIMEOUT` and
 `FLAGCX_CI_RDMA_PROBE_SUITE_TIMEOUT` override the supervisor defaults; a larger
 budget must still fit the enclosing CI job. No automatic retries replace the
 first failure evidence.
 
 Artifacts are collected by the existing always-upload step under
 `attempts-unit_test-*-metax-rdma_atomic_probe`. Contents under
-`rdma_atomic_probe/` include `results.json`, `summary.md`, SDK feature checks,
-inventory/provenance logs and one log per planned case. The suite transcript
-also captures build failures. The summary separates allocation, native verbs
-and adaptor outcomes for every allocation mode, followed by every individual
-case and its failure stage. A mixed-success diagnostic matrix returns failure.
+`rdma_atomic_probe/` include `results.json`, `summary.md`, `build.json`,
+`build/{native,adaptor,barrier}.log`, SDK feature checks, inventory/provenance
+logs and one log per planned case. The summary separates allocation, native
+verbs and adaptor outcomes for every allocation mode, followed by every
+individual case and its failure stage. A mixed-success diagnostic matrix
+returns failure.
 
-Statuses distinguish `ALLOC_ERROR`, `SDK_UNAVAILABLE`, `INIT_ERROR`,
+Statuses distinguish `BUILD_ERROR`, `ALLOC_ERROR`, `SDK_UNAVAILABLE`, `INIT_ERROR`,
 `REG_ERROR`, `POST_ERROR`, `CQ_ERROR`, `VERIFY_ERROR`, `COPY_ERROR`,
 `CAPABILITY_ERROR`, `CONNECT_ERROR`, `CLEANUP_ERROR`, `TIMEOUT` and `BLOCKED`.
 An unreapable worker is reported as `WORKER_STUCK`; launch/exit failures and
@@ -139,8 +158,9 @@ future production allocation change.
 ## Running on a MetaX host
 
 The platform YAML enables this suite only for MetaX. The normal unit-test CI
-entry builds the library, probe and existing Unified IR binary, then supervises
-the complete matrix. For an equivalent SDK-equipped local environment:
+entry builds the library, then the supervisor builds each worker independently
+and runs the complete matrix. The probe Makefile also provides separate
+`native` and `adaptor` targets. For an equivalent SDK-equipped local environment:
 
 ```bash
 bash .github/scripts/ci/run_unit_test.sh .github/scripts/set_env/metax.sh rdma_atomic_probe
@@ -149,4 +169,6 @@ bash .github/scripts/ci/run_unit_test.sh .github/scripts/set_env/metax.sh rdma_a
 Hardware-free supervisor coverage lives in
 `test/script/test_metax_rdma_probe.py`: complete allocation matrix, MetaX-only
 routing, GPU-signal enforcement, missing-rank/error classification, bounded
-timeout recovery, failure continuation and dependency reporting.
+timeout recovery, failure continuation and dependency reporting. Build-failure
+controls verify that each remaining layer runs, all allocation modes remain
+covered, build evidence is saved, and failed builds cannot reuse stale binaries.

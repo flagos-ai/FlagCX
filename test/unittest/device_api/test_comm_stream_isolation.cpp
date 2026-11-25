@@ -32,6 +32,7 @@ struct SavedEnvironment {
 };
 struct IndependentWork {
   std::atomic<bool> entered{false}, release{false}, expired{false};
+  static void warmup(void *) {}
   static void hold(void *argument) {
     auto *work = (IndependentWork *)argument;
     work->entered = true;
@@ -45,6 +46,21 @@ struct IndependentWork {
     }
   }
 };
+template <typename Submit>
+flagcxResult_t timedSubmit(const char *operation, int index, Submit submit) {
+  std::fprintf(stderr, "ISOLATION %s begin index=%d\n", operation, index);
+  std::fflush(stderr);
+  auto started = std::chrono::steady_clock::now();
+  auto result = submit();
+  double elapsed = std::chrono::duration<double, std::milli>(
+                       std::chrono::steady_clock::now() - started)
+                       .count();
+  std::fprintf(stderr,
+               "ISOLATION %s returned index=%d result=%d elapsed_ms=%.3f\n",
+               operation, index, int(result), elapsed);
+  std::fflush(stderr);
+  return result;
+}
 struct IsolationOwners {
   IndependentWork work;
   flagcxComm_t comms[2] = {};
@@ -145,7 +161,11 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
   flagcxRmaProxyState *rmaProxy = nullptr;
   uint64_t *doneAllocation = nullptr, *readyAllocation = nullptr;
   if (withRma) {
-    ASSERT_NE(owners.comms[0]->heteroComm, nullptr);
+    for (int i = 0; i < 2; i++) {
+      ASSERT_NE(owners.comms[i]->heteroComm, nullptr);
+      ASSERT_NE(owners.comms[i]->heteroComm->rmaProxy, nullptr);
+      ASSERT_NE(owners.comms[i]->heteroComm->rmaProxy->worker, nullptr);
+    }
     rmaProxy = owners.comms[0]->heteroComm->rmaProxy;
     ASSERT_NE(rmaProxy, nullptr);
     ASSERT_NE(rmaProxy->worker, nullptr);
@@ -161,23 +181,45 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
       ASSERT_TRUE(rmaProxy->doneSeqsMapped);
       ASSERT_TRUE(rmaProxy->readySeqsMapped);
     }
-    // Complete initialization before B's independent work is blocked.
-    ASSERT_EQ(deviceAdaptor->deviceSynchronize(), flagcxSuccess);
+    // Warm both SDK streams and the callback path before opening the bounded
+    // isolation window. No unrelated SDK submission may consume that window.
+    for (int i = 0; i < 2; i++) {
+      ASSERT_EQ(timedSubmit("warmup memset", i,
+                            [&] {
+                              return deviceAdaptor->deviceMemset(
+                                  owners.buffers[i], 0, sizeof(float),
+                                  flagcxMemDevice, owners.streams[i]);
+                            }),
+                flagcxSuccess);
+      auto warmed = timedSubmit("warmup callback", i, [&] {
+        return deviceAdaptor->launchHostFunc(owners.streams[i],
+                                             IndependentWork::warmup, nullptr);
+      });
+      if (warmed == flagcxNotSupported)
+        GTEST_SKIP() << "Adaptor does not support asynchronous host callbacks";
+      ASSERT_EQ(warmed, flagcxSuccess);
+      ASSERT_EQ(timedSubmit("warmup stream sync", i,
+                            [&] {
+                              return deviceAdaptor->streamSynchronize(
+                                  owners.streams[i]);
+                            }),
+                flagcxSuccess);
+    }
+    ASSERT_EQ(timedSubmit("warmup device sync", -1,
+                          [&] { return deviceAdaptor->deviceSynchronize(); }),
+              flagcxSuccess);
   }
-  std::fprintf(stderr, "ISOLATION independent callback submit\n");
+  flagcxResult_t launched = timedSubmit("hold callback", 1, [&] {
+    return deviceAdaptor->launchHostFunc(owners.streams[1],
+                                         IndependentWork::hold, &owners.work);
+  });
+  std::fprintf(stderr, "ISOLATION hold returned entered=%d expired=%d\n",
+               owners.work.entered.load(), owners.work.expired.load());
   std::fflush(stderr);
-  flagcxResult_t launched = deviceAdaptor->launchHostFunc(
-      owners.streams[1], IndependentWork::hold, &owners.work);
   if (launched == flagcxNotSupported)
     GTEST_SKIP() << "Adaptor does not support asynchronous host callbacks";
   ASSERT_EQ(launched, flagcxSuccess);
-  if (withRma) {
-    // No new allocations after the callback starts: isolate Finalize's own
-    // RMA frees from unrelated submission-time allocator behavior.
-    ASSERT_EQ(deviceAdaptor->deviceMemset(owners.buffers[1], 0, sizeof(float),
-                                          flagcxMemDevice, owners.streams[1]),
-              flagcxSuccess);
-  } else {
+  if (!withRma) {
     ASSERT_EQ(flagcxAllReduce(owners.buffers[1], owners.buffers[1], 1,
                               flagcxFloat, flagcxSum, owners.comms[1],
                               owners.streams[1]),
@@ -190,7 +232,9 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
   ASSERT_FALSE(owners.work.expired);
   std::fprintf(stderr, "ISOLATION finalize A begin\n");
   std::fflush(stderr);
-  EXPECT_EQ(flagcxCommFinalize(owners.comms[0]), flagcxSuccess);
+  EXPECT_EQ(timedSubmit("finalize A", 0,
+                        [&] { return flagcxCommFinalize(owners.comms[0]); }),
+            flagcxSuccess);
   std::fprintf(stderr, "ISOLATION finalize A done expired=%d\n",
                owners.work.expired.load());
   std::fflush(stderr);

@@ -24,6 +24,7 @@ MODES = (
     "gdrMemAlloc",
 )
 TERMINAL_ERRORS = {
+    "BUILD_ERROR",
     "ALLOC_ERROR", "SDK_UNAVAILABLE", "INIT_ERROR", "COPY_ERROR",
     "REG_ERROR", "POST_ERROR", "CQ_ERROR", "VERIFY_ERROR", "CLEANUP_ERROR",
     "SDK_ERROR", "VERBS_ERROR", "ADAPTOR_ERROR", "CONNECT_ERROR",
@@ -286,6 +287,54 @@ def case_command(case, binary, barrier, mpirun):
     return command
 
 
+def write_build_report(directory, builds):
+    temporary = directory / "build.json.tmp"
+    temporary.write_text(json.dumps(builds, indent=2) + "\n")
+    temporary.replace(directory / "build.json")
+
+
+def build_workers(args, directory, report):
+    """A failed worker must not prevent another worker from being built/run."""
+    components = {
+        "native": args.native_binary,
+        "adaptor": args.adaptor_binary,
+        "barrier": args.barrier,
+    }
+    builds = report["builds"] = {}
+    build_dir = directory / "build"
+    build_dir.mkdir(exist_ok=True)
+    for name, binary in components.items():
+        entry = builds[name] = dict(binary=str(binary), status="PENDING", available=False)
+        write_build_report(directory, builds)
+        if args.build_root:
+            suite = "device_api" if name == "barrier" else "rdma_atomic_probe"
+            target = str(binary.resolve()) if name == "barrier" else name
+            command = ["make", "-C", str(args.build_root / "test/unittest" / suite),
+                       "--jobs=" + str(args.jobs), target] + args.make_arg
+            entry["status"] = "BUILDING"
+            write_build_report(directory, builds)
+            outcome = run_child(command, build_dir / f"{name}.log", args.build_timeout)
+            entry.update(outcome)
+            entry["available"] = (outcome["returncode"] == 0 and not outcome["timed_out"]
+                                  and outcome["reaped"] and os.access(binary, os.X_OK))
+        else:
+            entry["available"] = os.access(binary, os.X_OK)
+            (build_dir / f"{name}.log").write_text(f"Using prebuilt binary: {binary}\n")
+        entry["status"] = "READY" if entry["available"] else "BUILD_ERROR"
+        write_build_report(directory, builds)
+        save_report(directory, report)
+        print(f'{name} worker: {entry["status"]}', flush=True)
+    return builds
+
+
+def case_worker(case, builds):
+    if case["layer"] == "allocation":
+        return next((Path(builds[name]["binary"]) for name in ("native", "adaptor")
+                     if builds[name]["available"]), None)
+    name = case["layer"]
+    return Path(builds[name]["binary"]) if builds[name]["available"] else None
+
+
 def save_report(directory, report):
     temporary = directory / "results.json.tmp"
     temporary.write_text(json.dumps(report, indent=2) + "\n")
@@ -335,6 +384,11 @@ def save_report(directory, report):
               "A mixed-success diagnostic run fails CI; BLOCKED/UNAVAILABLE are never counted as PASS."]
     if report.get("setup_error"):
         lines += ["", "Setup error: " + report["setup_error"]]
+    if report.get("builds"):
+        lines += ["", "## Worker builds", "",
+                  "| Worker | Status | Binary |", "|---|---|---|"]
+        for name, build in report["builds"].items():
+            lines.append(f'| {name} | {build["status"]} | {build["binary"]} |')
     temporary = directory / "summary.md.tmp"
     temporary.write_text("\n".join(lines) + "\n")
     temporary.replace(directory / "summary.md")
@@ -353,9 +407,14 @@ def collect_provenance(directory):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--native-binary", "--binary", dest="native_binary", type=Path, required=True)
+    parser.add_argument("--adaptor-binary", type=Path, required=True)
     parser.add_argument("--barrier", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--build-root", type=Path)
+    parser.add_argument("--make-arg", action="append", default=[])
+    parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument("--build-timeout", type=float, default=300)
     parser.add_argument("--case-timeout", type=float,
                         default=float(os.environ.get("FLAGCX_CI_RDMA_PROBE_CASE_TIMEOUT", "10")))
     parser.add_argument("--suite-timeout", type=float,
@@ -364,13 +423,16 @@ def main():
     parser.add_argument("--mpirun", default=os.environ.get("FLAGCX_CI_MPIRUN", "mpirun"))
     args = parser.parse_args()
     if any(not math.isfinite(value) or value <= 0 for value in
-           (args.case_timeout, args.suite_timeout, args.barrier_timeout)):
+           (args.case_timeout, args.suite_timeout, args.barrier_timeout, args.build_timeout)):
         parser.error("timeouts must be finite and positive")
+    if args.jobs < 1:
+        parser.error("jobs must be positive")
     directory = args.output.resolve()
     directory.mkdir(parents=True, exist_ok=True)
     page_size = os.sysconf("SC_PAGE_SIZE")
     report = dict(page_size=page_size, cases=build_matrix([], page_size), metadata=[],
-                  binary=str(args.binary), host_signal=False)
+                  workers=dict(native=str(args.native_binary), adaptor=str(args.adaptor_binary)),
+                  host_signal=False)
     report["environment"] = {key: os.environ.get(key) for key in (
         "MACA_PATH", "MACA_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "MPI_HOME",
         "LD_LIBRARY_PATH", "FLAGCX_IB_HCA", "FLAGCX_IB_GID_INDEX", "FLAGCX_SOCKET_IFNAME")}
@@ -381,11 +443,17 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     try:
-        sdk = args.binary.parent.parent / "sdk"
+        builds = build_workers(args, directory, report)
+        sdk = args.native_binary.parent.parent / "sdk"
         if sdk.is_dir():
             shutil.copytree(sdk, directory / "sdk", dirs_exist_ok=True)
+        inventory_worker = case_worker(dict(layer="allocation"), builds)
+        if inventory_worker is None:
+            for case in report["cases"]:
+                case.update(status="BUILD_ERROR", reason="no usable allocation/inventory worker; see build.json")
+            raise RuntimeError("both probe workers are unavailable; see build logs")
         inventory_log = directory / "inventory.log"
-        inv_outcome = run_child([str(args.binary), "--inventory"], inventory_log, 15)
+        inv_outcome = run_child([str(inventory_worker), "--inventory"], inventory_log, 15)
         report["inventory_run"] = inv_outcome
         inventories = [r for r in parse_log(inventory_log) if r.get("event") == "inventory"]
         if inv_outcome["returncode"] != 0 or inv_outcome["timed_out"] or not inventories:
@@ -397,7 +465,7 @@ def main():
         # Reserve termination/reap time per process group and enough margin to
         # finish/save the entire plan even if every worker hits its deadline.
         required = sum((args.barrier_timeout if c["layer"] == "barrier" else args.case_timeout) + 1.25
-                       for c in report["cases"])
+                       for c in report["cases"] if case_worker(c, builds) is not None)
         report["worst_case_seconds"] = required
         if time.monotonic() - started + required + 30 > args.suite_timeout:
             raise RuntimeError(f"matrix requires {required:.1f}s plus setup; increase suite budget or lower case timeout")
@@ -411,8 +479,13 @@ def main():
             case_log = directory / (case["id"] + ".log")
             case["log"] = str(case_log)
             reason = None
+            blocked_status = "BLOCKED"
+            worker = case_worker(case, builds)
             dependency = allocation_outcomes.get((case["mode"], case["bytes"]))
-            if driver_stuck:
+            if worker is None:
+                blocked_status = "BUILD_ERROR"
+                reason = f'{case["layer"]} worker unavailable; see build.json'
+            elif driver_stuck:
                 reason = "previous worker could not be reaped after SIGKILL"
             elif time.monotonic() - started > args.suite_timeout:
                 reason = "suite deadline reached"
@@ -423,11 +496,11 @@ def main():
             elif case["layer"] != "allocation" and not ports:
                 reason = "no active verbs HCA/port"
             if reason:
-                case.update(status="BLOCKED", reason=reason)
+                case.update(status=blocked_status, reason=reason)
                 case_log.write_text(reason + "\n")
             else:
                 env = case_environment(case)
-                command = case_command(case, args.binary, args.barrier, mpirun)
+                command = case_command(case, worker, args.barrier, mpirun)
                 timeout = args.barrier_timeout if case["layer"] == "barrier" else args.case_timeout
                 outcome = run_child(command, case_log, timeout, env)
                 records = parse_log(case_log)

@@ -31,12 +31,54 @@ for i, arg in enumerate(sys.argv):
                  'CrossNodeRelayDeviceFailureConvergesBeforeCleanup')
         body = ''.join('<testcase name="%s" status="run" result="completed"/>' % name for name in names)
         for rank in range(4):
-            (root / ('rank-%s.xml' % rank)).write_text('<testsuites><testsuite name="HeteroFinalizeMpi">' + body + '</testsuite></testsuites>')
+            report = root / ('rank-%s.xml' % rank)
+            report.write_text('<testsuites><testsuite name="HeteroFinalizeMpi">' + body + '</testsuite></testsuites>')
+            report.chmod(0o600)
         break
 """)
 
 
 class SymmemCiTest(unittest.TestCase):
+    def test_lifecycle_artifacts_survive_strict_umask_and_failed_mpi(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / 'test/script'
+            scripts.mkdir(parents=True)
+            shutil.copy(REPO_ROOT / 'test/script/symmem_test.sh', scripts)
+            ci = root / '.github/scripts/ci'
+            ci.mkdir(parents=True)
+            install_lifecycle_reports(ci)
+            shutil.copy(REPO_ROOT / '.github/scripts/ci/ignore_test.py', ci)
+            for name in ('run_with_timeout.sh', 'run_mpi_with_timeout.sh'):
+                wrapper = ci / name
+                wrapper.write_text('''#!/bin/bash
+python3 "$(dirname "$0")/mock_lifecycle_xml.py" "$@" || exit $?
+if [[ "$*" == *run_gtest_rank_xml.sh* ]]; then
+  exit "$CI_LIFECYCLE_STATUS"
+fi
+''')
+                wrapper.chmod(0o755)
+            for status in (0, 7):
+                with self.subTest(status=status):
+                    log_root = root / f'logs-{status}'
+                    result = subprocess.run(
+                        ['bash', '-c', 'umask 077; exec bash "$1"', 'bash',
+                         str(scripts / 'symmem_test.sh')],
+                        env={**os.environ, 'FLAGCX_ADAPTOR': 'enflame',
+                             'FLAGCX_CI_SYMMEM_VMM_SUPPORTED': '0',
+                             'FLAGCX_CI_REQUIRE_MULTICAST': '0',
+                             'FLAGCX_CI_IGNORE_TEST': '{}',
+                             'FLAGCX_CI_LOG_DIR': str(log_root),
+                             'CI_LIFECYCLE_STATUS': str(status)},
+                        text=True, capture_output=True, timeout=20)
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    reports = list(log_root.glob('symmem-lifecycle/results.*/rank-*.xml'))
+                    self.assertEqual(len(reports), 4)
+                    for report in reports:
+                        self.assertEqual(report.stat().st_mode & 0o777, 0o644)
+                        for parent in (log_root, report.parent.parent, report.parent):
+                            self.assertEqual(parent.stat().st_mode & 0o777, 0o755)
+
     def test_iluvatar_matches_cuda_except_untracked_vmm_ipc_with_va_only_mr(self):
         source = (REPO_ROOT / '.github/scripts/ci/run_unit_test.sh').read_text()
         start = source.index('    symmem)\n')

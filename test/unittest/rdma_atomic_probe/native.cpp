@@ -3,48 +3,38 @@
  ************************************************************************/
 #include "probe.h"
 
-#include <dirent.h>
 #include <fstream>
+#include <infiniband/verbs.h>
 #include <sstream>
 
 namespace {
-struct Port {
-  std::string hca;
-  int port;
-};
-
-std::vector<Port> ports() {
-  std::vector<Port> result;
-  // Discovery must not open unrelated HCAs: a broken provider/device must
-  // not prevent allocation controls or probes on another HCA from running.
-  DIR *devices = opendir("/sys/class/infiniband");
-  if (!devices)
-    return result;
-  while (auto *device = readdir(devices)) {
-    const std::string name = device->d_name;
-    if (name.empty() || name[0] == '.')
-      continue;
-    const std::string root = "/sys/class/infiniband/" + name + "/ports/";
-    DIR *entries = opendir(root.c_str());
-    if (!entries)
-      continue;
-    while (auto *entry = readdir(entries)) {
-      const int port = std::atoi(entry->d_name);
-      if (port <= 0)
-        continue;
-      std::ifstream stateFile(root + entry->d_name + "/state");
-      int state = 0;
-      stateFile >> state;
-      if (state == IBV_PORT_ACTIVE)
-        result.push_back({name, port});
-    }
-    closedir(entries);
-  }
-  closedir(devices);
-  std::sort(result.begin(), result.end(), [](const Port &a, const Port &b) {
-    return a.hca == b.hca ? a.port < b.port : a.hca < b.hca;
-  });
-  return result;
+void describeQp(const Options &o, ibv_qp *qp) {
+  ibv_qp_attr attr = {};
+  ibv_qp_init_attr init = {};
+  const int query = ibv_query_qp(
+      qp, &attr,
+      IBV_QP_STATE | IBV_QP_ACCESS_FLAGS | IBV_QP_PORT | IBV_QP_AV |
+          IBV_QP_DEST_QPN | IBV_QP_MAX_QP_RD_ATOMIC | IBV_QP_MAX_DEST_RD_ATOMIC,
+      &init);
+  ibv_device_attr device = {};
+  const int capability = ibv_query_device(qp->context, &device);
+  emit(o,
+       {{"event", "qp_state"},
+        {"qpn", qp->qp_num},
+        {"hca", ibv_get_device_name(qp->context->device)},
+        {"query_code", query},
+        {"capability_code", capability},
+        {"atomic_cap", int(device.atomic_cap)},
+        {"firmware", device.fw_ver},
+        {"state", int(attr.qp_state)},
+        {"access", attr.qp_access_flags},
+        {"port", attr.port_num},
+        {"remote_qpn", attr.dest_qp_num},
+        {"initiator_depth", attr.max_rd_atomic},
+        {"responder_depth", attr.max_dest_rd_atomic},
+        {"gid_index", attr.ah_attr.grh.sgid_index},
+        {"remote_gid", std::vector<uint8_t>(attr.ah_attr.grh.dgid.raw,
+                                            attr.ah_attr.grh.dgid.raw + 16)}});
 }
 
 std::string gidString(const ibv_gid &gid) {
@@ -58,7 +48,8 @@ std::string gidString(const ibv_gid &gid) {
   return out.str();
 }
 
-int chooseGid(ibv_context *ctx, const Port &port, int count, ibv_gid *gid) {
+int chooseGid(ibv_context *ctx, const ProbePort &port, int count,
+              ibv_gid *gid) {
   int fallback = -1;
   for (int i = 0; i < count; ++i) {
     ibv_gid candidate = {};
@@ -96,25 +87,11 @@ struct Endpoint {
 };
 } // namespace
 
-Json inventory() {
-  Json result = {{"event", "inventory"}, {"ports", Json::array()}};
-  int gpus = 0, runtime = 0, driver = 0;
-  result["gpu_count_code"] = int(mcGetDeviceCount(&gpus));
-  result["gpu_count"] = gpus;
-  result["runtime_code"] = int(mcRuntimeGetVersion(&runtime));
-  result["runtime_version"] = runtime;
-  result["driver_code"] = int(mcDriverGetVersion(&driver));
-  result["driver_version"] = driver;
-  for (const auto &port : ports())
-    result["ports"].push_back(port.hca + ":" + std::to_string(port.port));
-  return result;
-}
-
 void runNative(const Options &o, Allocation &allocation) {
-  const auto available = ports();
+  const auto available = probePorts();
   if (available.empty())
     fail(o, "open_hca", "SETUP_ERROR", 0, "no active verbs port");
-  Port selected = available[o.rank % available.size()];
+  ProbePort selected = available[o.rank % available.size()];
   if (o.hca != "auto") {
     bool found = false;
     for (const auto &p : available)

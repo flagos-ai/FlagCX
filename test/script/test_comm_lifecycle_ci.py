@@ -148,7 +148,7 @@ fi
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertNotIn(case, result.stdout)
 
-    def run_wrapper(self, mode="pass", inherited="*", selected="*"):
+    def run_wrapper(self, mode="pass", inherited="*", selected="*", strict_umask=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             launcher = root / "mpirun"
@@ -173,17 +173,31 @@ if report:
     skipped = os.getenv('TEST_XML_MODE') == 'skip' and os.getenv('OMPI_COMM_WORLD_RANK') == '1'
     case = '<testcase name="FinalizeThenRankLocalDestroy" status="run" result="%s"/>' % ('skipped' if skipped else 'completed')
     Path(report.removeprefix('xml:')).write_text('<testsuites><testsuite name="FlagCXCollTest">' + case + '</testsuite></testsuites>')
+    Path(report.removeprefix('xml:')).chmod(0o600)
+if os.getenv('TEST_XML_MODE') == 'fail':
+    sys.exit(7)
 '''.replace("report.removeprefix('xml:')", "report[4:]"))
             binary.chmod(0o755)
-            return subprocess.run(
-                ["bash", str(ROOT / ".github/scripts/ci/run_mpi_with_timeout.sh"),
-                 "-np", "2", str(binary), "--gtest_filter=" + selected],
+            command = ["bash", str(ROOT / ".github/scripts/ci/run_mpi_with_timeout.sh"),
+                       "-np", "2", str(binary), "--gtest_filter=" + selected]
+            if strict_umask:
+                command = ["bash", "-c", 'umask 077; exec "$@"', "bash"] + command
+            result = subprocess.run(
+                command,
                 env={**os.environ, "FLAGCX_CI_MPIRUN": str(launcher),
                      "FLAGCX_CI_LOG_DIR": str(root / "logs"),
                      "FLAGCX_CI_TEST_DIAGNOSTICS_AFTER": "0",
                      "GTEST_FILTER": inherited, "TEST_XML_MODE": mode},
                 text=True, capture_output=True, timeout=20,
             )
+            if strict_umask:
+                reports = list((root / "logs/runner-lifecycle").glob("results.*/rank-*.xml"))
+                self.assertTrue(reports, result.stderr)
+                for report in reports:
+                    self.assertEqual(report.stat().st_mode & 0o777, 0o644)
+                    for parent in (root / "logs", report.parent.parent, report.parent):
+                        self.assertEqual(parent.stat().st_mode & 0o777, 0o755)
+            return result
 
     def test_every_rank_must_report_success(self):
         self.assertEqual(self.run_wrapper().returncode, 0)
@@ -197,6 +211,12 @@ if report:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--gtest_filter=" + case + "-" + case, result.stdout)
         self.assertNotIn("expected 2 lifecycle XML", result.stderr)
+
+    def test_lifecycle_artifacts_are_readable_and_preserve_failure_status(self):
+        for mode, expected in (("pass", 0), ("fail", 7), ("missing", 1)):
+            with self.subTest(mode=mode):
+                result = self.run_wrapper(mode, strict_umask=True)
+                self.assertEqual(result.returncode, expected, result.stderr)
 
 
 if __name__ == "__main__":

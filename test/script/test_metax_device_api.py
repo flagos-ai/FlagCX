@@ -409,7 +409,7 @@ class MetaxCiTest(unittest.TestCase):
             directory = Path(name)
             scripts = directory / ".github/scripts/ci"
             scripts.mkdir(parents=True)
-            for filename in ("run_unit_test.sh", "ignore_test.py",
+            for filename in ("run_unit_test.sh", "timeouts.sh", "ignore_test.py",
                              "filter_supplemental_tests.sh"):
                 shutil.copy2(ROOT / ".github/scripts/ci" / filename, scripts)
             unit_bin = directory / "test/unittest/device_api/build/bin"

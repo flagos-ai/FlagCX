@@ -10,6 +10,11 @@ int main(int argc, char **argv) {
   rlimit noCore = {0, 0};
   setrlimit(RLIMIT_CORE, &noCore);
   Options o;
+#ifdef FLAGCX_PROBE_NATIVE
+  const char *worker = "native";
+#else
+  const char *worker = "adaptor";
+#endif
   if (argc == 2 && std::string(argv[1]) == "--inventory") {
     emit(o, inventory());
     return 0;
@@ -29,7 +34,7 @@ int main(int argc, char **argv) {
     auto text = [&](const char *key, const char *fallback) {
       return args.count(key) ? args[key] : std::string(fallback);
     };
-    o.layer = text("--layer", "native");
+    o.layer = text("--layer", worker);
     o.operation = text("--operation", "fetch_add");
     o.hca = text("--hca", "auto");
     o.registration = text("--registration", "mr");
@@ -59,6 +64,7 @@ int main(int argc, char **argv) {
            "HOST SIGNAL is forbidden in this probe");
     emit(o, {{"event", "start"},
              {"layer", o.layer},
+             {"worker", worker},
              {"mode", o.mode},
              {"operation", o.operation},
              {"bytes", o.bytes},
@@ -87,12 +93,14 @@ int main(int argc, char **argv) {
       if (allocation.read(o) != initial(o))
         fail(o, "initialize_readback", "VERIFY_ERROR", 0,
              "allocation copy round trip failed");
-    } else if (o.layer == "native") {
-      runNative(o, allocation);
-    } else if (o.layer == "adaptor") {
-      runAdaptor(o, allocation);
     } else {
-      fail(o, "arguments", "SETUP_ERROR", 0, "unknown probe layer");
+      if (o.layer != worker)
+        fail(o, "arguments", "SETUP_ERROR", 0, "wrong worker for probe layer");
+#ifdef FLAGCX_PROBE_NATIVE
+      runNative(o, allocation);
+#else
+      runAdaptor(o, allocation);
+#endif
     }
     allocation.release(o);
     MPI_Barrier(MPI_COMM_WORLD);
