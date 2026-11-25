@@ -3616,47 +3616,48 @@ flagcxResult_t flagcxHomoCommInit(struct bootstrapState *state,
     INFO(FLAGCX_INIT,
          "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
          "stage=native-get-unique-id begin",
-         rank, comm->cudaDev, comm->homoRank, comm->homoRanks);
+         rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks);
     uniqueIdResult = cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&commId);
     INFO(FLAGCX_INIT,
          "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
          "stage=native-get-unique-id end result=%d",
-         rank, comm->cudaDev, comm->homoRank, comm->homoRanks, uniqueIdResult);
+         rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks,
+         uniqueIdResult);
   }
   INFO(FLAGCX_INIT,
        "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
        "stage=unique-id-status begin",
-       rank, comm->cudaDev, comm->homoRank, comm->homoRanks);
+       rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks);
   flagcxResult_t result =
       flagcxCollectUniqueIdResult(state, rank, nranks, uniqueIdResult);
   INFO(FLAGCX_INIT,
        "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
        "stage=unique-id-status end result=%d",
-       rank, comm->cudaDev, comm->homoRank, comm->homoRanks, result);
+       rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks, result);
   FLAGCXCHECK(result);
 
   INFO(FLAGCX_INIT,
        "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
        "stage=unique-id-broadcast begin",
-       rank, comm->cudaDev, comm->homoRank, comm->homoRanks);
+       rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks);
   result = bootstrapCollSubgroupBroadcast(state, homoGlobalRanks.data(),
                                           comm->homoRank, comm->homoRanks, 0,
                                           (void *)commId, sizeof(*commId));
   INFO(FLAGCX_INIT,
        "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
        "stage=unique-id-broadcast end result=%d",
-       rank, comm->cudaDev, comm->homoRank, comm->homoRanks, result);
+       rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks, result);
   FLAGCXCHECK(result);
   INFO(FLAGCX_INIT,
        "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
        "stage=native-comm-init-rank begin",
-       rank, comm->cudaDev, comm->homoRank, comm->homoRanks);
+       rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks);
   result = cclAdaptors[flagcxCCLAdaptorDevice]->commInitRank(
       homoComm, comm->homoRanks, commId, comm->homoRank, NULL);
   INFO(FLAGCX_INIT,
        "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
        "stage=native-comm-init-rank end result=%d",
-       rank, comm->cudaDev, comm->homoRank, comm->homoRanks, result);
+       rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks, result);
   FLAGCXCHECK(result);
   return flagcxSuccess;
 }
