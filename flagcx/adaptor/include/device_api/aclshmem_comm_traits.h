@@ -549,8 +549,8 @@ struct CommTraits<AclshmemBackend> {
           if (arrived)
             break;
           if ((spins & 31) == 31) {
-            aclshmemPutMemNbi(dstPtr, (FLAGCX_ACLSHMEM_GM void *)scratch,
-                              bytes, pe);
+            aclshmemPutMemNbi(dstPtr, (FLAGCX_ACLSHMEM_GM void *)scratch, bytes,
+                              pe);
             aclshmemQuiet();
           }
           Intrin::spinBackoff(spins < 16 ? spins : 16);
