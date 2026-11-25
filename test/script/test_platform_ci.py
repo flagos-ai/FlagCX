@@ -362,7 +362,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn("KunlunXin heterogeneous perf skipped", handler)
 
     def test_gpu_ci_world_uses_four_ranks(self):
-        for platform in ("cuda", "metax", "hygon", "ppu", "ascend"):
+        for platform in ("cuda", "metax", "hygon", "ppu", "ascend", "iluvatar"):
             with self.subTest(platform=platform):
                 source = (
                     REPO_ROOT / f".github/scripts/set_env/{platform}.sh"

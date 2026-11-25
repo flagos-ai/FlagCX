@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 @unittest.skipUnless(importlib.util.find_spec("coverage"), "coverage.py is required")
 class TorchCoverageReportTest(unittest.TestCase):
-    def run_fixture(self, root, *, fail=False, report_path=None):
+    def run_fixture(self, root, *, fail=False, report_path=None, platform="cuda"):
         for relative in (
             ".github/configs/coverage.ini",
             ".github/scripts/ci/run_torch_coverage.sh",
@@ -42,6 +42,7 @@ class TorchCoverageReportTest(unittest.TestCase):
         env.update({
             "GITHUB_WORKSPACE": str(root),
             "PYTHON_BIN": sys.executable,
+            "FLAGCX_CI_PLATFORM": platform,
             "FLAGCX_CI_LOG_DIR": str(root / "logs"),
             "FLAGCX_CI_TEST_TIMEOUT": "5s",
             "FLAGCX_CI_TEST_KILL_AFTER": "1s",
@@ -76,6 +77,15 @@ class TorchCoverageReportTest(unittest.TestCase):
             result = self.run_fixture(root, fail=True)
             self.assertNotEqual(result.returncode, 0)
             self.assert_real_report(root)
+            self.assertEqual(len(list((root / "logs").glob("*/attempt-*.log"))), 2)
+
+    def test_iluvatar_report_survives_failed_tests(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = self.run_fixture(root, fail=True, platform="iluvatar")
+            self.assertNotEqual(result.returncode, 0)
+            report = json.loads((root / "coverage-iluvatar-gpu-torch.json").read_text())
+            self.assertGreater(report["totals"]["covered_lines"], 0)
             self.assertEqual(len(list((root / "logs").glob("*/attempt-*.log"))), 2)
 
     def test_report_can_be_persisted_outside_container_source(self):

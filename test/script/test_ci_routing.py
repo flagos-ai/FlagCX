@@ -151,6 +151,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 enabled_platform_or_matrix("cuda"),
             ),
             (
+                ".github/scripts/ci/run_iluvatar_workload.sh",
+                enabled_platform_or_matrix("iluvatar"),
+            ),
+            (
                 ".github/scripts/ci/run_cuda_workload.sh",
                 enabled_platform_or_matrix("cuda"),
             ),
@@ -333,6 +337,9 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (
+            ("workflow_dispatch", {"selection": "iluvatar"}, ["iluvatar"]),
+            ("issue_comment", {"comment": "/test iluvatar", "permission": "write",
+                               "is_pull_request": True}, ["iluvatar"]),
             ("workflow_dispatch", {"selection": "enflame"}, ["enflame"]),
             (
                 "issue_comment",
@@ -577,7 +584,7 @@ class CiWorkflowWiringTest(unittest.TestCase):
         ):
             source = path.read_text()
             self.assertIn("workflow_call:", source)
-            for platform in ("cuda", "hygon", "metax", "ppu", "kunlunxin"):
+            for platform in ("cuda", "hygon", "metax", "ppu", "kunlunxin", "iluvatar"):
                 self.assertIn(f"contains(fromJSON(inputs.platforms), '{platform}')", source)
             self.assertIn("if: always()", source)
             self.assertIn("check_platform_workflow.sh", source)
@@ -647,7 +654,7 @@ class CiWorkflowWiringTest(unittest.TestCase):
         caller = yaml.safe_load((REPO_ROOT / ".github/workflows/unit-test.yml").read_text())
         token = caller["jobs"]["torch_api_tests"]["secrets"]["FLAGCICD_API_TOKEN"]
         self.assertIn("needs.prepare.outputs.repository == github.repository", token)
-        for platform in ("cuda", "hygon", "metax", "ppu"):
+        for platform in ("cuda", "hygon", "metax", "ppu", "iluvatar"):
             with self.subTest(platform=platform):
                 job = workflow["jobs"][f"torch-api-test-{platform}"]
                 steps = {step.get("name"): step for step in job["steps"]}
@@ -748,6 +755,31 @@ class PlatformWorkflowCompletionTest(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_iluvatar_requires_config_and_workload_success(self):
+        for config in ("success", "failure", "cancelled", "skipped"):
+            for result in (None, "", "success", "failure", "cancelled", "skipped"):
+                with self.subTest(config=config, result=result):
+                    env = os.environ.copy()
+                    env.pop("ILUVATAR_RESULT", None)
+                    if result is not None:
+                        env["ILUVATAR_RESULT"] = result
+                    checked = subprocess.run(
+                        ["bash", str(REPO_ROOT / ".github/scripts/ci/check_platform_workflow.sh"), '["iluvatar"]', config]
+                        + ["skipped"] * 6,
+                        env=env, text=True, capture_output=True)
+                    self.assertEqual(checked.returncode == 0,
+                                     config == "success" and result == "success",
+                                     checked.stdout + checked.stderr)
+
+    def test_unselected_iluvatar_does_not_change_existing_gate(self):
+        env = os.environ.copy()
+        env["ILUVATAR_RESULT"] = "failure"
+        checked = subprocess.run(
+            ["bash", str(REPO_ROOT / ".github/scripts/ci/check_platform_workflow.sh"), '["cuda"]', "success", "success",
+             "success", "skipped", "skipped", "skipped", "skipped"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
 
     def test_hygon_experimental_perf_is_required(self):
         script = str(REPO_ROOT / ".github/scripts/ci/check_platform_workflow.sh")

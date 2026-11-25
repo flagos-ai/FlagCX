@@ -37,6 +37,11 @@ jobs:
       metax_set_env: ${{ steps.metax.outputs.set_env }}
       metax_ignore_test: ${{ steps.metax.outputs.ignore_test }}
       metax_runs_on: ${{ steps.metax.outputs.runs_on }}
+      iluvatar_ci_image: ${{ steps.iluvatar.outputs.ci_image }}
+      iluvatar_docker_args: ${{ steps.iluvatar.outputs.docker_args }}
+      iluvatar_set_env: ${{ steps.iluvatar.outputs.set_env }}
+      iluvatar_ignore_test: ${{ steps.iluvatar.outputs.ignore_test }}
+      iluvatar_runs_on: ${{ steps.iluvatar.outputs.runs_on }}
       hygon_ci_image: ${{ steps.hygon.outputs.ci_image }}
       hygon_docker_args: ${{ steps.hygon.outputs.docker_args }}
       hygon_set_env: ${{ steps.hygon.outputs.set_env }}
@@ -75,6 +80,10 @@ jobs:
         id: metax
         run: ruby .github/scripts/ci/load_platform_config.rb metax
 
+      - name: Load Iluvatar configuration
+        id: iluvatar
+        run: ruby .github/scripts/ci/load_platform_config.rb iluvatar
+
       - name: Load Hygon configuration
         id: hygon
         run: ruby .github/scripts/ci/load_platform_config.rb hygon
@@ -90,6 +99,87 @@ jobs:
       - name: Load KunlunXin configuration
         id: kunlunxin
         run: ruby .github/scripts/ci/load_platform_config.rb kunlunxin
+
+  torch-api-test-iluvatar:
+    if: contains(fromJSON(inputs.platforms), 'iluvatar')
+    name: torch-api-test (iluvatar)
+    needs: load-hardware-container-configs
+    runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.iluvatar_runs_on) }}
+    timeout-minutes: 180
+    env:
+      FLAGCICD_TOKEN_SET: ${{ secrets.FLAGCICD_API_TOKEN != '' }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Check Docker
+        shell: bash
+        run: docker version
+
+      - name: Run torch-api-test (iluvatar) in configured container
+        shell: bash
+        env:
+          FLAGCX_CI_TORCH_COVERAGE: '1'
+          FLAGCX_CI_CONTAINER_NAME: flagcx-iluvatar-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.iluvatar_docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.iluvatar_ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.iluvatar_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.iluvatar_ignore_test }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$FLAGCX_CI_LOG_DIR"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" \
+            iluvatar torch-api 2>&1 | tee "$FLAGCX_CI_LOG_DIR/iluvatar-torch-api.log"
+
+      - name: Cleanup torch-api-test (iluvatar) container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-iluvatar-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Collect Python coverage report
+        if: ${{ !cancelled() && hashFiles('.ci-logs/coverage-iluvatar-gpu-torch.json') != '' }}
+        run: cp "$FLAGCX_CI_LOG_DIR/coverage-iluvatar-gpu-torch.json" coverage-iluvatar-gpu-torch.json
+
+      - name: Upload coverage report to FlagCICD
+        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles('coverage-iluvatar-gpu-torch.json') != '' }}
+        uses: flagos-ai/FlagOps/actions/post-pytest-report@5bd0e138a6ae482b1a1cc809ea6705ecfd6eb410
+        continue-on-error: true
+        timeout-minutes: 2
+        with:
+          backend_url: https://flagcicd.flagos.net/flagcicd/api/v1/cicd/metrics/
+          api_token: ${{ secrets.FLAGCICD_API_TOKEN }}
+          report_path: coverage-iluvatar-gpu-torch.json
+          file_type: coverage
+          job_name: coverage-iluvatar-gpu-torch
+          pr_id: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
+          fail_on_error: 'false'
+
+      - name: Archive Python coverage report
+        if: ${{ !cancelled() && hashFiles('coverage-iluvatar-gpu-torch.json') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-iluvatar-gpu-torch
+          path: coverage-iluvatar-gpu-torch.json
+          retention-days: 7
+
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-torch-api-test-iluvatar-${{ github.run_attempt }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
   torch-api-test-hygon:
     if: contains(fromJSON(inputs.platforms), 'hygon')
@@ -517,6 +607,7 @@ jobs:
     if: always()
     needs:
       - load-hardware-container-configs
+      - torch-api-test-iluvatar
       - torch-api-test-hygon
       - torch-api-test-cuda
       - torch-api-test-metax
@@ -525,6 +616,7 @@ jobs:
       - torch-api-test-kunlunxin
     runs-on: ubuntu-latest
     env:
+      ILUVATAR_RESULT: ${{ needs['torch-api-test-iluvatar'].result }}
       PLATFORMS: ${{ inputs.platforms }}
       CONFIG_RESULT: ${{ needs['load-hardware-container-configs'].result }}
       CUDA_BASE_RESULT: ${{ needs['torch-api-test-cuda'].result }}
