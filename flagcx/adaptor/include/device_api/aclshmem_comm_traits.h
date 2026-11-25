@@ -97,6 +97,18 @@ aclshmemGmStore32(FLAGCX_ACLSHMEM_GM volatile uint32_t *p, uint32_t v) {
 #endif
 }
 
+// Byte-wide sibling of the 32-bit channel: the putValue read-back must load
+// exactly the bytes the call transferred, because a wider word can end past
+// the destination's allocation and needs an alignment the caller's offset
+// does not guarantee (MC952 review P2).
+FLAGCX_DEVICE_INLINE_DECORATOR uint8_t
+aclshmemGmLoad8(const FLAGCX_ACLSHMEM_GM volatile uint8_t *p) {
+#if defined(__CCE_IS_AICORE__)
+  asc_dcci_entire_all();
+#endif
+  return *p;
+}
+
 // ---- The 32-bit completion contract ----
 // Every completion word this backend publishes is 32 bits
 // (aclshmem_state_layout.h), which the trait advertises as completionBits /
@@ -526,22 +538,17 @@ struct CommTraits<AclshmemBackend> {
         // there is no retry budget, because a value that never arrives must
         // not fall through to the remote action (the old code sent the
         // signal anyway - MC952 review P1).
-        FLAGCX_ACLSHMEM_GM volatile uint32_t *remoteWord =
-            aclshmemPeerWord((FLAGCX_ACLSHMEM_GM uint32_t *)dstPtr, pe);
-        // Compare exactly the transferred bytes.  A sub-word tail masks the
-        // rest of its word, which belongs to a neighbour this call did not
-        // write.
-        uint32_t words = (bytes + 3u) / 4u;
-        uint32_t tail = bytes % 4u;
+        FLAGCX_ACLSHMEM_GM volatile uint8_t *remoteByte =
+            aclshmemPeerWord((FLAGCX_ACLSHMEM_GM uint8_t *)dstPtr, pe);
+        // Compare exactly the transferred bytes, one byte at a time: the
+        // destination owns sizeof(T) bytes and may end mid-word (even be a
+        // one-byte allocation), so any wider load could cross its allocation
+        // or land unaligned (MC952 review P2).
         for (int spins = 0;; ++spins) {
           bool arrived = true;
-          for (uint32_t i = 0; i < words; ++i) {
-            uint32_t mask = 0xffffffffu;
-            if (tail != 0 && i + 1u == words)
-              mask = (1u << (8u * tail)) - 1u;
-            uint32_t want = (uint32_t)(bits >> (32u * i));
-            uint32_t got = aclshmemGmLoad32(remoteWord + i);
-            if ((got & mask) != (want & mask)) {
+          for (uint32_t i = 0; i < bytes; ++i) {
+            uint8_t want = (uint8_t)(bits >> (8u * i));
+            if (aclshmemGmLoad8(remoteByte + i) != want) {
               arrived = false;
               break;
             }

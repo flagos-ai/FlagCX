@@ -129,6 +129,25 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxDevMemGetDevicePtr(sendMem, &sendMemPtr));
   FLAGCXCHECK(flagcxDevMemGetDevicePtr(recvMem, &recvMemPtr));
 
+#ifdef FLAGCX_ASCEND_PUTVALUE_TAIL
+  // MC952 review P2: sub-word putValue destinations whose last byte is the
+  // last byte of their registered allocation.  14 % 4 != 0 keeps the window
+  // ending mid-word, so a 32-bit read-back at the tail crosses the
+  // allocation (and the byte at offset 13 is also unaligned).
+  constexpr size_t kSubwordTailBytes = 14;
+  void *tailBuff = nullptr;
+  FLAGCXCHECK(flagcxMemAlloc(&tailBuff, kSubwordTailBytes, flagcxMemSHMEM));
+  flagcxWindow_t tailWin = nullptr;
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, tailBuff, kSubwordTailBytes,
+                                       &tailWin, flagcxTestWindowFlags(),
+                                       flagcxMemSHMEM));
+  flagcxDevMem_t tailMem = nullptr;
+  FLAGCXCHECK(flagcxDevMemCreate(comm, tailBuff, kSubwordTailBytes, tailWin,
+                                 &tailMem));
+  void *tailMemPtr = nullptr;
+  FLAGCXCHECK(flagcxDevMemGetDevicePtr(tailMem, &tailMemPtr));
+#endif
+
   // Allocate results buffer
   int *devResults = nullptr;
   FLAGCXCHECK(devHandle->deviceMalloc((void **)&devResults, 256 * sizeof(int),
@@ -445,6 +464,46 @@ int main(int argc, char *argv[]) {
         }
       }
       s18Pass &= s18bOk;
+
+#ifdef FLAGCX_ASCEND_PUTVALUE_TAIL
+      // --- Sub-block C: sub-word values ending on the allocation tail ---
+      // MC952 review P2: a 1-byte and a 2-byte putValue whose last byte is
+      // the last byte of the registered window, so the read-back must never
+      // load a wider word.  bytes = 0 selects the kernel's tail mode.
+      {
+        FLAGCXCHECK(devHandle->deviceMemset(tailBuff, 0xAA, kSubwordTailBytes,
+                                            flagcxMemDevice, stream));
+        FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
+                                            flagcxMemDevice, stream));
+        FLAGCXCHECK(devHandle->streamSynchronize(stream));
+        MPI_Barrier(MPI_COMM_WORLD);
+        launchKernelDevPutValueIntraWorldS(devCommPtr, tailMemPtr, devResults,
+                                           0, stream);
+        FLAGCXCHECK(devHandle->streamSynchronize(stream));
+        MPI_Barrier(MPI_COMM_WORLD);
+        FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
+                                            flagcxMemcpyDeviceToHost, stream));
+        unsigned char tailHost[kSubwordTailBytes];
+        FLAGCXCHECK(devHandle->deviceMemcpy(tailHost, tailBuff,
+                                            kSubwordTailBytes,
+                                            flagcxMemcpyDeviceToHost, stream));
+        // The 2-byte value lands last: [12] = 0x10 + sender, [13] = 0x5A.
+        bool s18cOk = (hostRes == 1);
+        for (size_t i = 0; i < kSubwordTailBytes; i++) {
+          unsigned char want = 0xAA;
+          if (i + 2 == kSubwordTailBytes)
+            want = (unsigned char)(0x10 + prevIntra);
+          if (i + 1 == kSubwordTailBytes)
+            want = 0x5A;
+          if (tailHost[i] != want) {
+            RPRINTF("  S18C mismatch i=%zu exp=0x%02x got=0x%02x\n", i,
+                    (unsigned)want, (unsigned)tailHost[i]);
+            s18cOk = false;
+          }
+        }
+        s18Pass &= s18cOk;
+      }
+#endif
 
       RPRINTF("S18 DevPut+PutValue(INTRA+WORLD): %s\n",
               s18Pass ? "PASS" : "FAIL");
@@ -833,10 +892,19 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->deviceFree(devResults, flagcxMemDevice, NULL));
   FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
   FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
+#ifdef FLAGCX_ASCEND_PUTVALUE_TAIL
+  FLAGCXCHECK(flagcxDevMemDestroy(comm, tailMem));
+#endif
   FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
   FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
+#ifdef FLAGCX_ASCEND_PUTVALUE_TAIL
+  FLAGCXCHECK(flagcxCommWindowDeregister(comm, tailWin, flagcxMemSHMEM));
+#endif
   FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
   FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
+#ifdef FLAGCX_ASCEND_PUTVALUE_TAIL
+  FLAGCXCHECK(flagcxMemFree(tailBuff, flagcxMemSHMEM));
+#endif
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));

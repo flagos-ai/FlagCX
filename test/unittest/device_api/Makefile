@@ -207,6 +207,10 @@ ifeq ($(KERNEL_PLATFORM), ascend)
     # and so are K8/K9/K10 (device_api.asc: the INTRA barrier plus peer
     # reads through aclshmem_ptr, both proven on this backend).
     # Everything else this platform lacks is unchanged.
+    # PUTVALUE_TAIL adds S18 sub-block C: 1/2-byte putValue destinations
+    # whose last byte is the last byte of their registered allocation
+    # (MC952 review P2).
+    CXXFLAGS += -DFLAGCX_ASCEND_PUTVALUE_TAIL
   else
     CXXFLAGS += -DFLAGCX_TEST_NO_CROSS_RANK_COMM \
                 -DFLAGCX_TEST_NO_REMOTE_READ \
