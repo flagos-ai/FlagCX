@@ -293,6 +293,12 @@ build_project() {
 
 build_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
+  if [[ "$SUITE" == rdma_atomic_probe ]]; then
+    make -C "$suite_dir" --jobs="$(nproc)" "${FLAGCX_CI_TEST_MAKE_ARGS[@]}"
+    make -C "$PROJECT_ROOT/test/unittest/device_api" --jobs="$(nproc)" mpi \
+      "${FLAGCX_CI_TEST_MAKE_ARGS[@]}"
+    return
+  fi
   if [[ "$SUITE" == device_traits ]]; then
     return 0
   fi
@@ -592,6 +598,13 @@ run_suite() {
   fi
 
   case "$SUITE" in
+    rdma_atomic_probe)
+      local probe_log_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}"
+      python3 "$PROJECT_ROOT/.github/scripts/ci/run_rdma_atomic_probe.py" \
+        --binary "$PROJECT_ROOT/test/unittest/rdma_atomic_probe/build/bin/rdma_atomic_probe" \
+        --barrier "$PROJECT_ROOT/test/unittest/device_api/build/bin/test_device_ir_unified_inter" \
+        --output "$probe_log_root/rdma_atomic_probe"
+      ;;
     adaptor)
       local unit_status=0
       local ibuc_status=0
@@ -1570,7 +1583,7 @@ case "$SUITE" in
   adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
-  device_traits)
+  device_traits|rdma_atomic_probe)
     ;;
   *)
     echo "Unsupported unit test suite: $SUITE" >&2

@@ -412,7 +412,10 @@ class MetaxCiTest(unittest.TestCase):
             for filename in ("run_unit_test.sh", "ignore_test.py",
                              "filter_supplemental_tests.sh"):
                 shutil.copy2(ROOT / ".github/scripts/ci" / filename, scripts)
-            (directory / "test/unittest/device_api").mkdir(parents=True)
+            unit_bin = directory / "test/unittest/device_api/build/bin"
+            unit_bin.mkdir(parents=True)
+            lifecycle_binary = unit_bin / "test_dev_comm_cleanup"
+            rma_case = "CommStreamIsolation.HeteroRmaNonVmmFinalizeDoesNotDrainIndependentWork"
             binaries = directory / "tools"
             binaries.mkdir()
             log = directory / "commands.log"
@@ -431,7 +434,13 @@ if [[ "$FLAGCX_CI_MPI_LABEL" == "${METAX_TEST_FAIL_LABEL:-}" ]]; then exit 7; fi
 ''')
             executable(scripts / "run_with_timeout.sh", r'''
 printf '%s|%s\n' "$FLAGCX_CI_TEST_LABEL" "$*" >> "$METAX_TEST_LOG"
+if [[ "$FLAGCX_CI_TEST_LABEL" == "device_api_host unit tests" &&
+      "$FLAGCX_CI_TEST_LABEL" == "${METAX_TEST_FAIL_LABEL:-}" ]]; then exit 7; fi
 exec "$@"
+''')
+            executable(lifecycle_binary, r'''
+printf 'host-lifecycle-env|%s|%s\n' "$GTEST_FILTER" "$FLAGCX_VMM_ENABLE" >> "$METAX_TEST_LOG"
+if [[ "$FLAGCX_CI_TEST_LABEL" == "${METAX_TEST_FAIL_LABEL:-}" ]]; then exit 7; fi
 ''')
             env_script = directory / "metax.sh"
             env_script.write_text(
@@ -444,15 +453,22 @@ exec "$@"
                                MPI_HOME=str(directory / "mpi"),
                                PATH=f"{binaries}:{os.environ['PATH']}",
                                FLAGCX_CI_COVERAGE="0", METAX_TEST_LOG=str(log))
-            for key in ("BASH_ENV", "FLAGCX_CI_UNIFIED_IR_SKIP_S16",
+            for key in ("BASH_ENV", "GTEST_FILTER", "FLAGCX_CI_PLATFORM",
+                        "FLAGCX_CI_CONFIG_DIR", "FLAGCX_CI_IGNORE_TEST",
+                        "FLAGCX_CI_UNIFIED_IR_SKIP_S16",
                         "FLAGCX_CI_DEVICE_API_INTRA_ONLY", "FLAGCX_CI_DEVICE_API_INTER",
                         "FLAGCX_CI_UNIFIED_IR_INTER", "FLAGCX_CI_UNIFIED_IR_FALLBACK",
+                        "FLAGCX_CI_UNIFIED_IR_FALLBACK_INTRA",
                         "FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY"):
                 environment.pop(key, None)
+            host_labels = {"device_api_host unit tests",
+                           "device_api_host non-VMM RMA lifecycle"}
             cases = [
                 ("device_api", "", {"device_api intra", "device_api inter",
                                       "device IR intra", "device IR inter"}),
-                ("device_api_host", "", {"device_api_host unit tests"}),
+                ("device_api_host", "", host_labels),
+                ("device_api_host", "device_api_host unit tests", host_labels),
+                ("device_api_host", "device_api_host non-VMM RMA lifecycle", host_labels),
                 ("device_api_unified_ir", "", {"unified IR intra", "unified IR inter",
                                                "unified IR intra forced fallback",
                                                "unified IR inter forced fallback"}),
@@ -474,6 +490,10 @@ exec "$@"
                     self.assertNotIn("SKIPPED", result.stdout)
                     if suite != "device_api_host":
                         self.assertIn("rdma", labels)
+                    else:
+                        lifecycle_env = [args for label, args in records
+                                         if label == "host-lifecycle-env"]
+                        self.assertEqual(lifecycle_env, [f"{rma_case}|0"])
                     for label, arguments in records:
                         if label == "make":
                             self.assertIn("COMPILE_KERNEL=1", arguments)
@@ -486,6 +506,18 @@ exec "$@"
                         fallback = next(args for label, args in records
                                         if label == "unified IR intra forced fallback")
                         self.assertIn("FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=1", fallback)
+
+            # Missing executables must remain failures; do not hide fixture or
+            # real build gaps by making the shared runner skip this phase.
+            lifecycle_binary.unlink()
+            log.write_text("")
+            environment["METAX_TEST_FAIL_LABEL"] = ""
+            result = subprocess.run(
+                ["bash", str(scripts / "run_unit_test.sh"), str(env_script), "device_api_host"],
+                env=environment, text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 127, result.stdout + result.stderr)
+            self.assertIn(str(lifecycle_binary), result.stderr)
 
 
 if __name__ == "__main__":

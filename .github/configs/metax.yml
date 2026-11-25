@@ -49,6 +49,7 @@ unit_test_suites:
   - device_api_host
   - device_api_unified_ir
   - p2p
+  - rdma_atomic_probe
   - rma
   - runner
   - service

@@ -1241,6 +1241,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                 "device_api_host",
                 "device_api_unified_ir",
                 "p2p",
+                "rdma_atomic_probe",
                 "rma",
                 "runner",
                 "service",
