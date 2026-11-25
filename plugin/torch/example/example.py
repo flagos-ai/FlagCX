@@ -214,7 +214,16 @@ def test_pair_teardown():
         dist.barrier(group=control)
     backend = group._get_backend(torch.device(dev_name, int(os.environ["LOCAL_RANK"])))
     closed_input = torch.empty(8, device=torch.device(dev_name, int(os.environ["LOCAL_RANK"])))
+    # Works may outlive the backend's SDK resources, including barrier Works
+    # whose wait() normally synchronizes the communication stream directly.
+    pending = dist.all_reduce(closed_input.fill_(MY_RANK + 1), group=group,
+                              async_op=True)
+    pending_barrier = dist.barrier(group=group, async_op=True)
     flagcx.shutdown_backend(backend)
+    for work in (pending, pending_barrier):
+        work.wait()
+        assert work.is_completed()
+        work.get_future().wait()
     for submit in (backend.barrier,
                    lambda: backend.allreduce_coalesced([closed_input])):
         try:
