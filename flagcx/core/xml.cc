@@ -142,6 +142,7 @@ flagcxResult_t xmlGetToken(FILE *file, char *name, char *value, char *last) {
     while (true) {
       FLAGCXCHECK(xmlGetChar(file, &c));
       if (c == '=') {
+        name[length] = '\0';
         WARN("XML Parse : Unexpected value with name %s", name);
         return flagcxInternalError;
       }

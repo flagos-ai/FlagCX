@@ -102,4 +102,21 @@ TEST(XmlParser, RejectsUnterminatedQuotedAttribute) {
   EXPECT_EQ(rawXml, nullptr);
 }
 
+TEST(XmlParser, RejectsMalformedSelfClosingTag) {
+  const std::string contents[] = {
+      "<system version='1'/=>",
+      "<system version='1' / =>",
+      "<system version='1'/name=>",
+      "<system version='1'/" + std::string(MAX_STR_LEN, 'x') + "=>",
+      "<system version='1'><gpu dev='0'/=></system>",
+  };
+
+  for (const std::string &text : contents) {
+    SCOPED_TRACE(text);
+    flagcxXml *rawXml = nullptr;
+    EXPECT_EQ(parseXmlText(text, &rawXml), flagcxInternalError);
+    EXPECT_EQ(rawXml, nullptr);
+  }
+}
+
 } // namespace
