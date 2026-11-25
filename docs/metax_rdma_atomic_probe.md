@@ -86,14 +86,36 @@ deadline, terminates the MPI process group and marked descendants (including
 reparented workers on Linux), and bounds reaping. Core dumps are disabled.
 Internal CQ/connection loops have independent deadlines.
 
-The supervisor independently builds native, adaptor and barrier workers,
-retaining each command, exit status and log. A failed build marks only that
-worker's cases `BUILD_ERROR`; other workers still build and run. Allocation
-checks and inventory prefer the native worker and use the adaptor worker if
-needed. A stale executable left by a failed build is never used. If both
-probe workers fail to build, the planned cases explicitly report that no
-allocation/inventory worker is available; compilation cannot produce hardware
-allocation results. Partial build failure still fails the overall suite.
+The supervisor independently builds SDK inventory, native, adaptor and barrier
+workers, retaining each command, exit status and log. A failed build marks that
+worker unavailable; other workers still build and run. Allocation checks prefer
+the native worker and use the adaptor worker if needed. A stale executable
+left by a failed build is never used. Partial build failure still fails the
+overall suite even when independent coverage can complete.
+
+Host inventory is a separate Python process reading sysfs, without loading GPU
+or verbs libraries. It saves each discovered port immediately; even this process
+has a deadline, because a driver sysfs read can stall. Host provenance is saved
+before GPU initialization. An unreadable port remains an explicit inventory
+error; successfully tested ports do not hide the missing coverage.
+
+GPU count first uses `rdma_atomic_sdk_inventory`, directly linked only to the
+necessary MACA/system libraries, without FlagCX, MPI or libibverbs linkage.
+This control calls only `mcGetDeviceCount`. If a control fails and its process
+has been reaped, the supervisor tries native/adaptor `--inventory` controls.
+They also query only the actual GPU count. A failed startup control remains in
+the report and fails CI even if a fallback supplies a valid count and allows
+the allocation matrix to finish. No default or inferred count is used.
+
+Both full workers and the SDK control write `PROBE_BOOT main_enter` as their
+first main action, before JSON/SDK/MPI work. SDK calls and MPI startup record
+enter/return, original codes and elapsed time. Loaded-library paths are logged
+before SDK calls. An empty log therefore does not get attributed to a particular
+API; it can indicate failure before main. Partial records retain the last
+observed stage. Runtime/driver versions run in separate SDK processes after the
+matrix, followed independently of the count control; optional information cannot
+block allocations from starting. Provider metadata is also deferred until after
+the matrix.
 
 An allocation failure blocks only network cases with that allocation mode and
 size, naming the prerequisite case. Other allocations and sizes continue.
@@ -101,16 +123,29 @@ An unreapable worker blocks remaining cases explicitly. No blocked or absent
 case is counted as a pass. Results are saved before launch and after every
 case, so failed or interrupted runs retain the complete planned matrix.
 
+Before TERM, after TERM and after KILL, isolated snapshot collectors save PID/TID
+state, cmdline, wchan, library maps, syscall and readable stacks. PID start times
+guard against reuse. Permission errors, truncation and partial reads are retained;
+the collector itself has a 250 ms deadline and 100 ms reap bound. An unreaped
+collector also stops further GPU submissions. A failed snapshot never prevents
+termination of the original worker. No process environment is dumped.
+
 With four active HCA/ports the default matrix contains **469 cases**. Defaults:
 
-- Per worker group: 10 seconds, plus at most 1.25 seconds for termination/reap.
-- Each barrier control: 180 seconds plus termination/reap.
-- Supervisor budget: 6,000 seconds (100 minutes), inside the existing 120-minute
+- Per worker group: 10 seconds, plus 1.25 seconds for termination/reap and up to
+  1.05 seconds for three snapshot collectors.
+- Each barrier control: 180 seconds plus the same cleanup/diagnostic allowance.
+- GPU inventory control: 15 seconds, configurable with `--inventory-timeout`;
+  the startup timeout has not been increased.
+- Supervisor budget: 6,600 seconds (110 minutes), inside the existing 120-minute
   hardware job limit. Project compilation runs before the supervisor; worker
   builds run inside it, each with a 300-second timeout by default.
 
 Before testing, the supervisor checks the full worst-case matrix budget for
 available workers, including elapsed build time, cleanup and setup margin.
+It also reserves optional metadata time. The four-port matrix reserves 6,108.7
+seconds for cases, cleanup and diagnostics; the larger suite budget accounts for
+the new evidence collection rather than increasing per-case timeouts.
 An insufficient budget produces a setup failure with all remaining entries
 explicitly blocked, rather than starting a matrix it cannot finish.
 `FLAGCX_CI_RDMA_PROBE_CASE_TIMEOUT` and
@@ -121,16 +156,23 @@ first failure evidence.
 Artifacts are collected by the existing always-upload step under
 `attempts-unit_test-*-metax-rdma_atomic_probe`. Contents under
 `rdma_atomic_probe/` include `results.json`, `summary.md`, `build.json`,
-`build/{native,adaptor,barrier}.log`, SDK feature checks, inventory/provenance
+`build/{sdk,native,adaptor,barrier}.log`, SDK feature checks, `host-inventory.json`,
+host and per-worker GPU inventory logs, version/provenance
 logs and one log per planned case. The summary separates allocation, native
 verbs and adaptor outcomes for every allocation mode, followed by every
 individual case and its failure stage. A mixed-success diagnostic matrix
 returns failure.
+Timeout evidence is stored under `<worker-log>.diagnostics/{before-term,after-term,after-kill}/`,
+with collector outcomes in `collector.json` and incremental `pid-*.json` snapshots.
+`results.json` and the Markdown summary distinguish startup controls from the
+actual allocation/transport matrix, including main-entry and last-stage evidence.
 
 Statuses distinguish `BUILD_ERROR`, `ALLOC_ERROR`, `SDK_UNAVAILABLE`, `INIT_ERROR`,
 `REG_ERROR`, `POST_ERROR`, `CQ_ERROR`, `VERIFY_ERROR`, `COPY_ERROR`,
 `CAPABILITY_ERROR`, `CONNECT_ERROR`, `CLEANUP_ERROR`, `TIMEOUT` and `BLOCKED`.
-An unreapable worker is reported as `WORKER_STUCK`; launch/exit failures and
+Startup controls additionally distinguish `STARTUP_TIMEOUT`, `STARTUP_ERROR`,
+`SDK_ERROR` and `MISSING_INVENTORY`. An unreapable worker is reported as
+`WORKER_STUCK`, with timeout evidence preserved; launch/exit failures and
 missing rank results are also explicit failures.
 API error records retain their original interface return codes; MACA errors
 also include the SDK error string. The GDR interface returns FlagCX codes;
@@ -172,3 +214,6 @@ routing, GPU-signal enforcement, missing-rank/error classification, bounded
 timeout recovery, failure continuation and dependency reporting. Build-failure
 controls verify that each remaining layer runs, all allocation modes remain
 covered, build evidence is saved, and failed builds cannot reuse stale binaries.
+Startup controls cover independent host discovery, partial/empty output,
+reaped-worker fallback, actual-count validation, unreaped-worker stop, deferred
+optional metadata, partial snapshots and PID reuse.

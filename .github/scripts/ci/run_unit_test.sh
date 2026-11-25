@@ -605,6 +605,7 @@ run_suite() {
         probe_build_args+=("--make-arg=$probe_arg")
       done
       python3 "$PROJECT_ROOT/.github/scripts/ci/run_rdma_atomic_probe.py" \
+        --sdk-inventory "$PROJECT_ROOT/test/unittest/rdma_atomic_probe/build/bin/rdma_atomic_sdk_inventory" \
         --native-binary "$PROJECT_ROOT/test/unittest/rdma_atomic_probe/build/bin/rdma_atomic_native_probe" \
         --adaptor-binary "$PROJECT_ROOT/test/unittest/rdma_atomic_probe/build/bin/rdma_atomic_adaptor_probe" \
         --barrier "$PROJECT_ROOT/test/unittest/device_api/build/bin/test_device_ir_unified_inter" \

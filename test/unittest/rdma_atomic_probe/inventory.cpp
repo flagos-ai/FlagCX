@@ -42,15 +42,12 @@ std::vector<ProbePort> probePorts() {
 }
 
 Json inventory() {
-  Json result = {{"event", "inventory"}, {"ports", Json::array()}};
-  int gpus = 0, runtime = 0, driver = 0;
-  result["gpu_count_code"] = int(mcGetDeviceCount(&gpus));
-  result["gpu_count"] = gpus;
-  result["runtime_code"] = int(mcRuntimeGetVersion(&runtime));
-  result["runtime_version"] = runtime;
-  result["driver_code"] = int(mcDriverGetVersion(&driver));
-  result["driver_version"] = driver;
-  for (const auto &port : probePorts())
-    result["ports"].push_back(port.hca + ":" + std::to_string(port.port));
-  return result;
+  // Full-linkage fallback/control. Host discovery and optional versions are
+  // deliberately not on this GPU-count path.
+  int gpus = 0;
+  const auto code =
+      probeTimed("mcGetDeviceCount", [&] { return mcGetDeviceCount(&gpus); });
+  return {{"event", "gpu_inventory"},
+          {"gpu_count_code", int(code)},
+          {"gpu_count", gpus}};
 }

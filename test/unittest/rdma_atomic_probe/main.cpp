@@ -7,6 +7,7 @@
 #include <sys/resource.h>
 
 int main(int argc, char **argv) {
+  probeBoot();
   rlimit noCore = {0, 0};
   setrlimit(RLIMIT_CORE, &noCore);
   Options o;
@@ -15,13 +16,24 @@ int main(int argc, char **argv) {
 #else
   const char *worker = "adaptor";
 #endif
+  probeEmit({{"event", "main_enter"}, {"worker", worker}});
+  probeLibraries();
   if (argc == 2 && std::string(argv[1]) == "--inventory") {
-    emit(o, inventory());
-    return 0;
+    const auto result = inventory();
+    probeEmit(result);
+    return result["gpu_count_code"].get<int>() == 0 ? 0 : 1;
   }
-  MPI_Init(&argc, &argv);
-  MPI_Comm_rank(MPI_COMM_WORLD, &o.rank);
-  MPI_Comm_size(MPI_COMM_WORLD, &o.ranks);
+  if (probeTimed("MPI_Init", [&] { return MPI_Init(&argc, &argv); }) !=
+      MPI_SUCCESS)
+    return 1;
+  if (probeTimed("MPI_Comm_rank",
+                 [&] { return MPI_Comm_rank(MPI_COMM_WORLD, &o.rank); }) !=
+          MPI_SUCCESS ||
+      probeTimed(
+          "MPI_Comm_size",
+          [&] { return MPI_Comm_size(MPI_COMM_WORLD, &o.ranks); },
+          o.rank) != MPI_SUCCESS)
+    return 1;
   try {
     std::map<std::string, std::string> args;
     if (argc % 2 != 1)
@@ -72,14 +84,22 @@ int main(int argc, char **argv) {
              {"direction", o.direction},
              {"ranks", o.ranks}});
     int gpus = 0;
-    checkMaca(o, "device_count", mcGetDeviceCount(&gpus));
+    checkMaca(o, "device_count",
+              probeTimed(
+                  "mcGetDeviceCount", [&] { return mcGetDeviceCount(&gpus); },
+                  o.rank));
+    emit(o, {{"event", "gpu_count"}, {"count", gpus}});
     if (gpus < o.ranks)
       fail(o, "device_count", "SETUP_ERROR", gpus,
            "one distinct GPU per rank is required");
     o.gpu = o.rank;
-    checkMaca(o, "set_device", mcSetDevice(o.gpu));
+    checkMaca(o, "set_device",
+              probeTimed(
+                  "mcSetDevice", [&] { return mcSetDevice(o.gpu); }, o.rank));
     char pci[64] = {};
-    mcError_t pciResult = mcDeviceGetPCIBusId(pci, sizeof(pci), o.gpu);
+    mcError_t pciResult = probeTimed(
+        "mcDeviceGetPCIBusId",
+        [&] { return mcDeviceGetPCIBusId(pci, sizeof(pci), o.gpu); }, o.rank);
     emit(o, {{"event", "gpu"},
              {"device", o.gpu},
              {"pci_code", int(pciResult)},
@@ -97,17 +117,35 @@ int main(int argc, char **argv) {
       if (o.layer != worker)
         fail(o, "arguments", "SETUP_ERROR", 0, "wrong worker for probe layer");
 #ifdef FLAGCX_PROBE_NATIVE
-      runNative(o, allocation);
+      probeTimed(
+          "native_transport",
+          [&] {
+            runNative(o, allocation);
+            return 0;
+          },
+          o.rank);
 #else
-      runAdaptor(o, allocation);
+      probeTimed(
+          "adaptor_transport",
+          [&] {
+            runAdaptor(o, allocation);
+            return 0;
+          },
+          o.rank);
 #endif
     }
     allocation.release(o);
-    MPI_Barrier(MPI_COMM_WORLD);
+    if (probeTimed(
+            "MPI_Barrier", [] { return MPI_Barrier(MPI_COMM_WORLD); },
+            o.rank) != MPI_SUCCESS)
+      fail(o, "MPI_Barrier", "INTERNAL_ERROR", 0, "MPI barrier failed");
     loadedLibraries(o);
     emit(o, {{"event", "result"}, {"status", "PASS"}});
-    MPI_Finalize();
-    return 0;
+    return probeTimed(
+               "MPI_Finalize", [] { return MPI_Finalize(); }, o.rank) ==
+                   MPI_SUCCESS
+               ? 0
+               : 1;
   } catch (const Failure &error) {
     emit(o, {{"event", "result"},
              {"status", error.status},
@@ -120,6 +158,7 @@ int main(int argc, char **argv) {
   // Do not enter collective cleanup after a failed rank or a poisoned QP.
   // The supervisor also bounds MPI_Abort and all surviving descendants.
   loadedLibraries(o);
-  MPI_Abort(MPI_COMM_WORLD, 1);
+  probeTimed(
+      "MPI_Abort", [] { return MPI_Abort(MPI_COMM_WORLD, 1); }, o.rank);
   return 1;
 }

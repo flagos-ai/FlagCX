@@ -3,6 +3,8 @@
  ************************************************************************/
 #pragma once
 
+#include "diagnostics.h"
+
 #include <mcr/mc_runtime.h>
 #include <mpi.h>
 #include <nlohmann/json.hpp>
@@ -19,13 +21,11 @@
 #include <string>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 #include "allocation_modes.h"
 #include "flagcx.h"
-
-using Json = nlohmann::json;
-using Clock = std::chrono::steady_clock;
 
 // The low half wraps during the default eight increments. A truncated 32-bit
 // update or an endian mismatch must not accidentally pass the 64-bit probe.
@@ -51,24 +51,7 @@ struct Options {
 };
 
 inline void emit(const Options &o, Json record) {
-  record["rank"] = o.rank;
-  record["pid"] = getpid();
-  record["monotonic_ns"] = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                               Clock::now().time_since_epoch())
-                               .count();
-  const std::string line = "PROBE_JSON " + record.dump() + "\n";
-  // One record per write, so MPI's output collector can preserve each line.
-  const char *p = line.data();
-  size_t remaining = line.size();
-  while (remaining) {
-    ssize_t n = write(STDOUT_FILENO, p, remaining);
-    if (n < 0 && errno == EINTR)
-      continue;
-    if (n <= 0)
-      break;
-    p += n;
-    remaining -= static_cast<size_t>(n);
-  }
+  probeEmit(std::move(record), o.rank);
 }
 
 struct Failure : std::runtime_error {
@@ -89,12 +72,22 @@ inline void fail(const Options &o, const char *stage, const char *status,
 
 inline void checkMaca(const Options &o, const char *stage, mcError_t error,
                       const char *status = "SDK_ERROR") {
-  emit(o, {{"event", "stage"},
-           {"stage", stage},
-           {"code", int(error)},
-           {"detail", mcGetErrorString(error)}});
-  if (error != mcSuccess)
-    fail(o, stage, status, int(error), mcGetErrorString(error));
+  emit(o, {{"event", "stage"}, {"stage", stage}, {"code", int(error)}});
+  if (error != mcSuccess) {
+    emit(o, {{"event", "stage"},
+             {"stage", "mcGetErrorString"},
+             {"phase", "enter"}});
+    const auto started = Clock::now();
+    const char *detail = mcGetErrorString(error);
+    emit(o, {{"event", "stage"},
+             {"stage", "mcGetErrorString"},
+             {"phase", "return"},
+             {"elapsed_ms",
+              std::chrono::duration<double, std::milli>(Clock::now() - started)
+                  .count()}});
+    fail(o, stage, status, int(error),
+         detail ? detail : "MACA returned an error");
+  }
 }
 
 inline void checkFlagcx(const Options &o, const char *stage,
@@ -121,21 +114,7 @@ inline Clock::time_point until(const Options &o) {
   return Clock::now() + std::chrono::milliseconds(int(o.timeout * 1000));
 }
 
-inline void loadedLibraries(const Options &o) {
-  std::ifstream maps("/proc/self/maps");
-  std::string line;
-  std::set<std::string> paths;
-  while (std::getline(maps, line)) {
-    if (line.find("libmc") == std::string::npos &&
-        line.find("libibverbs") == std::string::npos &&
-        line.find("libbnxt") == std::string::npos)
-      continue;
-    const auto start = line.find('/');
-    if (start != std::string::npos)
-      paths.insert(line.substr(start));
-  }
-  emit(o, {{"event", "loaded_libraries"}, {"paths", paths}});
-}
+inline void loadedLibraries(const Options &o) { probeLibraries(o.rank); }
 
 inline uint64_t initial(const Options &o) {
   if (o.operation == "write" && o.sender())
@@ -163,19 +142,26 @@ struct Allocation {
              {"gdr_interface", gdr}});
     if (gdr) {
       // Exercise the actual allocator, including its SyncMemops attribute.
-      const auto result = probeGdrAlloc(&ptr, o.bytes);
+      const auto result = probeTimed(
+          "gdrMemAlloc", [&] { return probeGdrAlloc(&ptr, o.bytes); }, o.rank);
       emit(o, {{"event", "gdr_alloc_result"},
                {"code", int(result)},
                {"address", reinterpret_cast<uintptr_t>(ptr)}});
       checkFlagcx(o, "gdrMemAlloc", result, "ALLOC_ERROR");
     } else {
-      checkMaca(o, "allocate", probeNativeAlloc(o.mode, &ptr, o.bytes),
+      checkMaca(o, "allocate",
+                probeTimed(
+                    "allocate",
+                    [&] { return probeNativeAlloc(o.mode, &ptr, o.bytes); },
+                    o.rank),
                 "ALLOC_ERROR");
     }
     if (!ptr || reinterpret_cast<uintptr_t>(ptr) % 8)
       fail(o, "allocate", "ALLOC_ERROR", 0, "null or unaligned GPU pointer");
     mcPointerAttribute_t attr = {};
-    mcError_t attrResult = mcPointerGetAttributes(&attr, ptr);
+    mcError_t attrResult = probeTimed(
+        "mcPointerGetAttributes",
+        [&] { return mcPointerGetAttributes(&attr, ptr); }, o.rank);
     emit(o,
          {{"event", "allocation"},
           {"address", reinterpret_cast<uintptr_t>(ptr)},
@@ -194,24 +180,44 @@ struct Allocation {
     }
     uint64_t value = initial(o);
     checkMaca(o, "initialize",
-              mcMemcpy(static_cast<char *>(ptr) + o.offset, &value,
-                       sizeof(value), mcMemcpyHostToDevice),
+              probeTimed(
+                  "initialize",
+                  [&] {
+                    return mcMemcpy(static_cast<char *>(ptr) + o.offset, &value,
+                                    sizeof(value), mcMemcpyHostToDevice);
+                  },
+                  o.rank),
               "INIT_ERROR");
-    checkMaca(o, "initialize_sync", mcDeviceSynchronize(), "INIT_ERROR");
+    checkMaca(o, "initialize_sync",
+              probeTimed(
+                  "mcDeviceSynchronize", [] { return mcDeviceSynchronize(); },
+                  o.rank),
+              "INIT_ERROR");
   }
   uint64_t read(const Options &o) {
     uint64_t value = 0;
     checkMaca(o, "readback",
-              mcMemcpy(&value, static_cast<char *>(ptr) + o.offset,
-                       sizeof(value), mcMemcpyDeviceToHost),
+              probeTimed(
+                  "readback",
+                  [&] {
+                    return mcMemcpy(&value, static_cast<char *>(ptr) + o.offset,
+                                    sizeof(value), mcMemcpyDeviceToHost);
+                  },
+                  o.rank),
               "COPY_ERROR");
     return value;
   }
   void release(const Options &o) {
     if (gdr)
-      checkFlagcx(o, "gdrMemFree", probeGdrFree(ptr), "CLEANUP_ERROR");
+      checkFlagcx(o, "gdrMemFree",
+                  probeTimed(
+                      "gdrMemFree", [&] { return probeGdrFree(ptr); }, o.rank),
+                  "CLEANUP_ERROR");
     else
-      checkMaca(o, "free", mcFree(ptr), "CLEANUP_ERROR");
+      checkMaca(o, "free",
+                probeTimed(
+                    "mcFree", [&] { return mcFree(ptr); }, o.rank),
+                "CLEANUP_ERROR");
     ptr = nullptr;
   }
 };

@@ -12,6 +12,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import uuid
 
@@ -30,6 +31,106 @@ TERMINAL_ERRORS = {
     "SDK_ERROR", "VERBS_ERROR", "ADAPTOR_ERROR", "CONNECT_ERROR",
     "CAPABILITY_ERROR", "SETUP_ERROR", "INTERNAL_ERROR", "TIMEOUT",
 }
+
+SNAPSHOT_TIMEOUT = 0.25
+SNAPSHOT_REAP_TIMEOUT = 0.1
+# Three isolated snapshots: before TERM, after TERM, after KILL.
+CLEANUP_ALLOWANCE = 1.25 + 3 * (SNAPSHOT_TIMEOUT + SNAPSHOT_REAP_TIMEOUT)
+
+
+class StartupFailure(RuntimeError):
+    def __init__(self, status, detail):
+        super().__init__(detail)
+        self.status = status
+
+
+def discover_ports(root=Path("/sys/class/infiniband"), progress=None):
+    """Host-only discovery: never load MACA, MPI or a verbs provider."""
+    result = dict(ports=[], entries=[], errors=[])
+    try:
+        devices = sorted(root.iterdir())
+    except OSError as error:
+        result["errors"].append(str(error))
+        return result
+    for device in devices:
+        try:
+            ports = sorted((device / "ports").iterdir())
+        except OSError as error:
+            result["errors"].append(str(error))
+            continue
+        for port in ports:
+            if not port.name.isdigit():
+                continue
+            try:
+                state = (port / "state").read_text().strip()
+                result["entries"].append(dict(hca=device.name, port=int(port.name), state=state))
+                if progress:
+                    progress(result["entries"][-1])
+                if state.split(":", 1)[0].strip() == "4":
+                    result["ports"].append(f"{device.name}:{int(port.name)}")
+            except OSError as error:
+                result["errors"].append(str(error))
+    result["ports"] = sorted(set(result["ports"]))
+    return result
+
+
+def host_inventory(directory, report):
+    # Even sysfs can stall in a driver read. Keep that risk outside the
+    # supervisor, and retain partial port records and process snapshots.
+    log = directory / "host-inventory.log"
+    outcome = run_child([sys.executable, str(Path(__file__)), "--host-inventory"], log, 5)
+    records = parse_log(log)
+    report["host_inventory_run"] = dict(outcome=outcome, records=records)
+    inventories = [r for r in records if r.get("event") == "host_inventory"]
+    if inventories:
+        report["host_inventory"] = inventories[-1]
+    save_report(directory, report)
+    if not outcome["reaped"]:
+        raise StartupFailure("WORKER_STUCK", "host inventory worker was not reaped")
+    if outcome["timed_out"]:
+        raise StartupFailure("STARTUP_TIMEOUT", "host inventory timed out; see host-inventory.log")
+    if outcome["returncode"] != 0 or not inventories:
+        raise StartupFailure("MISSING_INVENTORY", "host inventory failed; see host-inventory.log")
+    return inventories[-1]
+
+
+def capture_diagnostics(log, phase, processes):
+    directory = log.parent / (log.name + ".diagnostics") / phase
+    command = [sys.executable, str(Path(__file__).with_name("rdma_probe_snapshot.py")),
+               "--output", str(directory)]
+    for pid, identity in sorted(processes.items()):
+        command += ["--process", f"{pid}:{identity}"]
+    record = dict(phase=phase, directory=str(directory), processes=processes,
+                  timed_out=False, reaped=True)
+    child = None
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env.pop("FLAGCX_CI_RDMA_PROBE_TOKEN", None)
+        with (directory / "collector.log").open("w") as output:
+            child = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT,
+                                     env=env, start_new_session=True)
+            try:
+                child.wait(timeout=SNAPSHOT_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                record["timed_out"] = True
+                child.kill()
+                try:
+                    child.wait(timeout=SNAPSHOT_REAP_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    record["reaped"] = False
+            record.update(pid=child.pid, returncode=child.returncode)
+    except OSError as error:
+        record["error"] = str(error)
+    finally:
+        if child is not None:
+            returncode = child.poll()
+            record.update(pid=child.pid, returncode=returncode, reaped=returncode is not None)
+    try:
+        (directory / "collector.json").write_text(json.dumps(record, indent=2) + "\n")
+    except OSError as error:
+        record["save_error"] = str(error)
+    return record
 
 
 def process_tree(root, token=None):
@@ -128,6 +229,7 @@ def run_child(command, log, timeout, env=None, grace=1):
             child = subprocess.Popen(command, stdout=output,
                                      stderr=subprocess.STDOUT, env=env,
                                      start_new_session=True)
+            result["pid"] = child.pid
             end = time.monotonic() + timeout
             while child.poll() is None:
                 descendants.update(process_tree(child.pid))
@@ -139,6 +241,8 @@ def run_child(command, log, timeout, env=None, grace=1):
                     child.wait(timeout=min(0.1, remaining))
                 except subprocess.TimeoutExpired:
                     pass
+        except InterruptedError:
+            raise
         except OSError as error:
             result["launch_error"] = str(error)
             output.write(str(error) + "\n")
@@ -147,6 +251,15 @@ def run_child(command, log, timeout, env=None, grace=1):
                 # The marker also identifies reparented MPI workers that have
                 # escaped mpirun's process group or session.
                 descendants.update(process_tree(child.pid if child.poll() is None else -1, token))
+                need_diagnostics = (result["timed_out"] or child.poll() != 0 or any(
+                    same_process(pid, identity) for pid, identity in descendants.items()))
+                diagnostics = result["diagnostics"] = []
+                def snapshot(phase):
+                    if need_diagnostics and all(d["reaped"] for d in diagnostics):
+                        descendants.update(process_tree(
+                            child.pid if child.poll() is None else -1, token))
+                        diagnostics.append(capture_diagnostics(log, phase, descendants))
+                snapshot("before-term")
                 # Also remove descendants if mpirun exited ahead of its workers.
                 for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 0.25)):
                     cleanup_deadline = time.monotonic() + wait
@@ -175,10 +288,12 @@ def run_child(command, log, timeout, env=None, grace=1):
                     while time.monotonic() < cleanup_deadline and any(
                             same_process(pid, identity) for pid, identity in descendants.items()):
                         time.sleep(0.01)
+                    snapshot("after-term" if sig == signal.SIGTERM else "after-kill")
                 result["returncode"] = child.returncode
                 result["surviving_workers"] = [pid for pid, identity in descendants.items()
                                                if same_process(pid, identity)]
-                result["reaped"] = child.poll() is not None and not result["surviving_workers"]
+                result["reaped"] = (child.poll() is not None and not result["surviving_workers"]
+                                    and all(d["reaped"] for d in diagnostics))
     result["elapsed_s"] = round(time.monotonic() - started, 3)
     return result
 
@@ -213,12 +328,12 @@ def parse_log(path):
 
 
 def classify(case, outcome, records, text=""):
+    if not outcome.get("reaped", True):
+        return "WORKER_STUCK"
     if outcome["timed_out"]:
         return "TIMEOUT"
     if outcome.get("launch_error"):
         return "LAUNCH_ERROR"
-    if not outcome.get("reaped", True):
-        return "WORKER_STUCK"
     failures = [r["status"] for r in records if r.get("status") in TERMINAL_ERRORS]
     if failures:
         return failures[0]
@@ -296,19 +411,23 @@ def write_build_report(directory, builds):
 def build_workers(args, directory, report):
     """A failed worker must not prevent another worker from being built/run."""
     components = {
+        "sdk": args.sdk_inventory,
         "native": args.native_binary,
         "adaptor": args.adaptor_binary,
         "barrier": args.barrier,
     }
-    builds = report["builds"] = {}
+    builds = report["builds"] = {
+        name: dict(binary=str(binary), status="PENDING", available=False)
+        for name, binary in components.items()}
     build_dir = directory / "build"
     build_dir.mkdir(exist_ok=True)
     for name, binary in components.items():
-        entry = builds[name] = dict(binary=str(binary), status="PENDING", available=False)
+        entry = builds[name]
         write_build_report(directory, builds)
         if args.build_root:
             suite = "device_api" if name == "barrier" else "rdma_atomic_probe"
-            target = str(binary.resolve()) if name == "barrier" else name
+            target = (str(binary.resolve()) if name == "barrier" else
+                      "sdk-inventory" if name == "sdk" else name)
             command = ["make", "-C", str(args.build_root / "test/unittest" / suite),
                        "--jobs=" + str(args.jobs), target] + args.make_arg
             entry["status"] = "BUILDING"
@@ -324,6 +443,13 @@ def build_workers(args, directory, report):
         write_build_report(directory, builds)
         save_report(directory, report)
         print(f'{name} worker: {entry["status"]}', flush=True)
+        if not entry.get("reaped", True):
+            entry["status"] = "WORKER_STUCK"
+            for pending in builds.values():
+                if pending["status"] == "PENDING":
+                    pending.update(status="BLOCKED", reason="previous build worker was not reaped")
+            write_build_report(directory, builds)
+            raise StartupFailure("WORKER_STUCK", f"{name} build worker was not reaped")
     return builds
 
 
@@ -383,7 +509,16 @@ def save_report(directory, report):
               "", "All raw records, original return codes and launch commands are in results.json and case logs.",
               "A mixed-success diagnostic run fails CI; BLOCKED/UNAVAILABLE are never counted as PASS."]
     if report.get("setup_error"):
-        lines += ["", "Setup error: " + report["setup_error"]]
+        lines += ["", "Setup status: " + report.get("setup_status", "SETUP_ERROR"),
+                  "Setup error: " + report["setup_error"]]
+    if report.get("gpu_inventory_attempts"):
+        lines += ["", "## GPU startup controls", "",
+                  "| Worker | Result | Main entered | Last stage | Log |",
+                  "|---|---|---|---|---|"]
+        for attempt in report["gpu_inventory_attempts"]:
+            lines.append(f'| {attempt["worker"]} | {attempt["status"]} '
+                         f'| {attempt.get("main_entered")} | {attempt.get("last_stage", "")} '
+                         f'| {attempt["log"]} |')
     if report.get("builds"):
         lines += ["", "## Worker builds", "",
                   "| Worker | Status | Binary |", "|---|---|---|"]
@@ -394,44 +529,115 @@ def save_report(directory, report):
     temporary.replace(directory / "summary.md")
 
 
-def collect_provenance(directory):
-    commands = (
-        ["uname", "-a"], ["ibv_devinfo", "-v"], ["rdma", "link", "show"],
-        ["mx-smi"], ["lspci", "-nnvv"], ["modinfo", "bnxt_re"],
-    )
+def collect_provenance(directory, phase="host"):
+    commands = ((["uname", "-a"], ["lspci", "-nnvv"], ["modinfo", "bnxt_re"])
+                if phase == "host" else
+                (["ibv_devinfo", "-v"], ["rdma", "link", "show"], ["mx-smi"]))
     outcomes = []
     for index, command in enumerate(commands):
-        outcomes.append(run_child(command, directory / f"metadata-{index}.log", 5))
+        outcomes.append(run_child(command, directory / f"metadata-{phase}-{index}.log", 5))
+        if not outcomes[-1]["reaped"]:
+            break
     return outcomes
+
+
+def gpu_inventory(args, directory, report, builds):
+    """Use real counts, retaining failed controls; never reuse a live worker."""
+    attempts = report["gpu_inventory_attempts"] = []
+    for name in ("sdk", "native", "adaptor"):
+        if not builds[name]["available"]:
+            continue
+        log = directory / f"inventory-{name}.log"
+        attempt = dict(worker=name, log=str(log), status="RUNNING")
+        attempts.append(attempt)
+        save_report(directory, report)
+        env = case_environment(dict(layer="allocation", hca="auto", ro=0, depth=16, qps=1))
+        outcome = run_child([builds[name]["binary"], "--count" if name == "sdk" else "--inventory"],
+                            log, args.inventory_timeout, env)
+        records = parse_log(log)
+        stages = [r for r in records if r.get("event") == "stage"]
+        attempt.update(outcome=outcome, records=records,
+                       main_entered="PROBE_BOOT main_enter" in log.read_text(errors="replace"),
+                       last_stage=(stages[-1].get("stage", "") + "/" + stages[-1].get("phase", "")
+                                   if stages else ""))
+        inventories = [r for r in records if r.get("event") == "gpu_inventory"]
+        if not outcome["reaped"]:
+            attempt["status"] = "WORKER_STUCK"
+        elif outcome["timed_out"]:
+            attempt["status"] = "STARTUP_TIMEOUT"
+        elif outcome.get("launch_error"):
+            attempt["status"] = "LAUNCH_ERROR"
+        elif inventories and inventories[-1].get("gpu_count_code") != 0:
+            attempt["status"] = "SDK_ERROR"
+        elif (outcome["returncode"] == 0 and inventories
+              and inventories[-1].get("gpu_count_code") == 0
+              and type(inventories[-1].get("gpu_count")) is int
+              and inventories[-1]["gpu_count"] >= 0):
+            attempt["status"] = "PASS"
+        else:
+            attempt["status"] = "MISSING_INVENTORY" if outcome["returncode"] == 0 else "STARTUP_ERROR"
+        save_report(directory, report)
+        print(f'GPU inventory {name}: {attempt["status"]} last_stage={attempt["last_stage"]}', flush=True)
+        if attempt["status"] == "WORKER_STUCK":
+            raise StartupFailure("WORKER_STUCK", f"{name} GPU inventory was not reaped; see {log.name}")
+        if attempt["status"] == "PASS":
+            return inventories[-1]
+    status = attempts[-1]["status"] if attempts else "BUILD_ERROR"
+    raise StartupFailure(status, "no GPU inventory control succeeded; see startup records and diagnostics")
+
+
+def optional_metadata(args, directory, report, builds):
+    # Run version/provider queries after the matrix, so optional information
+    # cannot suppress allocation coverage. Each query is a fresh process.
+    report["device_metadata"] = collect_provenance(directory, "device")
+    for outcome in report["device_metadata"]:
+        if not outcome["reaped"]:
+            raise StartupFailure("WORKER_STUCK", "optional device metadata worker was not reaped")
+    report["sdk_versions"] = []
+    if not builds["sdk"]["available"]:
+        report["sdk_versions_skipped"] = "SDK inventory control is unavailable; see build.json"
+        return
+    for option in ("--runtime-version", "--driver-version"):
+        log = directory / (option[2:] + ".log")
+        outcome = run_child([str(args.sdk_inventory), option], log, 5)
+        report["sdk_versions"].append(dict(outcome=outcome, records=parse_log(log)))
+        save_report(directory, report)
+        if not outcome["reaped"]:
+            raise StartupFailure("WORKER_STUCK", f"{option} worker was not reaped")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native-binary", "--binary", dest="native_binary", type=Path, required=True)
     parser.add_argument("--adaptor-binary", type=Path, required=True)
+    parser.add_argument("--sdk-inventory", type=Path, required=True)
     parser.add_argument("--barrier", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--build-root", type=Path)
     parser.add_argument("--make-arg", action="append", default=[])
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--build-timeout", type=float, default=300)
+    parser.add_argument("--inventory-timeout", type=float, default=15)
     parser.add_argument("--case-timeout", type=float,
                         default=float(os.environ.get("FLAGCX_CI_RDMA_PROBE_CASE_TIMEOUT", "10")))
     parser.add_argument("--suite-timeout", type=float,
-                        default=float(os.environ.get("FLAGCX_CI_RDMA_PROBE_SUITE_TIMEOUT", "6000")))
+                        default=float(os.environ.get("FLAGCX_CI_RDMA_PROBE_SUITE_TIMEOUT", "6600")))
     parser.add_argument("--barrier-timeout", type=float, default=180)
     parser.add_argument("--mpirun", default=os.environ.get("FLAGCX_CI_MPIRUN", "mpirun"))
     args = parser.parse_args()
     if any(not math.isfinite(value) or value <= 0 for value in
-           (args.case_timeout, args.suite_timeout, args.barrier_timeout, args.build_timeout)):
+           (args.case_timeout, args.suite_timeout, args.barrier_timeout,
+            args.build_timeout, args.inventory_timeout)):
         parser.error("timeouts must be finite and positive")
     if args.jobs < 1:
         parser.error("jobs must be positive")
     directory = args.output.resolve()
+    previous_umask = os.umask(0o022)
     directory.mkdir(parents=True, exist_ok=True)
     page_size = os.sysconf("SC_PAGE_SIZE")
     report = dict(page_size=page_size, cases=build_matrix([], page_size), metadata=[],
-                  workers=dict(native=str(args.native_binary), adaptor=str(args.adaptor_binary)),
+                  workers=dict(sdk=str(args.sdk_inventory), native=str(args.native_binary),
+                               adaptor=str(args.adaptor_binary), barrier=str(args.barrier)),
                   host_signal=False)
     report["environment"] = {key: os.environ.get(key) for key in (
         "MACA_PATH", "MACA_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "MPI_HOME",
@@ -443,31 +649,29 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     try:
+        report["metadata"] = collect_provenance(directory)
+        save_report(directory, report)
+        if any(not outcome["reaped"] for outcome in report["metadata"]):
+            raise StartupFailure("WORKER_STUCK", "host metadata worker was not reaped")
+        report["host_inventory"] = host_inventory(directory, report)
+        ports = report["host_inventory"]["ports"]
+        report["cases"] = build_matrix(ports, page_size)
+        (directory / "host-inventory.json").write_text(
+            json.dumps(report["host_inventory"], indent=2) + "\n")
+        save_report(directory, report)
         builds = build_workers(args, directory, report)
         sdk = args.native_binary.parent.parent / "sdk"
         if sdk.is_dir():
             shutil.copytree(sdk, directory / "sdk", dirs_exist_ok=True)
-        inventory_worker = case_worker(dict(layer="allocation"), builds)
-        if inventory_worker is None:
-            for case in report["cases"]:
-                case.update(status="BUILD_ERROR", reason="no usable allocation/inventory worker; see build.json")
-            raise RuntimeError("both probe workers are unavailable; see build logs")
-        inventory_log = directory / "inventory.log"
-        inv_outcome = run_child([str(inventory_worker), "--inventory"], inventory_log, 15)
-        report["inventory_run"] = inv_outcome
-        inventories = [r for r in parse_log(inventory_log) if r.get("event") == "inventory"]
-        if inv_outcome["returncode"] != 0 or inv_outcome["timed_out"] or not inventories:
-            raise RuntimeError("inventory failed; see inventory.log")
-        inventory = report["inventory"] = inventories[0]
-        ports = sorted(set(inventory["ports"]))
-        report["cases"] = build_matrix(ports, page_size)
-        report["metadata"] = collect_provenance(directory)
+        inventory = report["inventory"] = gpu_inventory(args, directory, report, builds)
         # Reserve termination/reap time per process group and enough margin to
         # finish/save the entire plan even if every worker hits its deadline.
-        required = sum((args.barrier_timeout if c["layer"] == "barrier" else args.case_timeout) + 1.25
+        required = sum((args.barrier_timeout if c["layer"] == "barrier" else args.case_timeout) + CLEANUP_ALLOWANCE
                        for c in report["cases"] if case_worker(c, builds) is not None)
         report["worst_case_seconds"] = required
-        if time.monotonic() - started + required + 30 > args.suite_timeout:
+        report["optional_metadata_budget_seconds"] = 5 * (5 + CLEANUP_ALLOWANCE)
+        if (time.monotonic() - started + required + report["optional_metadata_budget_seconds"]
+                + 30 > args.suite_timeout):
             raise RuntimeError(f"matrix requires {required:.1f}s plus setup; increase suite budget or lower case timeout")
         save_report(directory, report)
         allocation_outcomes = {}
@@ -512,8 +716,14 @@ def main():
                 allocation_outcomes[(case["mode"], case["bytes"])] = case
             print(f'{case["id"]}: {case["status"]}', flush=True)
             save_report(directory, report)
+        if driver_stuck:
+            report["optional_metadata_skipped"] = "a matrix worker was not reaped"
+        else:
+            optional_metadata(args, directory, report, builds)
     except (OSError, RuntimeError, ValueError, InterruptedError) as error:
         report["setup_error"] = str(error)
+        report["setup_status"] = getattr(error, "status", "SETUP_ERROR")
+        print(f'{report["setup_status"]}: {error}', flush=True)
         for case in report["cases"]:
             if case["status"] == "PENDING":
                 case.update(status="BLOCKED", reason=str(error))
@@ -524,8 +734,20 @@ def main():
         if step_summary:
             with open(step_summary, "a") as output:
                 output.write((directory / "summary.md").read_text())
-    return 0 if report["cases"] and all(c["status"] == "PASS" for c in report["cases"]) else 1
+        os.umask(previous_umask)
+    passed = (report["cases"] and not report.get("setup_error")
+              and not report.get("host_inventory", {}).get("errors")
+              and all(c["status"] == "PASS" for c in report["cases"])
+              and all(b["status"] == "READY" for b in report.get("builds", {}).values())
+              and all(a["status"] == "PASS" for a in report.get("gpu_inventory_attempts", [])))
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if sys.argv[1:] == ["--host-inventory"]:
+        print("PROBE_BOOT host_inventory_enter", flush=True)
+        ports = discover_ports(progress=lambda entry: print(
+            "PROBE_JSON " + json.dumps(dict(event="host_port", **entry)), flush=True))
+        print("PROBE_JSON " + json.dumps(dict(event="host_inventory", **ports)), flush=True)
+    else:
+        raise SystemExit(main())
