@@ -26,6 +26,38 @@ git submodule sync --recursive
 network_git=(git -c http.version=HTTP/1.1
   -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60)
 
+recover_stale_submodule_locks() {
+  local stale_lock modified now process_status
+  [[ -d "$git_common_dir/modules" ]] || return 0
+  while IFS= read -r -d '' stale_lock; do
+    # A previous cancellation can leave shallow.lock behind indefinitely.
+    # Only recover old shallow locks while holding our shared checkout lock;
+    # never touch recent locks or locks while Git may still be using them.
+    modified=$(stat -c %Y "$stale_lock") || return 1
+    now=$(date +%s)
+    if ((now - modified < 300)); then
+      echo "Submodule lock is recent; leaving it intact: $stale_lock" >&2
+      return 1
+    fi
+    if ! command -v pgrep >/dev/null 2>&1; then
+      echo "Cannot check for active Git processes; leaving lock intact: $stale_lock" >&2
+      return 1
+    fi
+    if pgrep -x 'git|git-.*' >/dev/null; then
+      echo "Git processes are still running; leaving lock intact: $stale_lock" >&2
+      return 1
+    else
+      process_status=$?
+      if [[ "$process_status" != 1 ]]; then
+        echo "Git process check failed; leaving lock intact: $stale_lock" >&2
+        return 1
+      fi
+    fi
+    echo "Recovering stale submodule shallow lock: $stale_lock"
+    rm -- "$stale_lock" || return 1
+  done < <(find "$git_common_dir/modules" -type f -name shallow.lock -print0)
+}
+
 recover_incomplete_checkouts() {
   local entry path commit
   while IFS=$'\t' read -r -d '' entry path; do
@@ -48,7 +80,7 @@ recover_incomplete_checkouts() {
 # Explicit depth also limits the fetch of a pinned commit outside remote HEAD.
 for attempt in 1 2 3; do
   echo "Checking out submodules (attempt $attempt/3, HTTP/1.1, depth=1)"
-  if recover_incomplete_checkouts && \
+  if recover_stale_submodule_locks && recover_incomplete_checkouts && \
       timeout --signal=TERM --kill-after=10s 5m \
       "${network_git[@]}" submodule update \
       --init --force --recursive --checkout --depth=1 --jobs=1; then
