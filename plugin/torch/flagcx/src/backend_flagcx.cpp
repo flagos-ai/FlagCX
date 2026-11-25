@@ -22,9 +22,13 @@
 namespace c10d {
 namespace {
 
-bool heteroP2pRequested() {
+bool heteroCommForced() {
   const char *useHeteroComm = std::getenv("FLAGCX_USE_HETERO_COMM");
-  if (useHeteroComm != nullptr && std::stoi(useHeteroComm) == 1) {
+  return useHeteroComm != nullptr && std::stoi(useHeteroComm) == 1;
+}
+
+bool heteroP2pRequested() {
+  if (heteroCommForced()) {
     return true;
   }
 
@@ -121,6 +125,39 @@ flagcxDataType_t getFlagcxDataType(at::ScalarType type) {
       "Input tensor data type is not supported for FlagCX process group: ",
       type);
   return it->second;
+}
+
+flagcxResult_t allReduceTensor(at::Tensor &input, at::Tensor &output,
+                               flagcxDataType_t dtype, flagcxRedOp_t op,
+                               flagcxComm_t comm, flagcxStream_t stream,
+                               int groupSize) {
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+  int isHomo = 0;
+  if (op == flagcxAvg && !heteroCommForced()) {
+    auto result = flagcxIsHomoComm(comm, &isHomo);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  if (isHomo) {
+    TORCH_CHECK(input.is_floating_point() && !isFloat8Type(input.scalar_type()),
+                "Ascend AVG all-reduce requires FP16, BF16, FP32 or FP64");
+    // Ascend vendor collectives submit directly to the current torch_npu stream.
+    auto current = c10_npu::getCurrentNPUStream(input.device().index());
+    TORCH_CHECK(current.stream(true) == *reinterpret_cast<aclrtStream *>(stream),
+                "Ascend AVG all-reduce requires the current submission stream");
+    auto result = flagcxAllReduce(input.data_ptr(), output.data_ptr(),
+                                 input.numel(), dtype, flagcxSum, comm, stream);
+    if (result == flagcxSuccess && groupSize > 1) {
+      at::NoGradGuard noGrad;
+      output.div_(groupSize);
+      // Submit the queued division before the caller records its raw ACL event.
+      current.stream(true);
+    }
+    return result;
+  }
+#endif
+  return flagcxAllReduce(input.data_ptr(), output.data_ptr(), input.numel(),
+                         dtype, op, comm, stream);
 }
 
 bool check_same_size(const std::vector<at::Tensor> &inputTensors) {
@@ -1374,10 +1411,10 @@ flagcxBackend::allreduce(std::vector<at::Tensor> &tensors,
 
   // Perform the allreduce operation
   retained.markSubmitted();
-  C10D_FLAGCX_CHECK(flagcxAllReduce(tensor.data_ptr(), tensor.data_ptr(),
-                                    tensor.numel(), flagcxDataType,
-                                    flagcxReduceOp, comm_, stream),
-                    std::nullopt);
+  C10D_FLAGCX_CHECK(
+      allReduceTensor(tensor, tensor, flagcxDataType, flagcxReduceOp, comm_,
+                      stream, size_),
+      std::nullopt);
 
   work->event_->record(stream, deviceId_);
   retained.finish();
@@ -1414,9 +1451,8 @@ flagcxBackend::allreduce_coalesced(std::vector<at::Tensor> &tensors,
         }
 
 #endif
-        return flagcxAllReduce(input.data_ptr(), output.data_ptr(),
-                               input.numel(), flagcxDataType, flagcxReduceOp,
-                               comm, stream);
+        return allReduceTensor(input, output, flagcxDataType, flagcxReduceOp,
+                               comm, stream, size_);
       },
       OpType::COALESCED);
 }

@@ -211,6 +211,22 @@ def main():
         work.wait()
         assert_tensor_equal(value, torch.tensor([3.0]))
 
+        if (
+            device_type == "npu"
+            and int(os.environ.get("FLAGCX_USE_HETERO_COMM", "0")) != 1
+        ):
+            values = [
+                torch.tensor([2.0 + 2 * rank], device=device, requires_grad=True),
+                torch.tensor([-1.0 + rank], device=device),
+            ]
+            dist.all_reduce(values[0], op=dist.ReduceOp.AVG, async_op=True).wait()
+            assert_tensor_equal(values[0], torch.tensor([3.0]))
+            dist.all_reduce_coalesced(
+                values, op=dist.ReduceOp.AVG, async_op=True
+            ).wait()
+            assert_tensor_equal(values[0], torch.tensor([3.0]))
+            assert_tensor_equal(values[1], torch.tensor([-0.5]))
+
         future_value = torch.tensor(
             [rank + 1], dtype=torch.float32, device=device
         )

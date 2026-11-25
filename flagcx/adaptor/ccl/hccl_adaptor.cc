@@ -27,7 +27,7 @@ std::map<flagcxDataType_t, HcclDataType> f2h_datatype_map = {
     {flagcxDouble, HCCL_DATA_TYPE_FP64},
 };
 
-std::map<flagcxRedOp_t, HcclReduceOp> f2h_reduceop_map = {
+static const std::map<flagcxRedOp_t, HcclReduceOp> f2h_reduceop_map = {
     {flagcxSum, HCCL_REDUCE_SUM},
     {flagcxProd, HCCL_REDUCE_PROD},
     {flagcxMax, HCCL_REDUCE_MAX},
@@ -243,10 +243,13 @@ flagcxResult_t hcclAdaptorReduce(const void *sendbuff, void *recvbuff,
                                  flagcxRedOp_t op, int root,
                                  flagcxInnerComm_t comm,
                                  flagcxStream_t stream) {
+  auto reduceOp = f2h_reduceop_map.find(op);
+  if (reduceOp == f2h_reduceop_map.end())
+    return flagcxNotSupported;
   void *sendbuffptr = (void *)sendbuff;
   return (flagcxResult_t)h2f_ret_map[HcclReduce(
       sendbuffptr, recvbuff, count, (HcclDataType)f2h_datatype_map[datatype],
-      (HcclReduceOp)f2h_reduceop_map[op], root, comm->base, stream->base)];
+      reduceOp->second, root, comm->base, stream->base)];
 }
 
 // TODO: unsupported
@@ -315,21 +318,27 @@ flagcxResult_t hcclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
                                     size_t count, flagcxDataType_t datatype,
                                     flagcxRedOp_t op, flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
+  auto reduceOp = f2h_reduceop_map.find(op);
+  if (reduceOp == f2h_reduceop_map.end())
+    return flagcxNotSupported;
   void *sendbuffptr = (void *)sendbuff;
   return (flagcxResult_t)h2f_ret_map[HcclAllReduce(
       sendbuffptr, recvbuff, count, (HcclDataType)f2h_datatype_map[datatype],
-      (HcclReduceOp)f2h_reduceop_map[op], comm->base, stream->base)];
+      reduceOp->second, comm->base, stream->base)];
 }
 
 flagcxResult_t
 hcclAdaptorReduceScatter(const void *sendbuff, void *recvbuff, size_t recvcount,
                          flagcxDataType_t datatype, flagcxRedOp_t op,
                          flagcxInnerComm_t comm, flagcxStream_t stream) {
+  auto reduceOp = f2h_reduceop_map.find(op);
+  if (reduceOp == f2h_reduceop_map.end())
+    return flagcxNotSupported;
   void *sendbuffptr = (void *)sendbuff;
   return (flagcxResult_t)h2f_ret_map[HcclReduceScatter(
       sendbuffptr, recvbuff, recvcount,
       (HcclDataType)f2h_datatype_map[datatype],
-      (HcclReduceOp)f2h_reduceop_map[op], comm->base, stream->base)];
+      reduceOp->second, comm->base, stream->base)];
 }
 
 flagcxResult_t hcclAdaptorAllGather(const void *sendbuff, void *recvbuff,
