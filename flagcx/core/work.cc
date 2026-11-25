@@ -84,20 +84,47 @@ static flagcxResult_t workCheckCompletion(struct flagcxWorkRecord *record,
 }
 
 static flagcxResult_t workCollect(struct flagcxWorkTracker *tracker) {
-  uint64_t after = 0;
+  flagcxResult_t first = flagcxSuccess;
+  pthread_mutex_lock(&tracker->mutex);
+  if (tracker->closed ||
+      __atomic_load_n(&tracker->collecting, __ATOMIC_ACQUIRE)) {
+    pthread_mutex_unlock(&tracker->mutex);
+    return flagcxSuccess;
+  }
+  __atomic_store_n(&tracker->collecting, 1, __ATOMIC_RELEASE);
+  uint64_t after = tracker->collectAfter, start = after;
+  uint64_t limit = tracker->nextId;
+  int wrapped = 0;
+  pthread_mutex_unlock(&tracker->mutex);
   for (int budget = 0; budget < 8; ++budget) {
     pthread_mutex_lock(&tracker->mutex);
     struct flagcxWorkRecord *record = tracker->head;
-    while (record != NULL && (record->id <= after || record->pins != 0 ||
-                              (record->state != flagcxWorkRecorded &&
-                               record->state != flagcxWorkNativePending &&
-                               record->state != flagcxWorkComplete)))
+    while (record != NULL &&
+           (record->id <= after || record->id > limit || record->pins != 0 ||
+            (record->state != flagcxWorkRecorded &&
+             record->state != flagcxWorkNativePending &&
+             record->state != flagcxWorkComplete)))
       record = record->next;
+    if (!tracker->closed && record == NULL && !wrapped) {
+      // Visit at most one turn of the entry snapshot, including IDs whose
+      // records have since been deleted. New submissions belong to later calls.
+      wrapped = 1;
+      after = 0;
+      limit = start;
+      record = tracker->head;
+      while (record != NULL && (record->id > limit || record->pins != 0 ||
+                                (record->state != flagcxWorkRecorded &&
+                                 record->state != flagcxWorkNativePending &&
+                                 record->state != flagcxWorkComplete)))
+        record = record->next;
+    }
     if (tracker->closed || record == NULL) {
+      if (!tracker->closed)
+        tracker->collectAfter = 0;
       pthread_mutex_unlock(&tracker->mutex);
       break;
     }
-    after = record->id;
+    tracker->collectAfter = after = record->id;
     int complete = record->state == flagcxWorkComplete;
     record->state = flagcxWorkChecking;
     pthread_mutex_unlock(&tracker->mutex);
@@ -130,8 +157,10 @@ static flagcxResult_t workCollect(struct flagcxWorkTracker *tracker) {
       *list = record;
     }
     pthread_mutex_unlock(&tracker->mutex);
-    if (result != flagcxSuccess && result != flagcxInProgress)
-      return result;
+    if (result != flagcxSuccess && result != flagcxInProgress) {
+      first = result;
+      goto exit;
+    }
   }
   // Failed destruction remains attached to its owner for a later retry.
   for (int budget = 0; budget < 8; ++budget) {
@@ -157,10 +186,16 @@ static flagcxResult_t workCollect(struct flagcxWorkTracker *tracker) {
       free(record);
     }
     pthread_mutex_unlock(&tracker->mutex);
-    if (result != flagcxSuccess)
-      return result;
+    if (result != flagcxSuccess) {
+      first = result;
+      goto exit;
+    }
   }
-  return flagcxSuccess;
+exit:
+  // A concurrent submission may append records, but must not restart this
+  // collector's bounded scan or select the same record for reclamation.
+  __atomic_store_n(&tracker->collecting, 0, __ATOMIC_RELEASE);
+  return first;
 }
 
 static flagcxResult_t workPrepare(struct flagcxWorkTracker *tracker,
@@ -690,6 +725,8 @@ flagcxResult_t flagcxWorkRelease(struct flagcxWorkTracker *tracker) {
     return flagcxInProgress;
   if (!__atomic_load_n(&tracker->closed, __ATOMIC_ACQUIRE))
     return flagcxInvalidUsage;
+  if (__atomic_load_n(&tracker->collecting, __ATOMIC_ACQUIRE))
+    return flagcxInProgress;
   struct flagcxWorkRecord **lists[] = {&tracker->head, &tracker->spare,
                                        &tracker->retired};
   for (unsigned int i = 0; i < sizeof(lists) / sizeof(lists[0]); ++i) {
@@ -712,6 +749,7 @@ flagcxResult_t flagcxWorkRelease(struct flagcxWorkTracker *tracker) {
   }
   tracker->tail = NULL;
   tracker->spareCount = 0;
+  tracker->collectAfter = 0;
   if (pthread_mutex_destroy(&tracker->mutex) != 0)
     return flagcxSystemError;
   __atomic_store_n(&tracker->initialized, 0, __ATOMIC_RELEASE);
