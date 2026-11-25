@@ -3127,19 +3127,30 @@ flagcxResult_t flagcxGetUniqueId(flagcxUniqueId_t uniqueId) {
 }
 
 const char *flagcxGetErrorString(flagcxResult_t result) {
-  // TODO: implement a method to retrieve error string
-  return "Not implemented.";
+  static const char *const messages[] = {
+      "Success",        "Unhandled device error", "System error",
+      "Internal error", "Invalid argument",       "Invalid usage",
+      "Remote error",   "Operation in progress",  "Unhandled CCL error",
+      "Not supported"};
+  if ((unsigned int)result >= sizeof(messages) / sizeof(messages[0]))
+    return "Unknown error";
+  return messages[result];
 }
 
 const char *flagcxGetLastError(flagcxComm_t comm) {
-  // TODO: implement a method to retrieve last error string
   if (comm == NULL) {
     return "Undefined: flagcxComm is not fully initialized.";
   }
-  if (useHomoComm(comm)) {
+  // Finalize/Abort may already have consumed native state. Diagnostics must
+  // remain usable while the public owner is retained for local cleanup.
+  if (__atomic_load_n(&comm->finalizeState.lifecycle, __ATOMIC_ACQUIRE) ==
+          flagcxCommActive &&
+      useHomoComm(comm) && comm->homoComm != NULL &&
+      cclAdaptors[flagcxCCLAdaptorDevice]->getLastError != NULL) {
     return cclAdaptors[flagcxCCLAdaptorDevice]->getLastError(comm->homoComm);
   }
-  return "Not implemented.";
+  return flagcxGetErrorString(
+      __atomic_load_n(&comm->finalizeState.lastResult, __ATOMIC_ACQUIRE));
 }
 
 // ---- Custom op DevComm state init/destroy ----
@@ -4711,6 +4722,8 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   free(comm);
   return flagcxSuccess;
 exit:
+  __atomic_store_n(&comm->finalizeState.lastResult, destroyResult,
+                   __ATOMIC_RELEASE);
   __atomic_store_n(&comm->finalizeState.running, 0, __ATOMIC_RELEASE);
   return destroyResult;
 }
@@ -4777,6 +4790,7 @@ flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {
   if (comm->hostComm != NULL && state->commonPhase != flagcxFinalizeComplete)
     result = flagcxInProgress;
 exit:
+  __atomic_store_n(&state->lastResult, result, __ATOMIC_RELEASE);
   __atomic_store_n(&state->running, 0, __ATOMIC_RELEASE);
   if (result != flagcxSuccess)
     return result;

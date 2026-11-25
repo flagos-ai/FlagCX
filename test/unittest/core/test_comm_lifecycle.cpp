@@ -36,7 +36,22 @@ TEST(CommLifecyclePolicy, MissingPeerMetadataDoesNotGrantPermission) {
 #include <cstdlib>
 #include <new>
 #include <set>
+#include <string>
 #include <vector>
+
+TEST(CommLifecycleDiagnostics, ErrorCodesHaveStableSdkIndependentMessages) {
+  std::set<std::string> messages;
+  for (int result = 0; result < flagcxNumResults; ++result) {
+    const char *message = flagcxGetErrorString((flagcxResult_t)result);
+    ASSERT_NE(message, nullptr);
+    EXPECT_NE(*message, '\0');
+    EXPECT_STRNE(message, "Not implemented.");
+    messages.insert(message);
+  }
+  EXPECT_EQ(messages.size(), (size_t)flagcxNumResults);
+  EXPECT_STREQ(flagcxGetErrorString((flagcxResult_t)-1), "Unknown error");
+  EXPECT_STREQ(flagcxGetErrorString(flagcxNumResults), "Unknown error");
+}
 
 namespace {
 class CommFinalizeOwnerTest : public ::testing::Test {
@@ -49,6 +64,7 @@ protected:
   flagcxComm_t comm = nullptr;
   int finalizes = 0, destroys = 0, polls = 0, frees = 0, aborts = 0;
   int failAbortAt = 0;
+  int lastErrorQueries = 0;
   int hostFinalizes = 0, hostDestroys = 0;
   int pendingPolls = 0, eventFailures = 0, syncFailures = 0, eventDestroys = 0;
   flagcxResult_t finalizeResult = flagcxSuccess, asyncResult = flagcxSuccess;
@@ -105,6 +121,12 @@ protected:
       *result =
           current->pendingPolls-- > 0 ? flagcxInProgress : current->asyncResult;
       return flagcxSuccess;
+    };
+    sdk.getLastError = [](flagcxInnerComm_t inner) {
+      ++current->lastErrorQueries;
+      EXPECT_EQ(current->live.count(inner), 1u);
+      EXPECT_EQ(current->aborted.count(inner), 0u);
+      return "native diagnostic";
     };
     sdk.commDestroy = [](flagcxInnerComm_t inner) {
       ++current->destroys;
@@ -194,6 +216,22 @@ TEST_F(CommFinalizeOwnerTest, AsyncErrorRetainsStartedNativeOwnerForRetry) {
   EXPECT_EQ(polls, 2);
 }
 
+TEST_F(CommFinalizeOwnerTest, LastErrorUsesNativeOnlyWhileActive) {
+  comm->homoComm = makeOwner();
+  EXPECT_STREQ(flagcxGetLastError(comm), "native diagnostic");
+  EXPECT_EQ(lastErrorQueries, 1);
+  asyncResult = flagcxRemoteError;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxRemoteError);
+  EXPECT_STREQ(flagcxGetLastError(comm),
+               flagcxGetErrorString(flagcxRemoteError));
+  EXPECT_EQ(lastErrorQueries, 1);
+}
+
+TEST_F(CommFinalizeOwnerTest, LastErrorWithoutNativeOwnerStaysLocal) {
+  EXPECT_STREQ(flagcxGetLastError(comm), flagcxGetErrorString(flagcxSuccess));
+  EXPECT_EQ(lastErrorQueries, 0);
+}
+
 TEST_F(CommFinalizeOwnerTest, AbortAfterNativeAsyncErrorConsumesHandleOnce) {
   comm->homoComm = makeOwner();
   asyncResult = flagcxRemoteError;
@@ -241,6 +279,9 @@ TEST_F(CommFinalizeOwnerTest, AbortRetainsPartialPrefixAndEveryAlias) {
   failAbortAt = 2;
   EXPECT_EQ(flagcxCommAbort(comm), flagcxRemoteError);
   EXPECT_EQ(comm->finalizeState.abortIndex, 1u);
+  EXPECT_STREQ(flagcxGetLastError(comm),
+               flagcxGetErrorString(flagcxRemoteError));
+  EXPECT_EQ(lastErrorQueries, 0);
   EXPECT_EQ(comm->homoComm, c);
   EXPECT_EQ(comm->commMap.begin()->second, b);
   EXPECT_EQ(live.size(), 3u);
@@ -336,6 +377,8 @@ TEST_F(CommFinalizeOwnerTest,
   EXPECT_EQ(comm->homoInterComm, nullptr);
   EXPECT_EQ(comm->tunerInnerComm, nullptr);
   EXPECT_EQ(comm->homoCommMap.begin()->second, nullptr);
+  EXPECT_STREQ(flagcxGetLastError(comm), flagcxGetErrorString(flagcxSuccess));
+  EXPECT_EQ(lastErrorQueries, 0);
   flagcxResult_t async = flagcxInternalError;
   EXPECT_EQ(flagcxCommGetAsyncError(comm, &async), flagcxSuccess);
   EXPECT_EQ(async, flagcxSuccess);
@@ -380,6 +423,9 @@ TEST_F(CommFinalizeOwnerTest, FreeFailureRetriesLocallyWithoutNativeFinalize) {
   EXPECT_EQ(frees, 0);
   EXPECT_EQ(flagcxCommDestroy(comm), flagcxRemoteError);
   EXPECT_NE(comm->internalBuffers, nullptr);
+  EXPECT_STREQ(flagcxGetLastError(comm),
+               flagcxGetErrorString(flagcxRemoteError));
+  EXPECT_EQ(lastErrorQueries, 0);
   EXPECT_EQ(finalizes, 1);
   freeResult = flagcxSuccess;
   EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
