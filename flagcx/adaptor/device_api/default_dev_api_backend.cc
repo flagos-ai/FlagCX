@@ -1057,12 +1057,10 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   devComm->localBarrierFlags = nullptr;
   devComm->localBarrierFlagsDeviceAllocated = false;
   if (devComm->epochBuffer) {
-    do {
-      flagcxResult_t result = flagcxCommReleaseBuffer(
-          comm, devComm->epochBuffer, flagcxInternalBufferDevice);
-      if (result != flagcxSuccess)
-        return result;
-    } while (0);
+    flagcxResult_t result = flagcxCommReleaseBuffer(comm, devComm->epochBuffer,
+                                                    flagcxInternalBufferDevice);
+    if (result != flagcxSuccess)
+      return result;
     devComm->epochBuffer = nullptr;
   }
   devComm->signalBuffer = nullptr;
@@ -1070,31 +1068,25 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   // In the 64-bit path this aliases signalBuffer; Comm records it only once.
   devComm->completionSignalBuffer = nullptr;
   if (devComm->shadowBuffer) {
-    do {
-      flagcxResult_t result = flagcxCommReleaseBuffer(
-          comm, devComm->shadowBuffer, flagcxInternalBufferDevice);
-      if (result != flagcxSuccess)
-        return result;
-    } while (0);
+    flagcxResult_t result = flagcxCommReleaseBuffer(comm, devComm->shadowBuffer,
+                                                    flagcxInternalBufferDevice);
+    if (result != flagcxSuccess)
+      return result;
     devComm->shadowBuffer = nullptr;
   }
   if (devComm->counterBuffer) {
-    do {
-      flagcxResult_t result = flagcxCommReleaseBuffer(
-          comm, devComm->counterBuffer, flagcxInternalBufferHost);
-      if (result != flagcxSuccess)
-        return result;
-    } while (0);
+    flagcxResult_t result = flagcxCommReleaseBuffer(
+        comm, devComm->counterBuffer, flagcxInternalBufferHost);
+    if (result != flagcxSuccess)
+      return result;
     devComm->counterBuffer = nullptr;
   }
   if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
     if (devComm->completionCounterBuffer) {
-      do {
-        flagcxResult_t result = flagcxCommReleaseBuffer(
-            comm, devComm->completionCounterBuffer, flagcxInternalBufferDevice);
-        if (result != flagcxSuccess)
-          return result;
-      } while (0);
+      flagcxResult_t result = flagcxCommReleaseBuffer(
+          comm, devComm->completionCounterBuffer, flagcxInternalBufferDevice);
+      if (result != flagcxSuccess)
+        return result;
       devComm->completionCounterBuffer = nullptr;
     }
   } else {

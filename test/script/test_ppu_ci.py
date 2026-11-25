@@ -1,10 +1,8 @@
 import json
-import subprocess
-import unittest
-import json
 import os
 import subprocess
 import tempfile
+import unittest
 from pathlib import Path
 
 import yaml

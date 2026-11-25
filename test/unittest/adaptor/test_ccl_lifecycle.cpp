@@ -10,11 +10,11 @@
   } while (0)
 namespace NativeOwnerProbe {
 static std::set<void *> owners;
-static int finalizes, destroys, frees;
+static int finalizes, destroys, aborts, frees;
 static int result;
 static void reset() {
   ASSERT_TRUE(owners.empty());
-  finalizes = destroys = frees = 0;
+  finalizes = destroys = aborts = frees = 0;
   result = 0;
 }
 static void release(void *p) {
@@ -29,6 +29,8 @@ struct NativeOwnerContract {
   void *(*make)();
   flagcxResult_t (*finalize)(void *);
   flagcxResult_t (*destroy)(void *);
+  flagcxResult_t (*abort)(void *);
+  bool (*hasNative)(void *);
 };
 #include "adaptor-contracts/native_owners.h"
 #undef FLAGCXCHECK
@@ -76,5 +78,44 @@ TEST(CclOwnerContract, NullDestroySkipsNativeSdk) {
     NativeOwnerProbe::reset();
     EXPECT_EQ(sdk.destroy(nullptr), flagcxInvalidArgument);
     EXPECT_EQ(NativeOwnerProbe::destroys + NativeOwnerProbe::frees, 0);
+  }
+}
+
+TEST(CclOwnerContract, AbortRetainsWrapperAndDestroyDoesNotCloseNativeTwice) {
+  for (const auto &sdk : nativeOwners) {
+    SCOPED_TRACE(sdk.name);
+    NativeOwnerProbe::reset();
+    void *owner = sdk.make();
+    if (sdk.abort(owner) == flagcxNotSupported) {
+      EXPECT_TRUE(sdk.hasNative(owner));
+      EXPECT_EQ(sdk.destroy(owner), flagcxSuccess);
+      continue;
+    }
+    EXPECT_FALSE(sdk.hasNative(owner));
+    EXPECT_EQ(NativeOwnerProbe::owners.count(owner), 1u);
+    EXPECT_EQ(NativeOwnerProbe::aborts, 1);
+    EXPECT_EQ(sdk.abort(owner), flagcxSuccess);
+    EXPECT_EQ(NativeOwnerProbe::aborts, 1);
+    EXPECT_EQ(sdk.destroy(owner), flagcxSuccess);
+    EXPECT_EQ(NativeOwnerProbe::destroys, 0);
+    EXPECT_EQ(NativeOwnerProbe::frees, 1);
+  }
+}
+
+TEST(CclOwnerContract, AbortFailureOrInProgressRetainsNativeOwner) {
+  for (const auto &sdk : nativeOwners) {
+    SCOPED_TRACE(sdk.name);
+    NativeOwnerProbe::reset();
+    void *owner = sdk.make();
+    for (int result : {flagcxInProgress, flagcxRemoteError}) {
+      NativeOwnerProbe::result = result;
+      flagcxResult_t aborted = sdk.abort(owner);
+      EXPECT_TRUE(aborted == flagcxNotSupported || aborted == result);
+      EXPECT_TRUE(sdk.hasNative(owner));
+      EXPECT_EQ(NativeOwnerProbe::owners.count(owner), 1u);
+      EXPECT_EQ(NativeOwnerProbe::frees, 0);
+    }
+    NativeOwnerProbe::result = 0;
+    EXPECT_EQ(sdk.destroy(owner), flagcxSuccess);
   }
 }

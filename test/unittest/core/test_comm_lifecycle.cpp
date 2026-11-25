@@ -47,12 +47,15 @@ protected:
   flagcxDeviceAdaptor *savedDevice;
   flagcxCCLAdaptor *savedSdk, *savedHost;
   flagcxComm_t comm = nullptr;
-  int finalizes = 0, destroys = 0, polls = 0, frees = 0;
+  int finalizes = 0, destroys = 0, polls = 0, frees = 0, aborts = 0;
+  int failAbortAt = 0;
   int hostFinalizes = 0, hostDestroys = 0;
   int pendingPolls = 0, eventFailures = 0, syncFailures = 0, eventDestroys = 0;
   flagcxResult_t finalizeResult = flagcxSuccess, asyncResult = flagcxSuccess;
   flagcxResult_t destroyResult = flagcxSuccess, freeResult = flagcxSuccess;
+  flagcxResult_t abortResult = flagcxSuccess;
   std::set<void *> live;
+  std::set<void *> aborted;
   std::vector<void *> finalized;
   void SetUp() override {
     current = this;
@@ -111,6 +114,17 @@ protected:
       free(inner);
       return flagcxSuccess;
     };
+    sdk.commAbort = [](flagcxInnerComm_t inner) {
+      ++current->aborts;
+      EXPECT_EQ(current->live.count(inner), 1u);
+      EXPECT_EQ(current->aborted.count(inner), 0u);
+      if (current->abortResult != flagcxSuccess)
+        return current->abortResult;
+      if (current->aborts == current->failAbortAt)
+        return flagcxRemoteError;
+      current->aborted.insert(inner);
+      return flagcxSuccess; // The adaptor retains the wrapper until Destroy.
+    };
     host.commFinalize = [](flagcxInnerComm_t) {
       ++current->hostFinalizes;
       return flagcxSuccess;
@@ -139,7 +153,13 @@ protected:
     return (flagcxInnerComm_t)ptr;
   }
   void TearDown() override {
-    finalizeResult = asyncResult = destroyResult = freeResult = flagcxSuccess;
+    finalizeResult = asyncResult = destroyResult = freeResult = abortResult =
+        flagcxSuccess;
+    if (comm != nullptr && comm->finalizeState.abortStarted &&
+        !comm->finalizeState.abortComplete) {
+      EXPECT_EQ(flagcxCommAbort(comm), flagcxSuccess);
+      comm = nullptr;
+    }
     if (comm != nullptr)
       EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
     EXPECT_TRUE(live.empty());
@@ -172,6 +192,115 @@ TEST_F(CommFinalizeOwnerTest, AsyncErrorRetainsStartedNativeOwnerForRetry) {
   EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
   EXPECT_EQ(finalizes, 1);
   EXPECT_EQ(polls, 2);
+}
+
+TEST_F(CommFinalizeOwnerTest, AbortAfterNativeAsyncErrorConsumesHandleOnce) {
+  comm->homoComm = makeOwner();
+  asyncResult = flagcxRemoteError;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxRemoteError);
+  EXPECT_EQ(flagcxCommAbort(comm), flagcxSuccess);
+  comm = nullptr;
+  EXPECT_EQ(aborts, 1);
+  EXPECT_EQ(finalizes, 1);
+  EXPECT_EQ(polls, 1);
+  EXPECT_EQ(destroys, 1); // Releases the retained adaptor wrapper.
+  EXPECT_TRUE(live.empty());
+}
+
+TEST_F(CommFinalizeOwnerTest, AbortAfterDrainFailureAllowsCleanupRetry) {
+  comm->homoComm = makeOwner();
+  flagcxWorkRecord *work = nullptr;
+  ASSERT_EQ(flagcxWorkPrepare(&comm->submittedWork, nullptr, &work),
+            flagcxSuccess);
+  ASSERT_EQ(
+      flagcxWorkFinish(work, nullptr, flagcxSuccess, flagcxWorkNativeGroup, 0),
+      flagcxSuccess);
+  syncFailures = 1;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxRemoteError);
+  freeResult = flagcxRemoteError;
+  auto *buffer =
+      (flagcxInternalBuffer *)calloc(1, sizeof(flagcxInternalBuffer));
+  buffer->pointer = (void *)0x123000;
+  comm->internalBuffers = buffer;
+  EXPECT_EQ(flagcxCommAbort(comm), flagcxRemoteError);
+  EXPECT_TRUE(comm->finalizeState.abortComplete);
+  EXPECT_EQ(aborts, 1);
+  EXPECT_EQ(flagcxCommRequireActive(comm), flagcxInvalidUsage);
+  freeResult = flagcxSuccess;
+  EXPECT_EQ(flagcxCommAbort(comm), flagcxSuccess);
+  comm = nullptr;
+  EXPECT_EQ(aborts, 1);
+  EXPECT_EQ(finalizes, 0);
+}
+
+TEST_F(CommFinalizeOwnerTest, AbortRetainsPartialPrefixAndEveryAlias) {
+  auto a = makeOwner(), b = makeOwner(), c = makeOwner();
+  comm->homoCommMap[TunerCollCategory{}] = a;
+  comm->commMap[flagcxCommTag{}] = b;
+  comm->homoComm = comm->homoInterComm = comm->tunerInnerComm = c;
+  failAbortAt = 2;
+  EXPECT_EQ(flagcxCommAbort(comm), flagcxRemoteError);
+  EXPECT_EQ(comm->finalizeState.abortIndex, 1u);
+  EXPECT_EQ(comm->homoComm, c);
+  EXPECT_EQ(comm->commMap.begin()->second, b);
+  EXPECT_EQ(live.size(), 3u);
+  EXPECT_EQ(flagcxCommDestroy(comm), flagcxInvalidUsage);
+  EXPECT_EQ(flagcxCommAbort(comm), flagcxSuccess);
+  comm = nullptr;
+  EXPECT_EQ(aborts, 4);
+  EXPECT_EQ(finalizes, 0);
+  EXPECT_EQ(destroys, 3);
+}
+
+TEST_F(CommFinalizeOwnerTest, AbortInProgressAndBusyLifecyclePreserveOwners) {
+  auto owner = comm->homoComm = makeOwner();
+  comm->finalizeState.running = 1;
+  EXPECT_EQ(flagcxCommAbort(comm), flagcxInProgress);
+  EXPECT_EQ(aborts, 0);
+  comm->finalizeState.running = 0;
+  abortResult = flagcxInProgress;
+  EXPECT_EQ(flagcxCommAbort(comm), flagcxInProgress);
+  EXPECT_EQ(comm->homoComm, owner);
+  EXPECT_EQ(comm->finalizeState.abortIndex, 0u);
+  abortResult = flagcxSuccess;
+  EXPECT_EQ(flagcxCommAbort(comm), flagcxSuccess);
+  comm = nullptr;
+  EXPECT_EQ(aborts, 2);
+}
+
+TEST_F(CommFinalizeOwnerTest, UnsupportedAbortKeepsNormalFinalizeAvailable) {
+  comm->homoComm = makeOwner();
+  abortResult = flagcxNotSupported;
+  EXPECT_EQ(flagcxCommAbort(comm), flagcxNotSupported);
+  EXPECT_FALSE(comm->finalizeState.abortStarted);
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(finalizes, 1);
+}
+
+TEST_F(CommFinalizeOwnerTest, AbortDoesNotInventIpcClosurePermission) {
+  comm->homoComm = makeOwner();
+  comm->nranks = comm->localRanks = 2;
+  comm->ipcClosePolicyConfirmed = comm->internalBuffersNeedPeerClose = true;
+  auto *buffer =
+      (flagcxInternalBuffer *)calloc(1, sizeof(flagcxInternalBuffer));
+  buffer->pointer = (void *)0x456000;
+  comm->internalBuffers = buffer;
+  EXPECT_EQ(flagcxCommAbort(comm), flagcxInProgress);
+  EXPECT_EQ(aborts, 1);
+  EXPECT_EQ(frees, 0);
+  EXPECT_EQ(comm->finalizeState.commonPhase, flagcxFinalizeDrain);
+  EXPECT_NE(comm->homoComm, nullptr);
+  // Simulate the common import-close result. No bootstrap is available in this
+  // fixture; Abort above must return instead of attempting a peer exchange.
+  comm->finalizeState.commonPhase = flagcxFinalizeVendors;
+  comm->nranks = comm->localRanks = 1;
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(finalizes, 0);
+  EXPECT_EQ(frees, 0);
+  EXPECT_EQ(flagcxCommAbort(comm), flagcxSuccess);
+  comm = nullptr;
+  EXPECT_EQ(aborts, 1);
+  EXPECT_EQ(frees, 1);
 }
 
 TEST_F(CommFinalizeOwnerTest, UnknownProviderNotSupportedNeverDestroysNative) {
@@ -210,9 +339,10 @@ TEST_F(CommFinalizeOwnerTest,
   flagcxResult_t async = flagcxInternalError;
   EXPECT_EQ(flagcxCommGetAsyncError(comm, &async), flagcxSuccess);
   EXPECT_EQ(async, flagcxSuccess);
-  EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+  EXPECT_EQ(flagcxCommAbort(comm), flagcxSuccess);
   comm = nullptr;
   EXPECT_EQ(destroys, 3);
+  EXPECT_EQ(aborts, 0);
 }
 
 TEST_F(CommFinalizeOwnerTest, OrdinaryErrorDoesNotTriggerCompatibilityDestroy) {

@@ -348,8 +348,11 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm);
  * Only success consumes the handle; retain it for retry on any other result. */
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm);
 
-/* Frees resources associated with communicator object and aborts any operations
- * that might still be running on the device. */
+/* Aborts native work, then releases the communicator. Only success consumes
+ * the handle; retain it on errors or InProgress. Internal IPC exports still
+ * require collective Finalize before local release; Abort returns InProgress
+ * rather than entering that peer agreement implicitly. Heterogeneous Abort
+ * remains unsupported. */
 flagcxResult_t flagcxCommAbort(flagcxComm_t comm);
 
 /* Resume a communicator. */

@@ -4173,6 +4173,12 @@ static flagcxResult_t flagcxCommFinalizeNativeOwners(flagcxComm_t comm) {
   auto *state = &comm->finalizeState;
   auto *adaptor = cclAdaptors[flagcxCCLAdaptorDevice];
   while (state->vendorIndex < state->vendorCount) {
+    if (state->vendorOwners[state->vendorIndex] == NULL ||
+        (state->abortComplete && state->vendorIndex < state->abortIndex)) {
+      ++state->vendorIndex;
+      state->vendorFinalizeStarted = state->vendorDestroyStarted = 0;
+      continue;
+    }
     flagcxInnerComm_t inner =
         (flagcxInnerComm_t)state->vendorOwners[state->vendorIndex];
     flagcxResult_t result = flagcxSuccess;
@@ -4233,6 +4239,10 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
   if (!__atomic_compare_exchange_n(&state->running, &expected, 1, false,
                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
     return flagcxInProgress;
+  if (state->abortStarted && !state->abortComplete) {
+    __atomic_store_n(&state->running, 0, __ATOMIC_RELEASE);
+    return flagcxInvalidUsage;
+  }
   if (state->commonPhase == flagcxFinalizeComplete) {
     __atomic_store_n(&state->running, 0, __ATOMIC_RELEASE);
     return flagcxSuccess;
@@ -4345,6 +4355,9 @@ flagcxResult_t flagcxDestroyHomoCommOwner(flagcxComm_t comm,
     for (auto &item : comm->homoBestCommMap)
       if (item.second == inner)
         item.second = NULL;
+  for (unsigned int i = 0; i < comm->finalizeState.vendorCount; ++i)
+    if (comm->finalizeState.vendorOwners[i] == inner)
+      comm->finalizeState.vendorOwners[i] = NULL;
   return flagcxSuccess;
 }
 
@@ -4613,24 +4626,26 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     if (destroyResult != flagcxSuccess)
       return destroyResult;
   }
+  int expected = 0;
+  if (!__atomic_compare_exchange_n(&comm->finalizeState.running, &expected, 1,
+                                   false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return flagcxInProgress;
   __atomic_store_n(&comm->finalizeState.lifecycle, flagcxCommDestroying,
                    __ATOMIC_RELEASE);
   if (comm->destroyPhase == 0 && comm->deviceOrdinalValid) {
     destroyResult = deviceAdaptor->setDevice(comm->deviceOrdinal);
     if (destroyResult != flagcxSuccess)
-      return destroyResult;
+      goto exit;
   }
   if (comm->initRollbackPending)
     comm->finalizeState.commonPhase = flagcxFinalizeComplete;
-  do {
-    flagcxResult_t cleanupResult = flagcxCommFreeInternalBuffers(comm);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
-  } while (0);
+  destroyResult = flagcxCommFreeInternalBuffers(comm);
+  if (destroyResult != flagcxSuccess)
+    goto exit;
 
   destroyResult = flagcxCommDestroyNativeOwners(comm);
   if (destroyResult != flagcxSuccess)
-    return destroyResult;
+    goto exit;
 
   if (comm->heteroComm != NULL) {
     if (comm->heteroComm->netPluginHeld) {
@@ -4639,14 +4654,14 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     }
     destroyResult = flagcxHeteroCommDestroy(&comm->heteroComm);
     if (destroyResult != flagcxSuccess)
-      return destroyResult;
+      goto exit;
   }
   // Automatic fallback also owns a host communicator without USE_HOST_COMM.
   if (comm->hostComm != NULL) {
     destroyResult =
         cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->hostComm);
     if (destroyResult != flagcxSuccess)
-      return destroyResult;
+      goto exit;
     comm->hostComm = NULL;
   }
 
@@ -4654,24 +4669,24 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   if (comm->bootstrap != NULL) {
     destroyResult = bootstrapClose(comm->bootstrap);
     if (destroyResult != flagcxSuccess)
-      return destroyResult;
+      goto exit;
   }
   comm->bootstrap = NULL;
 
   if (comm->tuner != NULL && comm->tunerContext != NULL) {
     destroyResult = comm->tuner->destroy(comm->tunerContext);
     if (destroyResult != flagcxSuccess)
-      return destroyResult;
+      goto exit;
     comm->tunerContext = NULL;
   }
   destroyResult = flagcxWorkRelease(&comm->submittedWork);
   if (destroyResult != flagcxSuccess)
-    return destroyResult;
+    goto exit;
   comm->destroyPhase =
       1; // All SDK resources released; only plugin references remain.
   destroyResult = flagcxCommReleasePluginRefs(comm);
   if (destroyResult != flagcxSuccess)
-    return destroyResult;
+    goto exit;
 
   while (comm->publicWindows != nullptr) {
     flagcxWindow_t win = comm->publicWindows;
@@ -4689,17 +4704,77 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   free(comm->finalizeState.vendorOwners);
   free(comm);
   return flagcxSuccess;
+exit:
+  __atomic_store_n(&comm->finalizeState.running, 0, __ATOMIC_RELEASE);
+  return destroyResult;
 }
 
 flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {
-  FLAGCXCHECK(flagcxCommRequireActive(comm));
+  if (comm == NULL)
+    return flagcxInvalidArgument;
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commAbort(comm->homoComm));
-  if (!useHomoComm(comm)) {
-    // TODO: to be implemented.
+  if (comm->initRollbackPending || comm->pluginRollbackOnly)
+    return flagcxInvalidUsage;
+  // Heterogeneous Abort is not implemented. Do not consume a native owner
+  // before reporting that limitation; normal rollback/teardown remains usable.
+  if (!useHomoComm(comm) || comm->heteroComm != NULL)
     return flagcxNotSupported;
+  auto *state = &comm->finalizeState;
+  int expected = 0;
+  if (!__atomic_compare_exchange_n(&state->running, &expected, 1, false,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return flagcxInProgress;
+  flagcxResult_t result = flagcxSuccess;
+  __atomic_store_n(&state->lifecycle, flagcxCommFinalizing, __ATOMIC_RELEASE);
+  state->abortStarted = 1;
+  if (comm->destroyPhase == 0 && comm->deviceOrdinalValid) {
+    result = deviceAdaptor->setDevice(comm->deviceOrdinal);
+    if (result != flagcxSuccess)
+      goto exit;
   }
-  return flagcxSuccess;
+  result = flagcxCommCatalogNativeOwners(comm);
+  if (result != flagcxSuccess)
+    goto exit;
+  while (state->abortIndex < state->vendorCount) {
+    auto inner = (flagcxInnerComm_t)state->vendorOwners[state->abortIndex];
+    if (inner != NULL) {
+      auto *adaptor = cclAdaptors[flagcxCCLAdaptorDevice];
+      result = adaptor->commAbort != NULL ? adaptor->commAbort(inner)
+                                          : flagcxNotSupported;
+      if (result != flagcxSuccess) {
+        // An unsupported first Abort has consumed no native context, so the
+        // existing Finalize path must remain available.
+        if (result == flagcxNotSupported) {
+          bool nativeAborted = false;
+          for (unsigned int i = 0; i < state->abortIndex; ++i)
+            nativeAborted |= state->vendorOwners[i] != NULL;
+          if (!nativeAborted)
+            state->abortStarted = 0;
+        }
+        goto exit;
+      }
+    }
+    ++state->abortIndex;
+  }
+  state->abortComplete = 1;
+  // The native contexts are gone. Their retained wrappers are released by
+  // local Destroy, without re-entering native Finalize or native Destroy.
+  if (comm->hostComm == NULL)
+    comm->nativeFinalizeScope = flagcxNativeFinalizeLocal;
+  // Abort is local termination, not permission to free exports. Never enter
+  // a peer rendezvous implicitly here; callers can finish Finalize together
+  // and retry Abort/Destroy once imports are confirmed closed.
+  if (comm->nranks > 1 &&
+      ((!comm->ipcClosePolicyConfirmed || comm->internalBuffersNeedPeerClose) &&
+       state->commonPhase <= flagcxFinalizeImports))
+    result = flagcxInProgress;
+  if (comm->hostComm != NULL && state->commonPhase != flagcxFinalizeComplete)
+    result = flagcxInProgress;
+exit:
+  __atomic_store_n(&state->running, 0, __ATOMIC_RELEASE);
+  if (result != flagcxSuccess)
+    return result;
+  return flagcxCommDestroy(comm);
 }
 
 flagcxResult_t flagcxCommResume(flagcxComm_t comm) {

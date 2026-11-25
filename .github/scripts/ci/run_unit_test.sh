@@ -320,6 +320,25 @@ run_device_api_host() {
   local status=0
   GTEST_FILTER="$main_filter" FLAGCX_CI_TEST_LABEL="device_api_host unit tests" \
     "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || status=$?
+  if ! flagcx_ci_phase_supported non-vmm-rma; then
+    return "$status"
+  fi
+  # Test selection comes from the original effective filter. main_filter adds
+  # the RMA case only to move it into a fresh process, not to disable it.
+  local rma_selected
+  rma_selected=$(python3 - "$rma_case" "${GTEST_FILTER:-*}" <<'PYFILTER'
+import fnmatch, sys
+case, pattern = sys.argv[1:]
+positive, _, negative = pattern.partition("-")
+print(int(any(fnmatch.fnmatchcase(case, p) for p in (positive or "*").split(":"))
+          and not any(fnmatch.fnmatchcase(case, p) for p in negative.split(":"))))
+PYFILTER
+  )
+  if [[ "$rma_selected" != 1 ]]; then
+    flagcx_ci_report_skipped_suite "$SUITE/non-vmm-rma" \
+      "$rma_case is excluded by the effective GTEST_FILTER=${GTEST_FILTER:-*}"
+    return "$status"
+  fi
   # VMM's cached policy must be zero before the fresh process starts.
   FLAGCX_VMM_ENABLE=0 GTEST_FILTER="$rma_case" \
     FLAGCX_CI_TEST_LABEL="device_api_host non-VMM RMA lifecycle" \

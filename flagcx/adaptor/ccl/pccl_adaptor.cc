@@ -104,6 +104,11 @@ flagcxResult_t pcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 flagcxResult_t pcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
   if (comm == NULL)
     return flagcxInvalidArgument;
+  if (comm->base == NULL) {
+    free(comm);
+    return flagcxSuccess;
+  }
+
   flagcxResult_t result =
       (flagcxResult_t)p2f_ret_map[pcclCommDestroy(comm->base)];
   if (result != flagcxSuccess)
@@ -113,7 +118,17 @@ flagcxResult_t pcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t pcclAdaptorCommAbort(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)p2f_ret_map[pcclCommAbort(comm->base)];
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxSuccess;
+  flagcxResult_t result =
+      (flagcxResult_t)p2f_ret_map[pcclCommAbort(comm->base)];
+  if (result != flagcxSuccess)
+    return result;
+  // Native Abort consumes the SDK context. Keep the wrapper for owner cleanup.
+  comm->base = NULL;
+  return flagcxSuccess;
 }
 
 // TODO: unsupported

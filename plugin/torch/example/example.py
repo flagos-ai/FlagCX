@@ -213,7 +213,16 @@ def test_pair_teardown():
             torch.testing.assert_close(recv.cpu(), torch.full((8,), peer, dtype=torch.int32))
         dist.barrier(group=control)
     backend = group._get_backend(torch.device(dev_name, int(os.environ["LOCAL_RANK"])))
+    closed_input = torch.empty(8, device=torch.device(dev_name, int(os.environ["LOCAL_RANK"])))
     flagcx.shutdown_backend(backend)
+    for submit in (backend.barrier,
+                   lambda: backend.allreduce_coalesced([closed_input])):
+        try:
+            submit()
+        except RuntimeError as error:
+            assert "has been shut down" in str(error), str(error)
+        else:
+            raise AssertionError("Closed FlagCX backend accepted new work")
     # Repeated shutdown must not consume any native owner twice.
     flagcx.shutdown_backend(backend)
     dist.destroy_process_group(group)

@@ -35,6 +35,8 @@ struct flagcxCommFinalizeState {
   unsigned int vendorCount;
   int vendorCatalogReady;
   int hostFinalized;
+  int abortStarted, abortComplete;
+  unsigned int abortIndex;
 };
 enum flagcxHeteroFinalizePhase {
   flagcxHeteroFinalizeDrain = 0,

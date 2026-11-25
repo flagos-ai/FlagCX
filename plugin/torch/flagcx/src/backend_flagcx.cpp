@@ -670,6 +670,7 @@ std::unique_ptr<flagcxEvent> &flagcxBackend::getEventByIndex(int eventId) {
 }
 
 void flagcxBackend::initComm(at::Device dev) {
+  checkSubmissionHealthy();
   if (status_ == 0) {
     deviceId_ = dev.index();
     C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
@@ -711,6 +712,7 @@ void flagcxBackend::initComm(at::Device dev) {
 }
 
 void flagcxBackend::initComm() {
+  checkSubmissionHealthy();
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_ILUVATAR_ADAPTOR) ||            \
     defined(USE_METAX_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                   \
     defined(USE_KUNLUNXIN_ADAPTOR) || defined(USE_AMD_ADAPTOR)
@@ -739,6 +741,7 @@ void flagcxBackend::initComm() {
 }
 
 flagcxComm_t flagcxBackend::getOrCreatePairComm(int peer) {
+  checkSubmissionHealthy();
   std::string key;
   int numRanks;
   int p2pRank;
@@ -878,6 +881,9 @@ void flagcxBackend::abortHeteroCoalescing() noexcept {
 }
 
 void flagcxBackend::checkSubmissionHealthy() {
+  TORCH_CHECK(
+      shutdownState_ == nullptr && devHandle_ != nullptr,
+      "This FlagCX backend has been shut down; it cannot submit more work");
   TORCH_CHECK(!submissionUnsafe_,
               "A previous FlagCX batch failed after submission; this "
               "backend cannot safely submit more work");
@@ -1478,6 +1484,7 @@ flagcxBackend::allreduce(std::vector<at::Tensor> &tensors,
 c10::intrusive_ptr<Work>
 flagcxBackend::allreduce_coalesced(std::vector<at::Tensor> &tensors,
                                    const AllreduceCoalescedOptions &opts) {
+  checkSubmissionHealthy();
   // parameter validation
   check_gpu_tensors_same_device(tensors);
   TORCH_CHECK(

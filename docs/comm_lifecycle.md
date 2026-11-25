@@ -56,6 +56,18 @@ phase, and clears every consumed wrapper alias on strict success. Unknown
 plugins and other errors do not trigger this fallback. This records current
 adaptor integration, not a claim that every SDK version lacks Finalize.
 
+Abort remains available after a failed Finalize. It serializes owner changes
+with Finalize/Destroy and retains every handle on error or InProgress. A
+successful native Abort clears the native context and retains its host wrapper;
+local Destroy releases the wrapper without calling the SDK again. Registration
+and device-view cleanup also skip the retired context. Heterogeneous Abort
+remains unsupported.
+
+Abort does not grant permission to free IPC exports. If peer import closure is
+still pending, it returns InProgress with the communicator retained; the
+participants must complete Finalize before retrying cleanup. Only success from
+the public Abort consumes its handle, including through the NCCL wrapper.
+
 Two CI exceptions remain:
 
 - PPU keeps native `pcclCommFinalize` in Finalize and `pcclCommDestroy` in Destroy.
@@ -65,8 +77,20 @@ Two CI exceptions remain:
   may drain another communicator's work. Two native stream-isolation cases are
   excluded; non-VMM RMA isolation and IPC cleanup remain enabled.
 
+The native stream-isolation cases also require a separate native Finalize on
+other compatibility adaptors. Ascend and Enflame declare these exclusions in
+CI; the cases check the initialized communicator's compatibility policy before
+submitting work for local runs and platforms without a CI entry. Public
+Finalize/Destroy and mock IPC lifecycle coverage are retained.
+
 Iluvatar CI remains enabled. Its previously reported initialization/communication
 timeout is tracked separately and is not hidden with another exclusion.
+
+Enflame's host Device API target remains disabled, including the fresh-process
+non-VMM RMA invocation. Kunlunxin excludes only the three host-callback stream
+isolation cases; its other host cleanup tests remain enabled. The fresh RMA
+invocation respects the effective positive and negative GoogleTest filter.
+These exclusions report missing coverage rather than successful execution.
 
 ## Work completion and Torch shutdown
 
@@ -80,7 +104,9 @@ The Torch backend closes pair communicators in numeric `(min_rank, max_rank)`
 order, then the process-group communicator, then events, owned streams and the
 device handle. Borrowed Ascend streams keep their ownership rules.
 `flagcx.shutdown_backend(backend)` provides an explicit retryable close while
-the backend exists. If destruction encounters a cleanup failure, a retained
+the backend exists. Once shutdown starts, initialization and submission are
+rejected, including barrier and coalesced operations, even if cleanup fails.
+If destruction encounters a cleanup failure, a retained
 cleanup object owns its remaining handles and tensor dependencies;
 `flagcx.retry_pending_cleanup()` retries it on the caller's thread. The original
 participants must enter any unfinished Finalize in compatible order. Completion

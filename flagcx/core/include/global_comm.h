@@ -44,26 +44,26 @@ typedef enum {
 // Whether the user selected the hetero execution path, even on homo hardware.
 bool useHeteroComm();
 
-enum flagcxInternalBufferKind {
+typedef enum flagcxInternalBufferKind {
   flagcxInternalBufferDevice,
   flagcxInternalBufferHost,
   flagcxInternalBufferGdr,
   flagcxInternalBufferCcl
-};
+} flagcxInternalBufferKind_t;
 
 // One record per allocation, including buffers whose creation rolled back.
 // Device views borrow these pointers; only CommDestroy frees the allocation.
 struct flagcxInternalBuffer {
   void *pointer;
-  flagcxInternalBufferKind kind;
+  flagcxInternalBufferKind_t kind;
   flagcxInternalBuffer *next;
 };
 
 flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
                                              size_t size,
-                                             flagcxInternalBufferKind kind);
+                                             flagcxInternalBufferKind_t kind);
 flagcxResult_t flagcxCommReleaseBuffer(flagcxComm_t comm, void *pointer,
-                                       flagcxInternalBufferKind kind);
+                                       flagcxInternalBufferKind_t kind);
 flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm);
 
 struct flagcxComm {

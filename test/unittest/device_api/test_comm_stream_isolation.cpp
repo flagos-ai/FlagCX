@@ -96,6 +96,12 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
     ASSERT_EQ(flagcxCommInitRank(&owners.comms[i], 1, &id, 0), flagcxSuccess);
     std::fprintf(stderr, "ISOLATION comm-init done index=%d\n", i);
     std::fflush(stderr);
+    // These two native cases require independent SDK Finalize/Destroy phases.
+    // Compatibility Destroy is still covered by public lifecycle tests. RMA
+    // isolation below submits only runtime work on B, not native CCL work.
+    if (!withRma && owners.comms[i]->allowNativeDestroyFinalize)
+      GTEST_SKIP() << "Native stream isolation requires a separate native "
+                      "Finalize; this adaptor uses compatibility Destroy";
     ASSERT_EQ(deviceAdaptor->streamCreate(&owners.streams[i]), flagcxSuccess);
     ASSERT_EQ(deviceAdaptor->deviceMalloc(&owners.buffers[i], sizeof(float),
                                           flagcxMemDevice, nullptr),

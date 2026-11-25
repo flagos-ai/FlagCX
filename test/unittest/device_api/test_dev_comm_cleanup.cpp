@@ -437,7 +437,7 @@ flagcxResult_t observeDefaultDevCommDestroy(flagcxComm_t comm,
 }
 
 flagcxResult_t retainTestBuffer(flagcxComm_t comm, void *pointer,
-                                flagcxInternalBufferKind kind) {
+                                flagcxInternalBufferKind_t kind) {
   auto *record = static_cast<flagcxInternalBuffer *>(
       calloc(1, sizeof(flagcxInternalBuffer)));
   if (record == nullptr)
