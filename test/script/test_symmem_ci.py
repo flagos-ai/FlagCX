@@ -26,7 +26,9 @@ for i, arg in enumerate(sys.argv):
                  'SparseNodeClosureDoesNotWaitForAnotherNode',
                  'InitializationDeclaresIpcAndNativeScopeOnEmptyRanks',
                  'CollectiveCreationDeclaresClosureBeforePublication',
-                 'OuterFinalizeRetriesClosureThenEveryRankDestroysLocally')
+                 'OuterFinalizeRetriesClosureThenEveryRankDestroysLocally',
+                 'CrossNodeRelayDrainFailureConvergesBeforeCleanup',
+                 'CrossNodeRelayDeviceFailureConvergesBeforeCleanup')
         body = ''.join('<testcase name="%s" status="run" result="completed"/>' % name for name in names)
         for rank in range(4):
             (root / ('rank-%s.xml' % rank)).write_text('<testsuites><testsuite name="HeteroFinalizeMpi">' + body + '</testsuite></testsuites>')

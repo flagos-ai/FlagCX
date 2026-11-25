@@ -1,5 +1,6 @@
 #include "bootstrap.h"
 #include "comm_lifecycle_check.hpp"
+#include "dev_api_backend.h"
 #include "p2p.h"
 #include "rma_init_rollback.hpp"
 #include <chrono>
@@ -14,6 +15,10 @@ protected:
   int rank, nranks, importCloses = 0, fifoFrees = 0;
   bool failImport = false, failFree = false;
   int delayMs = 0;
+  bool failWork = false, failTransportDevice = false;
+  int relayCleanups = 0;
+  flagcxDevApiBackend backend = {};
+  flagcxDevApiBackend *savedBackend = devApiBackend;
   volatile uint32_t abortFlag = 0;
   std::vector<int> members;
   void SetUp() override {
@@ -22,6 +27,29 @@ protected:
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nranks);
     ASSERT_GE(nranks, 2);
+    device.setDevice = [](int) {
+      return active->failDevice ||
+                     (active->failTransportDevice && active->outer != nullptr &&
+                      active->outer->finalizeState.commonPhase ==
+                          flagcxFinalizeTransport)
+                 ? flagcxRemoteError
+                 : flagcxSuccess;
+    };
+    device.eventCreate = [](flagcxEvent_t *event, flagcxEventType_t) {
+      *event = (flagcxEvent_t)malloc(1);
+      return *event ? flagcxSuccess : flagcxSystemError;
+    };
+    device.eventRecord = [](flagcxEvent_t, flagcxStream_t) {
+      return flagcxSuccess;
+    };
+    device.eventQuery = [](flagcxEvent_t) { return flagcxSuccess; };
+    device.eventSynchronize = [](flagcxEvent_t) {
+      return active->failWork ? flagcxRemoteError : flagcxSuccess;
+    };
+    device.eventDestroy = [](flagcxEvent_t event) {
+      free(event);
+      return flagcxSuccess;
+    };
     device.ipcMemHandleClose = [](void *) {
       ++active->importCloses;
       std::this_thread::sleep_for(std::chrono::milliseconds(active->delayMs));
@@ -90,9 +118,51 @@ protected:
     }
     MPI_Barrier(MPI_COMM_WORLD);
   }
+  void makeOuter(bool splitNodes = false) {
+    outer = (flagcxComm_t)calloc(1, sizeof(flagcxComm));
+    ASSERT_NE(outer, nullptr);
+    outer->commType = flagcxCommunicatorHybrid;
+    outer->rank = rank;
+    outer->nranks = nranks;
+    outer->localRank = splitNodes ? rank / 2 : rank;
+    outer->localRanks = splitNodes ? (nranks + 1 - rank % 2) / 2 : nranks;
+    outer->localRankToRank = (int *)calloc(nranks, sizeof(int));
+    ASSERT_NE(outer->localRankToRank, nullptr);
+    for (int i = 0; i < outer->localRanks; ++i)
+      outer->localRankToRank[i] = splitNodes ? i * 2 + rank % 2 : i;
+    outer->deviceOrdinalValid = true;
+    outer->deviceOrdinal = owner->cudaDev;
+    outer->ipcTable = outer->ipcTableInline;
+    outer->ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
+    outer->bootstrap = owner->bootstrap;
+    owner->bootstrap = nullptr;
+    outer->heteroComm = owner;
+    owner->ownerComm = outer;
+    owner->workOwner = &outer->submittedWork;
+    owner = nullptr;
+  }
+  void attachCollectiveRelayCleanup() {
+    auto *child = outer->heteroComm;
+    child->relayInitialized = true;
+    child->nInterPeers = 1;
+    // Model an existing cross-node collective consumer with the real bootstrap
+    // barrier. This keeps the failure-agreement test independent of the SDK.
+    backend = *devApiBackend;
+    backend.commCleanup = [](flagcxComm_t comm) {
+      ++active->relayCleanups;
+      return bootstrapCollBarrier(comm->bootstrap, comm->rank, comm->nranks,
+                                  0x7f01);
+    };
+    devApiBackend = &backend;
+    // One participant declares the relay domain; initialization must propagate
+    // it even to ranks without a native communicator or local export.
+    outer->nativeFinalizeScope =
+        rank == 0 ? flagcxNativeFinalizeComm : flagcxNativeFinalizeLocal;
+  }
   void TearDown() override {
-    failImport = failFree = failDevice = false;
+    failImport = failFree = failDevice = failWork = failTransportDevice = false;
     RmaInitRollbackTest::TearDown();
+    devApiBackend = savedBackend;
   }
 };
 } // namespace
@@ -202,26 +272,8 @@ TEST_F(HeteroFinalizeMpi, CollectiveCreationDeclaresClosureBeforePublication) {
 
 TEST_F(HeteroFinalizeMpi,
        OuterFinalizeRetriesClosureThenEveryRankDestroysLocally) {
-  outer = (flagcxComm_t)calloc(1, sizeof(flagcxComm));
-  ASSERT_NE(outer, nullptr);
-  outer->commType = flagcxCommunicatorHybrid;
-  outer->rank = outer->localRank = rank;
-  outer->nranks = outer->localRanks = nranks;
-  outer->localRankToRank = (int *)calloc(nranks, sizeof(int));
-  ASSERT_NE(outer->localRankToRank, nullptr);
-  for (int i = 0; i < nranks; ++i)
-    outer->localRankToRank[i] = i;
-  outer->ipcTable = outer->ipcTableInline;
-  outer->ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
-  // Transfer this fixture's bootstrap to its outer owner. All child protocol
-  // steps are coordinated by the outer Finalize, with no second agreement.
-  outer->bootstrap = owner->bootstrap;
-  owner->bootstrap = nullptr;
-  outer->heteroComm = owner;
-  owner->ownerComm = outer;
-  owner->workOwner = &outer->submittedWork;
-  auto *child = owner;
-  owner = nullptr;
+  makeOuter();
+  auto *child = outer->heteroComm;
   ASSERT_EQ(flagcxCommInitFinalizePolicy(outer), flagcxSuccess);
   failImport = rank == 1;
   EXPECT_EQ(flagcxCommFinalize(outer), flagcxRemoteError);
@@ -234,4 +286,45 @@ TEST_F(HeteroFinalizeMpi,
             flagcxSuccess);
   EXPECT_EQ(outer, nullptr);
   EXPECT_EQ(fifoFrees, rank == 0 ? 1 : 0);
+}
+
+TEST_F(HeteroFinalizeMpi, CrossNodeRelayDrainFailureConvergesBeforeCleanup) {
+  makeOuter(true);
+  attachCollectiveRelayCleanup();
+  ASSERT_EQ(flagcxCommInitFinalizePolicy(outer), flagcxSuccess);
+  ASSERT_EQ(outer->nativeFinalizeScope, flagcxNativeFinalizeComm);
+  flagcxWorkRecord *work = nullptr;
+  ASSERT_EQ(flagcxWorkPrepare(&outer->submittedWork, nullptr, &work),
+            flagcxSuccess);
+  ASSERT_EQ(
+      flagcxWorkFinish(work, nullptr, flagcxSuccess, flagcxWorkNativeGroup, 0),
+      flagcxSuccess);
+  failWork = rank == 1;
+  EXPECT_EQ(flagcxCommFinalize(outer), flagcxRemoteError);
+  EXPECT_EQ(outer->finalizeState.commonPhase, flagcxFinalizeDrain);
+  EXPECT_EQ(relayCleanups, 0);
+  EXPECT_EQ(importCloses + fifoFrees, 0);
+  failWork = false;
+  ASSERT_EQ(flagcxCommFinalize(outer), flagcxSuccess);
+  EXPECT_EQ(relayCleanups, 1);
+  EXPECT_EQ(flagcxTestFinalizeAndDestroyRankLocally(&outer, rank, nranks),
+            flagcxSuccess);
+  EXPECT_EQ(outer, nullptr);
+}
+
+TEST_F(HeteroFinalizeMpi, CrossNodeRelayDeviceFailureConvergesBeforeCleanup) {
+  makeOuter(true);
+  attachCollectiveRelayCleanup();
+  ASSERT_EQ(flagcxCommInitFinalizePolicy(outer), flagcxSuccess);
+  failTransportDevice = rank == 1;
+  EXPECT_EQ(flagcxCommFinalize(outer), flagcxRemoteError);
+  EXPECT_EQ(outer->finalizeState.commonPhase, flagcxFinalizeTransport);
+  EXPECT_EQ(relayCleanups, 0);
+  EXPECT_EQ(importCloses + fifoFrees, 0);
+  failTransportDevice = false;
+  ASSERT_EQ(flagcxCommFinalize(outer), flagcxSuccess);
+  EXPECT_EQ(relayCleanups, 1);
+  EXPECT_EQ(flagcxTestFinalizeAndDestroyRankLocally(&outer, rank, nranks),
+            flagcxSuccess);
+  EXPECT_EQ(outer, nullptr);
 }

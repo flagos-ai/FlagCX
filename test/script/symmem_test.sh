@@ -79,6 +79,8 @@ else
     --case HeteroFinalizeMpi.InitializationDeclaresIpcAndNativeScopeOnEmptyRanks \
     --case HeteroFinalizeMpi.CollectiveCreationDeclaresClosureBeforePublication \
     --case HeteroFinalizeMpi.OuterFinalizeRetriesClosureThenEveryRankDestroysLocally \
+    --case HeteroFinalizeMpi.CrossNodeRelayDrainFailureConvergesBeforeCleanup \
+    --case HeteroFinalizeMpi.CrossNodeRelayDeviceFailureConvergesBeforeCleanup \
     "${reports[@]}" || test_status=$?
 fi
 

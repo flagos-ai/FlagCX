@@ -542,8 +542,30 @@ TEST_F(DefaultDevCommCleanupTest, EarlyCreateFailureDoesNotPublishHandle) {
   EXPECT_EQ(deviceMallocCallCount, 1);
   EXPECT_EQ(devComm, nullptr);
   EXPECT_EQ(heteroComm.devCommHandle, nullptr);
+  EXPECT_EQ(comm.nativeFinalizeScope, flagcxNativeFinalizeLocal);
   EXPECT_TRUE(allocatedPtrs.empty());
   EXPECT_TRUE(deviceFreedPtrs.empty());
+}
+
+TEST_F(DefaultDevCommCleanupTest,
+       RelayCreationDeclaresWorldCleanupBeforeAllocation) {
+  testDeviceAdaptor.deviceMalloc = injectDeviceMallocFailure;
+  failDeviceMallocCall = 1;
+  flagcxHeteroComm heteroComm = {};
+  heteroComm.nRanks = heteroComm.nNodes = 2;
+  heteroComm.relayInitialized = true;
+  heteroComm.nInterPeers = 1;
+  flagcxComm comm = {};
+  comm.nranks = 2;
+  comm.localRanks = 1;
+  comm.heteroComm = &heteroComm;
+  flagcxDevCommRequirements reqs = {};
+  flagcxDevCommInternal devComm = {};
+  EXPECT_EQ(devApiBackend->devCommCreate(&comm, &reqs, sizeof(reqs), &devComm),
+            flagcxSystemError);
+  EXPECT_EQ(comm.nativeFinalizeScope, flagcxNativeFinalizeComm);
+  EXPECT_EQ(deviceMallocCallCount, 1);
+  EXPECT_TRUE(allocatedPtrs.empty());
 }
 
 TEST_F(DefaultDevCommCleanupTest, PartialCreateFailureReleasesOwnedBuffers) {

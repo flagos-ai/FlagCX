@@ -103,6 +103,10 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
     return flagcxSuccess;
   }
 
+  // Collective relay creation also declares its communicator-wide teardown.
+  // Keep the scope through partial creation and cleanup retries.
+  comm->nativeFinalizeScope = flagcxNativeFinalizeComm;
+
   // Already initialized: just copy pointers into devComm
   if (hetero->relayInitialized) {
     devComm->nInterPeers = hetero->nInterPeers;

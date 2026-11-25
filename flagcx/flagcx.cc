@@ -4229,6 +4229,18 @@ static flagcxResult_t flagcxCommFinalizeNativeOwners(flagcxComm_t comm) {
   return flagcxSuccess;
 }
 
+static flagcxResult_t flagcxCommFinalizeStatus(flagcxComm_t comm, int tag,
+                                               flagcxResult_t local) {
+  flagcxResult_t result = flagcxSuccess, common = local;
+  if (comm->nativeFinalizeScope == flagcxNativeFinalizeComm && comm->nranks > 1)
+    result = flagcxConvergeBootstrapStatus(comm, local, &common);
+  else if (comm->internalBuffersNeedPeerClose && comm->nranks > 1)
+    result = bootstrapCollIntraNodeStatus(
+        comm->bootstrap, comm->localRankToRank, comm->localRank,
+        comm->localRanks, tag, local, &common);
+  return result == flagcxSuccess ? common : result;
+}
+
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
   if (comm == NULL)
     return flagcxInvalidArgument;
@@ -4263,7 +4275,11 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
     flagcxResult_t local = flagcxSuccess;
     if (comm->deviceOrdinalValid)
       local = deviceAdaptor->setDevice(comm->deviceOrdinal);
-    if (local == flagcxSuccess && !(state->localDoneMask & (1u << phase))) {
+    // A peer must not enter collective cleanup while device selection failed.
+    result = flagcxCommFinalizeStatus(comm, 0x6c00 + phase * 4, local);
+    if (result != flagcxSuccess)
+      break;
+    if (!(state->localDoneMask & (1u << phase))) {
       INFO(FLAGCX_INIT, "Lifecycle comm=%p rank=%d finalize phase=%d begin",
            comm, comm->rank, phase);
       if (phase <= flagcxFinalizeOwners) {
@@ -4296,17 +4312,7 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
       if (local == flagcxSuccess)
         state->localDoneMask |= 1u << phase;
     }
-    flagcxResult_t common = local;
-    if (comm->nativeFinalizeScope == flagcxNativeFinalizeComm &&
-        comm->nranks > 1) {
-      result = flagcxConvergeBootstrapStatus(comm, local, &common);
-    } else if (comm->internalBuffersNeedPeerClose && comm->nranks > 1) {
-      result = bootstrapCollIntraNodeStatus(
-          comm->bootstrap, comm->localRankToRank, comm->localRank,
-          comm->localRanks, 0x6c00 + phase * 2, local, &common);
-    }
-    if (result == flagcxSuccess)
-      result = common;
+    result = flagcxCommFinalizeStatus(comm, 0x6c01 + phase * 4, local);
     if (result != flagcxSuccess)
       break;
     if (phase == flagcxFinalizeImports && comm->heteroComm != NULL) {

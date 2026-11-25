@@ -43,9 +43,10 @@ flagcxResult_t flagcxCommInitFinalizePolicy(flagcxComm_t comm) {
   struct Policy {
     int scope, required;
   };
-  Policy local = {comm->allowNativeDestroyFinalize || comm->hostComm != NULL,
-                  comm->internalBuffersNeedPeerClose ||
-                      comm->heteroComm != NULL};
+  Policy local = {
+      comm->nativeFinalizeScope == flagcxNativeFinalizeComm ||
+          comm->allowNativeDestroyFinalize || comm->hostComm != NULL,
+      comm->internalBuffersNeedPeerClose || comm->heteroComm != NULL};
   if (comm->nranks <= 1) {
     comm->nativeFinalizeScope = (flagcxNativeFinalizeScope)local.scope;
     comm->internalBuffersNeedPeerClose = local.required;
