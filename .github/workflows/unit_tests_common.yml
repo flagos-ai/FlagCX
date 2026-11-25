@@ -107,18 +107,17 @@ jobs:
         with:
           repository: ${{ inputs.repository || github.repository }}
           ref: ${{ inputs.ref || github.ref }}
-          submodules: ${{ inputs.platform != 'cuda' && 'recursive' || 'false' }}
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
+
+      - name: Checkout submodules with retries
+        shell: bash
+        run: bash .github/scripts/ci/checkout_submodules.sh
 
       - name: Check Docker
         shell: bash
         run: docker version
-
-      - name: Checkout CUDA submodules with retries
-        if: inputs.platform == 'cuda'
-        shell: bash
-        run: bash .github/scripts/ci/checkout_submodules.sh
 
       - name: Run unit-test suite in host-managed container
         env:
@@ -263,9 +262,13 @@ jobs:
         with:
           repository: ${{ inputs.repository || github.repository }}
           ref: ${{ inputs.ref || github.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
+
+      - name: Checkout submodules with retries in job container
+        shell: bash
+        run: bash .github/scripts/ci/checkout_submodules.sh
 
       - name: Clean build artifacts in job container
         run: |

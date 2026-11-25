@@ -5,6 +5,16 @@ set -euo pipefail
 project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
 cd "$project_root"
 
+# Multiple self-hosted jobs can share this checkout and its .git/modules tree.
+# Use the common Git directory so all linked worktrees sharing .git/modules
+# also share this lock. The lock stays outside the worktree cleanup path.
+git_common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+lock_file="$git_common_dir/flagcx-submodule-checkout.lock"
+exec 9>"$lock_file"
+echo "Waiting for shared submodule checkout lock: $lock_file"
+flock --exclusive --wait 900 9
+echo "Acquired shared submodule checkout lock"
+
 git config --global --add safe.directory "$project_root"
 git config --global --add safe.directory "$project_root/third-party/googletest"
 git config --global --add safe.directory "$project_root/third-party/json"
