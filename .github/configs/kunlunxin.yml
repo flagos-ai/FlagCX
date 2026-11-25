@@ -70,6 +70,14 @@ unit_test_suites:
 # Platform exclusions; every entry must document its reason.
 ignore_test:
   gtest:
+  - suite: device_api_host
+    tests:
+    - CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator
+    - CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator
+    - CommStreamIsolation.HeteroRmaNonVmmFinalizeDoesNotDrainIndependentWork
+    reason: XRE cudaLaunchHostFunc is unsupported. These three isolation cases hold independent
+      work in a host callback; restore after a supported independent-work mechanism is validated.
+      Other host cleanup coverage remains enabled.
   - suite: adaptor
     tests:
     - IpcMemHandleMpiTest.*Gdr*

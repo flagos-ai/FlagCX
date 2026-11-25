@@ -806,6 +806,8 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
   FLAGCXCHECK(devHandle->streamDestroy(stream));
+  FLAGCXCHECK(flagcxCommFinalize(comm));
+  FLAGCXCHECK(flagcxCommFinalize(comm));
   FLAGCXCHECK(flagcxCommDestroy(comm));
 
   if (proc == 0) {

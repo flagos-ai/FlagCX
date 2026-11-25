@@ -122,6 +122,11 @@ flagcxResult_t tcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 flagcxResult_t tcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
   if (comm == NULL)
     return flagcxInvalidArgument;
+  if (comm->base == NULL) {
+    free(comm);
+    return flagcxSuccess;
+  }
+
   flagcxResult_t result = fromTcclResult(tcclCommDestroy(comm->base));
   if (result != flagcxSuccess)
     return result;
@@ -130,11 +135,16 @@ flagcxResult_t tcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t tcclAdaptorCommAbort(flagcxInnerComm_t comm) {
-  if (!comm) {
+  if (comm == NULL)
     return flagcxInvalidArgument;
-  }
-  tcclResult_t result = tcclCommAbort(comm->base);
-  return fromTcclResult(result);
+  if (comm->base == NULL)
+    return flagcxSuccess;
+  flagcxResult_t result = fromTcclResult(tcclCommAbort(comm->base));
+  if (result != flagcxSuccess)
+    return result;
+  // Native Abort consumes the SDK context. Keep the wrapper for owner cleanup.
+  comm->base = NULL;
+  return flagcxSuccess;
 }
 
 flagcxResult_t tcclAdaptorCommResume(flagcxInnerComm_t comm) {
@@ -209,6 +219,11 @@ flagcxResult_t tcclAdaptorCommRegister(const flagcxInnerComm_t comm, void *buff,
 
 flagcxResult_t tcclAdaptorCommDeregister(const flagcxInnerComm_t comm,
                                          void *handle) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxSuccess; // Native Abort already retired this registration.
+
   if (!comm) {
     return flagcxInvalidArgument;
   }

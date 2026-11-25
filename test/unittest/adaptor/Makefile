@@ -14,11 +14,11 @@ UNIT_TARGET := $(BINDIR)/adaptor_unit_tests
 
 FIXTURE_INCLUDE += -I$(OBJDIR)
 ADAPTOR_CONTRACTS := $(OBJDIR)/adaptor-contracts/.stamp
-$(ADAPTOR_CONTRACTS): $(PROJECT_ROOT)/test/script/test_ppu_adaptors.py \
+$(ADAPTOR_CONTRACTS): $(PROJECT_ROOT)/test/script/test_adaptor_contracts.py \
     $(wildcard $(PROJECT_ROOT)/flagcx/adaptor/device/*_adaptor.cc) \
     $(wildcard $(PROJECT_ROOT)/flagcx/adaptor/ccl/*_adaptor.cc) \
     $(wildcard $(PROJECT_ROOT)/flagcx/adaptor/include/*_adaptor.h)
-	@PYTHONDONTWRITEBYTECODE=1 python3 $(PROJECT_ROOT)/test/script/test_ppu_adaptors.py --generate-contracts $(dir $@)
+	@PYTHONDONTWRITEBYTECODE=1 python3 $(PROJECT_ROOT)/test/script/test_adaptor_contracts.py --generate-contracts $(dir $@)
 	@touch $@
 
 $(OBJDIR)/test_device_event.o $(OBJDIR)/test_ccl_lifecycle.o $(OBJDIR)/test_host_staging_cleanup.o: $(ADAPTOR_CONTRACTS)
@@ -128,4 +128,4 @@ all: $(HOST_MPI_TARGET)
 
 .PHONY: check-sdk-contracts
 check-sdk-contracts:
-	@CXX="$(CXX)" PYTHONDONTWRITEBYTECODE=1 python3 $(PROJECT_ROOT)/test/script/test_ppu_adaptors.py SdkCompileTest DeviceSelectionTest PpuAdaptorTest.test_hggc_device_selection_always_binds_native_context
+	@CXX="$(CXX)" PYTHONDONTWRITEBYTECODE=1 python3 $(PROJECT_ROOT)/test/script/test_adaptor_contracts.py SdkCompileTest DeviceSelectionTest PpuAdaptorTest.test_hggc_device_selection_always_binds_native_context

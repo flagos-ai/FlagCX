@@ -71,6 +71,14 @@ unit_test_suites:
 
 # Platform exclusions; every entry must document its reason.
 ignore_test:
+  gtest:
+  - suite: device_api_host
+    tests:
+    - CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator
+    - CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator
+    reason: HCCL adaptor has no separate native Finalize; compatibility native Destroy does
+      not guarantee independent native-context stream isolation. Restore after native Finalize
+      is integrated and validated. Public lifecycle and non-VMM RMA tests remain enabled.
   phases:
   - suite: rma
     name: gdr-visibility

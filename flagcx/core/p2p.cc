@@ -1550,16 +1550,8 @@ flagcxP2pCloseImportedFifo(struct flagcxP2pResources *resources) {
   if (resources == NULL)
     return flagcxSuccess;
 
-  // A live imported mapping must always have a peer-visible acknowledgement
-  // channel. Without it, closing locally cannot make it safe for the exporter
-  // to release the backing allocation.
-  if (resources->importedRecvFifoBase != NULL &&
-      resources->proxyInfo.shm == NULL) {
-    WARN("P2P FIFO close: missing teardown SHM for imported base %p",
-         resources->importedRecvFifoBase);
-    return flagcxInternalError;
-  }
-
+  // Bootstrap agrees import closure during Finalize. The transport SHM word
+  // remains an optional data-path notification, never a release permission.
   // No device work may retain the imported mapping when the close ACK becomes
   // visible to the exporting peer.
   if (resources->proxyInfo.stream != NULL) {
@@ -1622,12 +1614,9 @@ flagcxResult_t flagcxP2pReleaseLocalFifo(struct flagcxP2pResources *resources,
     resources->localFifoUnpublished = false;
     return flagcxSuccess;
   }
-  if (resources->shm == NULL) {
-    WARN("P2P FIFO free: missing teardown SHM for local base %p; preserving "
-         "the allocation",
-         resources->localRecvFifo);
-    return flagcxInternalError;
-  }
+  (void)timeoutMs;
+  if (!resources->importsClosedConfirmed)
+    return flagcxInvalidUsage;
 
   if (resources->proxyInfo.stream != NULL) {
     if (deviceAdaptor == NULL || deviceAdaptor->streamSynchronize == NULL)
@@ -1636,28 +1625,6 @@ flagcxResult_t flagcxP2pReleaseLocalFifo(struct flagcxP2pResources *resources,
         deviceAdaptor->streamSynchronize(resources->proxyInfo.stream);
     if (result != flagcxSuccess)
       return result;
-  }
-
-  uint64_t startNs = 0;
-  FLAGCXCHECK(flagcxP2pMonotonicTimeNs(&startNs));
-  uint64_t timeoutNs = 0;
-  if (timeoutMs > 0) {
-    timeoutNs = (uint64_t)timeoutMs > UINT64_MAX / 1000000ULL
-                    ? UINT64_MAX
-                    : (uint64_t)timeoutMs * 1000000ULL;
-  }
-  while (__atomic_load_n(&resources->shm->fifoImportClosed, __ATOMIC_ACQUIRE) !=
-         flagcxP2pFifoImportClosed) {
-    uint64_t nowNs = 0;
-    FLAGCXCHECK(flagcxP2pMonotonicTimeNs(&nowNs));
-    if (timeoutNs == 0 || nowNs - startNs >= timeoutNs) {
-      WARN("P2P FIFO free: timed out waiting for peer to close the import of "
-           "local base %p; preserving the allocation",
-           resources->localRecvFifo);
-      return flagcxSystemError;
-    }
-    struct timespec pause = {0, 1000000}; // 1 ms
-    nanosleep(&pause, NULL);
   }
 
   if (deviceAdaptor == NULL || deviceAdaptor->setDevice == NULL ||

@@ -82,6 +82,7 @@ fi
 ignore_filter=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
   gtest "$SUITE")
 if [[ -n "$ignore_filter" ]]; then
+  echo "Excluded $SUITE GoogleTest cases: $ignore_filter"
   if [[ "${GTEST_FILTER:-}" == *-* ]]; then
     GTEST_FILTER+=":$ignore_filter"
   else
@@ -309,8 +310,40 @@ build_suite() {
 run_device_api_host() {
   local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
-  FLAGCX_CI_TEST_LABEL="device_api_host unit tests" \
-    "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+  local rma_case=CommStreamIsolation.HeteroRmaNonVmmFinalizeDoesNotDrainIndependentWork
+  local main_filter=${GTEST_FILTER:-*}
+  if [[ "$main_filter" == *-* ]]; then
+    main_filter+=":$rma_case"
+  else
+    main_filter+="-$rma_case"
+  fi
+  local status=0
+  GTEST_FILTER="$main_filter" FLAGCX_CI_TEST_LABEL="device_api_host unit tests" \
+    "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || status=$?
+  if ! flagcx_ci_phase_supported non-vmm-rma; then
+    return "$status"
+  fi
+  # Test selection comes from the original effective filter. main_filter adds
+  # the RMA case only to move it into a fresh process, not to disable it.
+  local rma_selected
+  rma_selected=$(python3 - "$rma_case" "${GTEST_FILTER:-*}" <<'PYFILTER'
+import fnmatch, sys
+case, pattern = sys.argv[1:]
+positive, _, negative = pattern.partition("-")
+print(int(any(fnmatch.fnmatchcase(case, p) for p in (positive or "*").split(":"))
+          and not any(fnmatch.fnmatchcase(case, p) for p in negative.split(":"))))
+PYFILTER
+  )
+  if [[ "$rma_selected" != 1 ]]; then
+    flagcx_ci_report_skipped_suite "$SUITE/non-vmm-rma" \
+      "$rma_case is excluded by the effective GTEST_FILTER=${GTEST_FILTER:-*}"
+    return "$status"
+  fi
+  # VMM's cached policy must be zero before the fresh process starts.
+  FLAGCX_VMM_ENABLE=0 GTEST_FILTER="$rma_case" \
+    FLAGCX_CI_TEST_LABEL="device_api_host non-VMM RMA lifecycle" \
+    "$TEST_RUNNER" "$suite_dir/build/bin/test_dev_comm_cleanup" || status=$?
+  return "$status"
 }
 
 flagcx_ci_device_api_intra_only() {
@@ -1204,7 +1237,7 @@ run_suite() {
           -x FLAGCX_CI_RUNNER_BYTES=67108864 \
           "${runner_net_platform_env[@]}" \
           ./build/bin/runner_mpi_tests \
-          --gtest_filter=FlagCXCollTest.AlltoAll || stripe_status=$?
+          --gtest_filter=FlagCXCollTest.AlltoAll:FlagCXCollTest.FinalizeThenRankLocalDestroy || stripe_status=$?
       else
         echo "Skipping runner forced NET multi-QP striping: FLAGCX_CI_HAS_RDMA=0 (no RDMA device available)"
       fi
@@ -1249,7 +1282,7 @@ run_suite() {
           "${pxn_platform_env[@]}" \
           "${runner_net_platform_env[@]}" \
           ./build/bin/runner_mpi_tests \
-          --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll || pxn_status=$?
+          --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll:FlagCXCollTest.FinalizeThenRankLocalDestroy || pxn_status=$?
       elif [[ "${FLAGCX_CI_HAS_RDMA:-1}" != "1" && "${FLAGCX_CI_ENABLE_PXN:-1}" == "1" ]]; then
         echo "Skipping runner PXN: FLAGCX_CI_HAS_RDMA=0 (no RDMA device available)"
       fi
@@ -1311,7 +1344,7 @@ run_suite() {
         -x LD_LIBRARY_PATH
       )
       local symmem_bin="$PROJECT_ROOT/test/unittest/symmem/build/bin/symmem_mpi_tests"
-      local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.FullMeshRoundFailureConvergesAndRetries:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricLocalDeregisterUsesCommonPublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.SegmentedMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeLocalCleanupFailureRetries:SymMemTest.CrossNodeMixedVmmRejectsSymmetricAndRetriesIpc:SymMemTest.CrossNodeMixedMultiSegmentVmmRejectsSymmetricAndRetriesVmm:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.LsaWindowsShareArenaAndReuseReleasedOffset:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow"
+      local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.FullMeshRoundFailureConvergesAndRetries:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricLocalDeregisterUsesCommonPublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.SegmentedMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeLocalCleanupFailureRetries:SymMemTest.CrossNodeMixedVmmRejectsSymmetricAndRetriesIpc:SymMemTest.CrossNodeMixedMultiSegmentVmmRejectsSymmetricAndRetriesVmm:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.LsaWindowsShareArenaAndReuseReleasedOffset:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow:SymMemTest.FinalizeConfirmsImportsBeforeLocalExporterRelease"
 
       if ((symmem_run_vmm_local != 0)); then
         FLAGCX_CI_MPI_LABEL="symmem remote without NET" \

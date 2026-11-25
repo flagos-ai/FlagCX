@@ -95,6 +95,10 @@ static flagcxResult_t flagcxHeteroBeginWork(flagcxHeteroComm_t comm,
                                             int hostOnly = 0) {
   if (comm == NULL)
     return flagcxInvalidArgument;
+  if ((comm->finalizeState.rollbackPending ||
+       __atomic_load_n(&comm->finalizeState.started, __ATOMIC_ACQUIRE)) &&
+      !flagcxWorkHasCurrent(flagcxHeteroWorkOwner(comm)))
+    return flagcxInvalidUsage;
   flagcxResult_t result =
       hostOnly ? flagcxWorkPrepareHost(flagcxHeteroWorkOwner(comm), record)
                : flagcxWorkPrepareAccepted(flagcxHeteroWorkOwner(comm), stream,
@@ -1750,8 +1754,10 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
 }
 
 flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
-  if (proxy == NULL)
+  if (proxy == NULL || proxy->stopComplete)
     return flagcxSuccess;
 
   __atomic_store_n(&proxy->quiesced, 1, __ATOMIC_RELEASE);
@@ -1807,6 +1813,20 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
     proxy->readySeqsCpu = NULL;
     proxy->readySeqsMapped = false;
   }
+  proxy->stopComplete = true;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHeteroRmaProxyRelease(flagcxHeteroComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  auto *proxy = comm->rmaProxy;
+  if (proxy == NULL)
+    return flagcxSuccess;
+  if (!proxy->stopComplete || proxy->worker != NULL ||
+      __atomic_load_n(&proxy->callbacks, __ATOMIC_ACQUIRE) != 0)
+    return flagcxInvalidUsage;
+  flagcxResult_t result;
   if (proxy->doneSeqsDev != NULL) {
     result = deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, NULL);
     if (result != flagcxSuccess)
@@ -3151,6 +3171,10 @@ static flagcxResult_t flagcxHeteroSendTracked(const void *buffer, size_t count,
                                               int fromProxy) {
   if (comm == NULL)
     return flagcxInvalidArgument;
+  if (!fromProxy &&
+      (comm->finalizeState.started || comm->finalizeState.rollbackPending) &&
+      !flagcxWorkHasCurrent(flagcxHeteroWorkOwner(comm)))
+    return flagcxInvalidUsage;
   flagcxWorkTracker *tracker =
       fromProxy ? &comm->proxyWork : flagcxHeteroWorkOwner(comm);
   flagcxWorkRecord *record = NULL;
@@ -3187,6 +3211,10 @@ static flagcxResult_t flagcxHeteroRecvTracked(void *buffer, size_t count,
                                               int fromProxy) {
   if (comm == NULL)
     return flagcxInvalidArgument;
+  if (!fromProxy &&
+      (comm->finalizeState.started || comm->finalizeState.rollbackPending) &&
+      !flagcxWorkHasCurrent(flagcxHeteroWorkOwner(comm)))
+    return flagcxInvalidUsage;
   flagcxWorkTracker *tracker =
       fromProxy ? &comm->proxyWork : flagcxHeteroWorkOwner(comm);
   flagcxWorkRecord *record = NULL;

@@ -74,6 +74,9 @@ flagcx_ci_configure_suite() {
     device_api|device_api_host|device_api_unified_ir)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      if [[ "$suite" == device_api_host ]]; then
+        export FLAGCX_CI_TEST_DIAGNOSTICS_AFTER=${FLAGCX_CI_TEST_DIAGNOSTICS_AFTER:-2}
+      fi
       if [[ "$suite" != device_api_host ]]; then
         # BAREX has no remote signal atomic for Device API inter tests yet.
         # Keep the normal intra runs; forced-Net intra also needs that atomic.
@@ -129,7 +132,12 @@ flagcx_ci_run_suite_override() {
     # Exercise every collective with PCCL's built-in kernels, including when
     # the runner's inherited environment explicitly enables the plugin.
     export PCCL_ENABLE_EXT_KERNEL=0
-    export GTEST_FILTER='*-CoverageSupplemental.*'
+    local inherited_filter=${GTEST_FILTER:-*}
+    export GTEST_FILTER='*-CoverageSupplemental.*:FlagCXCollTest.FinalizeThenRankLocalDestroy'
+    if [[ "$inherited_filter" == *-* ]]; then
+      GTEST_FILTER+=":${inherited_filter#*-}"
+    fi
+    echo "Skipping FlagCXCollTest.FinalizeThenRankLocalDestroy: PCCL native Destroy may wait for peers after Finalize"
     local runner_status=0
     FLAGCX_CI_TEST_LABEL="runner unit tests" \
       "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || runner_status=1

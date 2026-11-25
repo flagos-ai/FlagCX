@@ -47,7 +47,18 @@ unit_test_suites:
 
 # Platform exclusions; every entry must document its reason.
 ignore_test:
+  gtest:
+  - suite: device_api_host
+    tests:
+    - CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator
+    - CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator
+    reason: ECCL adaptor has no separate native Finalize; native-context stream isolation
+      requires a supported native Finalize. The host test target also remains disabled.
   phases:
+  - suite: device_api_host
+    name: non-vmm-rma
+    reason: Enflame host test target is disabled; no device_api_host binary is built. This
+      phase provides no test coverage.
   - suite: p2p
     name: p2p-write-mpi
     when:

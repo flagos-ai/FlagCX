@@ -56,6 +56,11 @@ flagcxResult_t mcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 flagcxResult_t mcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
   if (comm == NULL)
     return flagcxInvalidArgument;
+  if (comm->base == NULL) {
+    free(comm);
+    return flagcxSuccess;
+  }
+
   flagcxResult_t result = (flagcxResult_t)mcclCommDestroy(comm->base);
   if (result != flagcxSuccess)
     return result;
@@ -64,7 +69,16 @@ flagcxResult_t mcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t mcclAdaptorCommAbort(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)mcclCommAbort(comm->base);
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxSuccess;
+  flagcxResult_t result = (flagcxResult_t)mcclCommAbort(comm->base);
+  if (result != flagcxSuccess)
+    return result;
+  // Native Abort consumes the SDK context. Keep the wrapper for owner cleanup.
+  comm->base = NULL;
+  return flagcxSuccess;
 }
 
 flagcxResult_t mcclAdaptorCommResume(flagcxInnerComm_t comm) {
@@ -110,6 +124,10 @@ flagcxResult_t mcclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 }
 
 flagcxResult_t mcclAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxSuccess;
   return (flagcxResult_t)mcclCommDeregister(comm->base, handle);
 }
 
@@ -135,11 +153,17 @@ flagcxResult_t mcclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
 
 flagcxResult_t mcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
                                                flagcxInnerWindow_t win) {
-  flagcxResult_t res = flagcxSuccess;
-  res = (flagcxResult_t)mcclCommWindowDeregister(comm->base, win->base);
-  if (res == flagcxSuccess)
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL) {
     free(win);
-  return res;
+    return flagcxSuccess;
+  }
+  flagcxResult_t result =
+      (flagcxResult_t)mcclCommWindowDeregister(comm->base, win->base);
+  if (result == flagcxSuccess)
+    free(win);
+  return result;
 }
 #else  // MCCL_VERSION_CODE < MCCL_VERSION(2, 30, 4)
 flagcxResult_t mcclAdaptorMemAlloc(void **ptr, size_t size) {

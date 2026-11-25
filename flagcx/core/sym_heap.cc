@@ -1167,7 +1167,8 @@ static flagcxResult_t flagcxSymCleanupUnpublished(flagcxHeteroComm_t comm,
     if (comm->ipcTable == nullptr || d->ipcSlot >= comm->ipcTableSize)
       local = flagcxInvalidUsage;
     else
-      local = releaseIpcTableEntry(&comm->ipcTable[d->ipcSlot]);
+      local =
+          releaseIpcTableEntry(&comm->ipcTable[d->ipcSlot], comm->ownerComm);
     if (local == flagcxSuccess)
       d->ipcSlot = -1;
   }

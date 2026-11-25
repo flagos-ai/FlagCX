@@ -52,8 +52,8 @@ TEST(HostMpiCleanup, AutomaticFallbackOwnerDestroysWhilePeersWait) {
   ASSERT_EQ(
       mpiAdaptor.commInitRank(&comm->hostComm, size, nullptr, rank, nullptr),
       flagcxSuccess);
-  comm->destroyPhase =
-      7; // No IPC owners; test the existing local release path.
+  comm->finalizeState.commonPhase = flagcxFinalizeComplete;
+  comm->finalizeState.lifecycle = flagcxCommFinalized;
   comm->ipcTable = comm->ipcTableInline;
   comm->ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
   MPI_Barrier(MPI_COMM_WORLD);
