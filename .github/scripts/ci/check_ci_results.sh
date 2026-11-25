@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if [[ $# -ne 7 && $# -ne 8 ]]; then
-  echo "Usage: $0 <active> <has-platforms> <prepare> <unit> <perf> <torch-api> <format> [level]" >&2
+if [[ $# -lt 7 || $# -gt 9 ]]; then
+  echo "Usage: $0 <active> <has-platforms> <prepare> <unit> <perf> <torch-api> <format> [level] [suite-filter-active]" >&2
   exit 2
 fi
 
@@ -15,6 +15,7 @@ perf_result=$5
 torch_result=$6
 format_result=$7
 level=${8:-L2}
+suite_filter_active=${9:-false}
 
 case "$level" in
   L0|L1|L2|L3) ;;
@@ -41,12 +42,21 @@ fi
 if [[ "$has_platforms" == true ]]; then
   case "$level" in
     L2|L3)
-      for result in "$perf_result" "$torch_result"; do
-        [[ "$result" == success ]] || {
-          echo "Selected platform workflow ended with result: $result" >&2
-          exit 1
-        }
-      done
+      if [[ "$suite_filter_active" == true ]]; then
+        for result in "$perf_result" "$torch_result"; do
+          case "$result" in
+            success|skipped) ;;
+            *) echo "Platform workflow failed during focused suite run: $result" >&2; exit 1 ;;
+          esac
+        done
+      else
+        for result in "$perf_result" "$torch_result"; do
+          [[ "$result" == success ]] || {
+            echo "Selected platform workflow ended with result: $result" >&2
+            exit 1
+          }
+        done
+      fi
       ;;
     *)
       # At L0/L1 perf/torch are intentionally skipped. Unexpected cancellation

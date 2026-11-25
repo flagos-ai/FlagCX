@@ -132,6 +132,25 @@ class CiMatrixRoutingTest(unittest.TestCase):
             )["unit_test_suites"]
             self.assertEqual(entry["suites"], expected)
 
+    def test_requested_suite_unavailable_on_selected_platform_fails_clearly(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context_path = Path(temp_dir) / "context.json"
+            output_path = Path(temp_dir) / "github-output"
+            context_path.write_text(json.dumps({
+                "event_name": "workflow_dispatch",
+                "selection": "metax",
+                "suites": ["device_api"],
+            }))
+            env = dict(os.environ, GITHUB_OUTPUT=str(output_path))
+            result = subprocess.run(
+                ["ruby", str(MATRIX_SCRIPT), str(CONFIG_DIR), str(context_path)],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("do not provide requested suite", result.stderr)
+
     def test_l3_keeps_explicit_platform_selection(self):
         outputs, _ = self.resolve({
             "event_name": "pull_request",
@@ -614,6 +633,18 @@ class CiRetryTest(unittest.TestCase):
 
 
 class CiWorkflowWiringTest(unittest.TestCase):
+    def test_push_resolver_fetches_before_commit_and_gate_receives_suite_filter(self):
+        workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/unit-test.yml").read_text())
+        prepare_steps = workflow["jobs"]["prepare"]["steps"]
+        checkout = next(step for step in prepare_steps if step.get("name") == "Checkout CI configuration")
+        self.assertEqual(checkout["with"]["fetch-depth"], 0)
+        gate = workflow["jobs"]["ci_complete"]["steps"][-1]
+        self.assertEqual(
+            gate["env"]["SUITE_FILTER_ACTIVE"],
+            "${{ needs.prepare.outputs.suite_filter_active }}",
+        )
+        self.assertIn("$SUITE_FILTER_ACTIVE", gate["run"])
+
     def test_single_gate_calls_all_platform_workflows(self):
         workflow = (REPO_ROOT / ".github/workflows/unit-test.yml").read_text()
         self.assertIn("name: FlagCX CI", workflow)
@@ -742,7 +773,13 @@ class CiWorkflowWiringTest(unittest.TestCase):
 
 
 class CiCompletionGateTest(unittest.TestCase):
-    def check(self, *results):
+    def check(self, *results, level=None, suite_filter_active=None):
+        if level is not None:
+            results += (level,)
+        if suite_filter_active is not None:
+            if level is None:
+                results += ("L2",)
+            results += (suite_filter_active,)
         return subprocess.run(
             ["bash", str(GATE_SCRIPT), *results],
             capture_output=True,
@@ -788,6 +825,18 @@ class CiCompletionGateTest(unittest.TestCase):
             "true", "true", "success", "success", "cancelled", "skipped", "success", "L1"
         )
         self.assertNotEqual(cancelled.returncode, 0)
+
+    def test_focused_suite_run_allows_perf_and_torch_skips_only(self):
+        passed = self.check(
+            "true", "true", "success", "success", "skipped", "skipped", "success",
+            level="L2", suite_filter_active="true",
+        )
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        failed = self.check(
+            "true", "true", "success", "success", "failure", "skipped", "success",
+            level="L2", suite_filter_active="true",
+        )
+        self.assertNotEqual(failed.returncode, 0)
 
 
 class PlatformWorkflowCompletionTest(unittest.TestCase):

@@ -63,6 +63,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Resolve changed paths, labels, and authorization
@@ -227,8 +228,10 @@ jobs:
           TORCH_RESULT: ${{ needs.torch_api_tests.result }}
           FORMAT_RESULT: ${{ needs.format-check.result }}
           LEVEL: ${{ needs.prepare.outputs.level }}
+          SUITE_FILTER_ACTIVE: ${{ needs.prepare.outputs.suite_filter_active }}
         shell: bash
         run: |
           bash .github/scripts/ci/check_ci_results.sh \
             "$ACTIVE" "$HAS_PLATFORMS" "$PREPARE_RESULT" "$UNIT_RESULT" \
-            "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT" "$LEVEL"
+            "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT" "$LEVEL" \
+            "$SUITE_FILTER_ACTIVE"

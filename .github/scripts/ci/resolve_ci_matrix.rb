@@ -186,6 +186,8 @@ unit_suites = selected.to_h do |entry|
   config = load_yaml.call(File.join(config_dir, "#{entry.fetch("platform")}.yml"))
   [entry.fetch("platform"), config.fetch("unit_test_suites", [])]
 end
+unsupported_suites = requested_suites - unit_suites.values.flatten.uniq
+abort "Selected platforms do not provide requested suite(s): #{unsupported_suites.join(", ")}" unless unsupported_suites.empty?
 suite_shared_paths = suites_config.fetch("shared_paths_watch", [])
 suite_path_map = suites_config.fetch("suites", {})
 matrix_entries = selected.map do |entry|

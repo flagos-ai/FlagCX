@@ -8,7 +8,10 @@ cd "$project_root"
 # Multiple self-hosted jobs can share this checkout and its .git/modules tree.
 # Use the common Git directory so all linked worktrees sharing .git/modules
 # also share this lock. The lock stays outside the worktree cleanup path.
-git_common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+git_common_dir=$(git rev-parse --git-common-dir)
+if [[ "$git_common_dir" != /* ]]; then
+  git_common_dir="$project_root/$git_common_dir"
+fi
 lock_file="$git_common_dir/flagcx-submodule-checkout.lock"
 exec 9>"$lock_file"
 echo "Waiting for shared submodule checkout lock: $lock_file"
