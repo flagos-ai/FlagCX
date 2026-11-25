@@ -16,6 +16,7 @@
 #include "info.h"
 #include "register.h"
 #include "type.h"
+#include "work.h"
 #include <stdint.h>
 
 #define CACHE_LINE_SIZE 128
@@ -173,7 +174,12 @@ struct flagcxSymLsaArena;
 class flagcxWorkerPool;
 
 struct flagcxHeteroComm {
+  struct flagcxWorkTracker submittedWork;
+  struct flagcxWorkTracker proxyWork;
+  struct flagcxWorkTracker *workOwner;
+  struct flagcxGroupPendingWork *pendingGroupWork;
   uint64_t startMagic;
+  bool netPluginHeld;
   bool destroyProxyComplete;
   flagcxResult_t destroyProxyResult;
   struct flagcxMemoryStack memPermanent, memScoped;

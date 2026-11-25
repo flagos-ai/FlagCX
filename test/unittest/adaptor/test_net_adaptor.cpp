@@ -901,7 +901,7 @@ TEST(IbucOwnershipTest, SrqCleanupPreservesPostedBuffersUntilDestroySucceeds) {
   EXPECT_EQ(ibucDestroyCqCalls, 1);
 }
 
-TEST(IbucOwnershipTest, SendCloseRetriesNewlyDeferredCleanup) {
+TEST(IbucOwnershipTest, SendCloseRetainsOwnerUntilRetrySucceeds) {
   ScopedIbucVerbsSymbols symbols;
   ibvSymbols.ibv_internal_dereg_mr = fakeIbucDeregisterMr;
   ibucDeregisterCalls = 0;
@@ -921,11 +921,13 @@ TEST(IbucOwnershipTest, SendCloseRetriesNewlyDeferredCleanup) {
   ibucDeregisterFailure = retransMr;
 
   EXPECT_EQ(flagcxIbucCloseSend(comm), flagcxSystemError);
-  ASSERT_EQ(ibucDeregisteredMrs.size(), 3u);
+  ASSERT_EQ(ibucDeregisteredMrs.size(), 2u);
   EXPECT_EQ(ibucDeregisteredMrs[0], fifoMr);
   EXPECT_EQ(ibucDeregisteredMrs[1], retransMr);
-  // closeSend consumes the handle and immediately retries newly deferred
-  // ownership. Only the MR whose first deregistration failed is retried.
+  EXPECT_EQ(comm->devs[0].fifoMr, nullptr);
+  EXPECT_EQ(comm->retransHdrMr, retransMr);
+  EXPECT_EQ(flagcxIbucCloseSend(comm), flagcxSuccess);
+  ASSERT_EQ(ibucDeregisteredMrs.size(), 3u);
   EXPECT_EQ(ibucDeregisteredMrs[2], retransMr);
 }
 
@@ -1204,10 +1206,7 @@ TEST(PpuPcclLoading, NativeCommBeforeBarexHostMrRegistration) {
   struct NativeCommGuard {
     flagcxCCLAdaptor *adaptor;
     flagcxInnerComm_t comm;
-    ~NativeCommGuard() {
-      EXPECT_EQ(adaptor->commDestroy(comm), flagcxSuccess);
-      free(comm);
-    }
+    ~NativeCommGuard() { EXPECT_EQ(adaptor->commDestroy(comm), flagcxSuccess); }
   } native{ccl, nativeComm};
 
   // The PPU CI preflight runs this case alone, so PCCL is opened before BAREX

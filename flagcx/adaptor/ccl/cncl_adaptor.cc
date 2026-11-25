@@ -85,8 +85,14 @@ flagcxResult_t cnclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t cnclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  flagcxResult_t result = (flagcxResult_t)
       c2f_ret_map[cnclDestroyComms(&(comm->base), 1 /*num_comm*/)];
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
+  return flagcxSuccess;
 }
 
 flagcxResult_t cnclAdaptorCommAbort(flagcxInnerComm_t comm) {

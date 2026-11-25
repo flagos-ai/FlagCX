@@ -19,54 +19,67 @@ int64_t flagcxParamUniRunnerGroupSize();
 FLAGCX_PARAM(UniRunnerGemmKSlices, "UNIRUNNER_GEMM_KSLICES", 1);
 FLAGCX_PARAM(UniRunnerGemmWorkersPerStep, "UNIRUNNER_GEMM_WORKERS_PER_STEP", 0);
 
+static flagcxResult_t waitFusedWorkspace(flagcxComm_t comm,
+                                         flagcxFusedInvocationBuffers *buffers,
+                                         int wait) {
+  if (buffers->workspaceWork != NULL) {
+    flagcxResult_t result =
+        wait ? flagcxWorkDrainRecord(buffers->workspaceWork, comm->heteroComm)
+             : flagcxWorkPollRecord(buffers->workspaceWork);
+    if (result != flagcxSuccess)
+      return result;
+    flagcxWorkDrop(buffers->workspaceWork);
+    buffers->workspaceWork = NULL;
+  }
+  return flagcxSuccess;
+}
+
 extern "C" flagcxResult_t flagcxFusedDrainPendingBuffers(flagcxComm_t comm) {
-  if (comm == nullptr || comm->heteroComm == nullptr ||
-      comm->heteroComm->proxyState == nullptr)
+  if (comm == NULL || comm->heteroComm == NULL ||
+      comm->heteroComm->proxyState == NULL)
     return flagcxSuccess;
   auto *state = &comm->heteroComm->proxyState->uniRunnerState;
-  if (state->pendingFusedBuffers == nullptr)
+  if (state->pendingFusedBuffers == NULL)
     return flagcxSuccess;
   FLAGCXCHECK(deviceAdaptor->setDevice(comm->heteroComm->cudaDev));
-  FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
-
   bool needsRunnerCleanup = false;
-  for (auto *node = state->pendingFusedBuffers; node != nullptr;
-       node = node->next)
+  for (auto *node = state->pendingFusedBuffers; node != NULL; node = node->next)
     needsRunnerCleanup |= node->runnerCleanupPending;
-  flagcxResult_t cleanupResult =
-      needsRunnerCleanup ? cleanupUniRunner(comm) : flagcxSuccess;
-
-  flagcxResult_t result = cleanupResult;
+  flagcxResult_t runner =
+      needsRunnerCleanup ? cleanupUniRunner(comm, false) : flagcxSuccess;
+  flagcxResult_t first = flagcxSuccess;
   auto **link = &state->pendingFusedBuffers;
-  while (*link != nullptr) {
+  while (*link != NULL) {
     auto *buffers = *link;
-    if (cleanupResult == flagcxSuccess)
+    flagcxResult_t result =
+        buffers->runnerCleanupPending ? runner : flagcxSuccess;
+    if (result == flagcxSuccess) {
       buffers->runnerCleanupPending = false;
-    if (buffers->counters != nullptr) {
-      flagcxResult_t freeResult = deviceAdaptor->deviceFree(
-          buffers->counters, flagcxMemDevice, nullptr);
-      if (freeResult == flagcxSuccess)
-        buffers->counters = nullptr;
-      else if (result == flagcxSuccess)
-        result = freeResult;
+      result = waitFusedWorkspace(comm, buffers, 0);
     }
-    if (buffers->workspace != nullptr) {
-      flagcxResult_t freeResult = deviceAdaptor->deviceFree(
-          buffers->workspace, flagcxMemDevice, nullptr);
-      if (freeResult == flagcxSuccess)
-        buffers->workspace = nullptr;
-      else if (result == flagcxSuccess)
-        result = freeResult;
+    if (result == flagcxSuccess && buffers->counters != NULL) {
+      result =
+          deviceAdaptor->deviceFree(buffers->counters, flagcxMemDevice, NULL);
+      if (result == flagcxSuccess)
+        buffers->counters = NULL;
     }
-    if (buffers->counters == nullptr && buffers->workspace == nullptr &&
-        !buffers->runnerCleanupPending) {
+    if (result == flagcxSuccess && buffers->workspace != NULL) {
+      result =
+          deviceAdaptor->deviceFree(buffers->workspace, flagcxMemDevice, NULL);
+      if (result == flagcxSuccess)
+        buffers->workspace = NULL;
+    }
+    if (result == flagcxSuccess) {
       *link = buffers->next;
       free(buffers);
     } else {
+      if (first == flagcxSuccess ||
+          (first == flagcxInProgress && result != flagcxInProgress))
+        first = result;
       link = &buffers->next;
     }
   }
-  return result;
+  return first;
 }
 
 namespace {
@@ -543,29 +556,22 @@ static flagcxResult_t validateCommon(const void *input, const void *weight,
 
 static flagcxResult_t finishInvocation(flagcxResult_t res, bool initialized,
                                        flagcxComm_t comm,
-                                       flagcxFusedInvocationBuffers *buffers,
-                                       flagcxStream_t stream = nullptr,
-                                       bool streamWorkMayBePending = false) {
+                                       flagcxFusedInvocationBuffers *buffers) {
   if (buffers == nullptr)
     return res;
   bool drained = true;
   if (initialized) {
-    flagcxResult_t cleanupRes = cleanupUniRunner(comm);
+    flagcxResult_t cleanup = cleanupUniRunner(comm);
     if (res == flagcxSuccess)
-      res = cleanupRes;
-    drained = cleanupRes == flagcxSuccess;
-    buffers->runnerCleanupPending = cleanupRes != flagcxSuccess;
-  } else if (streamWorkMayBePending) {
-    flagcxResult_t syncResult = deviceAdaptor->streamSynchronize(stream);
-    if (res == flagcxSuccess)
-      res = syncResult;
-    drained = syncResult == flagcxSuccess;
+      res = cleanup;
+    drained = cleanup == flagcxSuccess;
+    buffers->runnerCleanupPending = !drained;
   }
-  if (!drained) {
-    flagcxResult_t syncResult = deviceAdaptor->deviceSynchronize();
-    drained = syncResult == flagcxSuccess;
+  if (drained) {
+    flagcxResult_t completion = waitFusedWorkspace(comm, buffers, 1);
     if (res == flagcxSuccess)
-      res = syncResult;
+      res = completion;
+    drained = completion == flagcxSuccess;
   }
   if (!drained) {
     auto *state = &comm->heteroComm->proxyState->uniRunnerState;
@@ -610,10 +616,11 @@ flagcxResult_t resolveUniRunnerDslGemmWorkerCount(uint32_t m, uint32_t n,
                                          workerCount);
 }
 
-flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
-                                   void *output, size_t mPerRank, size_t n,
-                                   size_t k, flagcxDataType_t datatype,
-                                   flagcxComm_t comm, flagcxStream_t stream) {
+static flagcxResult_t
+flagcxAllGatherGemmImpl(const void *input, const void *weight, void *output,
+                        size_t mPerRank, size_t n, size_t k,
+                        flagcxDataType_t datatype, flagcxComm_t comm,
+                        flagcxStream_t stream) {
   flagcxResult_t res = validateCommon(input, weight, output, mPerRank, n, k,
                                       datatype, comm, stream);
   if (comm == nullptr) {
@@ -640,7 +647,6 @@ flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
   size_t agScratchElements = 0, agScratchBytes = 0;
   size_t counterBytes = 0, counterOffset = 0, totalWorkspaceBytes = 0;
   size_t gemmNodes = 0, numNodes = 0, dagBytes = 0;
-  bool workspaceStreamWork = false;
   auto prepareWorkspace = [&]() -> flagcxResult_t {
     FLAGCXCHECK(getEffectiveSlices(k, &slices));
     if (comm->nranks > 1 &&
@@ -676,11 +682,19 @@ flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
     if (buffers->workspace == nullptr)
       return flagcxSystemError;
     char *counterBase = static_cast<char *>(buffers->workspace) + counterOffset;
-    workspaceStreamWork = true;
+    flagcxResult_t prepared = flagcxWorkPrepareAccepted(
+        &comm->submittedWork, stream, &buffers->workspaceWork);
+    if (prepared != flagcxSuccess)
+      return prepared;
+    flagcxWorkRetain(buffers->workspaceWork);
     flagcxResult_t memsetResult = deviceAdaptor->deviceMemset(
         counterBase, 0, counterBytes, flagcxMemDevice, stream);
-    flagcxResult_t syncResult = deviceAdaptor->streamSynchronize(stream);
-    return memsetResult != flagcxSuccess ? memsetResult : syncResult;
+    flagcxResult_t recorded =
+        flagcxWorkFinish(buffers->workspaceWork, stream, memsetResult,
+                         flagcxWorkNativeGroup, 0, 1);
+    if (recorded != flagcxSuccess)
+      return recorded;
+    return flagcxWorkDrainRecord(buffers->workspaceWork, comm->heteroComm);
   };
   if (res == flagcxSuccess)
     res = prepareWorkspace();
@@ -690,7 +704,7 @@ flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
   if (agreement != flagcxSuccess || commonPrepare != flagcxSuccess)
     return finishInvocation(agreement != flagcxSuccess ? agreement
                                                        : commonPrepare,
-                            false, comm, buffers, stream, workspaceStreamWork);
+                            false, comm, buffers);
 
   void *workspace = buffers->workspace;
   char *counterBase = static_cast<char *>(workspace) + counterOffset;
@@ -740,12 +754,11 @@ flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
   return finishInvocation(res, initialized, comm, buffers);
 }
 
-flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
-                                       void *output, size_t m, size_t n,
-                                       size_t kPerRank,
-                                       flagcxDataType_t datatype,
-                                       flagcxRedOp_t op, flagcxComm_t comm,
-                                       flagcxStream_t stream) {
+static flagcxResult_t
+flagcxGemmReduceScatterImpl(const void *input, const void *weight, void *output,
+                            size_t m, size_t n, size_t kPerRank,
+                            flagcxDataType_t datatype, flagcxRedOp_t op,
+                            flagcxComm_t comm, flagcxStream_t stream) {
   flagcxResult_t res = validateCommon(input, weight, output, m, n, kPerRank,
                                       datatype, comm, stream);
   if (comm == nullptr) {
@@ -779,7 +792,6 @@ flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
   size_t dataWorkspaceBytes = 0, counterBytes = 0, counterOffset = 0;
   size_t totalWorkspaceBytes = 0;
   size_t gemmNodes = 0, ringNodes = 0, numNodes = 0, dagBytes = 0;
-  bool workspaceStreamWork = false;
   auto prepareWorkspace = [&]() -> flagcxResult_t {
     FLAGCXCHECK(getEffectiveSlices(kPerRank, &slices));
     if (rowsPerRank > UINT32_MAX || !checkedMul(m, kPerRank, &inputElements) ||
@@ -815,11 +827,19 @@ flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
     if (buffers->workspace == nullptr)
       return flagcxSystemError;
     char *counterBase = static_cast<char *>(buffers->workspace) + counterOffset;
-    workspaceStreamWork = true;
+    flagcxResult_t prepared = flagcxWorkPrepareAccepted(
+        &comm->submittedWork, stream, &buffers->workspaceWork);
+    if (prepared != flagcxSuccess)
+      return prepared;
+    flagcxWorkRetain(buffers->workspaceWork);
     flagcxResult_t memsetResult = deviceAdaptor->deviceMemset(
         counterBase, 0, counterBytes, flagcxMemDevice, stream);
-    flagcxResult_t syncResult = deviceAdaptor->streamSynchronize(stream);
-    return memsetResult != flagcxSuccess ? memsetResult : syncResult;
+    flagcxResult_t recorded =
+        flagcxWorkFinish(buffers->workspaceWork, stream, memsetResult,
+                         flagcxWorkNativeGroup, 0, 1);
+    if (recorded != flagcxSuccess)
+      return recorded;
+    return flagcxWorkDrainRecord(buffers->workspaceWork, comm->heteroComm);
   };
   if (res == flagcxSuccess)
     res = prepareWorkspace();
@@ -829,7 +849,7 @@ flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
   if (agreement != flagcxSuccess || commonPrepare != flagcxSuccess)
     return finishInvocation(agreement != flagcxSuccess ? agreement
                                                        : commonPrepare,
-                            false, comm, buffers, stream, workspaceStreamWork);
+                            false, comm, buffers);
 
   void *workspace = buffers->workspace;
   char *counterBase = static_cast<char *>(workspace) + counterOffset;
@@ -885,4 +905,46 @@ flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
                             initialized, comm, buffers);
   res = runUniRunner(comm, true);
   return finishInvocation(res, initialized, comm, buffers);
+}
+
+flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
+                                   void *output, size_t mPerRank, size_t n,
+                                   size_t k, flagcxDataType_t datatype,
+                                   flagcxComm_t comm, flagcxStream_t stream) {
+  if (comm == NULL || comm->heteroComm == NULL ||
+      !comm->uniRunnerKernelSupported)
+    return flagcxAllGatherGemmImpl(input, weight, output, mPerRank, n, k,
+                                   datatype, comm, stream);
+  flagcxWorkRecord *record = NULL;
+  flagcxResult_t result =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (result != flagcxSuccess)
+    return result;
+  flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  result = flagcxAllGatherGemmImpl(input, weight, output, mPerRank, n, k,
+                                   datatype, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkNativeGroup, 0, 1);
+}
+
+flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
+                                       void *output, size_t m, size_t n,
+                                       size_t kPerRank,
+                                       flagcxDataType_t datatype,
+                                       flagcxRedOp_t op, flagcxComm_t comm,
+                                       flagcxStream_t stream) {
+  if (comm == NULL || comm->heteroComm == NULL ||
+      !comm->uniRunnerKernelSupported)
+    return flagcxGemmReduceScatterImpl(input, weight, output, m, n, kPerRank,
+                                       datatype, op, comm, stream);
+  flagcxWorkRecord *record = NULL;
+  flagcxResult_t result =
+      flagcxWorkPrepareAccepted(&comm->submittedWork, stream, &record);
+  if (result != flagcxSuccess)
+    return result;
+  flagcxWorkRecord *previous = flagcxWorkSetCurrent(record);
+  result = flagcxGemmReduceScatterImpl(input, weight, output, m, n, kPerRank,
+                                       datatype, op, comm, stream);
+  flagcxWorkSetCurrent(previous);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkNativeGroup, 0, 1);
 }

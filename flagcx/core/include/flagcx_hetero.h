@@ -102,6 +102,12 @@ struct flagcxRmaIpcState {
 // pending queues: producer = caller (proxy kernel thread), consumer = RMA
 // worker. inProgress queues: RMA worker only (no locking needed).
 struct flagcxRmaProxyState {
+  flagcxResult_t workerCleanupResult;
+  int destroyedPeerMutexes;
+  bool doneCondDestroyed;
+  bool doneMutexDestroyed;
+  bool doneSeqsMapped;
+  bool readySeqsMapped;
   uint32_t queueSize;                     // power of two
   uint32_t queueMask;                     // queueSize - 1
   struct flagcxRmaDesc **circularBuffers; // [nRanks * queueSize]
@@ -166,6 +172,8 @@ struct flagcxRmaProxyState {
   // Set before communicator teardown starts. Producers fail fast while the
   // progress thread drains already-published descriptors and native requests.
   volatile int quiesced;
+  volatile unsigned int callbacks;
+  struct flagcxRmaDesc *cleanupDescs;
 
   void *const *fullSendComms; // [nRanks] or NULL until published
   int nRanks;
@@ -185,9 +193,9 @@ struct flagcxRmaProxyState {
   flagcxWorkerPool::Worker *worker;
 
   // Optional internal test notification. Called by the thread entering a
-  // communicator-wide drain before it waits for accepted RMA operations.
-  void (*flushAllEnterForTest)(void *);
-  void *flushAllEnterContextForTest;
+  // RMA drain after capturing its targets, before waiting for accepted work.
+  void (*drainEnterForTest)(void *);
+  void *drainEnterContextForTest;
 };
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
@@ -212,6 +220,14 @@ flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
 
 // Internal collective entry point. channelId is part of the transport order
 // key; callers must choose it deterministically on both endpoints.
+flagcxResult_t flagcxHeteroProxySend(const void *buffer, size_t count,
+                                     flagcxDataType_t type, int peer,
+                                     flagcxHeteroComm_t comm,
+                                     flagcxStream_t stream);
+flagcxResult_t flagcxHeteroProxyRecv(void *buffer, size_t count,
+                                     flagcxDataType_t type, int peer,
+                                     flagcxHeteroComm_t comm,
+                                     flagcxStream_t stream);
 flagcxResult_t flagcxHeteroSendOnChannel(const void *sendbuff, size_t count,
                                          flagcxDataType_t datatype, int peer,
                                          flagcxHeteroComm_t comm,
@@ -244,7 +260,9 @@ flagcxResult_t flagcxHeteroCommCount(const flagcxHeteroComm_t comm, int *count);
 flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
                                         int *rank);
 
-flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm);
+// A non-success result can report a cached proxy error after release. The
+// owner is cleared only when the communicator has actually been freed.
+flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t *owner);
 flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm);
 
 flagcxResult_t flagcxHeteroRmaProxyQuiesce(flagcxHeteroComm_t comm);

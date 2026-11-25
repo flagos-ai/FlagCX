@@ -1,4 +1,5 @@
 #include "gloo_adaptor.h"
+#include <map>
 
 #ifdef USE_GLOO_ADAPTOR
 
@@ -11,9 +12,9 @@ static std::vector<stagedBuffer_t> sendStagedBufferList;
 static std::vector<stagedBuffer_t> recvStagedBufferList;
 static std::vector<bufferPtr> unboundBufferStorage;
 
-// key: peer, value: tag
-static std::unordered_map<int, uint32_t> sendPeerTags;
-static std::unordered_map<int, uint32_t> recvPeerTags;
+// key: owner and peer, value: tag
+static std::map<std::pair<flagcxInnerComm_t, int>, uint32_t> sendPeerTags;
+static std::map<std::pair<flagcxInnerComm_t, int>, uint32_t> recvPeerTags;
 
 // TODO: unsupported
 flagcxResult_t glooAdaptorGetVersion(int *version) {
@@ -25,14 +26,78 @@ flagcxResult_t glooAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
   return flagcxNotSupported;
 }
 
+// Internal; requires the adaptor staging types and containers.
+static void glooReleaseStagedBuffers(std::vector<stagedBuffer_t> *buffers,
+                                     flagcxInnerComm_t owner) {
+  for (auto it = buffers->begin(); it != buffers->end();) {
+    stagedBuffer_t buffer = *it;
+    if (buffer->owner != owner) {
+      ++it;
+      continue;
+    }
+    // The native buffer can retain a registration of its backing allocation.
+    for (auto native = unboundBufferStorage.begin();
+         native != unboundBufferStorage.end(); ++native) {
+      if (native->get() == buffer->unboundBuffer) {
+        unboundBufferStorage.erase(native);
+        break;
+      }
+    }
+    free(buffer->buffer);
+    free(buffer);
+    it = buffers->erase(it);
+  }
+}
+
+static flagcxResult_t glooCleanupOwner(flagcxInnerComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  for (auto *buffer : sendStagedBufferList)
+    if (buffer->owner == comm && buffer->cnt != 0)
+      return flagcxInProgress;
+  for (auto *buffer : recvStagedBufferList)
+    if (buffer->owner == comm && buffer->cnt != 0)
+      return flagcxInProgress;
+  glooReleaseStagedBuffers(&sendStagedBufferList, comm);
+  glooReleaseStagedBuffers(&recvStagedBufferList, comm);
+  for (auto it = sendPeerTags.begin(); it != sendPeerTags.end();)
+    if (it->first.first == comm)
+      it = sendPeerTags.erase(it);
+    else
+      ++it;
+  for (auto it = recvPeerTags.begin(); it != recvPeerTags.end();)
+    if (it->first.first == comm)
+      it = recvPeerTags.erase(it);
+    else
+      ++it;
+  return flagcxSuccess;
+}
+
+static stagedBuffer_t glooFindStagedBuffer(flagcxInnerComm_t comm,
+                                           const void *pointer, size_t size,
+                                           int isRecv) {
+  const auto &buffers = isRecv ? recvStagedBufferList : sendStagedBufferList;
+  for (auto *buffer : buffers) {
+    uintptr_t address = (uintptr_t)pointer;
+    uintptr_t begin = (uintptr_t)buffer->buffer;
+    if (buffer->owner == comm && address >= begin &&
+        address - begin <= (size_t)buffer->size &&
+        size <= (size_t)buffer->size - (address - begin))
+      return buffer;
+  }
+  return NULL;
+}
+
 flagcxResult_t glooAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
                                           void **buff, size_t size,
                                           int isRecv) {
+  if (comm == NULL || comm->base == nullptr || buff == NULL)
+    return flagcxInvalidArgument;
   stagedBuffer *sbuff = NULL;
   if (isRecv) {
     for (auto it = recvStagedBufferList.begin();
          it != recvStagedBufferList.end(); it++) {
-      if ((*it)->size - (*it)->offset >= size) {
+      if ((*it)->owner == comm && (*it)->size - (*it)->offset >= size) {
         sbuff = (*it);
         break;
       }
@@ -40,7 +105,7 @@ flagcxResult_t glooAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
   } else {
     for (auto it = sendStagedBufferList.begin();
          it != sendStagedBufferList.end(); it++) {
-      if ((*it)->size - (*it)->offset >= size) {
+      if ((*it)->owner == comm && (*it)->size - (*it)->offset >= size) {
         sbuff = (*it);
         break;
       }
@@ -48,6 +113,7 @@ flagcxResult_t glooAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
   }
   if (sbuff == NULL) {
     FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
+    sbuff->owner = comm;
     sbuff->offset = 0;
     sbuff->cnt = 0;
     int newSize = GLOO_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
@@ -56,6 +122,7 @@ flagcxResult_t glooAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
     }
     sbuff->buffer = malloc(newSize);
     if (sbuff->buffer == NULL) {
+      free(sbuff);
       return flagcxSystemError;
     }
     sbuff->size = newSize;
@@ -70,6 +137,68 @@ flagcxResult_t glooAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
     }
   }
   *buff = (void *)((char *)sbuff->buffer + sbuff->offset);
+  return flagcxSuccess;
+}
+
+// TODO: unsupported
+
+flagcxResult_t glooAdaptorSend(const void *sendbuff, size_t count,
+                               flagcxDataType_t datatype, int peer,
+                               flagcxInnerComm_t comm,
+                               flagcxStream_t /*stream*/) {
+  size_t size = count * getFlagcxDataTypeSize(datatype);
+  if (comm == NULL || comm->base == nullptr)
+    return flagcxInvalidArgument;
+  stagedBuffer_t buff = glooFindStagedBuffer(comm, sendbuff, size, 0);
+  if (buff == NULL)
+    return flagcxInvalidArgument;
+  size_t offset = (uintptr_t)sendbuff - (uintptr_t)buff->buffer;
+  auto key = std::make_pair(comm, peer);
+  uint32_t utag;
+  if (sendPeerTags.find(key) != sendPeerTags.end()) {
+    utag = sendPeerTags[key];
+  } else {
+    utag = 0;
+    sendPeerTags[key] = 0;
+  }
+  buff->unboundBuffer->send(peer, utag, offset, size);
+  buff->offset = offset + size;
+  sendPeerTags[key] = utag + 1;
+  if (groupDepth == 0) {
+    buff->unboundBuffer->waitSend(flagcxGlooDefaultTimeout);
+  } else {
+    buff->cnt++;
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t glooAdaptorRecv(void *recvbuff, size_t count,
+                               flagcxDataType_t datatype, int peer,
+                               flagcxInnerComm_t comm,
+                               flagcxStream_t /*stream*/) {
+  size_t size = count * getFlagcxDataTypeSize(datatype);
+  if (comm == NULL || comm->base == nullptr)
+    return flagcxInvalidArgument;
+  stagedBuffer_t buff = glooFindStagedBuffer(comm, recvbuff, size, 1);
+  if (buff == NULL)
+    return flagcxInvalidArgument;
+  size_t offset = (uintptr_t)recvbuff - (uintptr_t)buff->buffer;
+  auto key = std::make_pair(comm, peer);
+  uint32_t utag;
+  if (recvPeerTags.find(key) != recvPeerTags.end()) {
+    utag = recvPeerTags[key];
+  } else {
+    utag = 0;
+    recvPeerTags[key] = 0;
+  }
+  buff->unboundBuffer->recv(peer, utag, offset, size);
+  buff->offset = offset + size;
+  recvPeerTags[key] = utag + 1;
+  if (groupDepth == 0) {
+    buff->unboundBuffer->waitRecv(flagcxGlooDefaultTimeout);
+  } else {
+    buff->cnt++;
+  }
   return flagcxSuccess;
 }
 
@@ -117,57 +246,23 @@ flagcxResult_t glooAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 flagcxResult_t glooAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = sendStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = recvStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  sendStagedBufferList.clear();
-  recvStagedBufferList.clear();
-  unboundBufferStorage.clear();
+  flagcxResult_t result = glooCleanupOwner(comm);
+  if (result != flagcxSuccess)
+    return result;
   comm->base.reset();
   return flagcxSuccess;
 }
 
 flagcxResult_t glooAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = sendStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = recvStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  sendStagedBufferList.clear();
-  recvStagedBufferList.clear();
-  unboundBufferStorage.clear();
-  comm->base.reset();
+  flagcxResult_t result = glooAdaptorCommFinalize(comm);
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
   return flagcxSuccess;
 }
 
 flagcxResult_t glooAdaptorCommAbort(flagcxInnerComm_t comm) {
-  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = sendStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = recvStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  sendStagedBufferList.clear();
-  recvStagedBufferList.clear();
-  unboundBufferStorage.clear();
-  comm->base.reset();
-  return flagcxSuccess;
+  return glooAdaptorCommFinalize(comm);
 }
 
 // TODO: unsupported
@@ -370,54 +465,6 @@ flagcxResult_t glooAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
                       sendCnt);
   GENERATE_GLOO_TYPES(datatype, setOutput, opts, recvbuff, recvCnt);
   ::gloo::alltoallv(opts);
-  return flagcxSuccess;
-}
-
-flagcxResult_t glooAdaptorSend(const void *sendbuff, size_t count,
-                               flagcxDataType_t datatype, int peer,
-                               flagcxInnerComm_t comm,
-                               flagcxStream_t /*stream*/) {
-  size_t size = count * getFlagcxDataTypeSize(datatype);
-  stagedBuffer_t buff = sendStagedBufferList.back();
-  uint32_t utag;
-  if (sendPeerTags.find(peer) != sendPeerTags.end()) {
-    utag = sendPeerTags[peer];
-  } else {
-    utag = 0;
-    sendPeerTags[peer] = 0;
-  }
-  buff->unboundBuffer->send(peer, utag, buff->offset, size);
-  buff->offset += size;
-  sendPeerTags[peer] = utag + 1;
-  if (groupDepth == 0) {
-    buff->unboundBuffer->waitSend(flagcxGlooDefaultTimeout);
-  } else {
-    buff->cnt++;
-  }
-  return flagcxSuccess;
-}
-
-flagcxResult_t glooAdaptorRecv(void *recvbuff, size_t count,
-                               flagcxDataType_t datatype, int peer,
-                               flagcxInnerComm_t comm,
-                               flagcxStream_t /*stream*/) {
-  size_t size = count * getFlagcxDataTypeSize(datatype);
-  stagedBuffer_t buff = recvStagedBufferList.back();
-  uint32_t utag;
-  if (recvPeerTags.find(peer) != recvPeerTags.end()) {
-    utag = recvPeerTags[peer];
-  } else {
-    utag = 0;
-    recvPeerTags[peer] = 0;
-  }
-  buff->unboundBuffer->recv(peer, utag, buff->offset, size);
-  buff->offset += size;
-  recvPeerTags[peer] = utag + 1;
-  if (groupDepth == 0) {
-    buff->unboundBuffer->waitRecv(flagcxGlooDefaultTimeout);
-  } else {
-    buff->cnt++;
-  }
   return flagcxSuccess;
 }
 

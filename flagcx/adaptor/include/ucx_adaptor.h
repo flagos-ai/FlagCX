@@ -125,6 +125,7 @@ typedef struct flagcxUcxComm {
   ucp_tag_t ctag; /* controlpath tag to filter out message that are not
                      belong to this connnection */
   struct flagcxSocket sock; /* socket for OOB connection */
+  bool closeNotified;
   int ready; /* indicates that receive communicator is fully initialized */
   flagcxUcxRequest_t reqs[MAX_REQUESTS]; /* max inflight requests */
   flagcxUcxRequest_t *freeReq;           /* first request available */

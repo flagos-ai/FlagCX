@@ -546,7 +546,7 @@ run_suite() {
       local unit_status=0
       local ibuc_status=0
       local ipc_status=0
-      local geometry_status=0
+      local geometry_status=0 host_cleanup_status=0
       local gpu_result_xml="$suite_dir/build/adaptor_gpu_results.xml"
       local check_gpu_tests=${FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS:-1}
       # Each platform declares its own GPU MR capability in set_env; this
@@ -723,9 +723,10 @@ run_suite() {
           "$suite_dir/build/bin/adaptor_mpi_tests" \
           --gtest_filter="$geometry_filter" || geometry_status=$?
       fi
+      bash "$PROJECT_ROOT/test/script/host_mpi_cleanup_test.sh" || host_cleanup_status=$?
       if ((unit_status != 0 || ibuc_status != 0 || ipc_status != 0 ||
-           geometry_status != 0)); then
-        echo "Adaptor failures: IBRC=$unit_status IBUC=$ibuc_status IPC=$ipc_status geometry=$geometry_status" >&2
+           geometry_status != 0 || host_cleanup_status != 0)); then
+        echo "Adaptor failures: IBRC=$unit_status IBUC=$ibuc_status IPC=$ipc_status geometry=$geometry_status host_cleanup=$host_cleanup_status" >&2
         return 1
       fi
       ;;

@@ -17,6 +17,7 @@
 #include "flagcx_kernel.h"
 #include "mem_alloc_provenance.h"
 #include "shmutils.h"
+#include "work.h"
 #include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -154,6 +155,8 @@ struct flagcxDevCommInternal {
   void *cachedGridBarrierPtr; // Device memory for grid sync state (2 x uint32)
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr and
                                   // cachedNetContextsPtr
+  flagcxWorkSnapshot cleanupWork;
+  bool cleanupStarted;
   bool backendDestroyed; // Retry cached frees without calling backend twice
 };
 
@@ -260,6 +263,8 @@ struct flagcxDevMemInternal {
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr; // Lazily allocated by flagcxDevMemGetDevicePtr
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr
+  flagcxWorkSnapshot cleanupWork;
+  bool cleanupStarted;
   bool backendDestroyed; // Retry cached frees without calling backend twice
   struct flagcxDevMemInternal *activeNext;
 };

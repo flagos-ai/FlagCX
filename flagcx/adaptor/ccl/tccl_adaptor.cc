@@ -120,11 +120,13 @@ flagcxResult_t tcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t tcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  if (!comm) {
+  if (comm == NULL)
     return flagcxInvalidArgument;
-  }
-  tcclResult_t result = tcclCommDestroy(comm->base);
-  return fromTcclResult(result);
+  flagcxResult_t result = fromTcclResult(tcclCommDestroy(comm->base));
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
+  return flagcxSuccess;
 }
 
 flagcxResult_t tcclAdaptorCommAbort(flagcxInnerComm_t comm) {

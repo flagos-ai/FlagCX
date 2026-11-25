@@ -4,7 +4,7 @@
 DEVICE_HOME  ?= /opt/rocm
 DEVICE_LIB   := $(DEVICE_HOME)/lib
 DEVICE_INCLUDE := $(DEVICE_HOME)/include
-DEVICE_LINK  := -lhiprtc
+DEVICE_LINK  := -lamdhip64 -lhiprtc
 DEVICE_PLATFORM :=
 DEVICE_COMPILER :=
 DEVICE_COMPILE_FLAG :=

@@ -303,6 +303,10 @@ flagcxResult_t hggcAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
 
 flagcxResult_t hggcAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  if (event == NULL)
+    return flagcxInvalidArgument;
   (*event) = NULL;
   *event = (flagcxEvent_t)calloc(1, sizeof(**event));
   if (*event == NULL)

@@ -189,9 +189,13 @@ typedef struct flagcxDeviceHandle *flagcxDeviceHandle_t;
  * populated device handle. Call before flagcxCommInitRank if you need device
  * operations (setDevice, getDeviceCount, streamCreate, etc.) early.
  * If not called explicitly, flagcxCommInitRank will load plugins internally. */
+/* On failure, a non-NULL output owns unfinished cleanup and must be retained
+ * for flagcxDeviceHandleFree retries. It cannot be used for device operations.
+ */
 flagcxResult_t flagcxDeviceHandleInit(flagcxDeviceHandle_t *devHandle);
 
 /* Free device handle — finalizes device/CCL adaptor plugins. */
+/* Only success consumes the handle. Other results preserve it for retry. */
 flagcxResult_t flagcxDeviceHandleFree(flagcxDeviceHandle_t devHandle);
 
 /* Deprecated: use flagcxDeviceHandleInit/Free and manage comm/uniqueId
@@ -203,10 +207,12 @@ struct flagcxHandlerGroup {
 };
 typedef struct flagcxHandlerGroup *flagcxHandlerGroup_t;
 
-/* Deprecated: use flagcxDeviceHandleInit instead */
+/* Deprecated: use flagcxDeviceHandleInit instead. A failed Init may retain a
+ * non-NULL cleanup owner; release it with flagcxHandleFree. */
 flagcxResult_t flagcxHandleInit(flagcxHandlerGroup_t *handler);
 
-/* Deprecated: use flagcxDeviceHandleFree instead */
+/* Deprecated: use flagcxDeviceHandleFree instead. Only success consumes the
+ * handler; other results preserve it for retry. */
 flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler);
 
 /* Allocation and user-buffer registration. A backend may reserve more memory
@@ -329,10 +335,14 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
  * will change to flagcxSuccess when the communicator is globally quiescent and
  * related resources are freed; then, calling flagcxCommDestroy can locally free
  * the rest of the resources (e.g. communicator itself) without blocking. */
+// Close submission admission and drain work accepted through FlagCX host APIs.
+// Application-launched Device API kernels and captured graph replays must be
+// completed by the caller first; graph capture/replay is not tracked here.
+// A failure retains the communicator and cleanup progress for retry.
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm);
 
-/* Frees local resources associated with communicator object.
-   The comm pointer is invalidated and must not be accessed after this call. */
+/* Frees resources associated with communicator object. The pointer is
+   invalidated only on success; on failure retain it for a cleanup retry. */
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm);
 
 /* Frees resources associated with communicator object and aborts any operations

@@ -654,11 +654,19 @@ flagcxResult_t cannAdaptorStreamWaitEvent(flagcxStream_t stream,
 
 flagcxResult_t cannAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
   const unsigned int flags =
       (eventType == flagcxEventDefault) ? ACL_EVENT_TIME_LINE : ACL_EVENT_SYNC;
-  DEVCHECK(aclrtCreateEventWithFlag(&((*event)->base), flags));
+  if (aclrtCreateEventWithFlag(&wrapper->base, flags) != ACL_SUCCESS) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 

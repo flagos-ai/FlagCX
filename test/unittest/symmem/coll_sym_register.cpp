@@ -13,6 +13,7 @@
 #include "sym_heap.h"
 #include "symmem_test.hpp"
 #include "transport.h"
+#include "work.h"
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -274,8 +275,8 @@ public:
     }
     savedMixedIput = net_->iput;
     savedMixedDeregMr = net_->deregMr;
-    savedFlushEnter_ = proxy_->flushAllEnterForTest;
-    savedFlushContext_ = proxy_->flushAllEnterContextForTest;
+    savedFlushEnter_ = proxy_->drainEnterForTest;
+    savedFlushContext_ = proxy_->drainEnterContextForTest;
     net_->iput = holdMixedIput;
     net_->deregMr = trackMixedDeregMr;
   }
@@ -284,8 +285,8 @@ public:
     mixedIputGate.peer = peer;
     mixedIputGate.targetSeq =
         __atomic_load_n(&proxy_->opSeqs[peer], __ATOMIC_ACQUIRE);
-    proxy_->flushAllEnterContextForTest = &mixedIputGate;
-    proxy_->flushAllEnterForTest = signalMixedDrainEnter;
+    proxy_->drainEnterContextForTest = &mixedIputGate;
+    proxy_->drainEnterForTest = signalMixedDrainEnter;
   }
 
   ~ScopedMixedIputDelay() {
@@ -294,8 +295,8 @@ public:
       mixedIputGate.held = false;
       mixedIputGate.cv.notify_all();
     }
-    proxy_->flushAllEnterForTest = savedFlushEnter_;
-    proxy_->flushAllEnterContextForTest = savedFlushContext_;
+    proxy_->drainEnterForTest = savedFlushEnter_;
+    proxy_->drainEnterContextForTest = savedFlushContext_;
     net_->iput = savedMixedIput;
     net_->deregMr = savedMixedDeregMr;
   }
@@ -3233,11 +3234,27 @@ TEST_F(SymMemTest, DuSegmentedAllocFailureRollsBackAndCanRetry) {
 namespace {
 bool rollbackSyncFailureArmed = false;
 int rollbackSyncCalls = 0;
+int rollbackWorkWaitCalls = 0;
 int rollbackBufferFrees = 0;
 
 flagcxResult_t rollbackSyncForTest() {
   ++rollbackSyncCalls;
   return rollbackSyncFailureArmed ? flagcxRemoteError : flagcxSuccess;
+}
+flagcxResult_t rollbackEventCreate(flagcxEvent_t *event, flagcxEventType_t) {
+  *event = reinterpret_cast<flagcxEvent_t>(malloc(1));
+  return *event != nullptr ? flagcxSuccess : flagcxSystemError;
+}
+flagcxResult_t rollbackEventRecord(flagcxEvent_t, flagcxStream_t) {
+  return flagcxSuccess;
+}
+flagcxResult_t rollbackEventWait(flagcxEvent_t) {
+  ++rollbackWorkWaitCalls;
+  return rollbackSyncFailureArmed ? flagcxRemoteError : flagcxSuccess;
+}
+flagcxResult_t rollbackEventDestroy(flagcxEvent_t event) {
+  free(event);
+  return flagcxSuccess;
 }
 flagcxResult_t rollbackUnsupportedIpc(flagcxIpcMemHandle_t *handle,
                                       size_t *bytes) {
@@ -3380,6 +3397,11 @@ struct ScopedRollbackAdaptor {
   ScopedRollbackAdaptor() {
     mock.ipcMemHandleCreate = rollbackUnsupportedIpc;
     mock.deviceSynchronize = rollbackSyncForTest;
+    mock.eventCreate = rollbackEventCreate;
+    mock.eventRecord = rollbackEventRecord;
+    mock.eventQuery = rollbackEventWait;
+    mock.eventSynchronize = rollbackEventWait;
+    mock.eventDestroy = rollbackEventDestroy;
     mock.gdrMemFree = rollbackFreeForTest;
     deviceAdaptor = &mock;
   }
@@ -3407,6 +3429,8 @@ struct ScopedRollbackResources {
     if (buffer != nullptr) {
       EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
     }
+    EXPECT_EQ(flagcxWorkWait(&comm->submittedWork), flagcxSuccess);
+    EXPECT_EQ(flagcxWorkRelease(&comm->submittedWork), flagcxSuccess);
   }
 };
 } // namespace
@@ -3463,7 +3487,7 @@ protected:
     ASSERT_TRUE(allRanksSucceeded(
         globalMemAllocRegistry.insert({resources.buffer, 64, flagcxMemCCL,
                                        flagcxMemAllocBackendNative, false})));
-    rollbackSyncCalls = rollbackBufferFrees = 0;
+    rollbackSyncCalls = rollbackWorkWaitCalls = rollbackBufferFrees = 0;
   }
   void EnableIpc() {
     rollbackFailClose = rollbackFailArrayFree = false;
@@ -3633,9 +3657,17 @@ protected:
 
 TEST_F(SymWindowRollback, RankLocalSynchronizeFailureConvergesAndRetries) {
   rollbackSyncFailureArmed = rank == 1;
-  if (rank == 0)
-    adaptor.mock.deviceSynchronize =
-        nullptr; // A no-op rank still participates.
+  // Capture an actual submission boundary only on the failing rank. Ranks
+  // without local work must still participate in rollback error agreement.
+  flagcxWorkRecord *work = nullptr;
+  flagcxResult_t prepared = flagcxSuccess;
+  if (rank == 1) {
+    prepared = flagcxWorkPrepare(&testComm.submittedWork, nullptr, &work);
+    if (prepared == flagcxSuccess)
+      prepared = flagcxWorkFinish(work, nullptr, flagcxSuccess,
+                                  flagcxWorkNativeGroup, 0);
+  }
+  ASSERT_TRUE(allRanksSucceeded(prepared));
 
   flagcxWindow_t window = nullptr;
   flagcxResult_t result = flagcxCommWindowRegister(
@@ -3644,7 +3676,8 @@ TEST_F(SymWindowRollback, RankLocalSynchronizeFailureConvergesAndRetries) {
   allRankResultRange(result, &minimum, &maximum);
   EXPECT_EQ(minimum, static_cast<int>(flagcxRemoteError));
   EXPECT_EQ(maximum, static_cast<int>(flagcxRemoteError));
-  EXPECT_EQ(rollbackSyncCalls, rank == 0 ? 0 : 1);
+  EXPECT_EQ(rollbackSyncCalls, 0);
+  EXPECT_EQ(rollbackWorkWaitCalls, rank == 1 ? 1 : 0);
   ASSERT_TRUE(
       allRanksSucceeded(window != nullptr && window->defaultBase != nullptr
                             ? flagcxSuccess
@@ -3656,12 +3689,11 @@ TEST_F(SymWindowRollback, RankLocalSynchronizeFailureConvergesAndRetries) {
   EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxInvalidUsage);
   EXPECT_EQ(rollbackBufferFrees, 0);
 
-  // Only rank zero retries a failing public deregistration; peers do not join.
-  adaptor.mock.deviceSynchronize = rollbackSyncForTest;
-  rollbackSyncFailureArmed = rank == 0;
+  // Retry the same saved, incomplete fence locally; peers do not join and no
+  // new fence is recorded at the current stream tail.
   result =
-      rank == 0 ? flagcxCommWindowDeregister(&testComm, window) : flagcxSuccess;
-  EXPECT_EQ(result, rank == 0 ? flagcxRemoteError : flagcxSuccess);
+      rank == 1 ? flagcxCommWindowDeregister(&testComm, window) : flagcxSuccess;
+  EXPECT_EQ(result, rank == 1 ? flagcxRemoteError : flagcxSuccess);
   rollbackSyncFailureArmed = false;
   ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(&testComm, window)));
   EXPECT_EQ(window->defaultBase, nullptr);
@@ -3679,6 +3711,7 @@ TEST_F(SymWindowRollback, RankLocalSynchronizeFailureConvergesAndRetries) {
   EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxSuccess);
   resources.buffer = nullptr;
   EXPECT_EQ(rollbackBufferFrees, 1);
+  EXPECT_EQ(rollbackSyncCalls, 0);
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
