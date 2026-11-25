@@ -6,6 +6,54 @@
 #include <cstdlib>
 #include <stdlib.h>
 
+struct flagcxC2cPendingResources {
+  struct flagcxC2cPendingResources *next;
+  struct flagcxWorkRecord *work[2];
+  void *scratch;
+  flagcxStream_t stream;
+};
+
+extern "C" flagcxResult_t flagcxC2cDrainPendingResources(flagcxComm_t comm,
+                                                         int wait) {
+  flagcxResult_t first = flagcxSuccess;
+  auto **link = &comm->pendingC2cResources;
+  while (*link != nullptr) {
+    auto *node = *link;
+    flagcxResult_t result = flagcxSuccess;
+    for (int i = 0; i < 2; ++i) {
+      if (node->work[i] == nullptr)
+        continue;
+      result = wait ? flagcxWorkWaitRecord(node->work[i])
+                    : flagcxWorkPollRecord(node->work[i]);
+      if (result != flagcxSuccess)
+        break;
+    }
+    if (result == flagcxSuccess && node->scratch != nullptr) {
+      result = flagcxCommReleaseBuffer(comm, node->scratch,
+                                       flagcxInternalBufferDevice);
+      if (result == flagcxSuccess)
+        node->scratch = nullptr;
+    }
+    if (result == flagcxSuccess && node->stream != nullptr) {
+      result = deviceAdaptor->streamDestroy(node->stream);
+      if (result == flagcxSuccess)
+        node->stream = nullptr;
+    }
+    if (result != flagcxSuccess) {
+      if (first == flagcxSuccess && (wait || result != flagcxInProgress))
+        first = result;
+      link = &node->next;
+      continue;
+    }
+    *link = node->next;
+    for (int i = 0; i < 2; ++i)
+      if (node->work[i] != nullptr)
+        flagcxWorkDrop(node->work[i]);
+    free(node);
+  }
+  return first;
+}
+
 // GCD using Euclidean algorithm
 inline int gcd(int a, int b) {
   while (b != 0) {
@@ -412,7 +460,10 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
             }
             return flagcxSuccess;
           },
-          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); });
+          [&]() {
+            return flagcxWorkNativeGroupResult(
+                cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
+          });
     case flagcxCommOpRecv:
       return flagcxRunnerRunGroup(
           [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupStart(); },
@@ -473,7 +524,10 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
             }
             return flagcxSuccess;
           },
-          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); });
+          [&]() {
+            return flagcxWorkNativeGroupResult(
+                cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
+          });
     case flagcxCommOpBroadcast:
       return cclAdaptors[flagcxCCLAdaptorDevice]->broadcast(
           const_cast<const void *>(static_cast<void *>(
@@ -524,7 +578,10 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
             }
             return flagcxSuccess;
           },
-          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); });
+          [&]() {
+            return flagcxWorkNativeGroupResult(
+                cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
+          });
     default:
       return flagcxSuccess;
   }
@@ -2410,6 +2467,23 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
 
   scratchBuffer_ = nullptr;
   flagcxStream_t hetStream = nullptr;
+  flagcxResult_t pendingResult = flagcxC2cDrainPendingResources(comm_, 0);
+  if (pendingResult != flagcxSuccess)
+    return pendingResult;
+  auto *pending =
+      (flagcxC2cPendingResources *)calloc(1, sizeof(flagcxC2cPendingResources));
+  if (pending == nullptr)
+    return flagcxSystemError;
+  pendingResult = flagcxWorkPrepareAccepted(&comm_->submittedWork, stream,
+                                            &pending->work[0]);
+  if (pendingResult != flagcxSuccess) {
+    free(pending);
+    return pendingResult;
+  }
+  flagcxWorkRetain(pending->work[0]);
+  pending->next = comm_->pendingC2cResources;
+  comm_->pendingC2cResources = pending;
+  auto *previousWork = flagcxWorkSetCurrent(pending->work[0]);
   const int homoRoot = root >= 0 ? comm_->globalRank2HomoRank[root] : -1;
   flagcxResult_t result = [&]() -> flagcxResult_t {
     // init scratch buffer if need
@@ -2420,8 +2494,9 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
          ((eachNicPerRank_ && isRootCluster_) ||
           (!eachNicPerRank_ && rank_ != rootRank_)))) {
       FLAGCXCHECK(deviceAdaptor->deviceMalloc(
-          &scratchBuffer_, totalCount_ * getFlagcxDataTypeSize(datatype),
+          &pending->scratch, totalCount_ * getFlagcxDataTypeSize(datatype),
           flagcxMemDevice, stream));
+      scratchBuffer_ = pending->scratch;
     } else {
       scratchBuffer_ = nullptr;
     }
@@ -2447,9 +2522,13 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
             ? const_cast<void *>(sendbuff)
             : recvTmpBuff;
 
-    flagcxStream_t createdStream = nullptr;
-    FLAGCXCHECK(deviceAdaptor->streamCreate(&createdStream));
-    hetStream = createdStream;
+    FLAGCXCHECK(deviceAdaptor->streamCreate(&pending->stream));
+    hetStream = pending->stream;
+    flagcxResult_t prepared = flagcxWorkPrepareAccepted(
+        &comm_->submittedWork, hetStream, &pending->work[1]);
+    if (prepared != flagcxSuccess)
+      return prepared;
+    flagcxWorkRetain(pending->work[1]);
 
     // execute sequential preHomoFunc steps
     FLAGCXCHECK(flagcxRunnerRunGroup(
@@ -2467,7 +2546,10 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
           }
           return flagcxSuccess;
         },
-        [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); }));
+        [&]() {
+          return flagcxWorkNativeGroupResult(
+              cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
+        }));
     FLAGCXCHECK(deviceAdaptor->streamSynchronize(stream));
 
     if (refreshFunc_.bufftype_ == -1) {
@@ -2498,7 +2580,10 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
             }
             return flagcxSuccess;
           },
-          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); }));
+          [&]() {
+            return flagcxWorkNativeGroupResult(
+                cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
+          }));
 
       FLAGCXCHECK(flagcxRunnerRunGroup(
           []() { return flagcxHeteroGroupStart(); },
@@ -2572,7 +2657,10 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
             }
             return flagcxSuccess;
           },
-          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); }));
+          [&]() {
+            return flagcxWorkNativeGroupResult(
+                cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
+          }));
 
       const int step = nPipePreSteps_ + nSeqInterSteps_ + s;
       FLAGCXCHECK(flagcxRunnerRunGroup(
@@ -2626,28 +2714,27 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
           }
           return flagcxSuccess;
         },
-        [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); }));
+        [&]() {
+          return flagcxWorkNativeGroupResult(
+              cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
+        }));
 
     return flagcxSuccess;
   }();
 
-  if (result != flagcxSuccess) {
-    flagcxRunnerRecordFirstError(deviceAdaptor->streamSynchronize(stream),
-                                 &result);
-    if (hetStream != nullptr) {
-      flagcxRunnerRecordFirstError(deviceAdaptor->streamSynchronize(hetStream),
-                                   &result);
-    }
+  flagcxWorkSetCurrent(previousWork);
+  int deferred = flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0;
+  for (int i = 0; i < 2; ++i) {
+    if (pending->work[i] == nullptr)
+      continue;
+    flagcxResult_t finished =
+        flagcxWorkFinish(pending->work[i], i == 0 ? stream : hetStream, result,
+                         flagcxWorkNativeGroup, deferred);
+    if (result == flagcxSuccess && finished != flagcxSuccess)
+      result = finished;
   }
-  if (scratchBuffer_ != nullptr) {
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->deviceFree(scratchBuffer_, flagcxMemDevice, stream),
-        &result);
-    scratchBuffer_ = nullptr;
-  }
-  if (hetStream != nullptr) {
-    flagcxRunnerRecordFirstError(deviceAdaptor->streamDestroy(hetStream),
-                                 &result);
-  }
+  scratchBuffer_ = nullptr;
+  flagcxRunnerRecordFirstError(flagcxC2cDrainPendingResources(comm_, 0),
+                               &result);
   return result;
 }

@@ -298,7 +298,8 @@ flagcxResult_t hybridRunnerGroupStart() {
 }
 
 flagcxResult_t hybridRunnerGroupEnd() {
-  flagcxResult_t result = cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
+  flagcxResult_t result = flagcxWorkNativeGroupResult(
+      cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
   flagcxRunnerRecordFirstError(flagcxHeteroGroupEnd(), &result);
   return result;
 }

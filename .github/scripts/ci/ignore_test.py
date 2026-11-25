@@ -1,14 +1,63 @@
 #!/usr/bin/env python3
-"""Read structured per-platform test exclusions supplied by the CI workflow."""
+"""Read platform ignore_test, exported from configs/<platform>.yml by CI."""
 
 import argparse
 import json
 import os
 import sys
+from pathlib import Path
+
+
+ADAPTOR_PLATFORMS = {
+    "nvidia": "cuda",
+    "du": "hygon",
+    "iluvatar": "iluvatar",
+    "metax": "metax",
+    "klx": "kunlunxin",
+    "musa": "mthreads",
+    "ppu": "ppu",
+    "ascend": "ascend",
+    "enflame": "enflame",
+}
 
 
 def config():
-    raw = os.environ.get("FLAGCX_CI_IGNORE_TEST", "{}")
+    raw = os.environ.get("FLAGCX_CI_IGNORE_TEST")
+    if raw is None:
+        # Local execution can read YAML directly. Hardware jobs receive JSON
+        # from load_platform_config.rb and need no YAML package in the image.
+        platform = os.environ.get("FLAGCX_CI_PLATFORM")
+        if not platform:
+            platform = ADAPTOR_PLATFORMS.get(os.environ.get("FLAGCX_ADAPTOR", ""))
+        if not platform:
+            return {}
+        config_root = Path(
+            os.environ.get(
+                "FLAGCX_CI_CONFIG_DIR",
+                Path(__file__).resolve().parents[2] / "configs",
+            )
+        )
+        path = config_root / f"{platform}.yml"
+        # Some lightweight test harnesses copy this helper without the full
+        # repository config tree. Keep their generic behavior unchanged; CI
+        # runners set FLAGCX_CI_CONFIG_DIR when platform exclusions are needed.
+        if not path.is_file():
+            return {}
+        try:
+            import yaml
+
+            value = yaml.safe_load(path.read_text()).get("ignore_test", {})
+        except ImportError:
+            import subprocess
+
+            raw = subprocess.check_output(
+                ["ruby", "-e", 'require "yaml"; require "json"; puts JSON.generate(YAML.safe_load(File.read(ARGV.fetch(0))).fetch("ignore_test", {}))', str(path)],
+                text=True,
+            )
+            value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise SystemExit(f"{path}: ignore_test must be a map")
+        return value
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as error:
@@ -43,7 +92,12 @@ def main():
     if args.kind == "phase":
         match = next(
             (entry for entry in data
-             if entry.get("suite") == args.suite and entry.get("name") == args.mode),
+             if entry.get("suite") == args.suite
+             and entry.get("name") == args.mode
+             and all(
+                 os.environ.get(key) == str(value)
+                 for key, value in entry.get("when", {}).items()
+             )),
             None,
         )
         print(match.get("reason", "") if match else "")

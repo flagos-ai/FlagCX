@@ -1,7 +1,7 @@
 # Unit-test platform registry.
 #
 # The per-platform files keep detailed runner/image settings. This registry
-# controls which platforms CI can select, including explicit dispatch inputs.
+# controls which platforms are included when the workflow runs with platform=all.
 platforms:
   cuda:
     enabled: true
@@ -13,9 +13,13 @@ platforms:
     enabled: true
   kunlunxin:
     enabled: true
+  mthreads:
+    enabled: true
   ppu:
     enabled: true
   ascend:
+    enabled: true
+  enflame:
     enabled: true
 shared_paths_watch:
   - .github/workflows/**
@@ -41,6 +45,7 @@ shared_paths_watch:
   - .gitmodules
   - Makefile
   - make.inc
+  - test/make.inc
   - makefiles/**
   - flagcx/core/**
   - flagcx/*.cc

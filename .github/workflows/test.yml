@@ -27,28 +27,39 @@ jobs:
       cuda_ci_image: ${{ steps.cuda.outputs.ci_image }}
       cuda_docker_args: ${{ steps.cuda.outputs.docker_args }}
       cuda_set_env: ${{ steps.cuda.outputs.set_env }}
+      cuda_ignore_test: ${{ steps.cuda.outputs.ignore_test }}
       cuda_runs_on: ${{ steps.cuda.outputs.runs_on }}
       metax_ci_image: ${{ steps.metax.outputs.ci_image }}
       metax_docker_args: ${{ steps.metax.outputs.docker_args }}
       metax_set_env: ${{ steps.metax.outputs.set_env }}
+      metax_ignore_test: ${{ steps.metax.outputs.ignore_test }}
       metax_runs_on: ${{ steps.metax.outputs.runs_on }}
       hygon_ci_image: ${{ steps.hygon.outputs.ci_image }}
       hygon_docker_args: ${{ steps.hygon.outputs.docker_args }}
       hygon_set_env: ${{ steps.hygon.outputs.set_env }}
+      hygon_ignore_test: ${{ steps.hygon.outputs.ignore_test }}
       hygon_runs_on: ${{ steps.hygon.outputs.runs_on }}
       ppu_ci_image: ${{ steps.ppu.outputs.ci_image }}
       ppu_docker_args: ${{ steps.ppu.outputs.docker_args }}
       ppu_set_env: ${{ steps.ppu.outputs.set_env }}
+      ppu_ignore_test: ${{ steps.ppu.outputs.ignore_test }}
       ppu_runs_on: ${{ steps.ppu.outputs.runs_on }}
+      mthreads_ci_image: ${{ steps.mthreads.outputs.ci_image }}
+      mthreads_docker_args: ${{ steps.mthreads.outputs.docker_args }}
+      mthreads_set_env: ${{ steps.mthreads.outputs.set_env }}
+      mthreads_ignore_test: ${{ steps.mthreads.outputs.ignore_test }}
+      mthreads_runs_on: ${{ steps.mthreads.outputs.runs_on }}
       ascend_ci_image: ${{ steps.ascend.outputs.ci_image }}
       ascend_docker_args: ${{ steps.ascend.outputs.docker_args }}
       ascend_set_env: ${{ steps.ascend.outputs.set_env }}
+      ascend_ignore_test: ${{ steps.ascend.outputs.ignore_test }}
       ascend_runs_on: ${{ steps.ascend.outputs.runs_on }}
       kunlunxin_ci_image: ${{ steps.kunlunxin.outputs.ci_image }}
       kunlunxin_docker_args: ${{ steps.kunlunxin.outputs.docker_args }}
       kunlunxin_container_options: ${{ steps.kunlunxin.outputs.container_options }}
       kunlunxin_container_volumes: ${{ steps.kunlunxin.outputs.container_volumes }}
       kunlunxin_set_env: ${{ steps.kunlunxin.outputs.set_env }}
+      kunlunxin_ignore_test: ${{ steps.kunlunxin.outputs.ignore_test }}
       kunlunxin_runs_on: ${{ steps.kunlunxin.outputs.runs_on }}
     steps:
       - name: Checkout Code
@@ -73,6 +84,10 @@ jobs:
       - name: Load PPU configuration
         id: ppu
         run: ruby .github/scripts/ci/load_platform_config.rb ppu
+
+      - name: Load Mthreads configuration
+        id: mthreads
+        run: ruby .github/scripts/ci/load_platform_config.rb mthreads
 
       - name: Load Ascend configuration
         id: ascend
@@ -114,6 +129,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.cuda_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.cuda_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.cuda_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.cuda_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           cuda perf-test-experimental
@@ -163,6 +179,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.hygon_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.hygon_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.hygon_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.hygon_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           hygon perf
@@ -212,6 +229,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.hygon_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.hygon_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.hygon_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.hygon_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           hygon perf-test-experimental
@@ -265,6 +283,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.cuda_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.cuda_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.cuda_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.cuda_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           cuda perf
@@ -314,6 +333,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.metax_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.metax_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.metax_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.metax_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           metax perf
@@ -363,6 +383,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.ppu_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ppu_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.ppu_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.ppu_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           ppu perf
@@ -412,6 +433,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.ppu_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ppu_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.ppu_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.ppu_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           ppu perf-test-experimental
@@ -428,6 +450,56 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: attempts-perf-test-experimental-ppu-${{ github.run_attempt }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  perf-test-mthreads:
+    if: contains(fromJSON(inputs.platforms), 'mthreads')
+    name: perf-test (mthreads)
+    needs: load-hardware-container-configs
+    runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.mthreads_runs_on) }}
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Check Docker
+        shell: bash
+        run: docker version
+
+      - name: Run perf-test (mthreads) in configured container
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-perf-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.mthreads_docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.mthreads_ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.mthreads_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.mthreads_ignore_test }}
+        run: >-
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
+          mthreads perf
+
+      - name: Cleanup perf-test (mthreads) container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-perf-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-perf-test-mthreads-${{ github.run_attempt }}
           path: ${{ env.FLAGCX_CI_LOG_DIR }}/
           include-hidden-files: true
           if-no-files-found: ignore
@@ -461,6 +533,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.ascend_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ascend_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.ascend_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.ascend_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           ascend perf
@@ -514,6 +587,7 @@ jobs:
         shell: bash
         env:
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_ignore_test }}
         run: |
           set -euo pipefail
           git clean -ffdX
@@ -546,6 +620,7 @@ jobs:
       - perf-test-experimental-ppu
       - perf-test-ascend
       - perf-test-kunlunxin
+      - perf-test-mthreads
     runs-on: ubuntu-latest
     env:
       PLATFORMS: ${{ inputs.platforms }}
@@ -559,6 +634,7 @@ jobs:
       PPU_EXPERIMENTAL_RESULT: ${{ needs['perf-test-experimental-ppu'].result }}
       KUNLUNXIN_RESULT: ${{ needs['perf-test-kunlunxin'].result }}
       ASCEND_RESULT: ${{ needs['perf-test-ascend'].result }}
+      MTHREADS_RESULT: ${{ needs['perf-test-mthreads'].result }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -584,4 +660,16 @@ jobs:
           if python3 -c 'import json, os, sys; sys.exit(0 if "kunlunxin" in json.loads(os.environ["PLATFORMS"]) else 1)'; then
             [[ "$CONFIG_RESULT" == success ]] || { echo "KunlunXin configuration loading ended with: $CONFIG_RESULT" >&2; exit 1; }
             [[ "$KUNLUNXIN_RESULT" == success ]] || { echo "KunlunXin performance job ended with: $KUNLUNXIN_RESULT" >&2; exit 1; }
+          fi
+
+      - name: Validate selected Mthreads performance job
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+          CONFIG_RESULT: ${{ needs['load-hardware-container-configs'].result }}
+          MTHREADS_RESULT: ${{ needs['perf-test-mthreads'].result }}
+        shell: bash
+        run: |
+          if python3 -c 'import json, os, sys; sys.exit(0 if "mthreads" in json.loads(os.environ["PLATFORMS"]) else 1)'; then
+            [[ "$CONFIG_RESULT" == success ]] || { echo "Mthreads configuration loading ended with: $CONFIG_RESULT" >&2; exit 1; }
+            [[ "$MTHREADS_RESULT" == success ]] || { echo "Mthreads performance job ended with: $MTHREADS_RESULT" >&2; exit 1; }
           fi

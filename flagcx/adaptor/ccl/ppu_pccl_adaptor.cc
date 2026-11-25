@@ -400,15 +400,36 @@ flagcxResult_t ppupcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t ppupcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL) {
+    free(comm);
+    return flagcxSuccess;
+  }
+
   const struct ppupcclSymbols *api = NULL;
   FLAGCXCHECK(ppupcclLoadApi(&api));
-  return ppupcclResultToFlagcx(api->pcclCommDestroy(comm->base));
+  flagcxResult_t result =
+      ppupcclResultToFlagcx(api->pcclCommDestroy(comm->base));
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
+  return flagcxSuccess;
 }
 
 flagcxResult_t ppupcclAdaptorCommAbort(flagcxInnerComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxSuccess;
   const struct ppupcclSymbols *api = NULL;
   FLAGCXCHECK(ppupcclLoadApi(&api));
-  return ppupcclResultToFlagcx(api->pcclCommAbort(comm->base));
+  flagcxResult_t result = ppupcclResultToFlagcx(api->pcclCommAbort(comm->base));
+  if (result != flagcxSuccess)
+    return result;
+  // Native Abort consumes the SDK context. Keep the wrapper for owner cleanup.
+  comm->base = NULL;
+  return flagcxSuccess;
 }
 
 flagcxResult_t ppupcclAdaptorCommResume(flagcxInnerComm_t comm) {

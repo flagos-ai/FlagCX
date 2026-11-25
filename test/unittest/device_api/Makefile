@@ -80,8 +80,8 @@ CXXFLAGS += -DCOMPILE_KERNEL
 endif
 
 # Host-only lifecycle/provenance tests.
-UNIT_SRC := test_dev_comm_cleanup.cpp
-UNIT_OBJ := $(OBJDIR)/test_dev_comm_cleanup.o
+UNIT_SRC := test_dev_comm_cleanup.cpp test_comm_stream_isolation.cpp
+UNIT_OBJ := $(UNIT_SRC:%.cpp=$(OBJDIR)/%.o)
 UNIT_TARGET := $(BINDIR)/test_dev_comm_cleanup
 
 # Provider dispatch is host-testable without a GPU or a FlagCX library link.
@@ -263,7 +263,7 @@ $(TOOLS_OBJ): $(TOOLS_SRC)
 	@echo "Compiling tools.cc"
 	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) $(ALL_INCLUDES)
 
-$(UNIT_OBJ): $(UNIT_SRC)
+$(UNIT_OBJ): $(OBJDIR)/%.o: %.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
 	@$(HOST_CXX) $< -o $@ -c $(UNIT_CXXFLAGS) $(UNIT_INCLUDES)

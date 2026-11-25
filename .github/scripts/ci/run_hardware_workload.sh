@@ -12,6 +12,7 @@ workload=$2
 set_env=$3
 suite=$4
 project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
+export FLAGCX_CI_PLATFORM="$platform"
 
 case "$workload" in
   unittest)

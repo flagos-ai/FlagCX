@@ -68,3 +68,46 @@ unit_test_suites:
   - runner
   - service
   - symmem
+
+# Platform exclusions; every entry must document its reason.
+ignore_test:
+  gtest:
+  - suite: device_api_host
+    tests:
+    - CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator
+    - CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator
+    reason: HCCL adaptor has no separate native Finalize; compatibility native Destroy does
+      not guarantee independent native-context stream isolation. Restore after native Finalize
+      is integrated and validated. Public lifecycle and non-VMM RMA tests remain enabled.
+  phases:
+  - suite: rma
+    name: gdr-visibility
+    reason: CUDA immediate-consumer conformance cases are outside Ascend RMA/SymMem coverage
+  torch:
+    modes:
+    - heterogeneous
+    operations:
+    - reduce
+    - allreduce
+    - reducescatter
+    reason: C2C refresh deviceMemset fails before heterogeneous transfer
+  runner:
+  - test: FlagCXCollTest.AlltoAllvAsymmetric
+    modes:
+    - runner default
+    reason: HCCL AlltoAllV fails at stream synchronization
+  - test: FlagCXCollTest.AllReduce
+    modes:
+    - runner heterogeneous
+    - runner forced NET
+    reason: C2C refresh deviceMemset fails before transfer
+  - test: FlagCXCollTest.Reduce
+    modes:
+    - runner heterogeneous
+    - runner forced NET
+    reason: C2C refresh deviceMemset fails before transfer
+  - test: FlagCXCollTest.ReduceScatter
+    modes:
+    - runner heterogeneous
+    - runner forced NET
+    reason: C2C refresh deviceMemset fails before transfer

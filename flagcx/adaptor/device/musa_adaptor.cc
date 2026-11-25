@@ -4,6 +4,11 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <mutex>
+#include <unistd.h>
 
 std::map<flagcxMemcpyType_t, musaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, musaMemcpyHostToDevice},
@@ -13,6 +18,11 @@ std::map<flagcxMemcpyType_t, musaMemcpyKind> memcpy_type_map = {
 
 flagcxResult_t musaAdaptorDeviceSynchronize() {
   DEVCHECK(musaDeviceSynchronize());
+  return flagcxSuccess;
+}
+
+flagcxResult_t musaAdaptorGetLastError() {
+  DEVCHECK(musaGetLastError());
   return flagcxSuccess;
 }
 
@@ -43,18 +53,75 @@ flagcxResult_t musaAdaptorDeviceMemset(void *ptr, int value, size_t size,
   return flagcxSuccess;
 }
 
+// DMA-BUF requires the native allocation itself to be page aligned.
+// Keep rejected native allocations alive while filling their alignment gap;
+// never return an interior pointer (IPC and musaFree need the original base).
+static flagcxResult_t musaAllocExportable(void **ptr, size_t size) {
+  if (ptr == nullptr)
+    return flagcxInvalidArgument;
+  *ptr = nullptr;
+  const char *enabled = std::getenv("FLAGCX_DMABUF_ENABLE");
+  if (size == 0 || enabled == nullptr || std::strcmp(enabled, "1") != 0) {
+    DEVCHECK(musaMalloc(ptr, size));
+    return flagcxSuccess;
+  }
+  const long nativePage = sysconf(_SC_PAGESIZE);
+  if (nativePage <= 0)
+    return flagcxSystemError;
+  const size_t page = static_cast<size_t>(nativePage);
+  if (size > std::numeric_limits<size_t>::max() - (page - 1))
+    return flagcxInvalidArgument;
+  const size_t rounded = ((size + page - 1) / page) * page;
+  static std::mutex allocationMutex;
+  std::lock_guard<std::mutex> lock(allocationMutex);
+  void *held[32] = {};
+  int count = 0;
+  musaError_t status = musaSuccess;
+  for (int attempt = 0; attempt < 16; ++attempt) {
+    void *candidate = nullptr;
+    status = musaMalloc(&candidate, rounded);
+    if (status != musaSuccess)
+      break;
+    const size_t remainder = reinterpret_cast<uintptr_t>(candidate) % page;
+    if (remainder == 0) {
+      *ptr = candidate;
+      break;
+    }
+    held[count++] = candidate;
+    void *padding = nullptr;
+    status = musaMalloc(&padding, page - remainder);
+    if (status != musaSuccess)
+      break;
+    held[count++] = padding;
+  }
+  for (int i = 0; i < count; ++i) {
+    const musaError_t freed = musaFree(held[i]);
+    if (status == musaSuccess && freed != musaSuccess)
+      status = freed;
+  }
+  if (status != musaSuccess) {
+    if (*ptr != nullptr) {
+      musaFree(*ptr);
+      *ptr = nullptr;
+    }
+    return flagcxUnhandledDeviceError;
+  }
+  return *ptr != nullptr ? flagcxSuccess : flagcxNotSupported;
+}
+
 flagcxResult_t musaAdaptorDeviceMalloc(void **ptr, size_t size,
                                        flagcxMemType_t type,
                                        flagcxStream_t stream) {
   if (type == flagcxMemHost) {
-    DEVCHECK(musaMallocHost(ptr, size));
+    // FIFOs and semaphores need a device-visible alias, not only pinned memory.
+    DEVCHECK(musaHostAlloc(ptr, size, musaHostAllocMapped));
   } else if (type == flagcxMemManaged) {
     DEVCHECK(musaMallocManaged(ptr, size, musaMemAttachGlobal));
   } else {
     if (stream == NULL) {
-      DEVCHECK(musaMalloc(ptr, size));
+      FLAGCXCHECK(musaAllocExportable(ptr, size));
     } else {
-      DEVCHECK(musaMalloc(ptr, size));
+      FLAGCXCHECK(musaAllocExportable(ptr, size));
       // MUSA currently does not support async malloc
       // DEVCHECK(musaMallocAsync(ptr, size, stream->base));
     }
@@ -100,12 +167,22 @@ flagcxResult_t musaAdaptorGetVendor(char *vendor) {
   return flagcxSuccess;
 }
 
+flagcxResult_t musaAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
+  if (pDevice == nullptr)
+    return flagcxInvalidArgument;
+  *pDevice = nullptr;
+  if (pHost == nullptr)
+    return flagcxInvalidArgument;
+  DEVCHECK(musaHostGetDevicePointer(pDevice, pHost, 0));
+  return flagcxSuccess;
+}
+
 flagcxResult_t musaAdaptorGdrMemAlloc(void **ptr, size_t size,
                                       void *memHandle) {
   if (ptr == NULL) {
     return flagcxInvalidArgument;
   }
-  DEVCHECK(musaMalloc(ptr, size));
+  FLAGCXCHECK(musaAllocExportable(ptr, size));
   musaPointerAttributes attrs;
   DEVCHECK(musaPointerGetAttributes(&attrs, *ptr));
   unsigned flags = 1;
@@ -157,7 +234,12 @@ flagcxResult_t musaAdaptorStreamFree(flagcxStream_t stream) {
 
 flagcxResult_t musaAdaptorStreamSynchronize(flagcxStream_t stream) {
   if (stream != NULL) {
-    DEVCHECK(musaStreamSynchronize(stream->base));
+    const musaError_t error = musaStreamSynchronize(stream->base);
+    if (error != musaSuccess) {
+      WARN("musaStreamSynchronize: native=%d (%s)", (int)error,
+           musaGetErrorString(error));
+      return flagcxUnhandledDeviceError;
+    }
   }
   return flagcxSuccess;
 }
@@ -188,12 +270,20 @@ flagcxResult_t musaAdaptorStreamWaitEvent(flagcxStream_t stream,
 
 flagcxResult_t musaAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? musaEventDefault
                                  : musaEventDisableTiming;
-  DEVCHECK(musaEventCreateWithFlags(&((*event)->base), flags));
+  if (musaEventCreateWithFlags(&wrapper->base, flags) != musaSuccess) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 
@@ -241,32 +331,50 @@ flagcxResult_t musaAdaptorEventQuery(flagcxEvent_t event) {
   return res;
 }
 
+// The wrapper owns the exported handle bytes, not the device allocation.
 flagcxResult_t musaAdaptorIpcMemHandleCreate(flagcxIpcMemHandle_t *handle,
                                              size_t *size) {
-  // to be implemented
-  return flagcxNotSupported;
+  if (handle == nullptr)
+    return flagcxInvalidArgument;
+  *handle = nullptr;
+  if (size != nullptr)
+    *size = sizeof(musaIpcMemHandle_t);
+  static_assert(sizeof(flagcxIpcMemHandle) == sizeof(musaIpcMemHandle_t),
+                "IPC wrapper must contain only the native transferable handle");
+  *handle = static_cast<flagcxIpcMemHandle_t>(calloc(1, sizeof(**handle)));
+  return *handle != nullptr ? flagcxSuccess : flagcxSystemError;
 }
 
 flagcxResult_t musaAdaptorIpcMemHandleGet(flagcxIpcMemHandle_t handle,
                                           void *devPtr) {
-  // to be implemented
-  return flagcxNotSupported;
+  if (handle == nullptr || devPtr == nullptr)
+    return flagcxInvalidArgument;
+  DEVCHECK(musaIpcGetMemHandle(&handle->base, devPtr));
+  return flagcxSuccess;
 }
 
 flagcxResult_t musaAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
                                            void **devPtr) {
-  // to be implemented
-  return flagcxNotSupported;
+  if (devPtr == nullptr)
+    return flagcxInvalidArgument;
+  *devPtr = nullptr;
+  if (handle == nullptr)
+    return flagcxInvalidArgument;
+  DEVCHECK(musaIpcOpenMemHandle(devPtr, handle->base,
+                                musaIpcMemLazyEnablePeerAccess));
+  return flagcxSuccess;
 }
 
 flagcxResult_t musaAdaptorIpcMemHandleClose(void *devPtr) {
-  // to be implemented
-  return flagcxNotSupported;
+  if (devPtr == nullptr)
+    return flagcxInvalidArgument;
+  DEVCHECK(musaIpcCloseMemHandle(devPtr));
+  return flagcxSuccess;
 }
 
 flagcxResult_t musaAdaptorIpcMemHandleFree(flagcxIpcMemHandle_t handle) {
-  // to be implemented
-  return flagcxNotSupported;
+  free(handle);
+  return flagcxSuccess;
 }
 
 flagcxResult_t musaAdaptorLaunchHostFunc(flagcxStream_t stream,
@@ -313,23 +421,122 @@ flagcxResult_t musaAdaptorGetDeviceByPciBusId(int *dev, const char *pciBusId) {
   return flagcxSuccess;
 }
 
-flagcxResult_t musaAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
-                                            int) {
-  return flagcxNotSupported;
-}
-flagcxResult_t musaAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
-                                             int) {
-  return flagcxNotSupported;
-}
-flagcxResult_t musaAdaptorEventElapsedTime(float *, flagcxEvent_t,
-                                           flagcxEvent_t) {
-  return flagcxNotSupported;
+// Adapt the native Stream MemOp path used by MooreThreads/mccl commit
+// 23edec5afda741efe0119410000dd80fd03092ef:
+//   src/ce_coll.cc: 64-bit MemOp capability and ordered signal writes;
+//   src/rma/rma_ce.cc: GEQ waits and remote-write flush capability;
+//   src/include/musawrap.h: native muStreamWait/WriteValue64 entry points.
+// Keep DefaultBackend; these operations do not require an MCCL communicator.
+namespace {
+
+flagcxResult_t musaStreamMemOpResult(MUresult result) {
+  if (result == MUSA_SUCCESS)
+    return flagcxSuccess;
+  if (result == MUSA_ERROR_NOT_SUPPORTED)
+    return flagcxNotSupported;
+  return flagcxUnhandledDeviceError;
 }
 
-flagcxResult_t musaAdaptorHostRegister(void *, size_t) {
-  return flagcxNotSupported;
+flagcxResult_t musaStreamMemOpCapability(MUdevice device,
+                                         MUdevice_attribute attribute) {
+  int supported = 0;
+  const MUresult result = muDeviceGetAttribute(&supported, attribute, device);
+  // Older drivers can reject an attribute they do not implement. Do not
+  // confuse context/device failures with a missing optional capability.
+  if (result == MUSA_ERROR_INVALID_VALUE || result == MUSA_ERROR_NOT_SUPPORTED)
+    return flagcxNotSupported;
+  if (result != MUSA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  return supported != 0 ? flagcxSuccess : flagcxNotSupported;
 }
-flagcxResult_t musaAdaptorHostUnregister(void *) { return flagcxNotSupported; }
+
+flagcxResult_t musaStreamMemOpCheck(bool flushRemoteWrites) {
+  MUdevice device;
+  const MUresult result = muCtxGetDevice(&device);
+  if (result != MUSA_SUCCESS)
+    return musaStreamMemOpResult(result);
+  flagcxResult_t capability = musaStreamMemOpCapability(
+      device, MU_DEVICE_ATTRIBUTE_CAN_USE_64_BIT_STREAM_MEM_OPS);
+  if (capability != flagcxSuccess)
+    return capability;
+  if (flushRemoteWrites)
+    return musaStreamMemOpCapability(
+        device, MU_DEVICE_ATTRIBUTE_CAN_FLUSH_REMOTE_WRITES);
+  return flagcxSuccess;
+}
+
+} // namespace
+
+flagcxResult_t musaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
+                                            uint64_t value, int flags) {
+  if (stream == nullptr || addr == nullptr ||
+      (reinterpret_cast<uintptr_t>(addr) % alignof(uint64_t)) != 0)
+    return flagcxInvalidArgument;
+  if (flags & ~FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
+    return flagcxInvalidArgument;
+
+  const bool flushRemoteWrites =
+      (flags & FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES) != 0;
+  const flagcxResult_t capability = musaStreamMemOpCheck(flushRemoteWrites);
+  if (capability != flagcxSuccess)
+    return capability;
+
+  // Native GEQ follows the driver's cyclic sequence-number comparison,
+  // consistent with MCCL. Use counters with an outstanding distance < 2^63.
+  unsigned int waitFlags = MU_STREAM_WAIT_VALUE_GEQ;
+  if (flushRemoteWrites)
+    waitFlags |= MU_STREAM_WAIT_VALUE_FLUSH;
+  return musaStreamMemOpResult(
+      muStreamWaitValue64(reinterpret_cast<MUstream>(stream->base),
+                          reinterpret_cast<MUdeviceptr>(addr),
+                          static_cast<muuint64_t>(value), waitFlags));
+}
+
+flagcxResult_t musaAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
+                                             uint64_t value, int flags) {
+  if (stream == nullptr || addr == nullptr ||
+      (reinterpret_cast<uintptr_t>(addr) % alignof(uint64_t)) != 0 ||
+      flags != 0)
+    return flagcxInvalidArgument;
+  const flagcxResult_t capability = musaStreamMemOpCheck(false);
+  if (capability != flagcxSuccess)
+    return capability;
+
+  // DEFAULT retains the native stream-scoped pre-write memory barrier.
+  // Do not select NO_MEMORY_BARRIER or replace this with a host-side store.
+  return musaStreamMemOpResult(muStreamWriteValue64(
+      reinterpret_cast<MUstream>(stream->base),
+      reinterpret_cast<MUdeviceptr>(addr), static_cast<muuint64_t>(value),
+      MU_STREAM_WRITE_VALUE_DEFAULT));
+}
+flagcxResult_t musaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
+                                           flagcxEvent_t end) {
+  if (ms == NULL || start == NULL || end == NULL) {
+    return flagcxInvalidArgument;
+  }
+  DEVCHECK(musaEventElapsedTime(ms, start->base, end->base));
+  return flagcxSuccess;
+}
+
+flagcxResult_t musaAdaptorHostRegister(void *ptr, size_t bytes) {
+  if (ptr == nullptr || bytes == 0)
+    return flagcxInvalidArgument;
+  const musaError_t result =
+      musaHostRegister(ptr, bytes, musaHostRegisterMapped);
+  if (result == musaErrorNotSupported)
+    return flagcxNotSupported;
+  DEVCHECK(result);
+  return flagcxSuccess;
+}
+flagcxResult_t musaAdaptorHostUnregister(void *ptr) {
+  if (ptr == nullptr)
+    return flagcxInvalidArgument;
+  const musaError_t result = musaHostUnregister(ptr);
+  if (result == musaErrorNotSupported)
+    return flagcxNotSupported;
+  DEVCHECK(result);
+  return flagcxSuccess;
+}
 
 // Symmetric memory VMM stubs (not supported)
 flagcxResult_t musaAdaptorSymPhysAlloc(void *, size_t, void **, void *,
@@ -364,13 +571,100 @@ flagcxResult_t musaAdaptorSymMulticastFree(void *) {
   return flagcxNotSupported;
 }
 
+// Ordinary GPU memory registration uses the native DMA-BUF route when
+// the platform and the specific allocation both support exporting it.
+flagcxResult_t musaAdaptorDmaSupport(bool *supported) {
+  if (supported == nullptr)
+    return flagcxInvalidArgument;
+  *supported = false;
+  int ordinal = 0;
+  DEVCHECK(musaGetDevice(&ordinal));
+  MUdevice device;
+  if (muDeviceGet(&device, ordinal) != MUSA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  int value = 0;
+  MUresult result = muDeviceGetAttribute(
+      &value, MU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED, device);
+  if (result == MUSA_ERROR_NOT_SUPPORTED || result == MUSA_ERROR_INVALID_VALUE)
+    return flagcxSuccess;
+  if (result != MUSA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  *supported = value != 0;
+  return flagcxSuccess;
+}
+
+flagcxResult_t musaAdaptorGetAddressRange(const void *ptr, void **base,
+                                          size_t *size) {
+  if (ptr == nullptr || base == nullptr || size == nullptr)
+    return flagcxInvalidArgument;
+  *base = nullptr;
+  *size = 0;
+  MUdeviceptr address = 0;
+  MUresult result =
+      muMemGetAddressRange(&address, size, reinterpret_cast<MUdeviceptr>(ptr));
+  if (result == MUSA_ERROR_NOT_SUPPORTED || result == MUSA_ERROR_INVALID_VALUE)
+    return flagcxNotSupported;
+  if (result != MUSA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  *base = reinterpret_cast<void *>(address);
+  return flagcxSuccess;
+}
+
+flagcxResult_t musaAdaptorGetPointerType(const void *ptr, int *ptrType) {
+  if (ptr == nullptr || ptrType == nullptr)
+    return flagcxInvalidArgument;
+  musaPointerAttributes attrs = {};
+  const musaError_t result = musaPointerGetAttributes(&attrs, ptr);
+  if (result == musaErrorInvalidValue) {
+    // Ordinary host allocations need not be tracked by the runtime.
+    musaGetLastError();
+    *ptrType = FLAGCX_PTR_HOST;
+    return flagcxSuccess;
+  }
+  if (result != musaSuccess) {
+    musaGetLastError();
+    return flagcxUnhandledDeviceError;
+  }
+#if MUSART_VERSION >= 38300
+  *ptrType = (attrs.type == musaMemoryTypeDevice ||
+              attrs.type == musaMemoryTypeManaged)
+                 ? FLAGCX_PTR_CUDA
+                 : FLAGCX_PTR_HOST;
+#else
+  *ptrType = (attrs.memoryType == musaMemoryTypeDevice || attrs.isManaged)
+                 ? FLAGCX_PTR_CUDA
+                 : FLAGCX_PTR_HOST;
+#endif
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+musaAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
+                                       size_t size, unsigned long long flags) {
+  if (handleOut == nullptr || buffer == nullptr || size == 0)
+    return flagcxInvalidArgument;
+  *static_cast<int *>(handleOut) = -1;
+  const long page = sysconf(_SC_PAGESIZE);
+  if (page <= 0)
+    return flagcxSystemError;
+  if (reinterpret_cast<uintptr_t>(buffer) % page != 0 || size % page != 0)
+    return flagcxInvalidArgument;
+  MUresult result = muMemGetHandleForAddressRange(
+      handleOut, reinterpret_cast<MUdeviceptr>(buffer), size,
+      MU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags);
+  if (result == MUSA_ERROR_NOT_SUPPORTED ||
+      (result == MUSA_ERROR_INVALID_VALUE && flags == 0))
+    return flagcxNotSupported;
+  return result == MUSA_SUCCESS ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
 struct flagcxDeviceAdaptor musaAdaptor {
   "MUSA",
       // Basic functions
       musaAdaptorDeviceSynchronize, musaAdaptorDeviceMemcpy,
       musaAdaptorDeviceMemset, musaAdaptorDeviceMalloc, musaAdaptorDeviceFree,
       musaAdaptorSetDevice, musaAdaptorGetDevice, musaAdaptorGetDeviceCount,
-      musaAdaptorGetVendor, NULL,
+      musaAdaptorGetVendor, musaAdaptorHostGetDevicePointer,
       // GDR functions
       NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
       NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
@@ -414,9 +708,7 @@ struct flagcxDeviceAdaptor musaAdaptor {
                                       // *dev, const char *pciBusId);
       musaAdaptorLaunchHostFunc,
       // DMA buffer
-      NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
-      NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
-            // void *buffer, size_t size, unsigned long long flags);
+      musaAdaptorDmaSupport, musaAdaptorMemGetHandleForAddressRange,
       musaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       musaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
@@ -425,13 +717,13 @@ struct flagcxDeviceAdaptor musaAdaptor {
       musaAdaptorSymFlatUnmap, musaAdaptorSymMulticastSupported,
       musaAdaptorSymMulticastCreate, musaAdaptorSymMulticastBind,
       musaAdaptorSymMulticastTeardown, musaAdaptorSymMulticastFree,
-      NULL, // flagcxResult_t (*getLastError)();
-      flagcxDeviceAdaptorGetPointerTypeNotSupported,
-      flagcxDeviceAdaptorGetAddressRangeNotSupported, FLAGCX_VMM_MR_CAP_NONE,
+      musaAdaptorGetLastError, musaAdaptorGetPointerType,
+      musaAdaptorGetAddressRange, FLAGCX_VMM_MR_CAP_NONE,
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL, NULL, NULL, NULL,
-      // Preserve the legacy collective receive acquire until this platform
-      // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      // A NIC completion alone does not establish GPU visibility. Require
+      // the provider's acquire for both incoming WRITE and local GET results.
+      FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_DEVICE_MUSA,
 };
 
 #endif // USE_MUSA_ADAPTOR

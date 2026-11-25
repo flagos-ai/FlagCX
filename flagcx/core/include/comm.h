@@ -8,6 +8,7 @@
 #define FLAGCX_COMM_H_
 
 #include "bootstrap.h"
+#include "comm_lifecycle.h"
 #include "device.h"
 #include "flagcx_kernel.h"
 #include "flagcx_net.h"
@@ -16,6 +17,7 @@
 #include "info.h"
 #include "register.h"
 #include "type.h"
+#include "work.h"
 #include <stdint.h>
 
 #define CACHE_LINE_SIZE 128
@@ -173,7 +175,12 @@ struct flagcxSymLsaArena;
 class flagcxWorkerPool;
 
 struct flagcxHeteroComm {
+  struct flagcxWorkTracker submittedWork;
+  struct flagcxWorkTracker proxyWork;
+  struct flagcxWorkTracker *workOwner;
+  struct flagcxGroupPendingWork *pendingGroupWork;
   uint64_t startMagic;
+  bool netPluginHeld;
   bool destroyProxyComplete;
   flagcxResult_t destroyProxyResult;
   struct flagcxMemoryStack memPermanent, memScoped;
@@ -349,6 +356,8 @@ struct flagcxHeteroComm {
   flagcxResult_t initState;
   // flag to indicate if flagcxCommFinalize() is called
   bool finalizeCalled;
+  struct flagcxHeteroFinalizeState finalizeState;
+  flagcxComm_t ownerComm;
   // shared structures for finalization
   int finalizeRankCnt;
   // group job to support multi-thread FT

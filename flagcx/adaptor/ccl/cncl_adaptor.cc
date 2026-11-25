@@ -80,17 +80,38 @@ flagcxResult_t cnclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 
 // TODO: unsupported
 flagcxResult_t cnclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  // return (flagcxResult_t)cnclCommFinalize(comm->base);
-  return flagcxUnhandledDeviceError;
+  (void)comm;
+  return flagcxNotSupported;
 }
 
 flagcxResult_t cnclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL) {
+    free(comm);
+    return flagcxSuccess;
+  }
+
+  flagcxResult_t result = (flagcxResult_t)
       c2f_ret_map[cnclDestroyComms(&(comm->base), 1 /*num_comm*/)];
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
+  return flagcxSuccess;
 }
 
 flagcxResult_t cnclAdaptorCommAbort(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)c2f_ret_map[cnclAbortComm(comm->base)];
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxSuccess;
+  flagcxResult_t result =
+      (flagcxResult_t)c2f_ret_map[cnclAbortComm(comm->base)];
+  if (result != flagcxSuccess)
+    return result;
+  // Native Abort consumes the SDK context. Keep the wrapper for owner cleanup.
+  comm->base = NULL;
+  return flagcxSuccess;
 }
 
 // TODO: not match

@@ -48,7 +48,11 @@ Please check the guides on building, testing the software:
 - [Changelog](./docs/CHANGELOG.md)
 - [Getting started](./docs/getting_started.md)
 - [Environment variables](./docs/environment_variables.md)
+- [CI platform matrix and test commands](./.github/CI.md)
 
+The hardware CI matrix currently includes CUDA, Hygon, Iluvatar, MetaX, PPU,
+Ascend, and Enflame. Pull requests select platform-specific jobs from changed
+paths; see the [CI guide](./.github/CI.md) for labels and manual test commands.
 
 ## Backend Support
 

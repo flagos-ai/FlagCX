@@ -1,0 +1,94 @@
+# Enflame TOPS hardware configuration.
+hardware_name: enflame
+display_name: Enflame Tests
+
+paths_watch:
+  - .github/configs/enflame.yml
+  - .github/docker/Dockerfile.enflame
+  - .github/scripts/set_env/enflame.sh
+  - flagcx/adaptor/device/tops_adaptor.cc
+  - flagcx/adaptor/ccl/eccl_adaptor.cc
+  - flagcx/adaptor/include/enflame_adaptor.h
+  - makefiles/enflame.mk
+  - .github/scripts/ci/run_unit_test.sh
+
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:enflame-dev-fixed-20261020
+
+runner_labels:
+  - sy-8g-cicd-flagcx
+
+docker_volumes:
+  - /dev/infiniband:/dev/infiniband
+  - /sys/class/infiniband:/sys/class/infiniband:ro
+  - /sys/bus/pci/devices:/sys/bus/pci/devices:ro
+  # Do not bind /sys/class/infiniband_verbs: it is absent on the Enflame
+  # runner, and Docker cannot create missing mount sources under sysfs.
+
+docker_options:
+  - --network=host
+  - --privileged=true
+  - --ipc=host
+  - --shm-size=100gb
+  - --ulimit=memlock=-1
+  - --ulimit=stack=67108864
+  - --ulimit=nofile=65535:65535
+
+set_env: .github/scripts/set_env/enflame.sh
+
+unit_test_suites:
+  - adaptor
+  - core
+  - device_api_host
+  - p2p
+  - rma
+  - runner
+  - service
+  - symmem
+
+# Platform exclusions; every entry must document its reason.
+ignore_test:
+  gtest:
+  - suite: device_api_host
+    tests:
+    - CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator
+    - CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator
+    reason: ECCL adaptor has no separate native Finalize; native-context stream isolation
+      requires a supported native Finalize. The host test target also remains disabled.
+  phases:
+  - suite: device_api_host
+    name: non-vmm-rma
+    reason: Enflame host test target is disabled; no device_api_host binary is built. This
+      phase provides no test coverage.
+  - suite: p2p
+    name: p2p-write-mpi
+    when:
+      FLAGCX_CI_HAS_RDMA: '0'
+    reason: No active RDMA HCA; P2P WRITE MPI coverage requires RDMA registration and transport
+  - suite: rma
+    name: rma-network
+    when:
+      FLAGCX_CI_HAS_RDMA: '0'
+    reason: No active RDMA HCA; network RMA and GDR visibility tests require RDMA memory registration
+  - suite: symmem
+    name: vmm-local-and-remote-without-net
+    reason: The Enflame TOPS runtime does not support VMM-backed SymMem data tests
+  - suite: symmem
+    name: vmm-net-data
+    reason: The Enflame TOPS runtime does not support VMM-backed SymMem data tests
+  - suite: symmem
+    name: local-ipc-net-fallback
+    when:
+      FLAGCX_CI_HAS_RDMA: '0'
+    reason: No active RDMA HCA is available; the Socket transport cannot register network MRs required
+      by this fallback test
+  - suite: symmem
+    name: ipc-net
+    when:
+      FLAGCX_CI_HAS_RDMA: '0'
+    reason: No active RDMA HCA is available; the Socket transport cannot register network MRs required
+      by this cross-node test
+  - suite: symmem
+    name: vmm-net-route-union
+    when:
+      FLAGCX_CI_HAS_RDMA: '0'
+    reason: No active RDMA HCA is available; this two-node route test requires network MR registration

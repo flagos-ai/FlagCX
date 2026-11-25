@@ -29,6 +29,21 @@ def enabled_platform_or_matrix(platform):
 
 
 class CiMatrixRoutingTest(unittest.TestCase):
+    def test_musa_alias_routes_to_mthreads(self):
+        for context in (
+            {"event_name": "pull_request", "labels": ["platform:musa"]},
+            {"event_name": "pull_request", "labels": ["platform:musa", "platform:mthreads"]},
+            {"event_name": "workflow_dispatch", "selection": "musa,mthreads"},
+            {"event_name": "issue_comment", "comment": "/test musa",
+             "is_pull_request": True, "permission": "write"},
+            {"event_name": "issue_comment", "comment": "/test",
+             "labels": ["platform:musa"], "is_pull_request": True,
+             "permission": "write"},
+        ):
+            with self.subTest(context=context):
+                outputs, _ = self.resolve(context)
+                self.assertEqual(outputs["platforms"], ["mthreads"])
+
     def resolve(self, context):
         with tempfile.TemporaryDirectory() as temp_dir:
             context_path = Path(temp_dir) / "context.json"
@@ -51,7 +66,17 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
         self.assertEqual(
             ALL_ENABLED_PLATFORMS,
-            ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "ppu", "ascend"],
+            [
+                "cuda",
+                "hygon",
+                "iluvatar",
+                "metax",
+                "kunlunxin",
+                "mthreads",
+                "ppu",
+                "ascend",
+                "enflame",
+            ],
         )
         for event_name in ("push", "schedule"):
             with self.subTest(event=event_name):
@@ -86,6 +111,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 "flagcx/adaptor/device/cann_adaptor.cc",
                 enabled_platform_or_matrix("ascend"),
             ),
+            (".github/scripts/set_env/enflame.sh", ["enflame"]),
             (
                 ".github/scripts/ci/run_ppu_workload.sh",
                 enabled_platform_or_matrix("ppu"),
@@ -117,7 +143,8 @@ class CiMatrixRoutingTest(unittest.TestCase):
             ),
             (
                 "flagcx/adaptor/kernel/common/nested/foo.h",
-                ["cuda", "hygon"],
+                [p for p in ("cuda", "hygon") if p in ALL_ENABLED_PLATFORMS]
+                or ALL_ENABLED_PLATFORMS,
             ),
             (
                 "test/kernel/nvidia/nested/foo.cu",
@@ -147,14 +174,16 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 self.assertEqual(outputs["platforms"], expected)
 
     def test_platform_labels_override_paths_for_enabled_platforms(self):
-        outputs, _ = self.resolve(
-            {
-                "event_name": "pull_request",
-                "labels": ["platform:kunlunxin"],
-                "files": ["README.md"],
-            }
-        )
-        self.assertEqual(outputs["platforms"], ["kunlunxin"])
+        for platform in ("enflame", "kunlunxin"):
+            with self.subTest(platform=platform):
+                outputs, _ = self.resolve(
+                    {
+                        "event_name": "pull_request",
+                        "labels": [f"platform:{platform}"],
+                        "files": ["README.md"],
+                    }
+                )
+                self.assertEqual(outputs["platforms"], [platform])
 
     def test_all_label_forces_full_matrix(self):
         outputs, _ = self.resolve(
@@ -184,6 +213,86 @@ class CiMatrixRoutingTest(unittest.TestCase):
         )
         self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
+    def test_unmapped_path_fallback_is_visible_and_never_blocks_planning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context_path = Path(temp_dir) / "context.json"
+            output_path = Path(temp_dir) / "github-output"
+            plan_path = Path(temp_dir) / "plan.json"
+            summary_path = Path(temp_dir) / "summary.md"
+            context_path.write_text(json.dumps({
+                "event_name": "pull_request", "files": ["new/unknown/path.cc"]
+            }))
+            env = dict(os.environ, GITHUB_OUTPUT=str(output_path),
+                       FLAGCX_CI_PLAN_PATH=str(plan_path),
+                       GITHUB_STEP_SUMMARY=str(summary_path))
+            result = subprocess.run(
+                ["ruby", str(MATRIX_SCRIPT), str(CONFIG_DIR), str(context_path)],
+                capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            plan = json.loads(plan_path.read_text())
+            summary = summary_path.read_text()
+            self.assertEqual(plan["platforms"], ALL_ENABLED_PLATFORMS)
+            self.assertEqual(plan["blocked"], [])
+            self.assertIn("Unmapped path", " ".join(plan["routing_reason"]))
+            self.assertIn("Blocked work", summary)
+            self.assertIn("full platform matrix", summary)
+
+    def test_levels_select_the_expected_workloads(self):
+        for level in ("L0", "L1", "L2", "L3"):
+            with self.subTest(level=level):
+                outputs, _ = self.resolve({
+                    "event_name": "workflow_dispatch", "selection": "cuda", "level": level
+                })
+                self.assertEqual(outputs["level"], level)
+
+    def test_level_labels_escalate_without_downgrading(self):
+        outputs, _ = self.resolve({
+            "event_name": "pull_request", "labels": ["level:L1", "level:L3"],
+            "files": ["flagcx/adaptor/device/cuda_adaptor.cc"], "level": "L0",
+        })
+        self.assertEqual(outputs["level"], "L3")
+
+    def test_l3_pr_level_selects_full_matrix_without_platform_override(self):
+        outputs, _ = self.resolve({
+            "event_name": "pull_request", "labels": ["level:L3"],
+            "files": ["flagcx/adaptor/device/cuda_adaptor.cc"],
+        })
+        self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+
+    def test_l3_selects_full_matrix_after_platform_routing(self):
+        cases = (
+            {"event_name": "pull_request", "labels": ["level:L3", "platform:cuda"]},
+            {"event_name": "workflow_dispatch", "selection": "cuda", "level": "L3"},
+            {"event_name": "issue_comment", "comment": "/test cuda", "level": "L3",
+             "is_pull_request": True, "permission": "write"},
+        )
+        for context in cases:
+            with self.subTest(context=context):
+                outputs, _ = self.resolve(context)
+                self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+
+    def test_l3_ignore_test_projection_preserves_selectors(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context_path = Path(temp_dir) / "context.json"
+            output_path = Path(temp_dir) / "github-output"
+            plan_path = Path(temp_dir) / "plan.json"
+            summary_path = Path(temp_dir) / "summary.md"
+            context_path.write_text(json.dumps({
+                "event_name": "workflow_dispatch", "selection": "metax", "level": "L2"
+            }))
+            env = dict(os.environ, GITHUB_OUTPUT=str(output_path),
+                       FLAGCX_CI_PLAN_PATH=str(plan_path),
+                       GITHUB_STEP_SUMMARY=str(summary_path))
+            subprocess.run(
+                ["ruby", str(MATRIX_SCRIPT), str(CONFIG_DIR), str(context_path)],
+                check=True, capture_output=True, text=True, env=env,
+            )
+            entry = json.loads(plan_path.read_text())["ignore_test"][0]
+            self.assertEqual(entry["modes"], ["homogeneous"])
+            self.assertEqual(entry["operations"], ["allreduce", "reducescatter"])
+            self.assertIn('"modes":["homogeneous"]', summary_path.read_text())
+
     def test_mixed_platform_and_unknown_changes_run_all_platforms(self):
         outputs, _ = self.resolve(
             {"event_name": "pull_request", "files": [
@@ -202,7 +311,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_fork_repository_and_immutable_ref_are_forwarded(self):
         outputs, _ = self.resolve({
             "event_name": "pull_request", "repository": "contributor/FlagCX",
-            "ref": "a" * 40, "labels": ["platform:kunlunxin"],
+            "ref": "a" * 40, "labels": ["platform:enflame"],
         })
         self.assertEqual(outputs["repository"], "contributor/FlagCX")
         self.assertEqual(outputs["ref"], "a" * 40)
@@ -210,10 +319,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_comment_without_platform_respects_labels(self):
         outputs, _ = self.resolve({
             "event_name": "issue_comment", "comment": "/test", "permission": "admin",
-            "is_pull_request": True, "labels": ["platform:kunlunxin"],
+            "is_pull_request": True, "labels": ["platform:enflame"],
             "files": ["flagcx/core/group.cc"],
         })
-        self.assertEqual(outputs["platforms"], ["kunlunxin"])
+        self.assertEqual(outputs["platforms"], ["enflame"])
 
     def test_every_platform_config_has_watch_patterns(self):
         for platform in ALL_ENABLED_PLATFORMS:
@@ -224,6 +333,16 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (
+            ("workflow_dispatch", {"selection": "enflame"}, ["enflame"]),
+            (
+                "issue_comment",
+                {
+                    "comment": "/test enflame",
+                    "permission": "write",
+                    "is_pull_request": True,
+                },
+                ["enflame"],
+            ),
             ("workflow_dispatch", {"selection": "kunlunxin"}, ["kunlunxin"]),
             (
                 "issue_comment",
@@ -594,6 +713,21 @@ class CiCompletionGateTest(unittest.TestCase):
         ):
             with self.subTest(results=result):
                 self.assertNotEqual(self.check(*result).returncode, 0)
+
+    def test_reduced_levels_allow_intentional_job_skips_but_keep_failures_visible(self):
+        for level, unit in (("L0", "skipped"), ("L1", "success")):
+            result = self.check(
+                "true", "true", "success", unit, "skipped", "skipped", "success", level
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+        failed = self.check(
+            "true", "true", "success", "skipped", "skipped", "skipped", "success", "L1"
+        )
+        self.assertNotEqual(failed.returncode, 0)
+        cancelled = self.check(
+            "true", "true", "success", "success", "cancelled", "skipped", "success", "L1"
+        )
+        self.assertNotEqual(cancelled.returncode, 0)
 
 
 class PlatformWorkflowCompletionTest(unittest.TestCase):

@@ -11,47 +11,11 @@ fi
 export DEVICE_HOME=${DEVICE_HOME:-/usr/local/Ascend/ascend-toolkit/latest}
 export CCL_HOME=${CCL_HOME:-$DEVICE_HOME}
 export FLAGCX_ADAPTOR=ascend
+export FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED=0
 export MPI_HOME=${MPI_HOME:-/usr/local/mpi}
 export PATH="$DEVICE_HOME/bin:${PATH:-}"
 export LD_LIBRARY_PATH="$DEVICE_HOME/lib64:/usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64/driver:${LD_LIBRARY_PATH:-}"
 
-FLAGCX_CI_IGNORE_TEST='{
-  "phases": [
-    {
-      "suite": "rma",
-      "name": "gdr-visibility",
-      "reason": "CUDA immediate-consumer conformance cases are outside Ascend RMA/SymMem coverage"
-    }
-  ],
-  "torch": {
-    "modes": ["heterogeneous"],
-    "operations": ["reduce", "allreduce", "reducescatter"],
-    "reason": "C2C refresh deviceMemset fails before heterogeneous transfer"
-  },
-  "runner": [
-    {
-      "test": "FlagCXCollTest.AlltoAllvAsymmetric",
-      "modes": ["runner default"],
-      "reason": "HCCL AlltoAllV fails at stream synchronization"
-    },
-    {
-      "test": "FlagCXCollTest.AllReduce",
-      "modes": ["runner heterogeneous", "runner forced NET"],
-      "reason": "C2C refresh deviceMemset fails before transfer"
-    },
-    {
-      "test": "FlagCXCollTest.Reduce",
-      "modes": ["runner heterogeneous", "runner forced NET"],
-      "reason": "C2C refresh deviceMemset fails before transfer"
-    },
-    {
-      "test": "FlagCXCollTest.ReduceScatter",
-      "modes": ["runner heterogeneous", "runner forced NET"],
-      "reason": "C2C refresh deviceMemset fails before transfer"
-    }
-  ]
-}'
-export FLAGCX_CI_IGNORE_TEST
 
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_ASCEND=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_ASCEND=1)

@@ -128,7 +128,7 @@ TEST(GdrVisibilityPolicy, NonCudaBackendsDoNotUseCudaArchitecture) {
   for (flagcxGdrDeviceFamily_t family :
        {FLAGCX_GDR_DEVICE_METAX, FLAGCX_GDR_DEVICE_DU, FLAGCX_GDR_DEVICE_PPU,
         FLAGCX_GDR_DEVICE_ASCEND, FLAGCX_GDR_DEVICE_ILUVATAR,
-        FLAGCX_GDR_DEVICE_UNKNOWN}) {
+        FLAGCX_GDR_DEVICE_MUSA, FLAGCX_GDR_DEVICE_UNKNOWN}) {
     flagcxGdrVisibilityContext context = cudaContext(90);
     context.deviceFamily = family;
     EXPECT_EQ(resolve(context).requirements, kRead | kWrite);

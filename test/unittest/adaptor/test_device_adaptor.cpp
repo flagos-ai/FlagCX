@@ -113,6 +113,10 @@ TEST(GdrFlushPolicyTest, ActivePlatformUsesDocumentedDefault) {
               static_cast<uint32_t>(FLAGCX_GDR_FLUSH_NONE));
     return;
   }
+  if (strcmp(deviceAdaptor->name, "MUSA") == 0) {
+    EXPECT_EQ(deviceAdaptor->gdrFlushRequirements, conservative);
+    return;
+  }
   GTEST_SKIP() << "No GDR visibility baseline for " << deviceAdaptor->name;
 }
 
@@ -535,6 +539,9 @@ TEST_F(DeviceAdaptorTest, StreamWaitWriteValue64) {
   ASSERT_EQ(devHandle->deviceMemset(deviceValue, 0, sizeof(uint64_t),
                                     flagcxMemDevice, nullptr),
             flagcxSuccess);
+  // The default-stream memset may still be running when the nonblocking
+  // stream starts its write.
+  ASSERT_EQ(devHandle->deviceSynchronize(), flagcxSuccess);
 
   constexpr uint64_t expected = 0x123456789abcdef0ULL;
   flagcxResult_t result =
@@ -606,6 +613,7 @@ TEST_F(DeviceAdaptorTest, StreamWaitValue64RemoteFlushCapability) {
   ASSERT_EQ(devHandle->deviceMemset(deviceValue, 0, sizeof(uint64_t),
                                     flagcxMemDevice, nullptr),
             flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceSynchronize(), flagcxSuccess);
 
   constexpr uint64_t expected = 0x1020304050607080ULL;
   flagcxResult_t result = deviceAdaptor->streamWriteValue64(

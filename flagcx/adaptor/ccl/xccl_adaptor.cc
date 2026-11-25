@@ -104,11 +104,31 @@ flagcxResult_t xcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t xcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)bkcl_destroy_context(comm->base);
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL) {
+    free(comm);
+    return flagcxSuccess;
+  }
+
+  flagcxResult_t result = (flagcxResult_t)bkcl_destroy_context(comm->base);
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
+  return flagcxSuccess;
 }
 
 flagcxResult_t xcclAdaptorCommAbort(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)bkcl_comm_abort(comm->base);
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxSuccess;
+  flagcxResult_t result = (flagcxResult_t)bkcl_comm_abort(comm->base);
+  if (result != flagcxSuccess)
+    return result;
+  // Native Abort consumes the SDK context. Keep the wrapper for owner cleanup.
+  comm->base = NULL;
+  return flagcxSuccess;
 }
 
 // Unsupported

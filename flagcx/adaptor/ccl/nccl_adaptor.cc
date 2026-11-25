@@ -121,20 +121,36 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 flagcxResult_t ncclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  FLAGCXCHECK((flagcxResult_t)ncclCommFinalize(comm->base));
-  free(comm);
-  return flagcxSuccess;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  return (flagcxResult_t)ncclCommFinalize(comm->base);
 }
 
 flagcxResult_t ncclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  FLAGCXCHECK((flagcxResult_t)ncclCommDestroy(comm->base));
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL) {
+    free(comm);
+    return flagcxSuccess;
+  }
+
+  flagcxResult_t result = (flagcxResult_t)ncclCommDestroy(comm->base);
+  if (result != flagcxSuccess)
+    return result;
   free(comm);
   return flagcxSuccess;
 }
 
 flagcxResult_t ncclAdaptorCommAbort(flagcxInnerComm_t comm) {
-  FLAGCXCHECK((flagcxResult_t)ncclCommAbort(comm->base));
-  free(comm);
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxSuccess;
+  flagcxResult_t result = (flagcxResult_t)ncclCommAbort(comm->base);
+  if (result != flagcxSuccess)
+    return result;
+  // Native Abort consumes the SDK context. Keep the wrapper for owner cleanup.
+  comm->base = NULL;
   return flagcxSuccess;
 }
 
@@ -181,6 +197,11 @@ flagcxResult_t ncclAdaptorCommRegister(const flagcxInnerComm_t comm, void *buff,
 
 flagcxResult_t ncclAdaptorCommDeregister(const flagcxInnerComm_t comm,
                                          void *handle) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxSuccess; // Native Abort already retired this registration.
+
   return (flagcxResult_t)ncclCommDeregister(comm->base, handle);
 }
 
@@ -213,6 +234,13 @@ flagcxResult_t ncclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
 
 flagcxResult_t ncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
                                                flagcxInnerWindow_t win) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL) {
+    free(win); // Only the host wrapper remains after native Abort.
+    return flagcxSuccess;
+  }
+
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
   flagcxResult_t res = flagcxSuccess;
   res = (flagcxResult_t)ncclCommWindowDeregister(comm->base, win->base);
@@ -460,12 +488,21 @@ flagcxResult_t ncclAdaptorDevCommCreate(flagcxInnerComm_t comm,
 
 flagcxResult_t ncclAdaptorDevCommDestroy(flagcxInnerComm_t comm,
                                          flagcxInnerDevComm_t devComm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL) {
+    free(devComm); // Only the host wrapper remains after native Abort.
+    return flagcxSuccess;
+  }
+
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
   if (!devComm)
     return flagcxSuccess;
   flagcxResult_t ret = ncclDevCommDestroyHelper(comm->base, &devComm->base);
+  if (ret != flagcxSuccess)
+    return ret;
   free(devComm);
-  return ret;
+  return flagcxSuccess;
 #else
   return flagcxNotSupported;
 #endif

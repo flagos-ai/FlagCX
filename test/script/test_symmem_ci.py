@@ -12,6 +12,30 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def install_lifecycle_reports(ci):
+    shutil.copyfile(REPO_ROOT / '.github/scripts/ci/check_required_gtests.py',
+                    ci / 'check_required_gtests.py')
+    (ci / 'mock_lifecycle_xml.py').write_text("""import sys
+from pathlib import Path
+for i, arg in enumerate(sys.argv):
+    if arg.endswith('run_gtest_rank_xml.sh'):
+        root = Path(sys.argv[i + 1])
+        names = ('DelayedImportAndEmptyRanksConfirmBeforeLocalDestroy',
+                 'FailedImportRetainsExporterUntilCollectiveRetry',
+                 'DeviceSelectionFailureConvergesBeforeImportClosure',
+                 'SparseNodeClosureDoesNotWaitForAnotherNode',
+                 'InitializationDeclaresIpcAndNativeScopeOnEmptyRanks',
+                 'CollectiveCreationDeclaresClosureBeforePublication',
+                 'OuterFinalizeRetriesClosureThenEveryRankDestroysLocally',
+                 'CrossNodeRelayDrainFailureConvergesBeforeCleanup',
+                 'CrossNodeRelayDeviceFailureConvergesBeforeCleanup')
+        body = ''.join('<testcase name="%s" status="run" result="completed"/>' % name for name in names)
+        for rank in range(4):
+            (root / ('rank-%s.xml' % rank)).write_text('<testsuites><testsuite name="HeteroFinalizeMpi">' + body + '</testsuite></testsuites>')
+        break
+""")
+
+
 class SymmemCiTest(unittest.TestCase):
     def test_iluvatar_matches_cuda_except_untracked_vmm_ipc_with_va_only_mr(self):
         source = (REPO_ROOT / '.github/scripts/ci/run_unit_test.sh').read_text()
@@ -24,12 +48,15 @@ class SymmemCiTest(unittest.TestCase):
             shutil.copy(REPO_ROOT / 'test/script/symmem_test.sh', scripts)
             ci = root / '.github/scripts/ci'
             ci.mkdir(parents=True)
+            install_lifecycle_reports(ci)
             shutil.copyfile(REPO_ROOT / '.github/scripts/ci/ignore_test.py',
                             ci / 'ignore_test.py')
             for name in ('run_with_timeout.sh', 'run_mpi_with_timeout.sh'):
                 wrapper = ci / name
                 wrapper.write_text('''#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, subprocess
+from pathlib import Path
+subprocess.check_call([sys.executable, str(Path(__file__).with_name('mock_lifecycle_xml.py')), *sys.argv[1:]])
 with open(os.environ['CI_CAPTURE'], 'a') as output:
     output.write(json.dumps({'label': os.getenv('FLAGCX_CI_MPI_LABEL', os.getenv('FLAGCX_CI_TEST_LABEL')),
                              'args': sys.argv[1:]}) + '\\n')
@@ -91,12 +118,13 @@ run_suite
             shutil.copyfile(REPO_ROOT / "test/script/symmem_test.sh", script)
             ci_dir = root / ".github/scripts/ci"
             ci_dir.mkdir(parents=True)
+            install_lifecycle_reports(ci_dir)
             shutil.copyfile(REPO_ROOT / ".github/scripts/ci/ignore_test.py",
                             ci_dir / "ignore_test.py")
             for name in ("run_with_timeout.sh", "run_mpi_with_timeout.sh"):
                 runner = ci_dir / name
                 runner.write_text(
-                    '#!/bin/bash\nprintf "%s\\n" "$*" >> "$CI_CAPTURE"\n'
+                    '#!/bin/bash\npython3 "$(dirname "$0")/mock_lifecycle_xml.py" "$@"\nprintf "%s\\n" "$*" >> "$CI_CAPTURE"\n'
                     'if [[ -n "${CI_FAIL_CASE:-}" && "$*" == *"$CI_FAIL_CASE"* ]]; '
                     'then exit 7; fi\n'
                 )
@@ -161,7 +189,7 @@ run_suite
             self.assertEqual(generic.returncode, 0, generic.stderr)
             generic_calls = generic_capture.read_text().splitlines()
             self.assertEqual(
-                sum("symmem_mpi_tests" in line for line in generic_calls), 2
+                sum("symmem_mpi_tests" in line for line in generic_calls), 3
             )
             self.assertFalse(any(
                 "--gtest_filter=SymMemTest." in line for line in generic_calls
@@ -187,11 +215,32 @@ run_suite
             unsupported_calls = unsupported_capture.read_text().splitlines()
             self.assertTrue(any("symmem_unit_tests" in line for line in unsupported_calls))
             self.assertEqual(
-                sum("symmem_mpi_tests" in line for line in unsupported_calls), 1
+                sum("symmem_mpi_tests" in line for line in unsupported_calls), 2
             )
             self.assertTrue(any("FLAGCX_VMM_ENABLE=0" in line for line in unsupported_calls))
             self.assertFalse(any("FLAGCX_VMM_ENABLE=1" in line for line in unsupported_calls))
             self.assertIn("Skipping symmem VMM-local tests", unsupported.stdout)
+
+            enflame_capture = root / "enflame-vmm-unsupported.calls"
+            enflame = subprocess.run(
+                ["bash", str(script)],
+                env=dict(
+                    os.environ,
+                    FLAGCX_ADAPTOR="enflame",
+                    FLAGCX_CI_SYMMEM_VMM_SUPPORTED="0",
+                    CI_CAPTURE=str(enflame_capture),
+                ),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(enflame.returncode, 0, enflame.stderr)
+            enflame_calls = enflame_capture.read_text().splitlines()
+            self.assertTrue(any("symmem_unit_tests" in line for line in enflame_calls))
+            self.assertTrue(any("symmem_mpi_tests" in line for line in enflame_calls))
+            self.assertTrue(any("FLAGCX_VMM_ENABLE=0" in line for line in enflame_calls))
+            self.assertFalse(any("FLAGCX_VMM_ENABLE=1" in line for line in enflame_calls))
+            self.assertFalse(any("UntrackedVmmMappingIsRejected" in line for line in enflame_calls))
+            self.assertIn("Skipping symmem VMM-local tests", enflame.stdout)
 
             invalid = subprocess.run(
                 ["bash", str(script)],

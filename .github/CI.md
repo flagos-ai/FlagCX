@@ -1,14 +1,14 @@
 # FlagCX CI
 
-The hardware CI matrix enables all seven platforms: CUDA, Hygon, Iluvatar,
-MetaX, KunlunXin, PPU, and Ascend. PR runs select platforms from changed paths
+The hardware CI matrix enables nine platforms: CUDA, Hygon, Iluvatar,
+MetaX, KunlunXin, Mthreads, PPU, Ascend, and Enflame. PR runs select platforms from changed paths
 and PR labels; push and scheduled runs select all enabled platforms. Unit,
 performance, and Torch API jobs run for the selected platforms alongside
 common checks. See `configs/platforms.yml` for the active registry.
 
-Platform-specific test exclusions are defined in each platform's
-`scripts/set_env/*.sh` file and reported as skipped coverage. Platform
-selection, images, runners, and suite lists remain in `configs/*.yml`.
+Platform-specific test exclusions are defined under `ignore_test` in each
+platform's `configs/*.yml` file. The same configuration drives test filtering
+and the plan Summary, where exclusions remain visible as skipped coverage.
 
 `unit-test.yml` is the automatic controller for PRs to `main`/`devops`, pushes
 to those branches, and the daily schedule. It runs the selected platforms'
@@ -17,8 +17,11 @@ changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
 PR labels `platform:cuda`, `platform:hygon`, `platform:iluvatar`,
-`platform:metax`, `platform:kunlunxin`, `platform:ppu`, and `platform:ascend`
+`platform:metax`, `platform:kunlunxin`, `platform:mthreads`, `platform:ppu`,
+`platform:ascend`, and `platform:enflame`
 override path selection. Multiple platform labels select their union;
+`platform:musa` is an alias for `platform:mthreads`; `musa` also works in
+workflow dispatch selection and `/test musa` commands.
 `platform:all` selects every enabled platform. Invalid platform labels fail
 matrix generation. Add/remove label events rerun the controller.
 
@@ -34,6 +37,7 @@ one of these exact commands on a PR:
 /test kunlunxin
 /test ppu
 /test ascend
+/test enflame
 /test all
 ```
 
@@ -44,6 +48,27 @@ Comment requests have separate concurrency groups and cannot cancel PR checks.
 GitHub only enables `issue_comment` workflows present on the default branch;
 comment-triggered runs belong to that branch's check suite, so the automatic
 PR run remains the merge gate.
+
+## Test Levels
+
+PRs default to L2. Add a `level:L0` through `level:L3` label to choose a level;
+when several level labels are present, the highest level wins. Manual dispatch
+accepts the same level input. Pushes and the nightly schedule always use L3.
+
+| Level | Workloads | Typical use |
+| --- | --- | --- |
+| L0 | Common checks and CI plan only | Workflow/configuration-only validation |
+| L1 | Selected platforms' unit suites | Fast PR feedback |
+| L2 | Unit, performance, and Torch API tests on selected platforms | Default PR coverage |
+| L3 | Same test groups as L2 on all enabled platforms | Push and nightly coverage |
+
+The prepare job writes the selected platforms, level, configured suites,
+`ignore_test` entries, routing reasons, and blocked-work policy to the GitHub
+Summary and archives the machine-readable plan. An unmapped changed path selects
+the full platform matrix. If a workload is unavailable, it should be recorded
+as blocked while other runnable jobs continue; an unknown path or a partial
+plan does not stop test execution. Actual selected test failures still fail
+`ci-complete`.
 
 ## Required Check
 
@@ -67,6 +92,23 @@ it does not replace production topology selection or validate APU/NIC proximity.
 P2P/RMA/SymMem failures containing SIGSEGV trigger bounded, per-rank GDB
 reproduction stored with the attempt artifacts, preserving the suite failure.
 
+Enflame runner tests retain the full host unit suite and the default MPI
+collectives except the known S60 Gather/Scatter failures. The platform's
+`FLAGCX_CI_RUNNER_MPI_FILTER` is applied alongside existing GTest exclusions.
+`FLAGCX_CI_SKIP_RUNNER_HYBRID=1` skips the heterogeneous P2P invocation that
+hangs in ECCL. When Enflame preflight reports `FLAGCX_CI_HAS_RDMA=0`, forced
+IB NET, multi-QP striping, and PXN invocations are skipped with explicit reasons;
+they run when RDMA is available (and PXN is enabled). Host/default MPI failures
+still fail the job. Without an active RDMA HCA, Enflame also skips adaptor
+IB/GDR loopback cases, the P2P `DevicesReturnsPositive` device probe and WRITE MPI, RMA network/GDR visibility,
+and SymMem's local-IPC-to-NET fallback, cross-node IPC+NET, and VMM+NET route
+union phases. The Socket fallback cannot register the network MRs these tests
+require. Adaptor non-network tests, P2P/RMA unit tests and RMA IPC tests, SymMem
+unit/IPC-local tests, and runner default tests remain enabled. P2P, RMA and SymMem
+phase exclusions emit workflow warnings and summary entries. With an active
+RDMA HCA these tests run normally. Other platforms retain their required RDMA
+preflight.
+
 ## Retry Logs
 
 KunlunXin job containers retain the Actions-managed bridge for checkout and
@@ -87,6 +129,19 @@ the mount, permissions or interfaces are missing. On DinD deployments the
 mounted namespace must expose the physical RDMA interfaces; an isolated DinD
 network still needs runner-side network provisioning. This check establishes
 visibility only; the adaptor Host MR and SendRecv tests verify connectivity.
+
+Mthreads CI uses `mt-8g-cicd-flagcx` and the image configured in
+`.github/configs/mthreads.yml`. It runs adaptor, core, device_api_host,
+p2p, rma, runner, service, and symmem host unit suites plus
+homogeneous and heterogeneous collective benchmarks. The symmem job currently
+runs host unit tests only; it does not cover IPC, VMM, or multi-process paths.
+The device adaptor suite excludes `DeviceAdaptorTest.StreamWaitEvent`, which
+currently fails on MUSA; all other device adaptor tests run.
+Device API and unified IR suites are selected but report capability skips because
+this repository has no MUSA device-kernel compiler backend. Device adaptor and
+topology cases run through the adaptor and core suites respectively. Torch plugin tests are also not
+configured for Mthreads. Build its CI image with
+`docker build -f docker/mthreads-ci.Dockerfile .`.
 
 Each test invocation has a timeout and at most one retry. Cancellation and
 missing/non-executable commands do not retry. Builds and container orchestration

@@ -22,6 +22,8 @@ case "${FLAGCX_ADAPTOR:-}" in
   nvidia|metax|ppu|ascend|iluvatar)
     run_multi_segment=1
     ;;
+  enflame)
+    ;;
   du)
     vmm_provider_env+=( -x FLAGCX_VMM_MULTI_SEGMENT_ENABLE=0 )
     ;;
@@ -56,6 +58,32 @@ FLAGCX_CI_TEST_LABEL="symmem unit tests" \
 
 echo ""
 echo ""
+echo "=== Running bootstrap IPC lifetime fault tests (four independent processes) ==="
+lifecycle_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}/symmem-lifecycle"
+mkdir -p "$lifecycle_root"
+lifecycle_xml=$(mktemp -d "$lifecycle_root/results.XXXXXX")
+FLAGCX_CI_MPI_LABEL="symmem bootstrap lifetime" \
+  "$MPI_RUNNER" -np 4 --allow-run-as-root \
+    bash "$PROJECT_ROOT/.github/scripts/ci/run_gtest_rank_xml.sh" "$lifecycle_xml" \
+    "$BUILD_BIN/symmem_mpi_tests" --gtest_filter=HeteroFinalizeMpi.* || test_status=$?
+reports=("$lifecycle_xml"/rank-*.xml)
+if [[ ! -f "${reports[0]}" || ${#reports[@]} -ne 4 ]]; then
+  echo "Missing per-rank IPC lifetime reports in $lifecycle_xml" >&2
+  test_status=1
+else
+  python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+    --case HeteroFinalizeMpi.DelayedImportAndEmptyRanksConfirmBeforeLocalDestroy \
+    --case HeteroFinalizeMpi.FailedImportRetainsExporterUntilCollectiveRetry \
+    --case HeteroFinalizeMpi.DeviceSelectionFailureConvergesBeforeImportClosure \
+    --case HeteroFinalizeMpi.SparseNodeClosureDoesNotWaitForAnotherNode \
+    --case HeteroFinalizeMpi.InitializationDeclaresIpcAndNativeScopeOnEmptyRanks \
+    --case HeteroFinalizeMpi.CollectiveCreationDeclaresClosureBeforePublication \
+    --case HeteroFinalizeMpi.OuterFinalizeRetriesClosureThenEveryRankDestroysLocally \
+    --case HeteroFinalizeMpi.CrossNodeRelayDrainFailureConvergesBeforeCleanup \
+    --case HeteroFinalizeMpi.CrossNodeRelayDeviceFailureConvergesBeforeCleanup \
+    "${reports[@]}" || test_status=$?
+fi
+
 echo "=== Running symmem IPC-local MPI tests (np=$LOCAL_NP) ==="
 FLAGCX_CI_MPI_LABEL="symmem IPC local" \
   "$MPI_RUNNER" -np "$LOCAL_NP" --allow-run-as-root \
@@ -65,11 +93,14 @@ FLAGCX_CI_MPI_LABEL="symmem IPC local" \
     -x FLAGCX_VMM_ENABLE=0 \
     -x FLAGCX_IB_DISABLE=1 \
     "$BUILD_BIN/symmem_mpi_tests" \
-    --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:CoverageSupplemental.* || test_status=$?
+    --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:HeteroFinalizeMpi.*:CoverageSupplemental.* || test_status=$?
 
 echo ""
 vmm_skip_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
   phase symmem vmm-local-and-remote-without-net)
+if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" != 1 && -z "$vmm_skip_reason" ]]; then
+  vmm_skip_reason="VMM is unavailable on this runtime"
+fi
 echo "=== Running symmem VMM-local MPI tests (np=$LOCAL_NP) ==="
 if [[ -z "$vmm_skip_reason" ]]; then
   FLAGCX_CI_MPI_LABEL="symmem VMM local" \
@@ -83,7 +114,7 @@ if [[ -z "$vmm_skip_reason" ]]; then
       -x FLAGCX_CI_REQUIRE_VMM=1 \
       "${vmm_provider_env[@]+"${vmm_provider_env[@]}"}" \
       "$BUILD_BIN/symmem_mpi_tests" \
-      --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:CoverageSupplemental.* || test_status=$?
+      --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:HeteroFinalizeMpi.*:CoverageSupplemental.* || test_status=$?
 else
   echo "Skipping symmem VMM-local tests: $vmm_skip_reason"
 fi

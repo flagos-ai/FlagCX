@@ -40,8 +40,8 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // so it cannot be blind to the type. The makefile therefore passes
 // -DFLAGCX_ASCEND_DEVICE_COMPILE=1 for the whole compilation and the vendor
 // condition keys on it; see makefiles/ascend.mk.
-#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
-    defined(__CCE_IS_AICORE__) ||                                              \
+#if defined(__CUDACC__) || defined(__MUSACC__) || defined(__HIPCC__) ||        \
+    defined(__xpu__) || defined(__CCE_IS_AICORE__) ||                          \
     (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
      defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
     defined(__TOPSCC__) || defined(__HGGCCC__) ||                              \
@@ -49,9 +49,8 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
-// Unreachable device path. CUDA requires its device intrinsic; the other
-// supported device compilers and host compilers accept __builtin_trap().
-#if defined(__CUDA_ARCH__)
+// Select the SDK trap only in the device compilation pass.
+#if defined(__CUDA_ARCH__) || (defined(__MUSA_ARCH__) && __MUSA_ARCH__ > 0)
 #define FLAGCX_DEVICE_TRAP() __trap()
 #else
 #define FLAGCX_DEVICE_TRAP() __builtin_trap()
@@ -66,8 +65,8 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // Ascend device path needs to distinguish is keyed on __CCE_IS_AICORE__
 // directly; see ascend_platform_traits.h.
 #ifndef FLAGCX_CHECK_DEVICE_CC
-#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
-    defined(__CCE_IS_AICORE__) ||                                              \
+#if defined(__CUDACC__) || defined(__MUSACC__) || defined(__HIPCC__) ||        \
+    defined(__xpu__) || defined(__CCE_IS_AICORE__) ||                          \
     (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
      defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
     defined(__TOPSCC__) || defined(__HGGCCC__)
@@ -319,6 +318,61 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #endif // FLAGCX_ILUVATAR_DEVICE_COMPILE
 
 #define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
+
+#elif defined(USE_MUSA_ADAPTOR)
+#include <musa_runtime.h>
+
+#if defined(__MUSACC__)
+// musa/atomic instantiates numeric_limits for the SDK half types.
+// Match MCCL's prerequisite order before its atomic include.
+#include <musa/atomic>
+#include <musa_bf16.h>
+#include <musa_fp16.h>
+
+#define FLAGCX_HOST_DECORATOR __host__
+#define FLAGCX_DEVICE_DECORATOR __device__
+#define FLAGCX_GLOBAL_DECORATOR __global__
+#if defined(__clang_llvm_bitcode_lib__)
+#define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __attribute__((always_inline))
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
+  __host__ __device__ __attribute__((always_inline))
+#else
+#define FLAGCX_DEVICE_INLINE_DECORATOR                                         \
+  __device__ inline __attribute__((always_inline))
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
+  __host__ __device__ inline __attribute__((always_inline))
+#endif
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
+// MCCL's proxy GIN publishes GPU/CPU state with this scoped MUSA fence.
+#define FLAGCX_DEVICE_THREAD_FENCE()                                           \
+  musa::atomic_thread_fence(musa::memory_order_seq_cst,                        \
+                            musa::thread_scope_system)
+#define FLAGCX_DEVICE_SYNC_THREADS() __syncthreads()
+#define FLAGCX_THREAD_IDX_X threadIdx.x
+#define FLAGCX_BLOCK_IDX_X blockIdx.x
+#define FLAGCX_BLOCK_DIM_X blockDim.x
+#define FLAGCX_GRID_DIM_X gridDim.x
+#define FLAGCX_SHARED_DECORATOR __shared__
+#else
+#define FLAGCX_HOST_DECORATOR
+#define FLAGCX_DEVICE_DECORATOR
+#define FLAGCX_GLOBAL_DECORATOR
+#define FLAGCX_DEVICE_INLINE_DECORATOR inline
+#define FLAGCX_HOST_DEVICE_INLINE inline
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR
+#define FLAGCX_DEVICE_THREAD_FENCE() ((void)0)
+#define FLAGCX_DEVICE_SYNC_THREADS() ((void)0)
+#define FLAGCX_THREAD_IDX_X 0
+#define FLAGCX_BLOCK_IDX_X 0
+#define FLAGCX_BLOCK_DIM_X 1
+#define FLAGCX_GRID_DIM_X 1
+#define FLAGCX_SHARED_DECORATOR static
+#endif
+
+// S5000 (mp_31), also used by the source MCCL cooperative groups.
+// Keep this layout constant identical in the host and device passes.
+#define FLAGCX_SIMT_WIDTH 32
+#define FLAGCX_DEVICE_STREAM_PTR musaStream_t *
 
 #elif defined(USE_DU_ADAPTOR)
 #include <hip/hip_runtime.h>

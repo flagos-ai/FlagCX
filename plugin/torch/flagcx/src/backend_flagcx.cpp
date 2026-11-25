@@ -395,14 +395,23 @@ flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
   deviceId_ = 0;
   status_ = 0;
   activeGroupCounter_ = 0;
-  C10D_FLAGCX_CHECK(flagcxDeviceHandleInit(&devHandle_), std::nullopt);
-  C10D_FLAGCX_CHECK(devHandle_->getDeviceCount(&nDevs_), std::nullopt);
-  usePairComm_ = !heteroP2pRequested();
-  if (!usePairComm_) {
-    // A heterogeneous communicator is initialized collectively. Do it while
-    // every process-group rank is constructing the backend instead of lazily
-    // from send/recv, where only the two P2P peers may participate.
-    initComm();
+  try {
+    C10D_FLAGCX_CHECK(flagcxDeviceHandleInit(&devHandle_), std::nullopt);
+    C10D_FLAGCX_CHECK(devHandle_->getDeviceCount(&nDevs_), std::nullopt);
+    usePairComm_ = !heteroP2pRequested();
+    if (!usePairComm_) {
+      // A heterogeneous communicator is initialized collectively. Do it while
+      // every process-group rank is constructing the backend instead of lazily
+      // from send/recv, where only the two P2P peers may participate.
+      initComm();
+    }
+  } catch (...) {
+    try {
+      shutdown();
+    } catch (...) {
+      retainFailedShutdown();
+    }
+    throw;
   }
 }
 #else
@@ -412,105 +421,170 @@ flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
   deviceId_ = 0;
   status_ = 0;
   activeGroupCounter_ = 0;
-  C10D_FLAGCX_CHECK(flagcxDeviceHandleInit(&devHandle_), std::nullopt);
-  C10D_FLAGCX_CHECK(devHandle_->getDeviceCount(&nDevs_), std::nullopt);
-  usePairComm_ = !heteroP2pRequested();
-  if (!usePairComm_) {
-    // See the extended-API constructor above. The caller must bind its local
-    // accelerator before creating the process group.
-    initComm();
+  try {
+    C10D_FLAGCX_CHECK(flagcxDeviceHandleInit(&devHandle_), std::nullopt);
+    C10D_FLAGCX_CHECK(devHandle_->getDeviceCount(&nDevs_), std::nullopt);
+    usePairComm_ = !heteroP2pRequested();
+    if (!usePairComm_) {
+      // See the extended-API constructor above. The caller must bind its local
+      // accelerator before creating the process group.
+      initComm();
+    }
+  } catch (...) {
+    try {
+      shutdown();
+    } catch (...) {
+      retainFailedShutdown();
+    }
+    throw;
   }
 }
 #endif
 
-flagcxBackend::~flagcxBackend() {
-  abortPairCoalescing();
-  abortHeteroCoalescing();
-  {
-    std::lock_guard<std::mutex> lock(tensorReaperMutex_);
-    stopTensorReaper_ = true;
-  }
-  tensorReaperCv_.notify_all();
-  if (tensorReaperThread_.joinable()) {
-    tensorReaperThread_.join();
-  }
-  // Only this thread accesses either list after the reaper has stopped.
-  inflightTensorBatches_.splice(inflightTensorBatches_.end(),
-                                reapingTensorBatches_);
-  int previousDevice = -1;
-  const bool restoreDevice =
-      devHandle_->getDevice(&previousDevice) == flagcxSuccess;
-  bool retainedUnconfirmedBatch = false;
-  // A caller can drop the Work without waiting. Keep tensor storage alive until
-  // the device has completed each submitted tensor batch.
-  for (auto it = inflightTensorBatches_.begin();
-       it != inflightTensorBatches_.end();) {
-    auto batch = it++;
-    auto result = flagcxUnhandledDeviceError;
-    if (!batch->completionUncertain) {
-      result = devHandle_->setDevice(batch->deviceId);
-      if (result == flagcxSuccess) {
-        result = batch->recorded ? devHandle_->eventSynchronize(batch->event)
-                                 : devHandle_->streamSynchronize(batch->stream);
-      }
-    }
-    if (result == flagcxSuccess) {
-      discardTensorBatch(batch);
-    } else {
-      // Completion is unknown; do not return the tensors to the allocator.
-      retainedUnconfirmedBatch = true;
-      static auto *quarantine = new std::list<inflightTensorBatch>();
-      quarantine->splice(quarantine->end(), inflightTensorBatches_, batch);
-      try {
-        TORCH_WARN(
-            "Could not confirm completion of a FlagCX tensor batch before "
-            "backend destruction; retaining its tensors");
-      } catch (...) {
-      }
-    }
-  }
-  if (restoreDevice) {
-    devHandle_->setDevice(previousDevice);
-  }
-  if (retainedUnconfirmedBatch) {
-    // The retained batches may still be using these resources. Leave them
-    // allocated along with their tensors rather than destroy active handles.
+struct flagcxBackend::ShutdownState {
+  int deviceId;
+  flagcxDeviceHandle_t handle = nullptr;
+  flagcxComm_t comm = nullptr;
+  bool sdkReleased = false;
+  flagcxPairComms pairs;
+  std::unordered_map<int, flagcxStream_t> streams;
+  std::unordered_map<int, std::unique_ptr<flagcxEvent>> events;
+  std::list<inflightTensorBatch> batches;
 #if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
-    // A failed HCCL group can also retain a pointer to an aclStreams_ slot.
-    // Moving the map preserves the addresses of its elements.
-    static auto *quarantinedStreams = new std::list<decltype(aclStreams_)>();
-    quarantinedStreams->emplace_back(std::move(aclStreams_));
+  std::unordered_map<int, aclrtStream> borrowedStreams;
 #endif
-    return;
-  }
+  flagcxResult_t release() {
+    if (handle == nullptr)
+      return flagcxSuccess;
+    if (comm == nullptr && pairs.empty() && streams.empty() && events.empty() &&
+        batches.empty())
+      sdkReleased = true;
+    if (sdkReleased) {
+      flagcxResult_t result = flagcxDeviceHandleFree(handle);
+      if (result == flagcxSuccess)
+        handle = nullptr;
+      return result;
+    }
+    flagcxResult_t result = handle->setDevice(deviceId);
+    if (result != flagcxSuccess)
+      return result;
+    while (!batches.empty()) {
+      auto &batch = batches.front();
+      if (batch.completionUncertain)
+        return flagcxInvalidUsage;
+      result = handle->setDevice(batch.deviceId);
+      if (result != flagcxSuccess)
+        return result;
+      if (!batch.completed) {
+        result = batch.recorded ? handle->eventSynchronize(batch.event)
+                                : handle->streamSynchronize(batch.stream);
+        if (result != flagcxSuccess)
+          return result;
+        batch.completed = true;
+      }
+      if (batch.event != nullptr) {
+        result = handle->eventDestroy(batch.event);
+        if (result != flagcxSuccess)
+          return result;
+        batch.event = nullptr;
+      }
+      if (batch.ownsStreamWrapper && batch.stream != nullptr) {
+        result = handle->streamFree(batch.stream);
+        if (result != flagcxSuccess)
+          return result;
+        batch.stream = nullptr;
+      }
+      batches.pop_front();
+    }
+    result = handle->setDevice(deviceId);
+    if (result != flagcxSuccess)
+      return result;
+    // Numeric pair order is identical on all ranks, including self pairs.
+    while (!pairs.empty()) {
+      result = flagcxCommDestroy(pairs.begin()->second);
+      if (result != flagcxSuccess)
+        return result;
+      pairs.erase(pairs.begin());
+    }
+    if (comm != nullptr) {
+      result = flagcxCommDestroy(comm);
+      if (result != flagcxSuccess)
+        return result;
+      comm = nullptr;
+    }
+    events.clear();
 #if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
-  // On Ascend, flagcxStreams_ holds pointers into aclStreams_. The streams
-  // themselves are owned by PyTorch and were never produced by streamCreate(),
-  // so destroying them frees memory this backend does not own. This showed up
-  // as "free(): invalid pointer" followed by SIGABRT at interpreter shutdown,
-  // making every run exit non-zero even after the work had completed.
-  flagcxStreams_.clear();
-  aclStreams_.clear();
+    // These wrappers point into borrowedStreams; PyTorch owns the SDK streams.
+    streams.clear();
+    borrowedStreams.clear();
 #else
-  for (auto &s : flagcxStreams_) {
-    devHandle_->streamDestroy(s.second);
-  }
-#endif
-  // Pair communicators can be initialized lazily by send/recv, before the
-  // process-group communicator is initialized.
-  for (auto &kv : pairComms_) {
-    auto ret = flagcxCommDestroy(kv.second);
-    if (ret != flagcxSuccess) {
-      TORCH_WARN("flagcxCommDestroy failed for pair-comm ", kv.first);
+    while (!streams.empty()) {
+      result = handle->streamDestroy(streams.begin()->second);
+      if (result != flagcxSuccess)
+        return result;
+      streams.erase(streams.begin());
     }
+#endif
+    sdkReleased = true;
+    result = flagcxDeviceHandleFree(handle);
+    if (result == flagcxSuccess)
+      handle = nullptr;
+    return result;
   }
-  pairComms_.clear();
-  if (status_ == 1) {
-    flagcxCommDestroy(comm_);
+};
+
+void flagcxBackend::shutdown() {
+  if (shutdownState_ == nullptr) {
+    // Allocate the owner before transferring any resource out of the backend.
+    auto state = std::make_shared<ShutdownState>();
+    submissionUnsafe_ = true;
+    abortPairCoalescing();
+    abortHeteroCoalescing();
+    {
+      std::lock_guard<std::mutex> lock(tensorReaperMutex_);
+      stopTensorReaper_ = true;
+    }
+    tensorReaperCv_.notify_all();
+    if (tensorReaperThread_.joinable())
+      tensorReaperThread_.join();
+    state->batches.splice(state->batches.end(), inflightTensorBatches_);
+    state->batches.splice(state->batches.end(), reapingTensorBatches_);
+    state->deviceId = deviceId_;
+    state->handle = devHandle_;
+    state->comm = comm_;
+    state->pairs.swap(pairComms_);
+    state->streams.swap(flagcxStreams_);
+    state->events.swap(flagcxEvents_);
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+    state->borrowedStreams.swap(aclStreams_);
+#endif
+    devHandle_ = nullptr;
+    comm_ = nullptr;
     status_ = 0;
+    shutdownState_ = std::move(state);
   }
-  if (status_ == 0) {
-    flagcxDeviceHandleFree(devHandle_);
+  C10D_FLAGCX_CHECK(shutdownState_->release(), std::nullopt);
+}
+
+void flagcxBackend::retainFailedShutdown() {
+  auto state = shutdownState_;
+  if (state != nullptr)
+    flagcxPendingBackendCleanup::instance().retain(
+        [state] { return state->release(); });
+}
+
+flagcxBackend::~flagcxBackend() {
+  try {
+    shutdown();
+  } catch (...) {
+    // Preserve every remaining handle and dependency when the framework drops
+    // its backend. Retrying stays on the caller's thread.
+    retainFailedShutdown();
+    try {
+      TORCH_WARN("FlagCX shutdown incomplete; retry via retry_pending_cleanup "
+                 "with the same ranks");
+    } catch (...) {
+    }
   }
 }
 
@@ -596,6 +670,7 @@ std::unique_ptr<flagcxEvent> &flagcxBackend::getEventByIndex(int eventId) {
 }
 
 void flagcxBackend::initComm(at::Device dev) {
+  checkSubmissionHealthy();
   if (status_ == 0) {
     deviceId_ = dev.index();
     C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
@@ -637,6 +712,7 @@ void flagcxBackend::initComm(at::Device dev) {
 }
 
 void flagcxBackend::initComm() {
+  checkSubmissionHealthy();
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_ILUVATAR_ADAPTOR) ||            \
     defined(USE_METAX_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                   \
     defined(USE_KUNLUNXIN_ADAPTOR) || defined(USE_AMD_ADAPTOR)
@@ -665,6 +741,7 @@ void flagcxBackend::initComm() {
 }
 
 flagcxComm_t flagcxBackend::getOrCreatePairComm(int peer) {
+  checkSubmissionHealthy();
   std::string key;
   int numRanks;
   int p2pRank;
@@ -682,7 +759,9 @@ flagcxComm_t flagcxBackend::getOrCreatePairComm(int peer) {
     p2pRank = (rank_ < peer) ? 0 : 1;
   }
 
-  if (auto it = pairComms_.find(key); it != pairComms_.end()) {
+  const auto pairKey =
+      std::make_pair(std::min(rank_, peer), std::max(rank_, peer));
+  if (auto it = pairComms_.find(pairKey); it != pairComms_.end()) {
     return it->second;
   }
 
@@ -709,10 +788,19 @@ flagcxComm_t flagcxBackend::getOrCreatePairComm(int peer) {
   }
   // numRanks == 1 (self-comm): no store exchange needed, single participant.
 
-  flagcxComm_t pairComm = nullptr;
-  C10D_FLAGCX_CHECK(flagcxCommInitRank(&pairComm, numRanks, &uniqueId, p2pRank),
-                    std::nullopt);
-  pairComms_.emplace(key, pairComm);
+  // Reserve the owner slot before InitRank can return a partial cleanup owner.
+  auto slot = pairComms_.emplace(pairKey, nullptr).first;
+  flagcxResult_t result =
+      flagcxCommInitRank(&slot->second, numRanks, &uniqueId, p2pRank);
+  flagcxComm_t pairComm = slot->second;
+  if (pairComm == nullptr) {
+    pairComms_.erase(slot);
+    if (result == flagcxSuccess)
+      result = flagcxInternalError;
+  }
+  if (result != flagcxSuccess)
+    submissionUnsafe_ = true;
+  C10D_FLAGCX_CHECK(result, std::nullopt);
   return pairComm;
 }
 
@@ -793,6 +881,9 @@ void flagcxBackend::abortHeteroCoalescing() noexcept {
 }
 
 void flagcxBackend::checkSubmissionHealthy() {
+  TORCH_CHECK(
+      shutdownState_ == nullptr && devHandle_ != nullptr,
+      "This FlagCX backend has been shut down; it cannot submit more work");
   TORCH_CHECK(!submissionUnsafe_,
               "A previous FlagCX batch failed after submission; this "
               "backend cannot safely submit more work");
@@ -1393,6 +1484,7 @@ flagcxBackend::allreduce(std::vector<at::Tensor> &tensors,
 c10::intrusive_ptr<Work>
 flagcxBackend::allreduce_coalesced(std::vector<at::Tensor> &tensors,
                                    const AllreduceCoalescedOptions &opts) {
+  checkSubmissionHealthy();
   // parameter validation
   check_gpu_tensors_same_device(tensors);
   TORCH_CHECK(
@@ -2300,6 +2392,13 @@ c10::intrusive_ptr<Backend> flagcxBackend::createFlagcxBackend(
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("createFlagcxBackend", &flagcxBackend::createFlagcxBackend);
+  m.def("shutdown_backend", [](const c10::intrusive_ptr<Backend> &backend) {
+    auto *flagcx = dynamic_cast<flagcxBackend *>(backend.get());
+    TORCH_CHECK(flagcx != nullptr, "Expected a FlagCX backend");
+    flagcx->shutdown();
+  });
+  m.def("retry_pending_cleanup",
+        [] { return (int)flagcxPendingBackendCleanup::instance().retry(); });
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
     defined(TORCH_VER_GE_250)
