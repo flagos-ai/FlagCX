@@ -138,9 +138,7 @@ when "workflow_dispatch"
   selection = parse_selection.call(context.fetch("selection", "all"))
   routing_reason << "Manual dispatch selected #{selection.join(", ")}"
 when "push"
-  selection = platform_names
-  level = "L3"
-  routing_reason << "Push runs the complete configured matrix at L3"
+  selection = select_paths.call
 when "schedule"
   selection = platform_names
   level = "L3"

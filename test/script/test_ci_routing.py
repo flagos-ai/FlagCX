@@ -63,7 +63,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
             outputs["platforms"] = json.loads(outputs["platforms"])
             return outputs, result.stdout
 
-    def test_push_and_schedule_always_run_all_enabled_platforms(self):
+    def test_push_routes_by_changed_paths_and_schedule_runs_full_matrix(self):
         self.assertEqual(
             ALL_ENABLED_PLATFORMS,
             [
@@ -78,10 +78,18 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 "enflame",
             ],
         )
-        for event_name in ("push", "schedule"):
-            with self.subTest(event=event_name):
-                outputs, _ = self.resolve({"event_name": event_name})
-                self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+        outputs, _ = self.resolve({
+            "event_name": "push", "files": [".github/scripts/set_env/metax.sh"]
+        })
+        self.assertEqual(outputs["platforms"], ["metax"])
+
+        outputs, _ = self.resolve({
+            "event_name": "push", "files": ["flagcx/core/group.cc"]
+        })
+        self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+
+        outputs, _ = self.resolve({"event_name": "schedule"})
+        self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
     def test_common_changes_select_all_platforms(self):
         outputs, _ = self.resolve(

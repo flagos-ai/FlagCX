@@ -111,6 +111,12 @@ jobs:
               fi
               ;;
             push)
+              before=$(jq -r '.before // empty' "$EVENT_PATH")
+              if [[ -n "$before" && "$before" != "0000000000000000000000000000000000000000" ]]; then
+                git diff --name-only "$before" "$EVENT_SHA" > "$files_file"
+              else
+                git ls-tree -r --name-only "$EVENT_SHA" > "$files_file"
+              fi
               ;;
             schedule)
               ;;
