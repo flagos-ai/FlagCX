@@ -142,8 +142,8 @@ int main(int argc, char *argv[]) {
                                        &tailWin, flagcxTestWindowFlags(),
                                        flagcxMemSHMEM));
   flagcxDevMem_t tailMem = nullptr;
-  FLAGCXCHECK(flagcxDevMemCreate(comm, tailBuff, kSubwordTailBytes, tailWin,
-                                 &tailMem));
+  FLAGCXCHECK(
+      flagcxDevMemCreate(comm, tailBuff, kSubwordTailBytes, tailWin, &tailMem));
   void *tailMemPtr = nullptr;
   FLAGCXCHECK(flagcxDevMemGetDevicePtr(tailMem, &tailMemPtr));
 #endif
