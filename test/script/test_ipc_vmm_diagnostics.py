@@ -9,6 +9,8 @@ import sys
 import tempfile
 import unittest
 
+from test_symmem_ci import install_lifecycle_reports
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / '.github/scripts/ci/run_ipc_vmm_diagnostics.sh'
 
@@ -94,11 +96,13 @@ print('IPC_REPRO_PASS case=' + case, flush=True)
             shutil.copy(ROOT / 'test/script/symmem_test.sh', script)
             ci = root / '.github/scripts/ci'
             ci.mkdir(parents=True)
+            install_lifecycle_reports(ci)
             shutil.copyfile(ROOT / '.github/scripts/ci/ignore_test.py',
                             ci / 'ignore_test.py')
             for name in ('run_with_timeout.sh', 'run_mpi_with_timeout.sh'):
                 path = ci / name
                 path.write_text('''#!/bin/bash
+python3 "$(dirname "$0")/mock_lifecycle_xml.py" "$@" || exit $?
 printf '%s\\n' "$*" >> "$SYMMEM_CALLS"
 if [[ "$*" == *--gtest_filter=SymMemTest.UntrackedVmmMappingIsRejected* ]]; then
   exit 139

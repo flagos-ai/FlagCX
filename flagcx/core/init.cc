@@ -14,6 +14,7 @@
 #include "net.h"
 #include "p2p.h"
 #include "reg_pool.h"
+#include "sym_heap.h"
 #include "topo.h"
 #include "transport.h"
 #include "type.h"
@@ -513,19 +514,26 @@ flagcxResult_t flagcxHeteroCommInitRank(flagcxHeteroComm_t *newcomm, int nranks,
                                         flagcxUniqueId commId, int myrank) {
   FLAGCXCHECK(flagcxInit());
   int cudaDev = 0;
-  flagcxConfig_t config;
+  flagcxConfig_t config = {};
   // flagcxGetDevice(&cudaDev);
-  deviceAdaptor->getDevice(&cudaDev);
-  FLAGCXCHECK(
-      flagcxCommInitRankDev(newcomm, nranks, commId, myrank, cudaDev, &config));
-  flagcxResult_t proxyRes = flagcxHeteroRmaProxyStart(*newcomm);
-  if (proxyRes != flagcxSuccess) {
-    // Preserve the owner if device cleanup fails; the caller can retry
-    // destruction instead of losing the remaining persistent allocations.
-    flagcxResult_t cleanupRes = flagcxHeteroCommDestroy(newcomm);
-    return cleanupRes != flagcxSuccess ? cleanupRes : proxyRes;
-  }
-  return flagcxSuccess;
+  flagcxResult_t deviceResult = deviceAdaptor->getDevice(&cudaDev);
+  if (deviceResult != flagcxSuccess)
+    return deviceResult;
+  flagcxResult_t initResult =
+      flagcxCommInitRankDev(newcomm, nranks, commId, myrank, cudaDev, &config);
+  if (initResult != flagcxSuccess)
+    return initResult;
+  return flagcxHeteroCommStartRma(newcomm);
+}
+
+flagcxResult_t flagcxHeteroCommStartRma(flagcxHeteroComm_t *owner) {
+  if (owner == NULL || *owner == NULL)
+    return flagcxInvalidArgument;
+  flagcxResult_t result = flagcxHeteroRmaProxyStart(*owner);
+  if (result == flagcxSuccess)
+    return result;
+  flagcxResult_t cleanup = flagcxHeteroCommRollbackInit(owner);
+  return cleanup != flagcxSuccess ? cleanup : result;
 }
 
 flagcxResult_t flagcxHeteroCommCount(const flagcxHeteroComm_t comm,
@@ -540,36 +548,62 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm) {
-  flagcxResult_t drain = flagcxWorkDrain(
+static flagcxResult_t flagcxHeteroDrainWork(flagcxHeteroComm_t comm) {
+  flagcxResult_t result = flagcxWorkDrain(
       comm->workOwner != NULL ? comm->workOwner : &comm->submittedWork, comm);
-  if (drain != flagcxSuccess)
-    return drain;
-  drain = flagcxGroupDrainWork(comm, 1);
-  if (drain != flagcxSuccess)
-    return drain;
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxGroupDrainWork(comm, 1);
+  if (result != flagcxSuccess)
+    return result;
   if (comm->proxyState != NULL &&
       comm->proxyState->uniRunnerState.invocationOwner != NULL) {
-    drain = cleanupUniRunner(comm->proxyState->uniRunnerState.invocationOwner,
-                             false);
-    if (drain != flagcxSuccess)
-      return drain;
+    result = cleanupUniRunner(comm->proxyState->uniRunnerState.invocationOwner,
+                              false);
+    if (result != flagcxSuccess)
+      return result;
   }
+  return flagcxHeteroRmaProxyQuiesce(comm);
+}
+
+flagcxResult_t flagcxHeteroCommCloseRelayImports(flagcxHeteroComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  flagcxResult_t result =
+      flagcxSymRetryPendingCleanup(comm, flagcxSymCleanupLocal);
+  if (result != flagcxSuccess)
+    return result;
+  while (comm->symWindows != NULL) {
+    flagcxWindow_t window = comm->symWindows->owner;
+    if (window == NULL)
+      return flagcxInvalidUsage;
+    result = flagcxSymWindowDeregister(comm, window, flagcxSymCleanupLocal);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  result = flagcxSymLsaDestroy(comm);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxHeteroRmaProxyStop(comm);
+  if (result != flagcxSuccess)
+    return result;
+  result = globalRegPool.releaseOwner(comm);
+  if (result != flagcxSuccess)
+    return result;
+  result = globalRegPool.removeAllNetHandles(comm);
+  if (result != flagcxSuccess)
+    return result;
+  return flagcxProxyCloseRelayImports(comm);
+}
+
+flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm) {
+  if (comm == NULL || comm->proxyState == NULL)
+    return flagcxInvalidArgument;
   if (!comm->destroyProxyComplete) {
-    flagcxResult_t result = flagcxHeteroRmaProxyStop(comm);
+    flagcxResult_t result = flagcxProxyStop(comm);
     if (result != flagcxSuccess)
       return result;
-    // Clean up P2P/Net handles while proxy is still alive and peerSocks valid.
-    result = globalRegPool.releaseOwner(comm);
-    if (result != flagcxSuccess)
-      return result;
-    result = globalRegPool.removeAllNetHandles(comm);
-    if (result != flagcxSuccess)
-      return result;
-    result = flagcxProxyStop(comm);
-    if (result != flagcxSuccess)
-      return result;
-    result = flagcxProxyDestroy(comm);
+    result = flagcxProxyFinalize(comm);
     if (result != flagcxSuccess)
       return result;
 #ifdef USE_IBUC
@@ -581,32 +615,65 @@ flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm) {
       comm->destroyProxyResult = comm->proxyState->workerCleanupResult;
     comm->destroyProxyComplete = true;
   }
-  if (comm->proxyState->uniRunnerState.streamFlagsPool != NULL ||
-      comm->proxyState->uniRunnerState.streamFlags != NULL ||
-      comm->proxyState->uniRunnerState.streamFlagsCapacity != 0 ||
-      comm->proxyState->uniRunnerState.redCompletionCountersPool != NULL ||
-      comm->proxyState->uniRunnerState.groupedArScratch != NULL ||
-      comm->proxyState->uniRunnerState.ipcOwner != NULL ||
-      comm->proxyState->uniRunnerState.ipcInputMem != NULL ||
-      comm->proxyState->uniRunnerState.ipcOutputMem != NULL ||
-      comm->proxyState->uniRunnerState.ipcReadyMem != NULL ||
-      comm->proxyState->uniRunnerState.ipcReadyBuffer != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingScratchMem != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingProgressMem != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingScratchBuffer != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingProgressBuffer != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingTriggersDevice != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingLanesDevice != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingControlHost != NULL ||
-      comm->proxyState->uniRunnerState.ipcParentFlagsDevice != NULL) {
-    flagcxResult_t result = deviceAdaptor->setDevice(comm->cudaDev);
-    if (result != flagcxSuccess)
-      return result;
-    result = cleanupUniRunnerPersistentState(&comm->proxyState->uniRunnerState);
-    if (result != flagcxSuccess)
-      return result;
+  return cleanupUniRunnerIpcImports(&comm->proxyState->uniRunnerState);
+}
+
+flagcxResult_t flagcxHeteroCommFinalize(flagcxHeteroComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  struct flagcxHeteroFinalizeState *state = &comm->finalizeState;
+  if (state->rollbackPending)
+    return flagcxInvalidUsage;
+  int expected = 0;
+  if (!__atomic_compare_exchange_n(&state->running, &expected, 1, false,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return flagcxInProgress;
+  if (state->phase == flagcxHeteroFinalizeComplete) {
+    __atomic_store_n(&state->running, 0, __ATOMIC_RELEASE);
+    return flagcxSuccess;
   }
-  return flagcxSuccess;
+  if (flagcxGetGroupDepth() != 0) {
+    __atomic_store_n(&state->running, 0, __ATOMIC_RELEASE);
+    return flagcxInvalidUsage;
+  }
+  __atomic_store_n(&state->started, 1, __ATOMIC_RELEASE);
+  flagcxResult_t result = flagcxSuccess;
+  while (state->phase < flagcxHeteroFinalizeComplete) {
+    int phase = state->phase;
+    flagcxResult_t local = deviceAdaptor->setDevice(comm->cudaDev);
+    if (local == flagcxSuccess && !(state->localDoneMask & (1u << phase))) {
+      switch (state->phase) {
+        case flagcxHeteroFinalizeDrain:
+          local = flagcxHeteroDrainWork(comm);
+          break;
+        case flagcxHeteroFinalizeImports:
+          local = flagcxHeteroCommCloseRelayImports(comm);
+          break;
+        case flagcxHeteroFinalizeProxy:
+          local = flagcxHeteroCommPrepareDestroy(comm);
+          break;
+        default:
+          local = flagcxInternalError;
+          break;
+      }
+      if (local == flagcxSuccess)
+        state->localDoneMask |= 1u << phase;
+    }
+    flagcxResult_t common = local;
+    if (comm->nRanks > 1)
+      result = bootstrapCollIntraNodeStatus(
+          comm->bootstrap, comm->localRankToRank, comm->localRank,
+          comm->localRanks, 0x6d20 + phase * 2, local, &common);
+    if (result == flagcxSuccess)
+      result = common;
+    if (result != flagcxSuccess)
+      break;
+    state->phase = (flagcxHeteroFinalizePhase)(phase + 1);
+  }
+  if (result == flagcxSuccess)
+    state->importsClosedConfirmed = 1;
+  __atomic_store_n(&state->running, 0, __ATOMIC_RELEASE);
+  return result;
 }
 
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t *owner) {
@@ -615,7 +682,28 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t *owner) {
   flagcxHeteroComm_t comm = *owner;
   if (comm == NULL)
     return flagcxSuccess;
-  flagcxResult_t result = flagcxHeteroCommPrepareDestroy(comm);
+  flagcxResult_t result;
+  if (comm->finalizeState.rollbackPending) {
+    result = flagcxHeteroDrainWork(comm);
+    if (result == flagcxSuccess)
+      result = flagcxHeteroCommCloseRelayImports(comm);
+    if (result == flagcxSuccess)
+      result = flagcxHeteroCommPrepareDestroy(comm);
+  } else {
+    result = flagcxHeteroCommFinalize(comm);
+  }
+  if (result != flagcxSuccess)
+    return result;
+  result = deviceAdaptor->setDevice(comm->cudaDev);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxProxyDestroy(comm);
+  if (result != flagcxSuccess)
+    return result;
+  result = cleanupUniRunnerPersistentState(&comm->proxyState->uniRunnerState);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxHeteroRmaProxyRelease(comm);
   if (result != flagcxSuccess)
     return result;
   flagcxResult_t proxyResult = comm->destroyProxyResult;
@@ -629,11 +717,15 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t *owner) {
     FLAGCXCHECK(flagcxNetAdaptorPluginFinalize());
     comm->netPluginHeld = false;
   }
+  result = bootstrapClose(comm->bootstrap);
+  if (result != flagcxSuccess)
+    return result;
+  comm->bootstrap = NULL;
   delete comm->workerPool;
   comm->workerPool = NULL;
   for (int i = 0; i < MAXCHANNELS; i++) {
     free(comm->channels[i].ring.userRanks);
-    for (int r = 0; r < comm->nRanks; r++) {
+    for (int r = 0; comm->channels[i].peers != NULL && r < comm->nRanks; r++) {
       free(comm->channels[i].peers[r]);
     }
     free(comm->channels[i].peers);
@@ -666,9 +758,28 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t *owner) {
   if (comm->interServerTopo) {
     flagcxInterServerTopoFree(comm->interServerTopo);
   }
+  if (comm->nodeRanks != NULL) {
+    // Flat scheduling may change nNodes; rankToNode retains the allocation's
+    // original node domain.
+    int allocatedNodes = 0;
+    for (int rank = 0; rank < comm->nRanks; ++rank)
+      allocatedNodes = std::max(allocatedNodes, comm->rankToNode[rank] + 1);
+    for (int node = 0; node < allocatedNodes; ++node)
+      free(comm->nodeRanks[node].localRankToRank);
+    free(comm->nodeRanks);
+  }
+  free(comm->rankToNode);
+  free(comm->rankToLocalRank);
   free(comm->peerInfo);
   free(comm);
   *owner = NULL;
 
   return proxyResult;
+}
+
+flagcxResult_t flagcxHeteroCommRollbackInit(flagcxHeteroComm_t *owner) {
+  if (owner == NULL || *owner == NULL)
+    return flagcxSuccess;
+  (*owner)->finalizeState.rollbackPending = 1;
+  return flagcxHeteroCommDestroy(owner);
 }

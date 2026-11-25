@@ -29,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+#include "cleanup_flagcx.hpp"
 #include "event_flagcx.hpp"
 #include "stream_guard_flagcx.hpp"
 #include "utils_flagcx.hpp"
@@ -151,6 +152,7 @@ public:
 #endif
 
   ~flagcxBackend() override;
+  void shutdown();
 
   void startCoalescing() override;
 
@@ -350,7 +352,10 @@ protected:
   // uses dedicated pair communicators so that only the two peers need to
   // participate in communicator initialization.
   bool usePairComm_ = true;
-  std::unordered_map<std::string, flagcxComm_t> pairComms_;
+  flagcxPairComms pairComms_;
+  void retainFailedShutdown();
+  struct ShutdownState;
+  std::shared_ptr<ShutdownState> shutdownState_;
   struct pairCoalesceCtx {
     bool active = false;
     int deviceId = -1;
@@ -367,6 +372,7 @@ protected:
     flagcxStream_t stream = nullptr;
     int deviceId = -1;
     bool recorded = false;
+    bool completed = false;
     bool completionUncertain = false;
     bool ownsStreamWrapper = false;
     // Storage keeps queued buffers alive without retaining Python Tensor

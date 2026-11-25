@@ -454,6 +454,7 @@ protected:
     probe_.requestDone.store(1, std::memory_order_release);
     if (comm_.rmaProxy != nullptr) {
       EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyStop(&comm_));
+      EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyRelease(&comm_));
     }
     delete comm_.workerPool;
     comm_.workerPool = nullptr;
@@ -536,6 +537,9 @@ TEST_F(RmaWorkerFixture, StopWaitsForAcceptedNativeRequest) {
                    std::future_status::ready)
                  _exit(2);
                EXPECT_EQ(flagcxSuccess, stopping.get());
+               ASSERT_NE(nullptr, comm_.rmaProxy);
+               EXPECT_TRUE(comm_.rmaProxy->stopComplete);
+               EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyRelease(&comm_));
                EXPECT_EQ(nullptr, comm_.rmaProxy);
                EXPECT_EQ(0u, comm_.workerPool->workerCount());
              },
@@ -567,6 +571,7 @@ TEST_F(RmaWorkerFixture, QuiesceDrainsAcceptedRequestBeforeStoppingWorker) {
                EXPECT_EQ(flagcxInvalidUsage,
                          flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0));
                EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyStop(&comm_));
+               EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyRelease(&comm_));
                EXPECT_EQ(0u, comm_.workerPool->workerCount());
              },
              std::chrono::seconds(8)))

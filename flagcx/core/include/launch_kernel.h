@@ -21,8 +21,19 @@
 
 struct flagcxSemaphore {
   flagcxResult_t initResult = flagcxSuccess;
+  int completionCancelled = 0;
   flagcxSemaphore() = default;
   virtual ~flagcxSemaphore() = default;
+
+  // Only a saved last-use fence may authorize this for a rejected notification.
+  // Keep counters intact: failed proxy users may still retire accepted
+  // requests.
+  void markCompletionCancelled() {
+    __atomic_store_n(&completionCancelled, 1, __ATOMIC_RELEASE);
+  }
+  int isCompletionCancelled() {
+    return __atomic_load_n(&completionCancelled, __ATOMIC_ACQUIRE);
+  }
 
   virtual flagcxEvent_t getEvent() = 0;
   virtual void signalStart() = 0;
@@ -111,7 +122,8 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
     return (signals[it->second].first >= step);
   }
   int pollEnd() override {
-    return (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) == 0);
+    return isCompletionCancelled() ||
+           (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) == 0);
   }
   void wait() override {
     int nDone = 0;
@@ -274,7 +286,8 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
     return (__atomic_load_n(signals + curStep[opId], __ATOMIC_ACQUIRE) >= step);
   }
   int pollEnd() override {
-    return (__atomic_load_n(signals + FLAGCX_SIGNAL_COUNTER_OFFSET,
+    return isCompletionCancelled() ||
+           (__atomic_load_n(signals + FLAGCX_SIGNAL_COUNTER_OFFSET,
                             __ATOMIC_ACQUIRE) == 0);
   }
   // Since the device kernel handles the signaling,

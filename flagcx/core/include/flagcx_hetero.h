@@ -102,6 +102,7 @@ struct flagcxRmaIpcState {
 // pending queues: producer = caller (proxy kernel thread), consumer = RMA
 // worker. inProgress queues: RMA worker only (no locking needed).
 struct flagcxRmaProxyState {
+  bool stopComplete;
   flagcxResult_t workerCleanupResult;
   int destroyedPeerMutexes;
   bool doneCondDestroyed;
@@ -324,6 +325,8 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
 // Async RMA proxy lifecycle.
 flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm);
+flagcxResult_t flagcxHeteroRmaProxyRelease(flagcxHeteroComm_t comm);
+flagcxResult_t flagcxHeteroCommRollbackInit(flagcxHeteroComm_t *owner);
 
 // Internal deterministic progress hook used by host-only RMA tests. Production
 // progress uses the same pass from the proxy thread.
@@ -398,5 +401,10 @@ flagcxResult_t flagcxHeteroRmaIpcInit(flagcxHeteroComm_t comm);
 
 // Cleanup IPC state.
 flagcxResult_t flagcxHeteroRmaIpcDestroy(flagcxHeteroComm_t comm);
+
+flagcxResult_t flagcxHeteroCommFinalize(flagcxHeteroComm_t comm);
+flagcxResult_t flagcxHeteroCommCloseRelayImports(flagcxHeteroComm_t comm);
+
+flagcxResult_t flagcxHeteroCommStartRma(flagcxHeteroComm_t *owner);
 
 #endif

@@ -46,7 +46,13 @@ unit_test_suites:
 
 # Platform exclusions; every entry must document its reason.
 ignore_test:
-  gtest: []
+  gtest:
+  - suite: device_api_host
+    tests:
+    - CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator
+    - CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator
+    reason: Current MCCL SDK has no mcclCommFinalize; compatibility native Destroy may drain
+      unrelated work. Restore with the supported native Finalize SDK
   phases:
   - suite: symmem
     name: vmm-local-and-remote-without-net

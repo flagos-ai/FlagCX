@@ -103,6 +103,10 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
     return flagcxSuccess;
   }
 
+  // Collective relay creation also declares its communicator-wide teardown.
+  // Keep the scope through partial creation and cleanup retries.
+  comm->nativeFinalizeScope = flagcxNativeFinalizeComm;
+
   // Already initialized: just copy pointers into devComm
   if (hetero->relayInitialized) {
     devComm->nInterPeers = hetero->nInterPeers;
@@ -1009,8 +1013,8 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   devComm->localBarrierShmPtr = NULL;
   devComm->barrierShmSize = 0;
   if (devComm->barrierDevPeerPtrsRaw != NULL) {
-    flagcxResult_t result = deviceAdaptor->deviceFree(
-        devComm->barrierDevPeerPtrsRaw, flagcxMemDevice, NULL);
+    flagcxResult_t result = flagcxCommReleaseBuffer(
+        comm, devComm->barrierDevPeerPtrsRaw, flagcxInternalBufferDevice);
     if (result != flagcxSuccess)
       return result;
     devComm->barrierDevPeerPtrsRaw = NULL;
@@ -1045,8 +1049,8 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   devComm->signalMrHostPtr = NULL;
   devComm->localSignalBuffer = NULL;
   if (devComm->signalDevPeerPtrsRaw != NULL) {
-    flagcxResult_t result = deviceAdaptor->deviceFree(
-        devComm->signalDevPeerPtrsRaw, flagcxMemDevice, NULL);
+    flagcxResult_t result = flagcxCommReleaseBuffer(
+        comm, devComm->signalDevPeerPtrsRaw, flagcxInternalBufferDevice);
     if (result != flagcxSuccess)
       return result;
     devComm->signalDevPeerPtrsRaw = NULL;
@@ -1057,12 +1061,10 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   devComm->localBarrierFlags = nullptr;
   devComm->localBarrierFlagsDeviceAllocated = false;
   if (devComm->epochBuffer) {
-    do {
-      flagcxResult_t result = deviceAdaptor->deviceFree(devComm->epochBuffer,
-                                                        flagcxMemDevice, NULL);
-      if (result != flagcxSuccess)
-        return result;
-    } while (0);
+    flagcxResult_t result = flagcxCommReleaseBuffer(comm, devComm->epochBuffer,
+                                                    flagcxInternalBufferDevice);
+    if (result != flagcxSuccess)
+      return result;
     devComm->epochBuffer = nullptr;
   }
   devComm->signalBuffer = nullptr;
@@ -1070,31 +1072,25 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   // In the 64-bit path this aliases signalBuffer; Comm records it only once.
   devComm->completionSignalBuffer = nullptr;
   if (devComm->shadowBuffer) {
-    do {
-      flagcxResult_t result = deviceAdaptor->deviceFree(devComm->shadowBuffer,
-                                                        flagcxMemDevice, NULL);
-      if (result != flagcxSuccess)
-        return result;
-    } while (0);
+    flagcxResult_t result = flagcxCommReleaseBuffer(comm, devComm->shadowBuffer,
+                                                    flagcxInternalBufferDevice);
+    if (result != flagcxSuccess)
+      return result;
     devComm->shadowBuffer = nullptr;
   }
   if (devComm->counterBuffer) {
-    do {
-      flagcxResult_t result = deviceAdaptor->deviceFree(devComm->counterBuffer,
-                                                        flagcxMemHost, NULL);
-      if (result != flagcxSuccess)
-        return result;
-    } while (0);
+    flagcxResult_t result = flagcxCommReleaseBuffer(
+        comm, devComm->counterBuffer, flagcxInternalBufferHost);
+    if (result != flagcxSuccess)
+      return result;
     devComm->counterBuffer = nullptr;
   }
   if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
     if (devComm->completionCounterBuffer) {
-      do {
-        flagcxResult_t result = deviceAdaptor->deviceFree(
-            devComm->completionCounterBuffer, flagcxMemDevice, NULL);
-        if (result != flagcxSuccess)
-          return result;
-      } while (0);
+      flagcxResult_t result = flagcxCommReleaseBuffer(
+          comm, devComm->completionCounterBuffer, flagcxInternalBufferDevice);
+      if (result != flagcxSuccess)
+        return result;
       devComm->completionCounterBuffer = nullptr;
     }
   } else {

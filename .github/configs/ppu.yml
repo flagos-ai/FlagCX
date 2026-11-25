@@ -79,6 +79,11 @@ unit_test_suites:
 # Platform exclusions; every entry must document its reason.
 ignore_test:
   gtest:
+  - suite: runner
+    tests:
+    - FlagCXCollTest.FinalizeThenRankLocalDestroy
+    reason: PCCL native Destroy can wait for peer Destroy after native Finalize; restore
+      when SDK local teardown is supported
   - suite: p2p
     tests:
     - P2pAdaptorStruct.*

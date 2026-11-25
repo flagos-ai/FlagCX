@@ -34,8 +34,8 @@ struct flagcxWorkRecord {
 };
 struct flagcxWorkTracker {
   pthread_mutex_t mutex;
-  int initialized, closed, submitting;
-  uint64_t nextId;
+  int initialized, closed, submitting, collecting;
+  uint64_t nextId, collectAfter;
   struct flagcxWorkRecord *head, *tail, *spare, *retired;
   unsigned int spareCount;
 };
@@ -105,5 +105,7 @@ flagcxResult_t flagcxCommDrainSnapshot(flagcxComm_t comm,
                                        struct flagcxWorkSnapshot *snapshot);
 void flagcxWorkSnapshotRelease(struct flagcxWorkSnapshot *snapshot);
 flagcxResult_t flagcxWorkRelease(struct flagcxWorkTracker *tracker);
+
+int flagcxWorkHasCurrent(struct flagcxWorkTracker *tracker);
 
 #endif

@@ -87,6 +87,9 @@ flagcxDevCommCreateSized(flagcxComm_t comm,
 // destroying their handles. FlagCX tracks its own host submissions and does
 // not synchronize the whole device. On failure the handle remains owned and
 // must be retried; getters reject a handle whose cleanup has started.
+// Internal exporter allocations belong to the parent Comm. Destroying a view
+// closes its imports locally; backing is released by CommDestroy after Finalize
+// has confirmed peer import closure.
 flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm, flagcxDevComm_t devComm);
 
 // Local view construction; cross-rank Window resources must already have
