@@ -67,59 +67,144 @@ static flagcxResult_t getPciPath(const char *busId, char **path) {
   return flagcxSuccess;
 }
 
-flagcxResult_t xmlGetValue(FILE *file, char *value, char *last) {
+static bool xmlIsWhitespace(char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+flagcxResult_t xmlGetValue(FILE *file, char *value, size_t valueSize,
+                           char *last) {
+  if (file == NULL || value == NULL || valueSize == 0 || last == NULL)
+    return flagcxInvalidArgument;
+
   char c;
   FLAGCXCHECK(xmlGetChar(file, &c));
-  if (c != '"' && c != '\'') {
-#if INT_OK
-    int o = 0;
-    do {
-      value[o++] = c;
-      FLAGCXCHECK(xmlGetChar(file, &c));
-    } while (c >= '0' && c <= '9');
-    value[o] = '\0';
-    *last = c;
-    return flagcxSuccess;
-#else
-    WARN("XML Parse : Expected (double) quote.");
-    return flagcxInternalError;
-#endif
-  }
-  int o = 0;
-  do {
+  while (xmlIsWhitespace(c))
     FLAGCXCHECK(xmlGetChar(file, &c));
-    value[o++] = c;
-  } while (c != '"');
-  value[o - 1] = '\0';
-  FLAGCXCHECK(xmlGetChar(file, last));
+
+  if (c == '"' || c == '\'') {
+    const char quote = c;
+    size_t length = 0;
+    while (true) {
+      FLAGCXCHECK(xmlGetChar(file, &c));
+      if (c == quote)
+        break;
+      if (length >= valueSize - 1) {
+        WARN("XML Parse : attribute value too long (max %zu)", valueSize - 1);
+        return flagcxInternalError;
+      }
+      value[length++] = c;
+    }
+    value[length] = '\0';
+    FLAGCXCHECK(xmlGetChar(file, last));
+    return flagcxSuccess;
+  }
+
+#if INT_OK
+  // Preserve support for legacy unquoted integer attributes.
+  size_t length = 0;
+  if (c == '-' || c == '+') {
+    if (length >= valueSize - 1) {
+      WARN("XML Parse : attribute value too long (max %zu)", valueSize - 1);
+      return flagcxInternalError;
+    }
+    value[length++] = c;
+    FLAGCXCHECK(xmlGetChar(file, &c));
+  }
+  if (c < '0' || c > '9') {
+    WARN("XML Parse : expected a quoted value or an integer.");
+    return flagcxInternalError;
+  }
+  do {
+    if (length >= valueSize - 1) {
+      WARN("XML Parse : attribute value too long (max %zu)", valueSize - 1);
+      return flagcxInternalError;
+    }
+    value[length++] = c;
+    FLAGCXCHECK(xmlGetChar(file, &c));
+  } while (c >= '0' && c <= '9');
+  value[length] = '\0';
+  *last = c;
   return flagcxSuccess;
+#else
+  WARN("XML Parse : Expected (double or single) quote.");
+  return flagcxInternalError;
+#endif
 }
 
 flagcxResult_t xmlGetToken(FILE *file, char *name, char *value, char *last) {
+  if (file == NULL || name == NULL || last == NULL)
+    return flagcxInvalidArgument;
+
   char c;
-  char *ptr = name;
-  int o = 0;
-  do {
-    FLAGCXCHECK(xmlGetChar(file, &c));
-    if (c == '=') {
-      ptr[o] = '\0';
-      if (value == NULL) {
-        WARN("XML Parse : Unexpected value with name %s", ptr);
+  size_t length = 0;
+  if (value == NULL) {
+    // Element and closing-tag names.
+    while (true) {
+      FLAGCXCHECK(xmlGetChar(file, &c));
+      if (c == '=') {
+        WARN("XML Parse : Unexpected value with name %s", name);
         return flagcxInternalError;
       }
-      return xmlGetValue(file, value, last);
+      if (xmlIsWhitespace(c) || c == '>' || c == '/') {
+        name[length] = '\0';
+        *last = c;
+        return flagcxSuccess;
+      }
+      if (length >= MAX_STR_LEN) {
+        name[length] = '\0';
+        WARN("Error : name %s too long (max %d)", name, MAX_STR_LEN);
+        return flagcxInternalError;
+      }
+      name[length++] = c;
     }
-    ptr[o] = c;
-    if (o == MAX_STR_LEN - 1) {
-      ptr[o] = '\0';
-      WARN("Error : name %s too long (max %d)", ptr, MAX_STR_LEN);
+  }
+
+  // Attribute parsing starts after the separator already consumed by the
+  // caller. Skip the remaining XML whitespace before reading the name.
+  do {
+    FLAGCXCHECK(xmlGetChar(file, &c));
+  } while (xmlIsWhitespace(c));
+
+  // A closing '>' or '/>' after whitespace means there are no more attributes.
+  if (c == '>' || c == '/') {
+    name[0] = '\0';
+    *last = c;
+    return flagcxSuccess;
+  }
+
+  // Read the attribute name. XML permits whitespace around '='.
+  while (c != '=') {
+    if (xmlIsWhitespace(c)) {
+      do {
+        FLAGCXCHECK(xmlGetChar(file, &c));
+      } while (xmlIsWhitespace(c));
+      if (c != '=') {
+        name[length] = '\0';
+        WARN("XML Parse : expected '=' after attribute %s", name);
+        return flagcxInternalError;
+      }
+      break;
+    }
+    if (c == '>' || c == '/') {
+      name[length] = '\0';
+      WARN("XML Parse : expected '=' after attribute %s", name);
       return flagcxInternalError;
     }
-    o++;
-  } while (c != ' ' && c != '>' && c != '/' && c != '\n' && c != '\r');
-  ptr[o - 1] = '\0';
-  *last = c;
-  return flagcxSuccess;
+    if (length >= MAX_STR_LEN) {
+      name[length] = '\0';
+      WARN("Error : name %s too long (max %d)", name, MAX_STR_LEN);
+      return flagcxInternalError;
+    }
+    name[length++] = c;
+    FLAGCXCHECK(xmlGetChar(file, &c));
+  }
+
+  if (length == 0) {
+    WARN("XML Parse : empty attribute name");
+    return flagcxInternalError;
+  }
+  name[length] = '\0';
+  return xmlGetValue(file, value, MAX_STR_LEN + 1, last);
 }
 
 // Shift the 3-chars string by one char and append c at the end
@@ -154,7 +239,7 @@ flagcxResult_t xmlSkipComment(FILE *file, char *start, char next) {
 flagcxResult_t xmlGetNode(FILE *file, struct flagcxXmlNode *node) {
   node->type = NODE_TYPE_NONE;
   char c = ' ';
-  while (c == ' ' || c == '\n' || c == '\r') {
+  while (xmlIsWhitespace(c)) {
     if (fread(&c, 1, 1, file) == 0)
       return flagcxSuccess;
   }
@@ -176,6 +261,8 @@ flagcxResult_t xmlGetNode(FILE *file, struct flagcxXmlNode *node) {
     node->type = NODE_TYPE_CLOSE;
     // Re-read the name, we got '/' in the first call
     FLAGCXCHECK(xmlGetToken(file, node->name, NULL, &c));
+    while (xmlIsWhitespace(c))
+      FLAGCXCHECK(xmlGetChar(file, &c));
     if (c != '>') {
       WARN("XML Parse error : unexpected trailing %c in closing tag %s", c,
            node->name);
@@ -188,21 +275,23 @@ flagcxResult_t xmlGetNode(FILE *file, struct flagcxXmlNode *node) {
 
   // Get Attributes
   int a = 0;
-  while (c == ' ') {
+  while (xmlIsWhitespace(c)) {
     FLAGCXCHECK(
         xmlGetToken(file, node->attrs[a].key, node->attrs[a].value, &c));
+    if (node->attrs[a].key[0] == '\0')
+      break;
     if (a == MAX_ATTR_COUNT) {
       INFO(FLAGCX_GRAPH, "XML Parse : Ignoring extra attributes (max %d)",
            MAX_ATTR_COUNT);
-      // Actually we need to still consume the extra attributes so we have an
-      // extra one.
-    } else
+      // Keep consuming extra attributes in the scratch slot.
+    } else {
       a++;
+    }
   }
   node->nAttrs = a;
   if (c == '/') {
     node->type = NODE_TYPE_SINGLE;
-    char str[MAX_STR_LEN];
+    char str[MAX_STR_LEN + 1];
     FLAGCXCHECK(xmlGetToken(file, str, NULL, &c));
   }
   if (c != '>') {
@@ -694,9 +783,12 @@ flagcxResult_t flagcxTopoGetXmlFromFile(const char *xmlTopoFile,
   INFO(FLAGCX_GRAPH, "Loading topology file %s", xmlTopoFile);
   struct xmlHandler handlers[] = {{"system", flagcxTopoXmlLoadSystem}};
   xml->maxIndex = 0;
-  FLAGCXCHECK(xmlLoadSub(file, xml, NULL, handlers, 1));
-  fclose(file);
-  return flagcxSuccess;
+  flagcxResult_t result = xmlLoadSub(file, xml, NULL, handlers, 1);
+  if (fclose(file) != 0 && result == flagcxSuccess) {
+    WARN("Unable to close XML topology file %s", xmlTopoFile);
+    return flagcxSystemError;
+  }
+  return result;
 }
 
 flagcxResult_t flagcxTopoDumpXmlToFile(const char *xmlTopoFile,
