@@ -14,9 +14,10 @@ on:
         type: string
 
 env:
+  FLAGCX_CI_TEST_MAX_ATTEMPTS: 1
   FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs
-  FLAGCX_CI_TEST_TIMEOUT: 100m
-  FLAGCX_CI_MPI_TIMEOUT: 60m
+  FLAGCX_CI_TEST_TIMEOUT: 3m
+  FLAGCX_CI_MPI_TIMEOUT: 10m
 
 jobs:
   load-hardware-container-configs:
@@ -111,7 +112,7 @@ jobs:
     name: perf-test-experimental (cuda)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.cuda_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -165,7 +166,7 @@ jobs:
     name: perf-test (iluvatar)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.iluvatar_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -217,7 +218,7 @@ jobs:
     name: perf-test (hygon)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.hygon_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -267,7 +268,7 @@ jobs:
     name: perf-test-experimental (hygon)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.hygon_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -317,7 +318,7 @@ jobs:
     name: perf-test (cuda)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.cuda_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -371,7 +372,7 @@ jobs:
     name: perf-test (metax)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.metax_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -421,7 +422,7 @@ jobs:
     name: perf-test (ppu)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.ppu_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -471,7 +472,7 @@ jobs:
     name: perf-test-experimental (ppu)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.ppu_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -521,7 +522,7 @@ jobs:
     name: perf-test (mthreads)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.mthreads_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -571,7 +572,7 @@ jobs:
     name: perf-test (ascend)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.ascend_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -621,7 +622,7 @@ jobs:
     name: perf-test (kunlunxin)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.kunlunxin_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
     container:
       image: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_ci_image }}
       options: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_container_options }}

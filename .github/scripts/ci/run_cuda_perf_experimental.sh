@@ -3,6 +3,8 @@
 set -euo pipefail
 
 project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
+source "$project_root/.github/scripts/ci/timeouts.sh"
+export FLAGCX_CI_MPI_TIMEOUT=$FLAGCX_CI_PERF_TIMEOUT
 export PATH="$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$project_root/build/lib:$MPI_HOME/lib:${LD_LIBRARY_PATH:-}"
 perf_bin="$project_root/test/perf/host_api/build/bin"
@@ -10,14 +12,14 @@ device_api_bin="$project_root/test/perf/device_api/build/bin"
 cuda_experimental_runner="$project_root/test/unittest/runner/build/bin/runner_unirunner_experimental_mpi_tests"
 mpi_runner="$project_root/.github/scripts/ci/run_mpi_with_timeout.sh"
 
-make -C "$project_root" --jobs="$(nproc)" \
+flagcx_ci_run build make -C "$project_root" --jobs="$(nproc)" \
   USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1
-make -C "$project_root/test/perf" --jobs="$(nproc)" \
+flagcx_ci_run build-tests make -C "$project_root/test/perf" --jobs="$(nproc)" \
   USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1
-cmake -S "$project_root/third-party/googletest" \
+flagcx_ci_run build-tests cmake -S "$project_root/third-party/googletest" \
   -B "$project_root/third-party/googletest/build"
-cmake --build "$project_root/third-party/googletest/build" --parallel "$(nproc)"
-make -C "$project_root/test/unittest/runner" --jobs="$(nproc)" \
+flagcx_ci_run build-tests cmake --build "$project_root/third-party/googletest/build" --parallel "$(nproc)"
+flagcx_ci_run build-tests make -C "$project_root/test/unittest/runner" --jobs="$(nproc)" \
   USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1 unirunner-experimental
 
 source "$project_root/test/script/_gpu_check.sh"
@@ -173,10 +175,10 @@ FLAGCX_P2P_PERF_OP=write \
 
 shared_project_build="$project_root/build-p2p-shared"
 shared_test_build="$project_root/test/perf/host_api/build-p2p-shared"
-make -C "$project_root" --jobs="$(nproc)" \
+flagcx_ci_run build make -C "$project_root" --jobs="$(nproc)" \
   USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1 \
   USE_SHARED_P2P_ENGINE=1 BUILDDIR="$shared_project_build"
-make -C "$project_root/test/perf/host_api" \
+flagcx_ci_run build-tests make -C "$project_root/test/perf/host_api" \
   USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1 \
   USE_SHARED_P2P_ENGINE=1 BUILDDIR="$shared_test_build" \
   FLAGCX_LIB="$shared_project_build/lib" \

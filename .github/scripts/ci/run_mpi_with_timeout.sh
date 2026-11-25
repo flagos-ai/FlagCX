@@ -2,11 +2,12 @@
 
 set -euo pipefail
 
-mpi_timeout="${FLAGCX_CI_MPI_TIMEOUT:-20m}"
+script_dir=$(cd "$(dirname "$0")" && pwd)
+source "$script_dir/timeouts.sh"
+mpi_timeout="$FLAGCX_CI_MPI_TIMEOUT"
 mpi_kill_after="${FLAGCX_CI_MPI_KILL_AFTER:-30s}"
 mpi_launcher="${FLAGCX_CI_MPIRUN:-mpirun}"
 mpi_label="${FLAGCX_CI_MPI_LABEL:-MPI invocation}"
-script_dir=$(cd "$(dirname "$0")" && pwd)
 test_runner="$script_dir/run_with_timeout.sh"
 
 if ! command -v "$mpi_launcher" >/dev/null 2>&1; then

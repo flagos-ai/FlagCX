@@ -19,6 +19,7 @@ class TorchCoverageReportTest(unittest.TestCase):
             ".github/configs/coverage.ini",
             ".github/scripts/ci/run_torch_coverage.sh",
             ".github/scripts/ci/run_with_timeout.sh",
+                ".github/scripts/ci/timeouts.sh",
         ):
             destination = root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -77,7 +78,7 @@ class TorchCoverageReportTest(unittest.TestCase):
             result = self.run_fixture(root, fail=True)
             self.assertNotEqual(result.returncode, 0)
             self.assert_real_report(root)
-            self.assertEqual(len(list((root / "logs").glob("*/attempt-*.log"))), 2)
+            self.assertEqual(len(list((root / "logs").glob("*/attempt-*.log"))), 1)
 
     def test_iluvatar_report_survives_failed_tests(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -86,7 +87,7 @@ class TorchCoverageReportTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             report = json.loads((root / "coverage-iluvatar-gpu-torch.json").read_text())
             self.assertGreater(report["totals"]["covered_lines"], 0)
-            self.assertEqual(len(list((root / "logs").glob("*/attempt-*.log"))), 2)
+            self.assertEqual(len(list((root / "logs").glob("*/attempt-*.log"))), 1)
 
     def test_report_can_be_persisted_outside_container_source(self):
         with tempfile.TemporaryDirectory() as temporary:

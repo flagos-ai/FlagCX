@@ -21,6 +21,7 @@ class IluvatarWorkloadTest(unittest.TestCase):
                 ".github/scripts/ci/run_hardware_workload.sh",
                 ".github/scripts/ci/run_iluvatar_workload.sh",
                 ".github/scripts/ci/run_with_timeout.sh",
+                ".github/scripts/ci/timeouts.sh",
                 ".github/scripts/ci/rdma_static_preflight.sh",
                 ".github/scripts/set_env/iluvatar.sh",
             ):
@@ -99,7 +100,8 @@ if "{kind}" in failure.split("+") or ("{kind}" == "perf" and sys.argv[1] == fail
                 "FAILURE": failure, "DEVICES": str(devices),
                 "PYTHON_BIN": str(mock_bin / "python"),
                 "FLAGCX_CI_LOG_DIR": str(root / "logs"),
-                "FLAGCX_CI_TEST_TIMEOUT": "1s" if failure == "timeout" else "10s",
+                "FLAGCX_CI_TEST_TIMEOUT": "10s",
+                "FLAGCX_CI_BUILD_TIMEOUT": "1s" if failure == "timeout" else "10s",
                 "FLAGCX_CI_TEST_KILL_AFTER": "0.1s",
                 "FLAGCX_CI_TORCH_COVERAGE": str(int(coverage)),
             })
@@ -127,7 +129,7 @@ if "{kind}" in failure.split("+") or ("{kind}" == "perf" and sys.argv[1] == fail
         for call in calls:
             if call["kind"] == "perf":
                 self.assertEqual(call["args"][-2:], ["-x", "FLAGCX_VMM_ENABLE=0"])
-        self.assertEqual(len(logs), 2)
+        self.assertEqual(len(logs), 3)
 
     def test_perf_failure_in_either_mode_is_not_hidden(self):
         for failure in ("homogeneous", "heterogeneous"):
@@ -143,7 +145,7 @@ if "{kind}" in failure.split("+") or ("{kind}" == "perf" and sys.argv[1] == fail
                 self.assertEqual(result.returncode, code, result.stdout + result.stderr)
                 self.assertEqual(sum(call["kind"] == "make" for call in calls), 1)
                 self.assertFalse(any(call["kind"] == "perf" for call in calls))
-                self.assertEqual(len(logs), 1)
+                self.assertEqual(len(logs), 2)
 
     def test_torch_builds_current_extension_and_runs_api_and_coverage(self):
         result, calls, _ = self.run_workload("torch-api")

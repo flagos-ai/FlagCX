@@ -1485,17 +1485,17 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             "runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.cuda_runs_on) }}",
             experimental_perf_job,
         )
-        self.assertIn("timeout-minutes: 240", experimental_perf_job)
+        self.assertIn("timeout-minutes: 60", experimental_perf_job)
         hygon_experimental_job = perf_workflow.split(
             "  perf-test-experimental-hygon:\n", 1
         )[1].split("\n  perf-test-cuda:", 1)[0]
         self.assertIn("hygon perf-test-experimental", hygon_experimental_job)
-        self.assertIn("timeout-minutes: 240", hygon_experimental_job)
+        self.assertIn("timeout-minutes: 60", hygon_experimental_job)
         ppu_experimental_job = perf_workflow.split(
             "  perf-test-experimental-ppu:\n", 1
         )[1].split("\n  perf-test-ascend:", 1)[0]
         self.assertIn("ppu perf-test-experimental", ppu_experimental_job)
-        self.assertIn("timeout-minutes: 240", ppu_experimental_job)
+        self.assertIn("timeout-minutes: 60", ppu_experimental_job)
         self.assertNotIn("\n  torch-api-test:\n", torch_workflow)
 
         for platform in ("cuda", "metax", "hygon", "ppu"):
@@ -1654,7 +1654,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh"
         ).read_text()
         self.assertIn('if [[ "$platform" == "ascend" ]]; then', hardware_launcher)
-        self.assertIn("flock --exclusive --wait 7200 9", hardware_launcher)
+        self.assertIn('flock --exclusive --wait "${lock_timeout%s}" 9', hardware_launcher)
         self.assertIn('docker container run --rm', hardware_launcher)
         config_loader = (
             REPO_ROOT / ".github/scripts/ci/load_platform_config.rb"
@@ -1721,6 +1721,7 @@ MPI_RUNNER="$PROJECT_ROOT/.github/scripts/ci/run_with_timeout.sh"
 run_test() { "$@"; }
 mktemp() { command mktemp -d "$TEST_FIXTURE_ROOT/build/${2##*/}"; }
 flagcx_ci_require_rdma() { return 0; }
+flagcx_ci_run() { shift; "$@"; }
 make() {
   if [[ "${FLAGCX_CI_MPI_LABEL:-}" == "rma GDR visibility ordinary" ]]; then
     "$MPI_RUNNER" bash -c 'printf "[  PASSED  ] 0 tests.\n"'
@@ -1761,6 +1762,7 @@ MPI_RUNNER=/unused
 run_test() { "$@"; }
 mktemp() { command mktemp -d "$TEST_FIXTURE_ROOT/build/${2##*/}"; }
 flagcx_ci_require_rdma() { return 0; }
+flagcx_ci_run() { shift; "$@"; }
 make() {
   local arg result_dir="" phase=""
   for arg in "$@"; do
@@ -1986,6 +1988,7 @@ flagcx_ci_require_rdma() { return 0; }
 # its own tests and cannot read reports from this simulated MPI runner.
 mktemp() { printf '/tmp/flagcx-rma-pr2-fixture\n'; }
 python3() { return 0; }
+flagcx_ci_run() { shift; "$@"; }
 make() {
   printf 'make %s\n' "$*"
   if [[ "${FLAGCX_CI_MPI_LABEL:-}" == "rma GDR visibility ordinary" ]]; then
@@ -2053,6 +2056,7 @@ mock_test_runner() { "$@"; }
 mock_mpi_runner() { :; }
 flagcx_ci_require_rdma() { return 0; }
 flagcx_ci_phase_supported() { return 0; }
+flagcx_ci_run() { shift; "$@"; }
 make() { printf '%s\n' "${FLAGCX_CI_MPI_LABEL:-unlabelled} $*"; }
 run_suite
 '''
@@ -3302,6 +3306,7 @@ mock_test_runner() { "$@"; }
 flagcx_ci_require_rdma() { return 0; }
 bash() { echo "EXEC symmem unit and IPC-local"; return "$TEST_UNIT_STATUS"; }
 mock_mpi_runner() { echo "EXEC $FLAGCX_CI_MPI_LABEL"; }
+flagcx_ci_run() { shift; "$@"; }
 make() {
   echo "EXEC $*"
   if [[ "$*" == *" run-unit "* ]]; then

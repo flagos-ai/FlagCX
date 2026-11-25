@@ -9,6 +9,7 @@ fi
 
 workload=$1
 project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
+source "$project_root/.github/scripts/ci/timeouts.sh"
 : "${FLAGCX_CI_SET_ENV:?The platform configuration must provide set_env}"
 source "$project_root/$FLAGCX_CI_SET_ENV"
 flagcx_ci_configure_suite "$workload"
@@ -22,8 +23,8 @@ export FLAGCX_DEBUG_SUBSYS=${FLAGCX_DEBUG_SUBSYS:-INIT,NET,P2P,PROXY}
 if [[ "$workload" == torch-api ]]; then
   export PYTHON_BIN=${PYTHON_BIN:-python3}
   export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-  FLAGCX_CI_TEST_MAX_ATTEMPTS=1 FLAGCX_CI_TEST_LABEL="Iluvatar Torch preflight" \
-    bash "$project_root/.github/scripts/ci/run_with_timeout.sh" "$PYTHON_BIN" -c '
+  FLAGCX_CI_TEST_LABEL="Iluvatar Torch preflight" \
+    flagcx_ci_run preflight "$PYTHON_BIN" -c '
 import sys
 import torch
 
@@ -43,16 +44,14 @@ for device in range(4):
 fi
 
 # Build failures are deterministic; retain logs without rebuilding on retry.
-FLAGCX_CI_TEST_MAX_ATTEMPTS=1 FLAGCX_CI_TEST_LABEL="Iluvatar build FlagCX" \
-  bash "$project_root/.github/scripts/ci/run_with_timeout.sh" \
-  make -C "$project_root" --jobs="$(nproc)" \
+FLAGCX_CI_TEST_LABEL="Iluvatar build FlagCX" \
+  flagcx_ci_run build make -C "$project_root" --jobs="$(nproc)" \
     "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
 
 case "$workload" in
   perf)
-    FLAGCX_CI_TEST_MAX_ATTEMPTS=1 FLAGCX_CI_TEST_LABEL="Iluvatar build host perf" \
-      bash "$project_root/.github/scripts/ci/run_with_timeout.sh" \
-      make -C "$project_root/test/perf" host_api --jobs="$(nproc)" \
+    FLAGCX_CI_TEST_LABEL="Iluvatar build host perf" \
+      flagcx_ci_run build-tests make -C "$project_root/test/perf" host_api --jobs="$(nproc)" \
         "${FLAGCX_CI_TEST_MAKE_ARGS[@]}"
     export FLAGCX_CI_PERF_PLATFORM=Iluvatar
     perf_bin="$project_root/test/perf/host_api/build/bin"
@@ -65,23 +64,21 @@ case "$workload" in
     ;;
   torch-api)
     export PIP_BREAK_SYSTEM_PACKAGES=1
-    "$PYTHON_BIN" -m pip install 'setuptools_scm>=8'
+    flagcx_ci_run torch-build "$PYTHON_BIN" -m pip install 'setuptools_scm>=8'
     if [[ "${FLAGCX_CI_TORCH_COVERAGE:-0}" == 1 ]]; then
-      "$PYTHON_BIN" -m pip install coverage==7.10.7
+      flagcx_ci_run torch-build "$PYTHON_BIN" -m pip install coverage==7.10.7
     fi
     (
       cd "$project_root"
       export FLAGCX_TORCH_BACKEND=vendor
-      FLAGCX_CI_TEST_MAX_ATTEMPTS=1 FLAGCX_CI_TEST_LABEL="Iluvatar build Torch extension" \
-        bash .github/scripts/ci/run_with_timeout.sh \
-        "$PYTHON_BIN" setup.py build_ext --inplace
+      FLAGCX_CI_TEST_LABEL="Iluvatar build Torch extension" \
+        flagcx_ci_run torch-build "$PYTHON_BIN" setup.py build_ext --inplace
     )
 
     export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
     export FLAGCX_TORCH_BACKEND=vendor
-    FLAGCX_CI_TEST_MAX_ATTEMPTS=1 FLAGCX_CI_TEST_LABEL="Iluvatar import Torch extension" \
-      bash "$project_root/.github/scripts/ci/run_with_timeout.sh" \
-      "$PYTHON_BIN" -c 'import flagcx, flagcx._C; print("Iluvatar extension:", flagcx._C.__file__, flush=True)'
+    FLAGCX_CI_TEST_LABEL="Iluvatar import Torch extension" \
+      flagcx_ci_run import "$PYTHON_BIN" -c 'import flagcx, flagcx._C; print("Iluvatar extension:", flagcx._C.__file__, flush=True)'
     result=0
     bash "$project_root/test/script/torch_api_test.sh" || result=$?
     if [[ "${FLAGCX_CI_TORCH_COVERAGE:-0}" == 1 ]]; then

@@ -433,7 +433,7 @@ class CiRetryTest(unittest.TestCase):
             timeout=15,
         )
 
-    def test_transient_failure_retries_and_is_reported_as_flaky(self):
+    def test_explicit_retry_is_reported_as_flaky(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             marker = Path(temp_dir) / "first-attempt"
             summary = Path(temp_dir) / "summary.md"
@@ -444,6 +444,7 @@ class CiRetryTest(unittest.TestCase):
             env["FLAGCX_CI_LOG_DIR"] = str(Path(temp_dir) / "attempt-logs")
             env.update(
                 {
+                    "FLAGCX_CI_TEST_MAX_ATTEMPTS": "2",
                     "FLAGCX_CI_TEST_TIMEOUT": "5s",
                     "FLAGCX_CI_TEST_KILL_AFTER": "1s",
                     "FLAGCX_CI_TEST_LABEL": "retry-test",
@@ -465,7 +466,7 @@ class CiRetryTest(unittest.TestCase):
             self.assertTrue((attempt_dirs[0] / "attempt-1.log").exists())
             self.assertTrue((attempt_dirs[0] / "attempt-2.log").exists())
 
-    def test_persistent_failure_retries_once_then_fails(self):
+    def test_persistent_failure_runs_once_then_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             count_file = Path(temp_dir) / "count"
             command = 'n=$(cat "$COUNT_FILE" 2>/dev/null || echo 0); echo $((n + 1)) > "$COUNT_FILE"; exit 9'
@@ -487,9 +488,9 @@ class CiRetryTest(unittest.TestCase):
             )
             attempts = count_file.read_text().strip()
         self.assertEqual(result.returncode, 9)
-        self.assertEqual(attempts, "2")
+        self.assertEqual(attempts, "1")
 
-    def test_timeout_is_retried_and_can_recover(self):
+    def test_explicit_timeout_retry_can_recover(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             marker = Path(temp_dir) / "first-attempt"
             command = 'if [[ ! -e "$MARKER" ]]; then touch "$MARKER"; sleep 3; else exit 0; fi'
@@ -497,6 +498,7 @@ class CiRetryTest(unittest.TestCase):
             env["MARKER"] = str(marker)
             env.update(
                 {
+                    "FLAGCX_CI_TEST_MAX_ATTEMPTS": "2",
                     "FLAGCX_CI_TEST_TIMEOUT": "1s",
                     "FLAGCX_CI_TEST_KILL_AFTER": "1s",
                     "FLAGCX_CI_TEST_LABEL": "timeout-test",
@@ -513,10 +515,10 @@ class CiRetryTest(unittest.TestCase):
         self.assertIn("passed on retry 1", result.stdout)
         self.assertIn("exceeded its 1s timeout on attempt 1", result.stderr)
 
-    def test_retry_policy_is_fixed_to_one_retry(self):
+    def test_default_policy_does_not_retry(self):
         result = self.run_wrapper("exit 8")
         self.assertEqual(result.returncode, 8)
-        self.assertEqual(result.stderr.count("retrying once"), 1)
+        self.assertEqual(result.stderr.count("retrying once"), 0)
 
     def test_identical_labels_keep_separate_invocation_logs(self):
         with tempfile.TemporaryDirectory() as temporary:

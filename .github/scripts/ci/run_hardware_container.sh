@@ -32,6 +32,12 @@ esac
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_root=$(cd "$script_dir/../../.." && pwd)
+source "$script_dir/timeouts.sh"
+workload_timeout=${FLAGCX_CI_WORKLOAD_TIMEOUT:-55m}
+if [[ "$workload" == unittest && "${FLAGCX_CI_COVERAGE:-0}" != 1 ]]; then
+  workload_timeout=${FLAGCX_CI_WORKLOAD_TIMEOUT:-40m}
+fi
+flagcx_ci_start_budget FLAGCX_CI_WORKLOAD_DEADLINE "$workload_timeout"
 
 # Parse platform YAML on a standard GitHub-hosted runner and pass these values
 # into the hardware job. Accelerator hosts only need Bash and Docker.
@@ -76,10 +82,11 @@ finish() {
 trap finish EXIT
 
 pull_image() {
-  local attempt pull_log status
+  local attempt pull_log pull_timeout status
   for attempt in 1 2 3; do
     pull_log="$log_dir/image-pull-attempt-$attempt.log"
-    if docker pull "$image" >"$pull_log" 2>&1; then
+    pull_timeout=$(flagcx_ci_limit_timeout 5m) || return $?
+    if timeout --signal=TERM --kill-after=10s "$pull_timeout" docker pull "$image" >"$pull_log" 2>&1; then
       cat "$pull_log"
       printf -- '- **Image pull:** succeeded on attempt %s/3\n' "$attempt" >> "$summary_file"
       return 0
@@ -111,14 +118,16 @@ pull_image
 # after pulling so the image retries above never hold it.
 if [[ "$platform" == "ascend" ]]; then
   exec 9>/var/lock/flagcx-ascend-ci.lock
-  flock --exclusive --wait 7200 9
+  lock_timeout=$(flagcx_ci_limit_timeout "$workload_timeout")
+  flock --exclusive --wait "${lock_timeout%s}" 9
   if [[ "$workload" == "perf" ]]; then
     bash "$script_dir/ascend_rdma_host_inventory.sh" | \
       tee "$log_dir/ascend-rdma-host-inventory.log"
   fi
 fi
 
-docker container run --rm \
+FLAGCX_CI_TEST_TIMEOUT="$workload_timeout" FLAGCX_CI_TEST_LABEL="$platform container" \
+  bash "$script_dir/run_with_timeout.sh" docker container run --rm \
   --name "$container_name" \
   "${docker_args[@]}" \
   --user=root \
@@ -129,9 +138,11 @@ docker container run --rm \
   --env GITHUB_WORKSPACE=/workspace \
   --env GITHUB_ACTIONS=true \
   --env CI=true \
-  --env FLAGCX_CI_TEST_TIMEOUT="${FLAGCX_CI_TEST_TIMEOUT:-20m}" \
-  --env FLAGCX_CI_MPI_TIMEOUT="${FLAGCX_CI_MPI_TIMEOUT:-20m}" \
+  --env FLAGCX_CI_TEST_TIMEOUT="$FLAGCX_CI_TEST_TIMEOUT" \
+  --env FLAGCX_CI_MPI_TIMEOUT="$FLAGCX_CI_MPI_TIMEOUT" \
   --env FLAGCX_CI_LOG_DIR=/ci-logs \
+  --env FLAGCX_CI_WORKLOAD_DEADLINE="$FLAGCX_CI_WORKLOAD_DEADLINE" \
+  --env FLAGCX_CI_TEST_MAX_ATTEMPTS=1 \
   --env FLAGCX_CI_TORCH_COVERAGE="${FLAGCX_CI_TORCH_COVERAGE:-0}" \
   --env FLAGCX_CI_COVERAGE_REPORT="/ci-logs/coverage-${platform}-gpu-torch.json" \
   --env FLAGCX_CI_COVERAGE="${FLAGCX_CI_COVERAGE:-0}" \

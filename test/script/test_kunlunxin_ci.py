@@ -72,7 +72,7 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
             ci = root / ".github/scripts/ci"
             ci.mkdir(parents=True)
             for name in ("run_unit_test.sh", "filter_supplemental_tests.sh",
-                         "ignore_test.py"):
+                         "ignore_test.py", "timeouts.sh"):
                 shutil.copyfile(REPO_ROOT / ".github/scripts/ci" / name, ci / name)
             symmem_script = root / "test/script/symmem_test.sh"
             symmem_script.parent.mkdir(parents=True)
@@ -87,6 +87,7 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
             )
             for executable in (binaries / "make", binaries / "cmake",
                                ci / "run_mpi_with_timeout.sh",
+                               ci / "run_runner_mpi.sh",
                                root / "test/unittest/symmem/build/bin/symmem_unit_tests"):
                 executable.parent.mkdir(parents=True, exist_ok=True)
                 executable.write_text(probe)
@@ -288,7 +289,7 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
             root = Path(temp_dir)
             scripts = root / ".github/scripts/ci"
             scripts.mkdir(parents=True)
-            for name in ("run_unit_test.sh", "filter_supplemental_tests.sh", "ignore_test.py"):
+            for name in ("run_unit_test.sh", "filter_supplemental_tests.sh", "ignore_test.py", "timeouts.sh"):
                 shutil.copyfile(REPO_ROOT / ".github/scripts/ci" / name, scripts / name)
             (scripts / "run_with_timeout.sh").write_text('#!/bin/bash\n"$@"\n')
             (scripts / "run_with_timeout.sh").chmod(0o755)
@@ -334,6 +335,8 @@ class KunlunXinWorkloadTest(unittest.TestCase):
             scripts.mkdir(parents=True)
             handler = scripts / HANDLER.name
             shutil.copyfile(HANDLER, handler)
+            shutil.copyfile(REPO_ROOT / ".github/scripts/ci/timeouts.sh", scripts / "timeouts.sh")
+            (scripts / "run_with_timeout.sh").write_text('#!/bin/bash\nexec "$@"\n')
             shutil.copyfile(REPO_ROOT / ".github/scripts/ci/ignore_test.py",
                             scripts / "ignore_test.py")
             (root / "platform.sh").write_text(

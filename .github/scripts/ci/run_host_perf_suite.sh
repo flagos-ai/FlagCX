@@ -12,6 +12,9 @@ perf_bin=$2
 shift 2
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "$script_dir/timeouts.sh"
+export FLAGCX_CI_MPI_TIMEOUT=$FLAGCX_CI_PERF_TIMEOUT
+flagcx_ci_start_budget FLAGCX_CI_MODE_DEADLINE "$FLAGCX_CI_PERF_MODE_BUDGET"
 export FLAGCX_CI_CONFIG_DIR="${FLAGCX_CI_CONFIG_DIR:-$script_dir/../../configs}"
 mpi_runner="$script_dir/run_mpi_with_timeout.sh"
 platform=${FLAGCX_CI_PERF_PLATFORM:-platform}
@@ -90,6 +93,10 @@ for operation in "${operations[@]}"; do
     continue
   fi
 
+  if ! flagcx_ci_limit_timeout "$FLAGCX_CI_PERF_TIMEOUT" >/dev/null; then
+    echo "$platform $mode cumulative budget exhausted; not run: $operation and remaining operations" >&2
+    exit 124
+  fi
   max_bytes=1G
   if [[ "$mode" == heterogeneous && "$operation" == sendrecv ]]; then
     max_bytes=${FLAGCX_CI_HETERO_SENDRECV_MAX_BYTES:-1G}
