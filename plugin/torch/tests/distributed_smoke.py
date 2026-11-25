@@ -211,21 +211,39 @@ def main():
         work.wait()
         assert_tensor_equal(value, torch.tensor([3.0]))
 
-        if (
-            device_type == "npu"
-            and int(os.environ.get("FLAGCX_USE_HETERO_COMM", "0")) != 1
-        ):
-            values = [
-                torch.tensor([2.0 + 2 * rank], device=device, requires_grad=True),
-                torch.tensor([-1.0 + rank], device=device),
-            ]
-            dist.all_reduce(values[0], op=dist.ReduceOp.AVG, async_op=True).wait()
-            assert_tensor_equal(values[0], torch.tensor([3.0]))
-            dist.all_reduce_coalesced(
-                values, op=dist.ReduceOp.AVG, async_op=True
-            ).wait()
-            assert_tensor_equal(values[0], torch.tensor([3.0]))
-            assert_tensor_equal(values[1], torch.tensor([-0.5]))
+        if args.adaptor == "ascend" and int(os.getenv("FLAGCX_USE_HETERO_COMM", "0")) != 1:
+            for dtype in (torch.float16, torch.bfloat16, torch.float32):
+                value = torch.tensor([2.0 + 2 * rank], dtype=dtype, device=device)
+                expected = torch.tensor([3.0], dtype=dtype)
+                dist.all_reduce(value, op=dist.ReduceOp.AVG, async_op=True).wait()
+                assert_tensor_equal(value, expected)
+                other = torch.full_like(value, -1.0 + rank)
+                dist.all_reduce_coalesced([value, other], op=dist.ReduceOp.AVG,
+                                          async_op=True).wait()
+                assert_tensor_equal(value, expected)
+                assert_tensor_equal(other, torch.tensor([-0.5], dtype=dtype))
+
+                value.fill_(2.0 + 2 * rank)
+                dist.reduce(value, dst=1, op=dist.ReduceOp.AVG, async_op=True).wait()
+                if rank == 1:
+                    assert_tensor_equal(value, expected)
+                chunks = torch.tensor([2.0 + 2 * rank, 6.0 + 4 * rank],
+                                      dtype=dtype, device=device)
+                dist.reduce_scatter_tensor(value, chunks, op=dist.ReduceOp.AVG,
+                                           async_op=True).wait()
+                assert_tensor_equal(value, torch.tensor([3.0 if rank == 0 else 8.0],
+                                                        dtype=dtype))
+
+            # No division is needed for an empty reduction or a one-rank group.
+            empty = torch.empty(0, dtype=torch.int32, device=device)
+            dist.all_reduce(empty, op=dist.ReduceOp.AVG)
+            for member in range(world_size):
+                group = dist.new_group([member])
+                if rank == member:
+                    value = torch.tensor([-3, 5], dtype=torch.int32, device=device)
+                    dist.all_reduce(value, op=dist.ReduceOp.AVG, group=group)
+                    assert_tensor_equal(value, torch.tensor([-3, 5], dtype=torch.int32))
+                    dist.destroy_process_group(group)
 
         future_value = torch.tensor(
             [rank + 1], dtype=torch.float32, device=device

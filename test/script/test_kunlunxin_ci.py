@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
+import yaml
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -15,18 +17,15 @@ HANDLER = REPO_ROOT / ".github/scripts/ci/run_kunlunxin_workload.sh"
 
 
 def load_kunlunxin_ignore_config():
-    result = subprocess.run(
-        ["bash", "-c", 'source "$1"; printf "%s" "$FLAGCX_CI_IGNORE_TEST"',
-         "bash", str(REPO_ROOT / ".github/scripts/set_env/kunlunxin.sh")],
-        check=True, capture_output=True, text=True,
-    )
-    return json.loads(result.stdout)
+    return yaml.safe_load(
+        (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
+    )["ignore_test"]
 
 
 class KunlunXinUnitDispatchTest(unittest.TestCase):
-    def test_ignore_config_is_owned_by_platform_shell(self):
+    def test_ignore_config_is_owned_by_platform_yaml(self):
         config = (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
-        self.assertNotIn("ignore_test:", config)
+        self.assertIn("ignore_test:", config)
         self.assertTrue(load_kunlunxin_ignore_config()["phases"])
 
     def test_unified_ir_ignore_test_only_matches_s16(self):
@@ -132,7 +131,9 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
                 env.update(
                     REAL_PLATFORM_ENV=str(REPO_ROOT / f'.github/scripts/set_env/{unified_ir_platform}.sh'),
                     MPI_HOME=str(root / 'mpi'),
-                    FLAGCX_CI_IGNORE_TEST='{}',
+                    FLAGCX_CI_IGNORE_TEST=json.dumps(yaml.safe_load(
+                        (REPO_ROOT / f'.github/configs/{unified_ir_platform}.yml').read_text()
+                    )['ignore_test']),
                     FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY='0',
                     FLAGCX_CI_KUNLUNXIN_DEVICES='0,1,2,3',
                     XSHMEM_SYMMETRIC_SIZE='8589934592',
@@ -313,7 +314,8 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
             log = root / "calls.log"
             env = os.environ.copy()
             env.update(GITHUB_WORKSPACE=str(root), CALL_LOG=str(log),
-                       PATH=f"{binaries}:{env['PATH']}", FLAGCX_CI_COVERAGE="0")
+                       PATH=f"{binaries}:{env['PATH']}", FLAGCX_CI_COVERAGE="0",
+                       FLAGCX_CI_IGNORE_TEST="{}")
             result = subprocess.run(
                 ["bash", str(scripts / "run_unit_test.sh"), str(platform), "core"],
                 env=env, capture_output=True, text=True, timeout=10,

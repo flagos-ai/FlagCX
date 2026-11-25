@@ -10,6 +10,7 @@ fi
 SET_ENV_SCRIPT=$1
 SUITE=$2
 PROJECT_ROOT=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
+export FLAGCX_CI_CONFIG_DIR="${FLAGCX_CI_CONFIG_DIR:-$PROJECT_ROOT/.github/configs}"
 MPI_RUNNER="$PROJECT_ROOT/.github/scripts/ci/run_mpi_with_timeout.sh"
 TEST_RUNNER="$PROJECT_ROOT/.github/scripts/ci/run_with_timeout.sh"
 
@@ -17,6 +18,9 @@ if [[ ! -f "$SET_ENV_SCRIPT" ]]; then
   echo "Platform environment script not found: $SET_ENV_SCRIPT" >&2
   exit 1
 fi
+
+platform_from_script=$(basename "$SET_ENV_SCRIPT" .sh)
+export FLAGCX_CI_PLATFORM="${FLAGCX_CI_PLATFORM:-$platform_from_script}"
 
 # The platform script owns accelerator-specific compiler flags and device
 # topology. It is sourced (rather than executed) so it can provide arrays and

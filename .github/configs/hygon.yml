@@ -61,3 +61,10 @@ unit_test_suites:
   - runner
   - service
   - symmem
+
+# Platform exclusions; every entry must document its reason.
+ignore_test:
+  phases:
+  - suite: symmem
+    name: vmm-net-data
+    reason: Hygon VMM MR data path is independently covered by RMA visibility tests

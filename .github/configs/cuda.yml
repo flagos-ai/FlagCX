@@ -55,3 +55,6 @@ unit_test_suites:
   - runner
   - service
   - symmem
+
+# Platform exclusions; every entry must document its reason.
+ignore_test: {}

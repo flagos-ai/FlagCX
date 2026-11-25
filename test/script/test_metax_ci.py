@@ -1,6 +1,7 @@
 """Hardware-free checks for the MetaX perf CI gates."""
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -9,6 +10,8 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+
+import yaml
 
 
 PREFLIGHT = Path(__file__).resolve().parents[2] / ".github/scripts/ci/check_metax_devices.py"
@@ -72,8 +75,12 @@ class MetaXPerfSuiteTest(unittest.TestCase):
                        FLAGCX_CI_PERF_PLATFORM="MetaX",
                        FLAGCX_CI_PERF_CONTINUE_ON_FAILURE="1",
                        MPI_HOME=str(root / "mpi"),
+                       FLAGCX_CI_PLATFORM="metax",
+                       FLAGCX_CI_IGNORE_TEST=json.dumps(
+                           yaml.safe_load((Path(__file__).resolve().parents[2] / ".github/configs/metax.yml").read_text())["ignore_test"]
+                       ),
                        FLAGCX_CI_TEST_RUNNER_LOG=str(calls))
-            for name in ("FLAGCX_CI_IGNORE_TEST", "FLAGCX_CI_PERF_SKIP_OPERATIONS",
+            for name in ("FLAGCX_CI_PERF_SKIP_OPERATIONS",
                          "FLAGCX_CI_PERF_NP", "FLAGCX_CI_PERF_VERIFY",
                          "FLAGCX_CI_HETERO_SENDRECV_MAX_BYTES"):
                 env.pop(name, None)

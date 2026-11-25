@@ -29,25 +29,6 @@ fi
 export PATH="/usr/local/musa/bin:$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/local/musa/lib:/usr/local/musa/lib64:/usr/local/lib:${LD_LIBRARY_PATH:-}"
 export FLAGCX_SOCKET_IFNAME="${FLAGCX_SOCKET_IFNAME:-^lo,docker,br-,veth}"
-FLAGCX_CI_IGNORE_TEST=$(cat <<'JSON'
-{
-  "gtest": [],
-  "phases": [
-    {
-      "suite": "symmem",
-      "name": "vmm-local-and-remote-without-net",
-      "reason": "MUSA does not implement SymMem VMM allocation and mapping; ordinary IPC is tested"
-    },
-    {
-      "suite": "symmem",
-      "name": "vmm-net-data",
-      "reason": "MUSA advertises neither DMA-BUF nor VA registration for VMM allocations; ordinary NET and the VMM rejection contract are tested"
-    }
-  ]
-}
-JSON
-)
-export FLAGCX_CI_IGNORE_TEST
 
 FLAGCX_CI_MUSA_DEVICES=${FLAGCX_CI_MUSA_DEVICES:-0,1,2,3}
 IFS=, read -r -a FLAGCX_CI_MUSA_DEVICE_IDS <<< "$FLAGCX_CI_MUSA_DEVICES"
