@@ -75,8 +75,7 @@ TEST(XmlParser, ParsesBothQuoteStylesAndXmlWhitespace) {
 TEST(XmlParser, AcceptsMaximumAttributeValueAndRejectsOverflow) {
   const std::string maxValue(MAX_STR_LEN, 'x');
   const std::string validContents =
-      "<system version=\"1\"><gpu note=\"" + maxValue +
-      "\"/></system>";
+      "<system version=\"1\"><gpu note=\"" + maxValue + "\"/></system>";
 
   flagcxXml *rawXml = nullptr;
   ASSERT_EQ(parseXmlText(validContents, &rawXml), flagcxSuccess);
@@ -87,8 +86,7 @@ TEST(XmlParser, AcceptsMaximumAttributeValueAndRejectsOverflow) {
 
   const std::string overlongValue(MAX_STR_LEN + 1, 'x');
   const std::string invalidContents =
-      "<system version=\"1\"><gpu note=\"" + overlongValue +
-      "\"/></system>";
+      "<system version=\"1\"><gpu note=\"" + overlongValue + "\"/></system>";
   rawXml = nullptr;
   EXPECT_EQ(parseXmlText(invalidContents, &rawXml), flagcxInternalError);
   EXPECT_EQ(rawXml, nullptr);
