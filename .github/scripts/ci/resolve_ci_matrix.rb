@@ -172,9 +172,17 @@ unit_suites = selected.to_h do |entry|
   config = load_yaml.call(File.join(config_dir, "#{entry.fetch("platform")}.yml"))
   [entry.fetch("platform"), config.fetch("unit_test_suites", [])]
 end
+# Temporary MetaX diagnostic profile. Keep the platform in the unit matrix,
+# but exclude performance/Torch hardware jobs while its sole suite is the probe.
+# Restoring metax.yml's regular suite list restores those workloads as well.
+probe_only_platforms = selected.filter_map do |entry|
+  name = entry.fetch("platform")
+  name if name == "metax" && unit_suites.fetch(name) == ["rdma_atomic_probe"]
+end
+workload_platforms = selected.map { |entry| entry.fetch("platform") } - probe_only_platforms
 planned_groups = []
 planned_groups << "unit suites" unless level == "L0"
-planned_groups.concat(["performance", "Torch API"]) if %w[L2 L3].include?(level)
+planned_groups.concat(["performance", "Torch API"]) if %w[L2 L3].include?(level) && !workload_platforms.empty?
 plan = {
   "schema_version" => 1,
   "source_sha" => context.fetch("ref", ""),
@@ -184,6 +192,8 @@ plan = {
   "blocked" => [],
   "platforms" => selected.map { |entry| entry.fetch("platform") },
   "unit_suites" => unit_suites,
+  "probe_only_platforms" => probe_only_platforms,
+  "workload_platforms" => workload_platforms,
   "planned_groups" => planned_groups,
   "routing_reason" => routing_reason,
   "changed_files" => files,
@@ -218,6 +228,9 @@ if summary_path && !summary_path.empty?
     summary.puts "- Planned groups: **#{planned_groups.empty? ? "common checks only" : planned_groups.join(", ")}**"
     summary.puts "- Unit suites: **#{unit_suites.values.flatten.uniq.length} configured**"
     unit_suites.each { |platform, suites| summary.puts "- #{platform} suites: #{suites.join(", ")}" }
+    unless probe_only_platforms.empty?
+      summary.puts "- Temporarily probe-only: **#{probe_only_platforms.join(", ")}**; other unit suites, performance and Torch API hardware tests are disabled"
+    end
     summary.puts
     summary.puts "### ignore_test"
     summary.puts
@@ -242,6 +255,7 @@ outputs = {
   "active" => active.to_s,
   "matrix" => JSON.generate({"include" => selected.map { |entry| entry.slice("platform", "display_name")}}),
   "platforms" => JSON.generate(selected.map { |entry| entry.fetch("platform") }),
+  "workload_platforms" => JSON.generate(workload_platforms),
   "platform_csv" => selected.map { |entry| entry.fetch("platform") }.join(","),
   "has_platforms" => (!selected.empty?).to_s,
   "repository" => context.fetch("repository", ""),

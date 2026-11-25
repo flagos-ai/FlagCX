@@ -43,6 +43,7 @@ jobs:
       active: ${{ steps.resolve.outputs.active }}
       matrix: ${{ steps.resolve.outputs.matrix }}
       platforms: ${{ steps.resolve.outputs.platforms }}
+      workload_platforms: ${{ steps.resolve.outputs.workload_platforms }}
       has_platforms: ${{ steps.resolve.outputs.has_platforms }}
       repository: ${{ steps.resolve.outputs.repository }}
       ref: ${{ steps.resolve.outputs.ref }}
@@ -165,7 +166,7 @@ jobs:
     if: needs.prepare.outputs.active == 'true' && (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3')
     uses: ./.github/workflows/test.yml
     with:
-      platforms: ${{ needs.prepare.outputs.platforms }}
+      platforms: ${{ needs.prepare.outputs.workload_platforms }}
       repository: ${{ needs.prepare.outputs.repository }}
       ref: ${{ needs.prepare.outputs.ref }}
 
@@ -175,7 +176,7 @@ jobs:
     if: needs.prepare.outputs.active == 'true' && (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3')
     uses: ./.github/workflows/torch-api-test.yml
     with:
-      platforms: ${{ needs.prepare.outputs.platforms }}
+      platforms: ${{ needs.prepare.outputs.workload_platforms }}
       repository: ${{ needs.prepare.outputs.repository }}
       ref: ${{ needs.prepare.outputs.ref }}
     secrets:

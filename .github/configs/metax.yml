@@ -42,18 +42,11 @@ docker_options:
 
 set_env: .github/scripts/set_env/metax.sh
 
+# Temporary probe-only CI while diagnosing MetaX startup/RDMA atomics.
+# The resolver also excludes this profile from performance and Torch API jobs.
+# Restore the regular suite list to resume all MetaX hardware coverage.
 unit_test_suites:
-  - adaptor
-  - core
-  - device_api
-  - device_api_host
-  - device_api_unified_ir
-  - p2p
   - rdma_atomic_probe
-  - rma
-  - runner
-  - service
-  - symmem
 
 # Platform exclusions; every entry must document its reason.
 ignore_test:

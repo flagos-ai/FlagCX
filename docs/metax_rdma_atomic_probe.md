@@ -1,5 +1,11 @@
 # MetaX GPU RDMA allocation probe
 
+MetaX CI temporarily runs only this hardware suite while startup and RDMA
+atomics are being diagnosed. Other MetaX unit suites, performance and Torch
+API hardware jobs are disabled; common checks and other platforms retain their
+normal selection. Restore the regular `unit_test_suites` list in
+`.github/configs/metax.yml` to resume the full MetaX matrix.
+
 `rdma_atomic_probe` is an independent MetaX hardware CI suite for diagnosing
 the signal-only FetchAdd failure in PR #737. It does not change the production
 allocator, enable HOST SIGNAL, call stream wait/write-value operations, or
