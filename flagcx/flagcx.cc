@@ -4485,33 +4485,67 @@ static flagcxResult_t flagcxCommPrepareFinalizeStage(flagcxComm_t comm,
     if (flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0 ||
         flagcxGetGroupDepth() != 0)
       return flagcxInvalidUsage;
+    INFO(FLAGCX_INIT,
+         "Lifecycle comm=%p rank=%d finalize drain=submitted-work begin", comm,
+         comm->rank);
     flagcxResult_t drain =
         flagcxWorkDrain(&comm->submittedWork, comm->heteroComm);
+    INFO(
+        FLAGCX_INIT,
+        "Lifecycle comm=%p rank=%d finalize drain=submitted-work end result=%d",
+        comm, comm->rank, drain);
     if (drain != flagcxSuccess)
       return drain;
+    INFO(FLAGCX_INIT, "Lifecycle comm=%p rank=%d finalize drain=c2c begin",
+         comm, comm->rank);
     drain = flagcxC2cDrainPendingResources(comm, 1);
+    INFO(FLAGCX_INIT,
+         "Lifecycle comm=%p rank=%d finalize drain=c2c end result=%d", comm,
+         comm->rank, drain);
     if (drain != flagcxSuccess)
       return drain;
     if (comm->heteroComm != NULL) {
+      INFO(FLAGCX_INIT, "Lifecycle comm=%p rank=%d finalize drain=group begin",
+           comm, comm->rank);
       drain = flagcxGroupDrainWork(comm->heteroComm, 1);
+      INFO(FLAGCX_INIT,
+           "Lifecycle comm=%p rank=%d finalize drain=group end result=%d", comm,
+           comm->rank, drain);
       if (drain != flagcxSuccess)
         return drain;
     }
     if (comm->heteroComm != NULL && comm->heteroComm->proxyState != NULL &&
         comm->heteroComm->proxyState->uniRunnerState.invocationOwner != NULL) {
+      INFO(FLAGCX_INIT,
+           "Lifecycle comm=%p rank=%d finalize drain=uni-runner begin", comm,
+           comm->rank);
       drain = cleanupUniRunner(comm, false);
+      INFO(FLAGCX_INIT,
+           "Lifecycle comm=%p rank=%d finalize drain=uni-runner end result=%d",
+           comm, comm->rank, drain);
       if (drain != flagcxSuccess)
         return drain;
     }
     // Drain local producers before any rank enters transport shutdown.
     if (comm->heteroComm != NULL)
       do {
+        INFO(FLAGCX_INIT,
+             "Lifecycle comm=%p rank=%d finalize drain=quiesce begin", comm,
+             comm->rank);
         flagcxResult_t cleanupResult = flagcxCommQuiesce(comm);
+        INFO(FLAGCX_INIT,
+             "Lifecycle comm=%p rank=%d finalize drain=quiesce end result=%d",
+             comm, comm->rank, cleanupResult);
         if (cleanupResult != flagcxSuccess)
           return cleanupResult;
       } while (0);
     do {
+      INFO(FLAGCX_INIT, "Lifecycle comm=%p rank=%d finalize drain=fused begin",
+           comm, comm->rank);
       flagcxResult_t cleanupResult = flagcxFusedDrainPendingBuffers(comm);
+      INFO(FLAGCX_INIT,
+           "Lifecycle comm=%p rank=%d finalize drain=fused end result=%d", comm,
+           comm->rank, cleanupResult);
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     } while (0);
