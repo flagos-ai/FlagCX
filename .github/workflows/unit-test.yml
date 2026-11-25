@@ -17,6 +17,11 @@ on:
         required: true
         type: string
         default: all
+      suite:
+        description: "Unit-test suite name, all, or comma-separated names"
+        required: false
+        type: string
+        default: all
       level:
         description: "CI test level: L0, L1, L2, or L3"
         required: true
@@ -42,6 +47,8 @@ jobs:
     outputs:
       active: ${{ steps.resolve.outputs.active }}
       matrix: ${{ steps.resolve.outputs.matrix }}
+      suites: ${{ steps.resolve.outputs.suites }}
+      suite_filter_active: ${{ steps.resolve.outputs.suite_filter_active }}
       platforms: ${{ steps.resolve.outputs.platforms }}
       has_platforms: ${{ steps.resolve.outputs.has_platforms }}
       repository: ${{ steps.resolve.outputs.repository }}
@@ -67,6 +74,7 @@ jobs:
           EVENT_SHA: ${{ github.sha }}
           EVENT_REPOSITORY: ${{ github.repository }}
           EVENT_SELECTION: ${{ inputs.platform || 'all' }}
+          EVENT_SUITES: ${{ inputs.suite || 'all' }}
           EVENT_LEVEL: ${{ inputs.level || 'L2' }}
           ACTOR: ${{ github.actor }}
           FLAGCX_CI_PLAN_PATH: ${{ runner.temp }}/flagcx-ci-plan.json
@@ -83,6 +91,7 @@ jobs:
           repository="$EVENT_REPOSITORY"
           ref="$EVENT_SHA"
           selection="$EVENT_SELECTION"
+          suites="$EVENT_SUITES"
 
           case "$EVENT_NAME" in
             pull_request)
@@ -133,11 +142,13 @@ jobs:
             --arg comment "$comment" \
             --argjson is_pull_request "$is_pull_request" \
             --arg selection "$selection" \
+            --arg suites "$suites" \
             --arg level "$EVENT_LEVEL" \
             --arg repository "$repository" \
             --arg ref "$ref" \
             '{event_name:$event_name, labels:$labels, files:$files, permission:$permission,
               comment:$comment, is_pull_request:$is_pull_request, selection:$selection,
+              suites:($suites | split(",") | map(select(length > 0 and . != "all"))),
               repository:$repository, ref:$ref, level:$level}' > "$context_file"
 
           ruby .github/scripts/ci/resolve_ci_matrix.rb \
@@ -162,13 +173,14 @@ jobs:
     uses: ./.github/workflows/unit_tests_common.yml
     with:
       platform: ${{ matrix.platform }}
+      suites: ${{ toJSON(matrix.suites) }}
       repository: ${{ needs.prepare.outputs.repository }}
       ref: ${{ needs.prepare.outputs.ref }}
 
   performance_tests:
     name: Platform performance tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true' && (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3')
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.suite_filter_active != 'true' && (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3')
     uses: ./.github/workflows/test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -178,7 +190,7 @@ jobs:
   torch_api_tests:
     name: Platform Torch API tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true' && (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3')
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.suite_filter_active != 'true' && (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3')
     uses: ./.github/workflows/torch-api-test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}

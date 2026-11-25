@@ -88,6 +88,58 @@ class CiMatrixRoutingTest(unittest.TestCase):
         })
         self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
+    def test_suite_selection_labels_and_path_fallback(self):
+        outputs, _ = self.resolve({
+            "event_name": "pull_request",
+            "labels": ["platform:metax", "suite:p2p"],
+            "files": ["test/unittest/p2p/test_p2p.cc"],
+        })
+        self.assertEqual(outputs["matrix"]["include"], [
+            {"platform": "metax", "display_name": "MetaX Tests", "suites": ["p2p"]}
+        ])
+
+        outputs, _ = self.resolve({
+            "event_name": "workflow_dispatch", "selection": "metax,cuda",
+            "suites": ["p2p", "rma"],
+        })
+        self.assertEqual(outputs["matrix"]["include"][0]["suites"], ["p2p", "rma"])
+        self.assertEqual(outputs["matrix"]["include"][1]["suites"], ["p2p", "rma"])
+
+        outputs, _ = self.resolve({
+            "event_name": "pull_request", "labels": ["platform:metax"],
+            "files": ["test/unittest/p2p/test_p2p.cc"],
+        })
+        self.assertEqual(outputs["matrix"]["include"][0]["suites"], ["p2p"])
+
+        outputs, _ = self.resolve({
+            "event_name": "pull_request", "labels": ["platform:metax"],
+            "files": ["new/unmapped/change.cc"],
+        })
+        self.assertEqual(outputs["matrix"]["include"][0]["suites"], [
+            "adaptor", "core", "p2p", "rma", "runner", "service", "symmem"
+        ])
+
+    def test_suite_dispatch_input_and_nightly_select_all_suites(self):
+        outputs, _ = self.resolve({
+            "event_name": "workflow_dispatch", "selection": "metax", "suites": ["p2p"]
+        })
+        self.assertEqual(outputs["matrix"]["include"][0]["suites"], ["p2p"])
+        outputs, _ = self.resolve({"event_name": "schedule"})
+        self.assertEqual(len(outputs["matrix"]["include"]), len(ALL_ENABLED_PLATFORMS))
+        for entry in outputs["matrix"]["include"]:
+            expected = yaml.safe_load(
+                (CONFIG_DIR / f"{entry['platform']}.yml").read_text()
+            )["unit_test_suites"]
+            self.assertEqual(entry["suites"], expected)
+
+    def test_l3_keeps_explicit_platform_selection(self):
+        outputs, _ = self.resolve({
+            "event_name": "pull_request",
+            "labels": ["level:L3", "platform:metax"],
+            "files": ["flagcx/core/group.cc"],
+        })
+        self.assertEqual(outputs["platforms"], ["metax"])
+
         outputs, _ = self.resolve({"event_name": "schedule"})
         self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
@@ -268,7 +320,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
         })
         self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
-    def test_l3_selects_full_matrix_after_platform_routing(self):
+    def test_l3_keeps_explicit_platform_routing(self):
         cases = (
             {"event_name": "pull_request", "labels": ["level:L3", "platform:cuda"]},
             {"event_name": "workflow_dispatch", "selection": "cuda", "level": "L3"},
@@ -278,7 +330,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
         for context in cases:
             with self.subTest(context=context):
                 outputs, _ = self.resolve(context)
-                self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+                self.assertEqual(outputs["platforms"], ["cuda"])
 
     def test_l3_ignore_test_projection_preserves_selectors(self):
         with tempfile.TemporaryDirectory() as temp_dir:

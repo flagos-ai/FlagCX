@@ -7,6 +7,11 @@ on:
         description: Platform configuration name
         required: true
         type: string
+      suites:
+        description: JSON array of unit-test suites selected by the controller
+        required: false
+        type: string
+        default: '[]'
       repository:
         description: Repository containing the source under test
         required: false
@@ -36,7 +41,7 @@ jobs:
       container_options: ${{ steps.config.outputs.container_options }}
       container_volumes: ${{ steps.config.outputs.container_volumes }}
       set_env: ${{ steps.config.outputs.set_env }}
-      unit_test_suites: ${{ steps.config.outputs.unit_test_suites }}
+      unit_test_suites: ${{ inputs.suites != '[]' && inputs.suites || steps.config.outputs.unit_test_suites }}
       ignore_test: ${{ steps.config.outputs.ignore_test }}
     steps:
       - name: Checkout code

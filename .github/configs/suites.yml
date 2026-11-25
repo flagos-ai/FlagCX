@@ -1,0 +1,23 @@
+# Changed paths select unit-test suites; unmatched paths run all suites.
+shared_paths_watch:
+  - flagcx/core/**
+  - flagcx/include/**
+  - include/**
+  - Makefile
+  - make.inc
+  - test/make.inc
+  - makefiles/**
+  - .github/workflows/**
+  - .github/scripts/ci/**
+suites:
+  adaptor: [flagcx/adaptor/**]
+  core: [test/unittest/core/**, flagcx/core/**]
+  device_api: [test/unittest/device_api/**, flagcx/adaptor/kernel/**]
+  device_api_host: [test/unittest/device_api/**]
+  device_api_unified_ir: [test/unittest/device_api/**, flagcx/adaptor/kernel/**]
+  device_traits: [test/unittest/device_traits/**]
+  p2p: [test/unittest/p2p/**, test/kernel/p2p/**, flagcx/**/p2p/**]
+  rma: [test/unittest/rma/**, test/kernel/rma/**, flagcx/**/rma/**]
+  runner: [test/unittest/runner/**, test/kernel/runner/**]
+  service: [test/unittest/service/**]
+  symmem: [test/unittest/symmem/**, test/script/symmem_test.sh]

@@ -41,6 +41,8 @@ platforms = settings.map do |name, value|
 end.compact
 platform_names = platforms.map { |entry| entry.fetch("platform") }
 abort "No enabled platform configs found in #{config_dir}" if platforms.empty?
+suites_config_path = File.join(config_dir, "suites.yml")
+suites_config = File.file?(suites_config_path) ? load_yaml.call(suites_config_path) : {}
 
 canonical_platform = ->(name) { name == "musa" ? "mthreads" : name }
 valid_levels = %w[L0 L1 L2 L3]
@@ -52,9 +54,19 @@ end
 level_number = ->(value) { value.delete_prefix("L").to_i }
 
 labels = Array(context["labels"]).map(&:to_s).map do |label|
-  label.start_with?("platform:") ? "platform:#{canonical_platform.call(label.delete_prefix("platform:"))}" : label
+  if label.start_with?("platform:")
+    names = label.delete_prefix("platform:").split(",").map { |name| canonical_platform.call(name.strip) }
+    "platform:#{names.join(',')}"
+  else
+    label
+  end
 end
 files = Array(context["files"]).map(&:to_s)
+requested_suites = Array(context["suites"]).map(&:to_s)
+labels.each do |label|
+  requested_suites.concat(label.delete_prefix("suite:").split(",")) if label.start_with?("suite:")
+end
+requested_suites = requested_suites.map(&:strip).reject { |suite| suite.empty? || suite == "all" }.uniq
 event_name = context.fetch("event_name")
 selection = nil
 active = true
@@ -106,14 +118,15 @@ level = normalise_level.call(level_labels.max_by { |value| level_number.call(val
 case event_name
 when "pull_request"
   route_labels = labels.select { |label| label.start_with?("platform:") }
-  invalid_labels = route_labels.map { |label| label.delete_prefix("platform:") }
+  requested_platforms = route_labels.flat_map { |label| label.delete_prefix("platform:").split(",") }
+  invalid_labels = requested_platforms
                                 .reject { |name| name == "all" || platform_names.include?(name) }
   abort "Unknown platform label(s): #{invalid_labels.join(", ")}" unless invalid_labels.empty?
   if route_labels.include?("platform:all")
     selection = platform_names
     routing_reason << "platform:all label selected the full platform matrix"
   elsif !route_labels.empty?
-    selection = route_labels.map { |label| label.delete_prefix("platform:") }.uniq
+    selection = requested_platforms.uniq
     routing_reason << "Platform labels selected #{selection.join(", ")}"
   else
     selection = select_paths.call
@@ -128,7 +141,7 @@ when "issue_comment"
     routing_reason << "No authorized /test request; hardware execution is inactive"
   elsif command[1].nil?
     route_labels = labels.select { |label| label.start_with?("platform:") }
-    selection = route_labels.empty? ? select_paths.call : parse_selection.call(route_labels.map { |label| label.delete_prefix("platform:") }.join(","))
+    selection = route_labels.empty? ? select_paths.call : parse_selection.call(route_labels.flat_map { |label| label.delete_prefix("platform:").split(",") }.join(","))
     routing_reason << "Authorized /test request used PR routing"
   else
     selection = parse_selection.call(command[1])
@@ -147,7 +160,10 @@ else
   abort "Unsupported event: #{event_name}"
 end
 
-if active && level == "L3" && selection != platform_names
+explicit_platform_selection = labels.any? { |label| label.start_with?("platform:") } ||
+                              (event_name == "workflow_dispatch" && context.fetch("selection", "all") != "all") ||
+                              (event_name == "issue_comment" && context.fetch("comment", "").match?(/\A\/test\s+(?!all\z)[a-z0-9_-]+\z/))
+if active && level == "L3" && !explicit_platform_selection && selection != platform_names
   selection = platform_names
   routing_reason << "level:L3 selected the full platform matrix"
 end
@@ -170,6 +186,31 @@ unit_suites = selected.to_h do |entry|
   config = load_yaml.call(File.join(config_dir, "#{entry.fetch("platform")}.yml"))
   [entry.fetch("platform"), config.fetch("unit_test_suites", [])]
 end
+suite_shared_paths = suites_config.fetch("shared_paths_watch", [])
+suite_path_map = suites_config.fetch("suites", {})
+matrix_entries = selected.map do |entry|
+  platform = entry.fetch("platform")
+  available = unit_suites.fetch(platform)
+  if requested_suites.any?
+    suites = requested_suites & available
+  elsif event_name == "schedule" || match_paths.call(suite_shared_paths, files) || files.empty?
+    suites = available
+  else
+    matched = available.select { |suite| match_paths.call(Array(suite_path_map[suite]), files) }
+    unmapped = files.any? do |path|
+      !suite_shared_paths.any? { |pattern| File.fnmatch?(pattern, path, File::FNM_PATHNAME | File::FNM_EXTGLOB) } &&
+        !suite_path_map.values.flatten.any? { |pattern| File.fnmatch?(pattern, path, File::FNM_PATHNAME | File::FNM_EXTGLOB) }
+    end
+    suites = unmapped || matched.empty? ? available : matched
+  end
+  next if suites.empty?
+  { "platform" => platform, "display_name" => entry.fetch("display_name"), "suites" => suites }
+end.compact
+matrix = { "include" => matrix_entries }
+suite_filter_active = matrix_entries.any? do |entry|
+  entry.fetch("suites").length < unit_suites.fetch(entry.fetch("platform")).length
+end
+suite_filter_active ||= requested_suites.any?
 planned_groups = []
 planned_groups << "unit suites" unless level == "L0"
 planned_groups.concat(["performance", "Torch API"]) if %w[L2 L3].include?(level)
@@ -215,6 +256,7 @@ if summary_path && !summary_path.empty?
     summary.puts "- Changed files: **#{files.length}**"
     summary.puts "- Planned groups: **#{planned_groups.empty? ? "common checks only" : planned_groups.join(", ")}**"
     summary.puts "- Unit suites: **#{unit_suites.values.flatten.uniq.length} configured**"
+    matrix_entries.each { |entry| summary.puts "- #{entry.fetch("platform")} selected suites: #{entry.fetch("suites").join(", ")}" }
     unit_suites.each { |platform, suites| summary.puts "- #{platform} suites: #{suites.join(", ")}" }
     summary.puts
     summary.puts "### ignore_test"
@@ -238,9 +280,11 @@ output_path = ENV["GITHUB_OUTPUT"]
 abort "GITHUB_OUTPUT is required" if output_path.nil? || output_path.empty?
 outputs = {
   "active" => active.to_s,
-  "matrix" => JSON.generate({"include" => selected.map { |entry| entry.slice("platform", "display_name")}}),
+  "matrix" => JSON.generate(matrix),
   "platforms" => JSON.generate(selected.map { |entry| entry.fetch("platform") }),
   "platform_csv" => selected.map { |entry| entry.fetch("platform") }.join(","),
+  "suites" => JSON.generate(matrix_entries.to_h { |entry| [entry.fetch("platform"), entry.fetch("suites")] }),
+  "suite_filter_active" => suite_filter_active.to_s,
   "has_platforms" => (!selected.empty?).to_s,
   "repository" => context.fetch("repository", ""),
   "ref" => context.fetch("ref", ""),
