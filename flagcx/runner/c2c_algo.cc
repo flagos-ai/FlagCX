@@ -29,8 +29,8 @@ extern "C" flagcxResult_t flagcxC2cDrainPendingResources(flagcxComm_t comm,
         break;
     }
     if (result == flagcxSuccess && node->scratch != nullptr) {
-      result =
-          deviceAdaptor->deviceFree(node->scratch, flagcxMemDevice, nullptr);
+      result = flagcxCommReleaseBuffer(comm, node->scratch,
+                                       flagcxInternalBufferDevice);
       if (result == flagcxSuccess)
         node->scratch = nullptr;
     }

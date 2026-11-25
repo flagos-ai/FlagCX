@@ -436,6 +436,8 @@ flagcxStreamValueSemaphore::enqueueCompletion(flagcxStream_t launchStream) {
 }
 
 int flagcxStreamValueSemaphore::pollEnd() {
+  if (isCompletionCancelled())
+    return 1;
   if (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) != 0) {
     return 0;
   }

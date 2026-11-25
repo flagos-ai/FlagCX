@@ -389,6 +389,8 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxMemFree(helperBuff, memAllocator));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
   FLAGCXCHECK(devHandle->streamDestroy(stream));
+  FLAGCXCHECK(flagcxCommFinalize(comm));
+  FLAGCXCHECK(flagcxCommFinalize(comm));
   FLAGCXCHECK(flagcxCommDestroy(comm));
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
 

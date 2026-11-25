@@ -87,6 +87,14 @@ void *flagcxAsyncJobMain(void *arg) {
 
 static int64_t p2pScheduleDisable = flagcxParamP2pScheduleDisable();
 
+enum flagcxGroupCompletionState {
+  flagcxGroupCompletionNotSubmitted = 0,
+  flagcxGroupCompletionAccepted,
+  flagcxGroupCompletionRejected,
+  flagcxGroupCompletionUncertain,
+  flagcxGroupCompletionCancelled
+};
+
 struct flagcxGroupPendingWork {
   flagcxGroupPendingWork *next;
   std::shared_ptr<flagcxSemaphore> semaphore;
@@ -94,6 +102,7 @@ struct flagcxGroupPendingWork {
   flagcxStream_t launchStream;
   flagcxProxyOp *unpublished;
   flagcxStreamValueSemaphore *failedCompletion;
+  enum flagcxGroupCompletionState completionState;
 };
 
 static void groupKeepUnpublished(flagcxGroupPendingWork *pending,
@@ -138,6 +147,18 @@ flagcxResult_t flagcxGroupDrainWork(flagcxHeteroComm_t comm, int wait) {
       // queued write/wait is finished. Let deferred proxy users retire now.
       node->failedCompletion->markCompletionDrained();
       node->failedCompletion = NULL;
+    }
+    if (result == flagcxSuccess && node->semaphore) {
+      if (node->completionState == flagcxGroupCompletionNotSubmitted ||
+          node->completionState == flagcxGroupCompletionRejected) {
+        // The fallback fence covers the queued prefix. No callback/kernel was
+        // accepted to finish this semaphore; proxy request retirement remains
+        // independent of this permission.
+        node->semaphore->markCompletionCancelled();
+        node->completionState = flagcxGroupCompletionCancelled;
+      } else if (node->completionState == flagcxGroupCompletionUncertain) {
+        result = flagcxInProgress;
+      }
     }
     while (result == flagcxSuccess && node->unpublished != NULL) {
       auto *op = node->unpublished;
@@ -760,6 +781,7 @@ static flagcxResult_t groupFinishOne(flagcxGroupJob *gjob,
     goto fail;
   if (launch->event != NULL) {
     if (launch->streamValue) {
+      pending->completionState = flagcxGroupCompletionAccepted;
       auto *completion =
           static_cast<flagcxStreamValueSemaphore *>(semaphore.get());
       ret = completion->enqueueCompletion(stream);
@@ -769,15 +791,27 @@ static flagcxResult_t groupFinishOne(flagcxGroupJob *gjob,
         goto fail;
       }
     } else if (deviceAsyncKernel) {
-      FLAGCXCHECKGOTO(deviceAdaptor->launchDeviceFunc(stream, deviceAsyncKernel,
-                                                      semaphore->getSignals()),
-                      ret, fail);
+      ret = deviceAdaptor->launchDeviceFunc(stream, deviceAsyncKernel,
+                                            semaphore->getSignals());
+      pending->completionState =
+          ret == flagcxSuccess      ? flagcxGroupCompletionAccepted
+          : ret == flagcxInProgress ? flagcxGroupCompletionUncertain
+                                    : flagcxGroupCompletionRejected;
+      if (ret != flagcxSuccess)
+        goto fail;
       FLAGCXCHECKGOTO(deviceAdaptor->eventRecord(launch->event, stream), ret,
                       fail);
+      if (ret != flagcxSuccess)
+        goto fail;
     } else {
-      FLAGCXCHECKGOTO(deviceAdaptor->launchHostFunc(stream, cpuAsyncKernel,
-                                                    semaphore.get()),
-                      ret, fail);
+      ret = deviceAdaptor->launchHostFunc(stream, cpuAsyncKernel,
+                                          semaphore.get());
+      pending->completionState =
+          ret == flagcxSuccess      ? flagcxGroupCompletionAccepted
+          : ret == flagcxInProgress ? flagcxGroupCompletionUncertain
+                                    : flagcxGroupCompletionRejected;
+      if (ret != flagcxSuccess)
+        goto fail;
     }
   }
   ret = launch->event != NULL

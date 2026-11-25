@@ -23,28 +23,26 @@ ENABLED_PLATFORMS = [
 
 
 def load_platform_ignore_config(platform):
-    result = subprocess.run(
-        ["bash", "-c",
-         'source "$1"; if [[ -n "${FLAGCX_CI_IGNORE_TEST:-}" ]]; then '
-         'printf "%s" "$FLAGCX_CI_IGNORE_TEST"; else printf "{}"; fi',
-         "bash", str(REPO_ROOT / f".github/scripts/set_env/{platform}.sh")],
-        capture_output=True, text=True, check=True,
-    )
-    return json.loads(result.stdout)
+    return yaml.safe_load(
+        (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
+    )["ignore_test"]
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
-    def test_platform_ignore_lists_live_in_environment_scripts(self):
+    def test_platform_ignore_lists_live_in_yaml_configs(self):
         for platform in (
-            "ascend", "hygon", "iluvatar", "kunlunxin", "metax", "ppu"
+            "ascend", "hygon", "iluvatar", "kunlunxin", "metax", "ppu",
+            "cuda", "enflame", "mthreads"
         ):
             with self.subTest(platform=platform):
                 config = yaml.safe_load(
                     (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
                 )
-                self.assertNotIn("ignore_test", config)
+                self.assertIsInstance(config["ignore_test"], dict)
+                shell = (REPO_ROOT / f".github/scripts/set_env/{platform}.sh").read_text()
+                self.assertNotIn("FLAGCX_CI_IGNORE_TEST=", shell)
                 ignore_config = load_platform_ignore_config(platform)
-                if platform == "iluvatar":
+                if platform in ("iluvatar", "cuda"):
                     self.assertEqual(ignore_config, {})
                 else:
                     self.assertTrue(ignore_config)
@@ -54,13 +52,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "unit_tests_common.yml",
         ):
             workflow = (REPO_ROOT / ".github/workflows" / filename).read_text()
-            self.assertNotIn("ignore_test", workflow)
+            self.assertIn("FLAGCX_CI_IGNORE_TEST:", workflow)
         loader = (REPO_ROOT / ".github/scripts/ci/load_platform_config.rb").read_text()
-        self.assertNotIn('"ignore_test"', loader)
+        self.assertIn('"ignore_test"', loader)
         container_runner = (
             REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh"
         ).read_text()
-        self.assertNotIn("FLAGCX_CI_IGNORE_TEST", container_runner)
+        self.assertIn("FLAGCX_CI_IGNORE_TEST", container_runner)
 
     def test_kunlunxin_workloads_use_job_containers(self):
         for filename, job_name, workload in (
@@ -218,6 +216,29 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                         capture_output=True, text=True, check=True,
                     )
                     self.assertEqual(bool(result.stdout.strip()), should_skip)
+
+    def test_ignore_helper_resolves_platform_from_adaptor(self):
+        helper = REPO_ROOT / ".github/scripts/ci/ignore_test.py"
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("FLAGCX_CI_IGNORE_TEST", "FLAGCX_CI_PLATFORM")}
+        result = subprocess.run(
+            ["python3", str(helper), "perf", "homogeneous"],
+            env={**env, "FLAGCX_ADAPTOR": "metax"},
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(result.stdout.strip(), "allreduce reducescatter")
+
+        result = subprocess.run(
+            ["python3", str(helper), "phase", "symmem", "vmm-net-data"],
+            env={**env, "FLAGCX_ADAPTOR": "musa"},
+            capture_output=True, text=True, check=True,
+        )
+        self.assertIn("MUSA advertises neither", result.stdout)
+
+    def test_unit_runner_sets_platform_from_environment_script_name(self):
+        runner = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        self.assertIn('platform_from_script=$(basename "$SET_ENV_SCRIPT" .sh)', runner)
+        self.assertIn('export FLAGCX_CI_PLATFORM="${FLAGCX_CI_PLATFORM:-$platform_from_script}"', runner)
 
     def test_run_override_distinguishes_completion_failure_and_real_skip(self):
         source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
@@ -3303,6 +3324,7 @@ run_suite
                                  "PROJECT_ROOT_FOR_TEST": str(REPO_ROOT),
                                  "TEST_SUITE": suite, "TEST_RDMA": rdma,
                                  "TEST_UNIT_STATUS": unit_status,
+                                 "FLAGCX_CI_IGNORE_TEST": json.dumps(load_platform_ignore_config("enflame")),
                                  "GITHUB_STEP_SUMMARY": str(summary)},
                             text=True, capture_output=True, check=False,
                         )

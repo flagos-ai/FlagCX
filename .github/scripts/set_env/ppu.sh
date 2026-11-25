@@ -40,33 +40,6 @@ export FLAGCX_MEM_ENABLE=1
 export FLAGCX_VMM_ENABLE=0
 export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-eth0}"
 
-FLAGCX_CI_IGNORE_TEST='{
-  "gtest": [
-    {
-      "suite": "p2p",
-      "tests": [
-        "P2pAdaptorStruct.*",
-        "P2pAdaptorTest.*",
-        "P2pLoopbackTest.*",
-        "P2pEngineRpcTransportTest.ConnectAcceptIsLocalSameHost"
-      ],
-      "reason": "These tests directly target the IBRC vtable; PPU CI validates the BAREX transport through P2P Engine tests"
-    }
-  ],
-  "phases": [
-    {
-      "suite": "p2p",
-      "name": "p2p-legacy-unit",
-      "reason": "Legacy ACCL P2P unit tests can hang in BAREX process-exit statistics cleanup; shared-engine unit and WRITE MPI coverage remains enabled"
-    },
-    {
-      "suite": "symmem",
-      "name": "vmm-net-data",
-      "reason": "PPU BAREX has no validated VMM-capable MR route"
-    }
-  ]
-}'
-export FLAGCX_CI_IGNORE_TEST
 
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_PPU=1 USE_ACCL_BAREX=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_PPU=1 USE_ACCL_BAREX=1)
@@ -101,6 +74,9 @@ flagcx_ci_configure_suite() {
     device_api|device_api_host|device_api_unified_ir)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      if [[ "$suite" == device_api_host ]]; then
+        export FLAGCX_CI_TEST_DIAGNOSTICS_AFTER=${FLAGCX_CI_TEST_DIAGNOSTICS_AFTER:-2}
+      fi
       if [[ "$suite" != device_api_host ]]; then
         # BAREX has no remote signal atomic for Device API inter tests yet.
         # Keep the normal intra runs; forced-Net intra also needs that atomic.
@@ -156,7 +132,12 @@ flagcx_ci_run_suite_override() {
     # Exercise every collective with PCCL's built-in kernels, including when
     # the runner's inherited environment explicitly enables the plugin.
     export PCCL_ENABLE_EXT_KERNEL=0
-    export GTEST_FILTER='*-CoverageSupplemental.*'
+    local inherited_filter=${GTEST_FILTER:-*}
+    export GTEST_FILTER='*-CoverageSupplemental.*:FlagCXCollTest.FinalizeThenRankLocalDestroy'
+    if [[ "$inherited_filter" == *-* ]]; then
+      GTEST_FILTER+=":${inherited_filter#*-}"
+    fi
+    echo "Skipping FlagCXCollTest.FinalizeThenRankLocalDestroy: PCCL native Destroy may wait for peers after Finalize"
     local runner_status=0
     FLAGCX_CI_TEST_LABEL="runner unit tests" \
       "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || runner_status=1

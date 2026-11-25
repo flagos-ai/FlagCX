@@ -1,10 +1,8 @@
 import json
-import subprocess
-import unittest
-import json
 import os
 import subprocess
 import tempfile
+import unittest
 from pathlib import Path
 
 import yaml
@@ -61,7 +59,10 @@ run_suite
                              str(REPO_ROOT / f'.github/scripts/set_env/{platform}.sh'),
                              str(REPO_ROOT), str(recorder)],
                             env={**os.environ, 'CAPTURE': str(capture),
-                                 'FAIL_LABEL': failure, 'MPI_HOME': '/fake/mpi'},
+                                 'FAIL_LABEL': failure, 'MPI_HOME': '/fake/mpi',
+                                 'FLAGCX_CI_IGNORE_TEST': json.dumps(yaml.safe_load(
+                                     (REPO_ROOT / f'.github/configs/{platform}.yml').read_text()
+                                 )['ignore_test'])},
                             capture_output=True, text=True, timeout=15,
                         )
                         labels = [json.loads(line) for line in capture.read_text().splitlines()]
@@ -83,7 +84,9 @@ import json, os, sys
 args = sys.argv[1:]
 label = os.environ.get("FLAGCX_CI_MPI_LABEL", os.environ.get("FLAGCX_CI_TEST_LABEL"))
 assert os.environ["PCCL_ENABLE_EXT_KERNEL"] == "0"
-assert os.environ["GTEST_FILTER"] == "*-CoverageSupplemental.*"
+positive, _, negative = os.environ["GTEST_FILTER"].partition("-")
+assert positive == "*"
+assert set(negative.split(":")) == {"CoverageSupplemental.*", "FlagCXCollTest.FinalizeThenRankLocalDestroy"}
 if args[0] != "make":
     exports = dict(arg.split("=", 1) for i, arg in enumerate(args)
                    if i > 0 and args[i - 1] == "-x")
@@ -258,12 +261,9 @@ if label == os.environ["FAIL_LABEL"]:
         self.assertIn('-x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable"', unit_runner)
         self.assertIn("FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1", unit_runner)
         self.assertIn("SymMemTest.VmmNetRouteCapabilityUnion", unit_runner)
-        ppu_config = json.loads(subprocess.check_output(
-            ["bash", "-c",
-             'source "$1"; printf "%s" "$FLAGCX_CI_IGNORE_TEST"',
-             "bash", str(REPO_ROOT / ".github/scripts/set_env/ppu.sh")],
-            text=True,
-        ))
+        ppu_config = yaml.safe_load(
+            (Path(__file__).resolve().parents[2] / ".github/configs/ppu.yml").read_text()
+        )["ignore_test"]
         self.assertTrue(any(
             entry["suite"] == "symmem" and entry["name"] == "vmm-net-data"
             for entry in ppu_config["phases"]

@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if [[ $# -ne 7 ]]; then
-  echo "Usage: $0 <active> <has-platforms> <prepare> <unit> <perf> <torch-api> <format>" >&2
+if [[ $# -ne 7 && $# -ne 8 ]]; then
+  echo "Usage: $0 <active> <has-platforms> <prepare> <unit> <perf> <torch-api> <format> [level]" >&2
   exit 2
 fi
 
@@ -14,6 +14,12 @@ unit_result=$4
 perf_result=$5
 torch_result=$6
 format_result=$7
+level=${8:-L2}
+
+case "$level" in
+  L0|L1|L2|L3) ;;
+  *) echo "Unknown CI level: $level" >&2; exit 2 ;;
+esac
 
 if [[ "$active" == false && "$prepare_result" == success ]]; then
   echo "No authorized CI request; no platform jobs were scheduled."
@@ -24,21 +30,35 @@ if [[ "$prepare_result" != success ]]; then
   exit 1
 fi
 
-if [[ "$has_platforms" == true && "$unit_result" != success ]]; then
+if [[ "$has_platforms" == true && "$level" != L0 && "$unit_result" != success ]]; then
   echo "Selected platform unit tests ended with result: $unit_result" >&2
   exit 1
 fi
-if [[ "$has_platforms" != true && "$unit_result" != success && "$unit_result" != skipped ]]; then
+if [[ ( "$has_platforms" != true || "$level" == L0 ) && "$unit_result" != success && "$unit_result" != skipped ]]; then
   echo "Unit-test job ended with result: $unit_result" >&2
   exit 1
 fi
 if [[ "$has_platforms" == true ]]; then
-  for result in "$perf_result" "$torch_result"; do
-    [[ "$result" == success ]] || {
-      echo "Selected platform workflow ended with result: $result" >&2
-      exit 1
-    }
-  done
+  case "$level" in
+    L2|L3)
+      for result in "$perf_result" "$torch_result"; do
+        [[ "$result" == success ]] || {
+          echo "Selected platform workflow ended with result: $result" >&2
+          exit 1
+        }
+      done
+      ;;
+    *)
+      # At L0/L1 perf/torch are intentionally skipped. Unexpected cancellation
+      # or failure still needs attention.
+      for result in "$perf_result" "$torch_result"; do
+        case "$result" in
+          success|skipped) ;;
+          *) echo "Platform workflow failed at level $level: $result" >&2; exit 1 ;;
+        esac
+      done
+      ;;
+  esac
 else
   for result in "$perf_result" "$torch_result"; do
     case "$result" in

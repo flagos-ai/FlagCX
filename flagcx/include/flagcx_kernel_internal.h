@@ -184,7 +184,8 @@ typedef struct flagcxCommProperties flagcxCommProperties_t;
 flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm);
 
 // Shared cleanup for entries referenced by the outer Comm or symmetric heap.
-flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *entry);
+flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *entry,
+                                    flagcxComm_t comm);
 // Release a local IPC table slot and its imported mappings immediately.
 flagcxResult_t releaseIpcTableSlot(flagcxComm_t comm, int slot);
 // A failed build may retain a cleanup-only slot. cleanupStatus is separate
