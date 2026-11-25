@@ -31,13 +31,38 @@ flagcxResult_t mpiAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
   return flagcxSuccess;
 }
 
+// Internal; requires the adaptor staging types and containers.
+static void mpiReleaseStagedBuffers(std::vector<stagedBuffer_t> *buffers,
+                                    flagcxInnerComm_t owner) {
+  for (auto it = buffers->begin(); it != buffers->end();) {
+    stagedBuffer_t buffer = *it;
+    if (buffer->owner != owner) {
+      ++it;
+      continue;
+    }
+    free(buffer->buffer);
+    free(buffer);
+    it = buffers->erase(it);
+  }
+}
+
+static flagcxResult_t mpiCleanupOwner(flagcxInnerComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  mpiReleaseStagedBuffers(&sendStagedBufferList, comm);
+  mpiReleaseStagedBuffers(&recvStagedBufferList, comm);
+  return flagcxSuccess;
+}
+
 flagcxResult_t mpiAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
                                          void **buff, size_t size, int isRecv) {
+  if (comm == NULL || comm->base == nullptr || buff == NULL)
+    return flagcxInvalidArgument;
   stagedBuffer *sbuff = NULL;
   if (isRecv) {
     for (auto it = recvStagedBufferList.begin();
          it != recvStagedBufferList.end(); it++) {
-      if ((*it)->size - (*it)->offset >= size) {
+      if ((*it)->owner == comm && (*it)->size - (*it)->offset >= size) {
         sbuff = (*it);
         break;
       }
@@ -45,7 +70,7 @@ flagcxResult_t mpiAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
   } else {
     for (auto it = sendStagedBufferList.begin();
          it != sendStagedBufferList.end(); it++) {
-      if ((*it)->size - (*it)->offset >= size) {
+      if ((*it)->owner == comm && (*it)->size - (*it)->offset >= size) {
         sbuff = (*it);
         break;
       }
@@ -53,6 +78,7 @@ flagcxResult_t mpiAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
   }
   if (sbuff == NULL) {
     FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
+    sbuff->owner = comm;
     sbuff->offset = 0;
     int newSize = MPI_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
     while (newSize < size) {
@@ -60,6 +86,7 @@ flagcxResult_t mpiAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
     }
     sbuff->buffer = malloc(newSize);
     if (sbuff->buffer == NULL) {
+      free(sbuff);
       return flagcxSystemError;
     }
     sbuff->size = newSize;
@@ -140,54 +167,23 @@ flagcxResult_t mpiAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 flagcxResult_t mpiAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = sendStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = recvStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  sendStagedBufferList.clear();
-  recvStagedBufferList.clear();
+  flagcxResult_t result = mpiCleanupOwner(comm);
+  if (result != flagcxSuccess)
+    return result;
   comm->base.reset();
   return flagcxSuccess;
 }
 
 flagcxResult_t mpiAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = sendStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = recvStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  sendStagedBufferList.clear();
-  recvStagedBufferList.clear();
-  comm->base.reset();
+  flagcxResult_t result = mpiAdaptorCommFinalize(comm);
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
   return flagcxSuccess;
 }
 
 flagcxResult_t mpiAdaptorCommAbort(flagcxInnerComm_t comm) {
-  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = sendStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = recvStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  sendStagedBufferList.clear();
-  recvStagedBufferList.clear();
-  MPI_Abort(comm->base->getMpiComm(), 1);
-  return flagcxSuccess;
+  return mpiAdaptorCommFinalize(comm);
 }
 
 flagcxResult_t mpiAdaptorCommResume(flagcxInnerComm_t comm) {

@@ -104,7 +104,13 @@ flagcxResult_t xcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t xcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)bkcl_destroy_context(comm->base);
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  flagcxResult_t result = (flagcxResult_t)bkcl_destroy_context(comm->base);
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
+  return flagcxSuccess;
 }
 
 flagcxResult_t xcclAdaptorCommAbort(flagcxInnerComm_t comm) {

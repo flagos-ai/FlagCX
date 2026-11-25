@@ -187,12 +187,20 @@ flagcxResult_t topsAdaptorStreamWaitEvent(flagcxStream_t stream,
 
 flagcxResult_t topsAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? topsEventDefault
                                  : topsEventDisableTiming;
-  DEVCHECK(topsEventCreateWithFlags(&((*event)->base), flags));
+  if (topsEventCreateWithFlags(&wrapper->base, flags) != topsSuccess) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 

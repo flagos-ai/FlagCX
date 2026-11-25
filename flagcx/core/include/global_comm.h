@@ -6,6 +6,7 @@
 #include "flagcx.h"
 #include "flagcx_tuner.h"
 #include "utils.h"
+#include "work.h"
 
 #include <map>
 #include <vector>
@@ -63,6 +64,12 @@ flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
 flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm);
 
 struct flagcxComm {
+  struct flagcxWorkTracker submittedWork;
+  struct flagcxC2cPendingResources *pendingC2cResources;
+  bool devicePluginHeld;
+  bool cclPluginHeld;
+  bool netPluginHeld;
+  bool pluginRollbackOnly;
   // TODO: adjust code format
   // 0: active, 1: locally quiescent, 2: transport cleanup completed,
   // 3: local owners destroyed, 4: homo comms destroyed,

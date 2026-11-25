@@ -47,7 +47,7 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
     WARN("ADAPTOR/Plugin: Failed to find symbol 'flagcxDeviceAdaptorPlugin_v1' "
          "in '%s': %s",
          envValue, dlerror());
-    flagcxAdaptorClosePluginLib(devicePluginDlHandle);
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(devicePluginDlHandle));
     devicePluginDlHandle = NULL;
     return flagcxSuccess;
   }
@@ -56,7 +56,7 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
   // _latest is an internal-only struct.
   if (flagcxCalloc(&upgradedPluginAdaptor, 1) != flagcxSuccess) {
     WARN("ADAPTOR/Plugin: Failed to allocate upgraded adaptor struct");
-    flagcxAdaptorClosePluginLib(devicePluginDlHandle);
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(devicePluginDlHandle));
     devicePluginDlHandle = NULL;
     return flagcxSystemError;
   }
@@ -92,18 +92,22 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
          envValue);
     free(upgradedPluginAdaptor);
     upgradedPluginAdaptor = NULL;
-    flagcxAdaptorClosePluginLib(devicePluginDlHandle);
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(devicePluginDlHandle));
     devicePluginDlHandle = NULL;
     return flagcxSuccess;
   }
 
   // A built-in adaptor may have been used before this valid plugin was
   // requested. Release its cached signals before switching adaptors.
-  flagcxResult_t poolResult = streamValueBufferPool.clear();
+  flagcxResult_t poolResult = flagcxStreamValueProbeCleanup();
+  if (poolResult == flagcxSuccess)
+    poolResult = streamValueBufferPool.clear();
+  if (poolResult == flagcxSuccess)
+    poolResult = deviceSemaphoreBufferPool.clear();
   if (poolResult != flagcxSuccess) {
     free(upgradedPluginAdaptor);
     upgradedPluginAdaptor = NULL;
-    flagcxAdaptorClosePluginLib(devicePluginDlHandle);
+    FLAGCXCHECK(flagcxAdaptorClosePluginLib(devicePluginDlHandle));
     devicePluginDlHandle = NULL;
     return poolResult;
   }
@@ -118,45 +122,50 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
 }
 
 flagcxResult_t flagcxDeviceAdaptorPluginUnload() {
-  // Release pinned signals while their adaptor and device runtime are alive.
-  flagcxResult_t result = streamValueBufferPool.clear();
+  flagcxResult_t result = flagcxStreamValueProbeCleanup();
+  if (result == flagcxSuccess)
+    result = streamValueBufferPool.clear();
+  if (result == flagcxSuccess)
+    result = deviceSemaphoreBufferPool.clear();
   if (result != flagcxSuccess)
     return result;
+  FLAGCXCHECK(flagcxAdaptorClosePluginLib(devicePluginDlHandle));
   flagcxClearStreamValueProbeCache();
   if (defaultDeviceAdaptor != NULL) {
     deviceAdaptor = defaultDeviceAdaptor;
     defaultDeviceAdaptor = NULL;
     flagcxRebuildGlobalDeviceHandle();
   }
-  if (upgradedPluginAdaptor != NULL) {
-    free(upgradedPluginAdaptor);
-    upgradedPluginAdaptor = NULL;
-  }
-  flagcxAdaptorClosePluginLib(devicePluginDlHandle);
+  free(upgradedPluginAdaptor);
+  upgradedPluginAdaptor = NULL;
   devicePluginDlHandle = NULL;
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxDeviceAdaptorPluginInit() {
+flagcxResult_t flagcxDeviceAdaptorPluginInit(bool *acquired) {
   std::lock_guard<std::mutex> lock(devicePluginMutex);
+  if (acquired != NULL)
+    *acquired = false;
   flagcxResult_t result = flagcxDeviceAdaptorPluginLoad();
-  if (result != flagcxSuccess)
-    return result;
-  devicePluginRefCount++;
-  return flagcxSuccess;
+  // A failed load may retain a library whose rollback failed. Give that
+  // cleanup reference to the same owner instead of losing it at Init failure.
+  if (result == flagcxSuccess || devicePluginDlHandle != NULL) {
+    ++devicePluginRefCount;
+    if (acquired != NULL)
+      *acquired = true;
+  }
+  return result;
 }
 
 flagcxResult_t flagcxDeviceAdaptorPluginFinalize() {
   std::lock_guard<std::mutex> lock(devicePluginMutex);
+  if (devicePluginRefCount == 0)
+    return flagcxSuccess;
   if (devicePluginRefCount == 1) {
-    INFO(FLAGCX_INIT, "Unloading device adaptor plugin");
-    // The last owner releases its reference even when pool cleanup
-    // fails. In that case the loader retains the live plugin handle and a
-    // future init/finalize can retry unloading without a phantom reference.
-    devicePluginRefCount = 0;
-    return flagcxDeviceAdaptorPluginUnload();
-  } else if (devicePluginRefCount > 1) {
-    --devicePluginRefCount;
+    flagcxResult_t result = flagcxDeviceAdaptorPluginUnload();
+    if (result != flagcxSuccess)
+      return result;
   }
+  --devicePluginRefCount;
   return flagcxSuccess;
 }

@@ -38,6 +38,7 @@
 #define GLOO_ADAPTOR_MAX_STAGED_BUFFER_SIZE (8 * 1024 * 1024) // 8MB
 using bufferPtr = std::unique_ptr<::gloo::transport::UnboundBuffer>;
 struct stagedBuffer {
+  flagcxInnerComm_t owner;
   int offset;
   int size = GLOO_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
   int cnt;

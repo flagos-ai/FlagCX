@@ -208,12 +208,20 @@ flagcxResult_t mluAdaptorStreamWaitEvent(flagcxStream_t stream,
 
 flagcxResult_t mluAdaptorEventCreate(flagcxEvent_t *event,
                                      flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
+  flagcxEvent_t wrapper = (flagcxEvent_t)calloc(1, sizeof(struct flagcxEvent));
+  if (wrapper == NULL)
+    return flagcxSystemError;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? CNRT_NOTIFIER_DEFAULT
                                  : CNRT_NOTIFIER_DISABLE_TIMING_ALL;
-  DEVCHECK(cnrtNotifierCreateWithFlags(&((*event)->base), flags));
+  if (cnrtNotifierCreateWithFlags(&wrapper->base, flags) != cnrtSuccess) {
+    free(wrapper);
+    return flagcxUnhandledDeviceError;
+  }
+  *event = wrapper;
   return flagcxSuccess;
 }
 

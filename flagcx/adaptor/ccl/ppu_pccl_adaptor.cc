@@ -400,9 +400,16 @@ flagcxResult_t ppupcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t ppupcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
   const struct ppupcclSymbols *api = NULL;
   FLAGCXCHECK(ppupcclLoadApi(&api));
-  return ppupcclResultToFlagcx(api->pcclCommDestroy(comm->base));
+  flagcxResult_t result =
+      ppupcclResultToFlagcx(api->pcclCommDestroy(comm->base));
+  if (result != flagcxSuccess)
+    return result;
+  free(comm);
+  return flagcxSuccess;
 }
 
 flagcxResult_t ppupcclAdaptorCommAbort(flagcxInnerComm_t comm) {

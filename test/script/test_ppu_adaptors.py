@@ -18,6 +18,147 @@ ROOT = Path(__file__).resolve().parents[2]
 CXX = os.environ.get("CXX") or shutil.which("clang++") or shutil.which("g++")
 INCLUDE = ROOT / "flagcx/adaptor/include"
 
+def production_function(source, name):
+    match = re.search(r"(?:static\s+)?(?:inline\s+)?(?:flagcxResult_t|MPI_Datatype|MPI_Op|void|stagedBuffer_t)\s+"
+                      + re.escape(name) + r"\s*\(", source)
+    if match is None:
+        raise ValueError("Missing production function " + name)
+    opening = source.index("{", match.end())
+    depth, end = 1, opening + 1
+    while depth:
+        depth += (source[end] == "{") - (source[end] == "}")
+        end += 1
+    return source[match.start():end]
+
+
+
+def generate_native_contracts(output):
+    cases = []
+    text = '// SDK boundary mocks around actual production CCL callbacks.\n'
+    platforms = (
+        ('nccl', 'nccl', 'nccl', True), ('rccl', 'rccl', 'nccl', True),
+        ('durccl', 'durccl', 'nccl', True), ('ixnccl', 'ixnccl', 'nccl', True),
+        ('mccl', 'mccl', 'mccl', True), ('musa_mccl', 'mccl', 'mccl', False),
+        ('ppu_pccl', 'ppupccl', 'pccl', True), ('tccl', 'tccl', 'tccl', True),
+        ('hccl', 'hccl', 'Hccl', False), ('cncl', 'cncl', 'cncl', False),
+        ('pccl', 'pccl', 'pccl', False), ('xccl', 'xccl', 'bkcl', False),
+        ('eccl', 'eccl', 'eccl', False),
+    )
+    for file, adaptor, sdk, native in platforms:
+        source = (ROOT / f'flagcx/adaptor/ccl/{file}_adaptor.cc').read_text()
+        ns = file + 'OwnerContract'
+        text += f'namespace {ns} {{\n'
+        text += 'struct flagcxInnerComm { void *base; }; using flagcxInnerComm_t = flagcxInnerComm *;\n'
+        text += 'static void free(void *p) { NativeOwnerProbe::release(p); }\n'
+        text += 'static int finalizeSdk(void *p) { EXPECT_EQ(p, (void *)42); ++NativeOwnerProbe::finalizes; return NativeOwnerProbe::result; }\n'
+        text += 'static int destroySdk(void *p) { EXPECT_EQ(p, (void *)42); ++NativeOwnerProbe::destroys; return NativeOwnerProbe::result; }\n'
+        if file == 'ppu_pccl':
+            text += '''struct ppupcclSymbols { int (*pcclCommFinalize)(void *); int (*pcclCommDestroy)(void *); };
+static const ppupcclSymbols api = {finalizeSdk, destroySdk};
+static flagcxResult_t ppupcclLoadApi(const ppupcclSymbols **p) { *p = &api; return flagcxSuccess; }
+static flagcxResult_t ppupcclResultToFlagcx(int r) { return (flagcxResult_t)r; }
+'''
+        elif file == 'cncl':
+            text += 'static int cnclDestroyComms(void **p, int n) { EXPECT_EQ(n, 1); return destroySdk(*p); }\n'
+        elif file == 'xccl':
+            text += 'static int bkcl_destroy_context(void *p) { return destroySdk(p); }\n'
+        else:
+            text += f'static int {sdk}CommDestroy(void *p) {{ return destroySdk(p); }}\n'
+            if native:
+                text += f'static int {sdk}CommFinalize(void *p) {{ return finalizeSdk(p); }}\n'
+        if file in ('hccl', 'cncl', 'pccl'):
+            name = {'hccl': 'h2f', 'cncl': 'c2f', 'pccl': 'p2f'}[file]
+            text += f'static const int {name}_ret_map[] = {{0,1,2,3,4,5,6,7,8}};\n'
+        if file == 'tccl':
+            text += 'using tcclResult_t = int;\nstatic flagcxResult_t fromTcclResult(int r) { return (flagcxResult_t)r; }\n'
+        for op in ('Finalize', 'Destroy'):
+            text += production_function(source, adaptor + 'AdaptorComm' + op) + '\n'
+        text += 'static void *make() { auto *p = (flagcxInnerComm *)std::calloc(1, sizeof(flagcxInnerComm)); p->base = (void *)42; NativeOwnerProbe::owners.insert(p); return p; }\n'
+        text += '}\n'
+        cases.append(f'''  {{"{file}", {str(native).lower()}, {ns}::make,
+    [](void *p) {{ return {ns}::{adaptor}AdaptorCommFinalize(({ns}::flagcxInnerComm_t)p); }},
+    [](void *p) {{ return {ns}::{adaptor}AdaptorCommDestroy(({ns}::flagcxInnerComm_t)p); }} }}''')
+    text += 'static const NativeOwnerContract nativeOwners[] = {\n' + ',\n'.join(cases) + '\n};\n'
+    (Path(output) / 'native_owners.h').write_text(text)
+
+
+def generate_host_contracts(output):
+    for vendor in ('mpi', 'gloo', 'bootstrap'):
+        source = (ROOT / f'flagcx/adaptor/ccl/{vendor}_adaptor.cc').read_text()
+        names = [vendor + 'CleanupOwner', vendor + 'AdaptorGetStagedBuffer',
+                 vendor + 'AdaptorCommFinalize', vendor + 'AdaptorCommDestroy']
+        if vendor != 'bootstrap':
+            names.insert(0, vendor + 'ReleaseStagedBuffers')
+        if vendor == 'gloo':
+            names.insert(2, 'glooFindStagedBuffer')
+            names += ['glooAdaptorSend', 'glooAdaptorRecv']
+        text = '// Exact production host allocation and lifecycle functions.\n'
+        text += '\n'.join(production_function(source, name) for name in names)
+        (Path(output) / (vendor + '_staging.h')).write_text(text + '\n')
+
+
+EVENT_CONTRACTS = (
+    ("cuda", "cuda", "nvidia", "cudaEventCreateWithFlags", "cudaEventDestroy", "cudaSuccess", "cudaEventDefault", "cudaEventDisableTiming"),
+    ("hip", "hip", "amd", "hipEventCreateWithFlags", "hipEventDestroy", "hipSuccess", "hipEventDefault", "hipEventDisableTiming"),
+    ("duhip", "duhip", "du", "hipEventCreateWithFlags", "hipEventDestroy", "hipSuccess", "hipEventDefault", "hipEventDisableTiming"),
+    ("ixcuda", "ixcuda", "iluvatar", "cudaEventCreateWithFlags", "cudaEventDestroy", "cudaSuccess", "cudaEventDefault", "cudaEventDisableTiming"),
+    ("musa", "musa", "musa", "musaEventCreateWithFlags", "musaEventDestroy", "musaSuccess", "musaEventDefault", "musaEventDisableTiming"),
+    ("maca", "maca", "metax", "mcEventCreateWithFlags", "mcEventDestroy", "mcSuccess", "mcEventDefault", "mcEventDisableTiming"),
+    ("mlu", "mlu", "cambricon", "cnrtNotifierCreateWithFlags", "cnrtNotifierDestroy", "cnrtSuccess", "CNRT_NOTIFIER_DEFAULT", "CNRT_NOTIFIER_DISABLE_TIMING_ALL"),
+    ("cann", "cann", "ascend", "aclrtCreateEventWithFlag", "aclrtDestroyEvent", "ACL_SUCCESS", "ACL_EVENT_TIME_LINE", "ACL_EVENT_SYNC"),
+    ("tops", "tops", "enflame", "topsEventCreateWithFlags", "topsEventDestroy", "topsSuccess", "topsEventDefault", "topsEventDisableTiming"),
+    ("ptpu", "ptpu", "sunrise", "tangEventCreateWithFlags", "tangEventDestroy", "tangSuccess", "tangEventDefault", "tangEventDisableTiming"),
+    ("tsmicro", "tsmicro", "tsmicro", "txEventCreate", "txEventDestroy", "TX_SUCCESS", None, None),
+    ("kunlunxin", "kunlun", "kunlunxin", "cudaEventCreateWithFlags", "cudaEventDestroy", "cudaSuccess", "cudaEventDefault", "cudaEventDisableTiming"),
+    ("hggc", "hggc", "ppu", "hggcEventCreateWithFlags", "hggcEventDestroy", "hggcSuccess", "hggcEventDefault", "hggcEventDisableTiming"),
+)
+
+
+def error_macro(header, name):
+    lines = (INCLUDE / (header + "_adaptor.h")).read_text().splitlines()
+    first = next(i for i, line in enumerate(lines)
+                 if line.startswith("#define " + name + "(func)"))
+    last = first
+    while lines[last].endswith("\\"):
+        last += 1
+    return "\n".join(lines[first:last + 1])
+
+
+def generate_event_contracts(output):
+    text = "// SDK and allocator boundary mocks around actual platform callbacks.\n"
+    cases = []
+    for file, adaptor, header, create, destroy, success, default, timing in EVENT_CONTRACTS:
+        source = (ROOT / f"flagcx/adaptor/device/{file}_adaptor.cc").read_text()
+        namespace = adaptor + "EventContract"
+        text += f"namespace {namespace} {{\n"
+        text += "struct flagcxEvent { uintptr_t base; };\n"
+        text += "typedef flagcxEvent *flagcxEvent_t;\n"
+        text += "typedef int hipError_t; typedef int tangError_t; typedef int hggcError_t;\n"
+        text += "static void *calloc(size_t n, size_t bytes) { return DeviceEventMock::allocate(n, bytes); }\n"
+        text += "static void free(void *p) { DeviceEventMock::release(p); }\n"
+        text += f"enum {{ {success} = 0"
+        if default:
+            text += f", {default} = 7, {timing} = 11"
+        text += " };\n"
+        args = "uintptr_t *p, unsigned int flags" if default else "uintptr_t *p"
+        flags = "flags" if default else "0"
+        text += f"static int {create}({args}) {{ return DeviceEventMock::create(p, {flags}); }}\n"
+        text += f"static int {destroy}(uintptr_t p) {{ return DeviceEventMock::destroy(p); }}\n"
+        macro = "HGGCCHECK" if file == "hggc" else "DEVCHECK"
+        if file == "hggc":
+            text += "static flagcxResult_t hggcResultToFlagcx(int r) { return r == 0 ? flagcxSuccess : r == 70 ? flagcxInProgress : flagcxUnhandledDeviceError; }\n"
+        text += error_macro(header, macro) + "\n"
+        for operation in ("Create", "Destroy"):
+            text += production_function(source, adaptor + "AdaptorEvent" + operation) + "\n"
+        text += f"#undef {macro}\n}} // namespace {namespace}\n"
+        expected = "flagcxInProgress" if file == "hggc" else "flagcxUnhandledDeviceError"
+        cases.append(f'''  {{"{adaptor}", {7 if default else 0}, {11 if default else 0}, {expected},
+    [](void **p, flagcxEventType_t type) {{ return {namespace}::{adaptor}AdaptorEventCreate(({namespace}::flagcxEvent_t *)p, type); }},
+    [](void *p) {{ return {namespace}::{adaptor}AdaptorEventDestroy(({namespace}::flagcxEvent_t)p); }} }}''')
+    text += "static const DeviceEventContract eventContracts[] = {\n" + ",\n".join(cases) + "\n};\n"
+    (Path(output) / "device_events.h").write_text(text)
+
+
 RUNTIME = r"""
 #pragma once
 #include <cstddef>
@@ -177,6 +318,348 @@ template <class T> flagcxResult_t flagcxCalloc(T **p, size_t n) {
 inline bool flagcxCCLAdaptorNeedSendrecv(size_t n) { return n != 0; }
 inline size_t getFlagcxDataTypeSize(flagcxDataType_t) { return 4; }
 """
+
+
+
+@unittest.skipUnless(CXX, "C++ compiler required")
+class DeviceSelectionTest(unittest.TestCase):
+    def compile_selection(self, platform, adaptor, header, mocks, checks):
+        # Compile the production function and error macro, with SDK calls mocked.
+        production = (ROOT / f"flagcx/adaptor/device/{platform}_adaptor.cc").read_text()
+        start = production.index(f"flagcxResult_t {adaptor}AdaptorSetDevice(int dev)")
+        opening = production.index("{", start)
+        depth = 1
+        end = opening + 1
+        while depth:
+            depth += (production[end] == "{") - (production[end] == "}")
+            end += 1
+        lines = (INCLUDE / f"{header}_adaptor.h").read_text().splitlines()
+        first = next(i for i, line in enumerate(lines)
+                     if line.startswith("#define DEVCHECK(func)"))
+        last = first
+        while lines[last].endswith("\\"):
+            last += 1
+        source = '#include <cassert>\n#include "flagcx.h"\n'
+        source += '#define WARN(...) ((void)0)\n'
+        source += mocks + "\n" + "\n".join(lines[first:last + 1]) + "\n"
+        source += production[start:end] + "\nint main() {\n" + checks + "\n}\n"
+        with tempfile.TemporaryDirectory() as folder:
+            cpp = Path(folder) / "selection.cc"
+            binary = Path(folder) / "selection"
+            cpp.write_text(source)
+            result = subprocess.run(
+                [CXX, "-std=c++11", f"-I{ROOT / 'flagcx/include'}", str(cpp),
+                 "-o", str(binary)], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run([str(binary)], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_native_device_selection(self):
+        # PPU's existing contract below tests its native error conversion too.
+        platforms = (
+            ("cuda", "cuda", "nvidia", "cuda", "cudaSuccess"),
+            ("musa", "musa", "musa", "musa", "musaSuccess"),
+            ("hip", "hip", "amd", "hip", "hipSuccess"),
+            ("duhip", "duhip", "du", "hip", "hipSuccess"),
+            ("ixcuda", "ixcuda", "iluvatar", "cuda", "cudaSuccess"),
+            ("maca", "maca", "metax", "mc", "mcSuccess"),
+            ("mlu", "mlu", "cambricon", "cnrt", "cnrtSuccess"),
+            ("tops", "tops", "enflame", "tops", "topsSuccess"),
+            ("ptpu", "ptpu", "sunrise", "tang", "tangSuccess"),
+            ("tsmicro", "tsmicro", "tsmicro", "tx", "TX_SUCCESS"),
+            ("cann", "cann", "ascend", "aclrt", "ACL_SUCCESS"),
+        )
+        for platform, adaptor, header, native, success in platforms:
+            with self.subTest(platform=platform):
+                mocks = r"""
+using hipError_t = int;
+using tangError_t = int;
+static const int SUCCESS = 0;
+static int current = 2, selections = 0;
+static int selectStatus = SUCCESS;
+static bool contextBound = false;
+static int SELECT(int device) {
+  ++selections;
+  if (selectStatus == SUCCESS) {
+    current = device;
+    contextBound = true;
+  }
+  return selectStatus;
+}
+""".replace("SUCCESS", success)
+                mocks = mocks.replace("SELECT", native + "SetDevice")
+                checks = r"""
+// A matching ordinal does not establish this thread's native context.
+assert(SET(2) == flagcxSuccess && contextBound && selections == 1);
+contextBound = false;
+assert(SET(2) == flagcxSuccess && contextBound && selections == 2);
+assert(SET(3) == flagcxSuccess && selections == 3 && current == 3);
+current = 2; // Applications may change device without going through FlagCX.
+assert(SET(3) == flagcxSuccess && selections == 4 && current == 3);
+selectStatus = 98;
+contextBound = false;
+assert(SET(3) == flagcxUnhandledDeviceError && selections == 5 && !contextBound);
+assert(SET(-1) == flagcxUnhandledDeviceError && selections == 6 && current == 3);
+""".replace("SET", adaptor + "AdaptorSetDevice")
+                self.compile_selection(platform, adaptor, header, mocks, checks)
+
+    def test_kunlun_device_selection_checks_both_contexts(self):
+        mocks = r"""
+static const int cudaSuccess = 0;
+static int compatDevice = 2, nativeDevice = 2;
+static int compatSets = 0, nativeSets = 0;
+static int compatSetStatus = 0, nativeSetStatus = 0;
+static bool compatBindsNative = false;
+static int cudaSetDevice(int device) {
+  ++compatSets;
+  if (compatSetStatus == 0) {
+    compatDevice = device;
+    if (compatBindsNative) nativeDevice = device;
+  }
+  return compatSetStatus;
+}
+static int xpu_set_device(int device) {
+  ++nativeSets;
+  if (nativeSetStatus == 0) nativeDevice = device;
+  return nativeSetStatus;
+}
+"""
+        checks = r"""
+assert(kunlunAdaptorSetDevice(2) == flagcxSuccess);
+assert(compatSets == 1 && nativeSets == 1);
+nativeDevice = 1;
+assert(kunlunAdaptorSetDevice(2) == flagcxSuccess && compatSets == 2 && nativeSets == 2);
+assert(nativeDevice == 2);
+compatDevice = 1;
+assert(kunlunAdaptorSetDevice(2) == flagcxSuccess && compatSets == 3 && nativeSets == 3);
+assert(compatDevice == 2);
+assert(kunlunAdaptorSetDevice(3) == flagcxSuccess && compatSets == 4 && nativeSets == 4);
+compatBindsNative = true;
+assert(kunlunAdaptorSetDevice(4) == flagcxSuccess && compatSets == 5 && nativeSets == 5);
+compatSetStatus = 98;
+assert(kunlunAdaptorSetDevice(4) == flagcxUnhandledDeviceError);
+assert(compatSets == 6 && nativeSets == 5);
+compatSetStatus = 0;
+compatBindsNative = false;
+nativeDevice = 1;
+nativeSetStatus = 98;
+assert(kunlunAdaptorSetDevice(4) == flagcxUnhandledDeviceError && nativeSets == 6);
+assert(compatDevice == 4 && nativeDevice == 1);
+nativeSetStatus = 0;
+assert(kunlunAdaptorSetDevice(4) == flagcxSuccess && nativeSets == 7 && nativeDevice == 4);
+"""
+        self.compile_selection("kunlunxin", "kunlun", "kunlunxin", mocks, checks)
+
+
+@unittest.skipUnless(CXX, "C++ compiler required")
+class SdkCompileTest(unittest.TestCase):
+    def test_mpi_predefined_handles_accept_pointer_and_integer_sdks(self):
+        production = (INCLUDE / "mpi_adaptor.h").read_text()
+        for pointer in (False, True):
+            with self.subTest(pointer=pointer), tempfile.TemporaryDirectory() as folder:
+                tmp = Path(folder)
+                names = ["CHAR", "UNSIGNED_CHAR", "INT", "UNSIGNED", "LONG_LONG",
+                         "UNSIGNED_LONG_LONG", "FLOAT", "DOUBLE", "UINT16_T",
+                         "DATATYPE_NULL", "SUM", "PROD", "MAX", "MIN", "OP_NULL"]
+                source = '#include <cassert>\n#include <vector>\n#include "flagcx.h"\n'
+                source += 'using MPI_Comm = int;\n'
+                source += ('using MPI_Datatype = void *; using MPI_Op = void *;\n'
+                           if pointer else 'using MPI_Datatype = int; using MPI_Op = int;\n')
+                for i, name in enumerate(names):
+                    source += (f'static int storage_{name}; static void *MPI_{name} = &storage_{name};\n'
+                               if pointer else f'static int MPI_{name} = {i};\n')
+                source += 'enum { MPI_ERR_TYPE = 17 };\n'
+                for name in ['Allreduce', 'Reduce', 'Bcast', 'Gather', 'Scatter',
+                             'Allgather', 'Alltoall', 'Comm_size', 'Reduce_scatter']:
+                    source += f'static int MPI_{name}(...) {{ return 0; }}\n'
+                source += '\n'.join(production_function(production, name) for name in
+                                    ['getFlagcxToMpiDataType', 'getFlagcxToMpiOp', 'callMpi'])
+                source += '\nint main() { assert(getFlagcxToMpiDataType(flagcxFloat) == MPI_FLOAT);'
+                source += ' assert(getFlagcxToMpiOp(flagcxSum) == MPI_SUM);'
+                source += ' assert(getFlagcxToMpiDataType(flagcxBfloat16) == MPI_DATATYPE_NULL); }\n'
+                (tmp / 'mpi.cc').write_text(source)
+                result = subprocess.run([CXX, '-std=c++11', f'-I{ROOT / "flagcx/include"}',
+                                         str(tmp / 'mpi.cc'), '-o', str(tmp / 'test')],
+                                        text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                result = subprocess.run([str(tmp / 'test')], text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_native_devcomm_backend_preserves_failed_owner(self):
+        for vendor in ('nccl', 'eccl'):
+            with self.subTest(vendor=vendor), tempfile.TemporaryDirectory() as folder:
+                tmp = Path(folder)
+                ccl = (ROOT / f'flagcx/adaptor/ccl/{vendor}_adaptor.cc').read_text()
+                backend = (ROOT / f'flagcx/adaptor/device_api/{vendor}_dev_api_backend.cc').read_text()
+                source = r'''
+#include "flagcx.h"
+#include <cstdlib>
+#include <cassert>
+struct flagcxInnerComm { int unused; };
+using flagcxInnerComm_t = flagcxInnerComm *;
+struct flagcxInnerDevComm { int base; };
+using flagcxInnerDevComm_t = flagcxInnerDevComm *;
+struct flagcxComm { flagcxInnerComm_t homoComm; };
+struct flagcxDevComm { flagcxInnerDevComm_t devComm; };
+using flagcxDevComm_t = flagcxDevComm *;
+static int status, frees, closes;
+static void releaseWrapper(void *p) { ++frees; std::free(p); }
+#define NCCL_VERSION(a,b,c) ((a)*10000+(b)*100+(c))
+#define NCCL_VERSION_CODE 22900
+#define free releaseWrapper
+'''
+                if vendor == 'nccl':
+                    # Actual native callback also uses comm->base.
+                    source = source.replace('struct flagcxInnerComm { int unused; };',
+                                            'struct flagcxInnerComm { void *base; };')
+                    source += 'static flagcxResult_t ncclDevCommDestroyHelper(void *, int *) { ++closes; return (flagcxResult_t)status; }\n'
+                else:
+                    source += 'static flagcxResult_t flagcxEcclDevCommDestroy(flagcxInnerComm *, flagcxInnerDevComm *) { ++closes; return (flagcxResult_t)status; }\n'
+                source += production_function(ccl, vendor + 'AdaptorDevCommDestroy') + '\n#undef free\n'
+                source += 'struct Ccl { flagcxResult_t (*devCommDestroy)(flagcxInnerComm_t, flagcxInnerDevComm_t); };\n'
+                source += f'static Ccl sdk = {{{vendor}AdaptorDevCommDestroy}}; static Ccl *cclAdaptors[] = {{nullptr, &sdk}};\n'
+                source += '#define flagcxCCLAdaptorDevice 1\n'
+                source += production_function(backend, vendor + 'DevApiCommDestroy')
+                source += '\nint main() { flagcxInnerComm inner{}; flagcxComm comm{&inner};\n'
+                source += 'auto *p = (flagcxInnerDevComm_t)std::calloc(1, sizeof(flagcxInnerDevComm)); p->base = 42; flagcxDevComm dev{p};\n'
+                source += 'for (int r : {flagcxInProgress, flagcxRemoteError}) { status = r;\n'
+                source += f'assert({vendor}DevApiCommDestroy(&comm, &dev) == r);\n'
+                source += 'assert(dev.devComm == p && p->base == 42 && frees == 0); }\nstatus = 0;\n'
+                source += f'assert({vendor}DevApiCommDestroy(&comm, &dev) == flagcxSuccess);\n'
+                source += f'assert(dev.devComm == nullptr && frees == 1 && closes == 3); assert({vendor}DevApiCommDestroy(&comm, &dev) == flagcxSuccess && closes == 3); }}\n'
+                source = '#include <initializer_list>\n' + source
+                (tmp / 'devcomm.cc').write_text(source)
+                result = subprocess.run([CXX, '-std=c++11', f'-I{ROOT / "flagcx/include"}',
+                                         str(tmp / 'devcomm.cc'), '-o', str(tmp / 'test')],
+                                        text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                result = subprocess.run([str(tmp / 'test')], text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_eccl_runtime_only_and_full_sdk_use_actual_adaptor(self):
+        for full in (False, True):
+            with self.subTest(full=full), tempfile.TemporaryDirectory() as folder:
+                tmp = Path(folder)
+                (tmp / "tops").mkdir()
+                (tmp / "tops/tops_runtime.h").write_text(r"""
+#pragma once
+#include <cstdlib>
+using topsDeviceProp_t = int;
+using topsStream_t = void *;
+using topsEvent_t = void *;
+struct topsIpcMemHandle_t { char bytes[64]; };
+enum { topsSuccess = 0 };
+static int topsAllocs, topsFrees;
+static int topsMalloc(void **p, size_t n) { ++topsAllocs; *p = malloc(n); return 0; }
+static int topsFree(void *p) { ++topsFrees; free(p); return 0; }
+""")
+                (tmp / "eccl.h").write_text(r"""
+#pragma once
+#include <cstdlib>
+using ecclComm_t = void *;
+using ecclResult_t = int;
+using ecclDataType_t = int;
+using ecclRedOp_t = int;
+struct ecclUniqueId { char bytes[128]; };
+enum { ecclInvalidUsage = 5 };
+static int ecclGetVersion(...) { return 0; }
+static int ecclGetUniqueId(...) { return 0; }
+static const char *ecclGetErrorString(...) { return "stub"; }
+static const char *ecclGetLastError(...) { return "stub"; }
+static int ecclCommInitRank(...) { return 0; }
+static int ecclCommDestroy(...) { return 0; }
+static int ecclCommAbort(...) { return 0; }
+static int ecclCommCount(...) { return 0; }
+static int ecclCommDevice(...) { return 0; }
+static int ecclCommUserRank(...) { return 0; }
+static int ecclCommGetAsyncError(...) { return 0; }
+static int ecclReduce(...) { return 0; }
+static int ecclGather(...) { return 0; }
+static int ecclScatter(...) { return 0; }
+static int ecclBroadcast(...) { return 0; }
+static int ecclAllReduce(...) { return 0; }
+static int ecclReduceScatter(...) { return 0; }
+static int ecclAllGather(...) { return 0; }
+static int ecclAlltoall(...) { return 0; }
+static int ecclAlltoAllv(...) { return 0; }
+static int ecclSend(...) { return 0; }
+static int ecclRecv(...) { return 0; }
+static int ecclGroupStart(...) { return 0; }
+static int ecclGroupEnd(...) { return 0; }
+""")
+                if full:
+                    (tmp / "eccl_device.h").write_text(r"""
+#pragma once
+struct ecclDevComm_t { int value; };
+using ecclWindow_t = void *;
+struct ecclCommProperties_t { int deviceApiSupport, multimemSupport; };
+#define ECCL_COMM_PROPERTIES_INITIALIZER {1, 1}
+struct ecclDevCommRequirements_t {
+ int barrierCount, lsaBarrierCount, lsaLLA2ABlockCount, lsaLLA2ASlotCount;
+ int ginContextCount, railGinBarrierCount, ginCounterCount, ginConnectionType;
+};
+#define ECCL_DEV_COMM_REQUIREMENTS_INITIALIZER {}
+enum { ECCL_GIN_CONNECTION_FULL = 7 };
+static int nativeAllocs, nativeFrees, closes, closeResult;
+static ecclDevCommRequirements_t seenReqs;
+static int ecclMemAlloc(void **p, size_t n) { ++nativeAllocs; *p = malloc(n); return 0; }
+static int ecclMemFree(void *p) { ++nativeFrees; free(p); return 0; }
+static int ecclCommWindowRegister(void *, void *, size_t, void **p, int) { *p = (void *)42; return 0; }
+static int ecclCommWindowDeregister(void *, void *) { ++closes; return closeResult; }
+static int ecclCommQueryProperties(void *, ecclCommProperties_t *) { return 0; }
+static int ecclDevCommCreate(void *, const ecclDevCommRequirements_t *r, ecclDevComm_t *p) { seenReqs = *r; p->value = 42; return 0; }
+static int ecclDevCommDestroy(void *, ecclDevComm_t *) { ++closes; return closeResult; }
+""")
+                (tmp / "adaptor.h").write_text(PROJECT)
+                (tmp / "alloc.h").write_text('#include "adaptor.h"\n')
+                (tmp / "comm.h").write_text('#define FLAGCX_DEVICE_CTA_COUNT 8\n')
+                cpp = tmp / "eccl.cc"
+                cpp.write_text('#include <cassert>\n#include "'
+                               + str(ROOT / 'flagcx/adaptor/ccl/eccl_adaptor.cc') + '"\n'
+                               + r"""
+int main() {
+ assert(ecclAdaptor.devCommCreate != nullptr);
+ assert(ecclAdaptor.devCommDestroy != nullptr);
+ void *p = nullptr;
+ assert(ecclAdaptorMemAlloc(&p, 64) == flagcxSuccess && p);
+ assert(ecclAdaptorMemFree(p) == flagcxSuccess);
+ flagcxInnerComm comm{}; flagcxDevCommRequirements reqs{};
+ flagcxInnerDevComm_t device = nullptr;
+ flagcxInnerWindow_t win = nullptr;
+#ifdef FLAGCX_ENFLAME_DEVICE_API
+ assert(nativeAllocs == 1 && nativeFrees == 1 && topsAllocs == 0);
+ assert(ecclAdaptorDevCommReqsInit(&comm, &reqs) == flagcxSuccess);
+ reqs.interContextCount = 2; reqs.interBarrierCount = 3; reqs.interCounterCount = 4;
+ assert(ecclAdaptorDevCommCreate(&comm, &reqs, &device) == flagcxSuccess);
+ assert(seenReqs.ginContextCount == 2 && seenReqs.railGinBarrierCount == 3 && seenReqs.ginCounterCount == 4);
+ closeResult = flagcxRemoteError;
+ assert(ecclAdaptorDevCommDestroy(&comm, device) == flagcxRemoteError);
+ assert(device->base.value == 42);
+ closeResult = 0;
+ assert(ecclAdaptorDevCommDestroy(&comm, device) == flagcxSuccess);
+ assert(ecclAdaptorCommWindowRegister(&comm, (void *)1, 64, &win, 0) == flagcxSuccess);
+ closeResult = flagcxRemoteError;
+ assert(ecclAdaptorCommWindowDeregister(&comm, win) == flagcxRemoteError);
+ assert(win->base == (void *)42);
+ closeResult = 0;
+ assert(ecclAdaptorCommWindowDeregister(&comm, win) == flagcxSuccess);
+#else
+ assert(topsAllocs == 1 && topsFrees == 1);
+ assert(ecclAdaptorDevCommReqsInit(&comm, &reqs) == flagcxNotSupported);
+ assert(ecclAdaptorDevCommCreate(&comm, &reqs, &device) == flagcxNotSupported && device == nullptr);
+ assert(ecclAdaptorCommWindowRegister(&comm, (void *)1, 64, &win, 0) == flagcxNotSupported && win == nullptr);
+#endif
+}
+""")
+                cmd = [CXX, '-std=c++17', '-DUSE_ENFLAME_ADAPTOR',
+                       f'-I{tmp}', f'-I{INCLUDE}', f'-I{ROOT / "flagcx/include"}',
+                       str(cpp), '-o', str(tmp / 'test')]
+                if full:
+                    cmd.insert(1, '-DFLAGCX_ENFLAME_DEVICE_API')
+                result = subprocess.run(cmd, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                result = subprocess.run([str(tmp / 'test')], text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 @unittest.skipUnless(CXX, "C++ compiler required")
@@ -535,7 +1018,6 @@ int main(int argc, char **argv) {
     assert(ppupcclAdaptorCommInitRank(&comm, 4,
         reinterpret_cast<flagcxInnerUniqueId_t>(&id), 0, nullptr) == flagcxSuccess);
     assert(ppupcclAdaptorCommDestroy(comm) == flagcxSuccess);
-    free(comm);
     void *plugin = dlopen("libpccl-ext-kernel.so", RTLD_NOW | RTLD_NOLOAD);
     if (strcmp(argv[1], "optional") == 0) {
       assert(plugin == nullptr);
@@ -802,5 +1284,53 @@ int main() {
             self.assertFalse(output.exists())
 
 
+    def test_hggc_device_selection_always_binds_native_context(self):
+        production = (ROOT / "flagcx/adaptor/device/hggc_adaptor.cc").read_text()
+        start = production.index("flagcxResult_t hggcAdaptorSetDevice(int dev)")
+        end = production.index("flagcxResult_t hggcAdaptorGetDevice(", start)
+        source = '#include "ppu_adaptor.h"\n'
+        source += r"""
+static int nativeDevice = 2, selectCalls = 0;
+static bool contextBound = false;
+static hggcError_t selectResult = hggcSuccess;
+static hggcError_t hggcSetDevice(int dev) {
+  ++selectCalls;
+  if (selectResult == hggcSuccess) {
+    nativeDevice = dev;
+    contextBound = true;
+  }
+  return selectResult;
+}
+"""
+        source += production[start:end] + r"""
+int main() {
+  assert(hggcAdaptorSetDevice(2) == flagcxSuccess);
+  assert(contextBound && selectCalls == 1);
+  contextBound = false;
+  assert(hggcAdaptorSetDevice(2) == flagcxSuccess);
+  assert(contextBound && selectCalls == 2);
+  assert(hggcAdaptorSetDevice(3) == flagcxSuccess);
+  assert(selectCalls == 3 && nativeDevice == 3);
+  nativeDevice = 2; // An application can switch devices outside FlagCX.
+  assert(hggcAdaptorSetDevice(3) == flagcxSuccess);
+  assert(selectCalls == 4 && nativeDevice == 3);
+  selectResult = hggcErrorInvalidValue;
+  contextBound = false;
+  assert(hggcAdaptorSetDevice(3) == flagcxUnhandledDeviceError);
+  assert(selectCalls == 5 && !contextBound);
+  assert(hggcAdaptorSetDevice(-1) == flagcxUnhandledDeviceError);
+  assert(selectCalls == 6 && nativeDevice == 3);
+}
+"""
+        self.compile_and_run(source)
+
+
+
 if __name__ == "__main__":
-    unittest.main()
+    if len(os.sys.argv) == 3 and os.sys.argv[1] == "--generate-contracts":
+        Path(os.sys.argv[2]).mkdir(parents=True, exist_ok=True)
+        generate_event_contracts(os.sys.argv[2])
+        generate_native_contracts(os.sys.argv[2])
+        generate_host_contracts(os.sys.argv[2])
+    else:
+        unittest.main()

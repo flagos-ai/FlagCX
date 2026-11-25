@@ -20,6 +20,7 @@
 struct shmHandleInternal {
   int fd;
   char *shmPath;
+  char pathStorage[SHM_PATH_MAX];
   char *shmPtr;
   void *devShmPtr; // not used in FlagCX
   size_t shmSize;
@@ -38,8 +39,9 @@ static void shmHandleInit(int fd, char *shmPath, size_t shmSize,
   handle->refcount = (hptr != NULL) ? (int *)(hptr + shmSize) : NULL;
   if (create) {
     int slen = strlen(shmPath);
-    handle->shmPath = (char *)malloc(slen + 1);
-    memcpy(handle->shmPath, shmPath, slen + 1);
+    (void)slen;
+    snprintf(handle->pathStorage, sizeof(handle->pathStorage), "%s", shmPath);
+    handle->shmPath = handle->pathStorage;
     if (hptr)
       memset(hptr, 0, shmSize);
   } else {
@@ -129,8 +131,13 @@ fail:
   if (tmphandle) {
     shmHandleInit(fd, shmPath, shmSize, realShmSize, hptr, dptr, create,
                   tmphandle);
-    flagcxShmClose((flagcxShmHandle_t)tmphandle);
-    tmphandle = NULL;
+    flagcxResult_t cleanupResult = flagcxShmClose((flagcxShmHandle_t)tmphandle);
+    if (cleanupResult == flagcxSuccess) {
+      tmphandle = NULL;
+    } else {
+      ret = cleanupResult;
+      goto exit;
+    }
   }
   hptr = NULL;
   dptr = NULL;
@@ -138,52 +145,42 @@ fail:
 }
 
 flagcxResult_t flagcxShmClose(flagcxShmHandle_t handle) {
-  flagcxResult_t ret = flagcxSuccess;
-  struct shmHandleInternal *tmphandle = (struct shmHandleInternal *)handle;
-  if (tmphandle) {
-    if (tmphandle->fd >= 0) {
-      close(tmphandle->fd);
-      if (tmphandle->shmPath != NULL &&
-          (tmphandle->shmPtr == NULL ||
-           (tmphandle->refcount != NULL && *tmphandle->refcount > 0))) {
-        if (unlink(tmphandle->shmPath) != 0) {
-          WARN("unlink shared memory %s failed, error: %s", tmphandle->shmPath,
-               strerror(errno));
-          ret = flagcxSystemError;
-        }
-      }
-      free(tmphandle->shmPath);
+  struct shmHandleInternal *state = (struct shmHandleInternal *)handle;
+  if (state == NULL)
+    return flagcxSuccess;
+  // Decide while refcount still belongs to a live mapping.
+  if (state->shmPath != NULL) {
+    if (state->shmPtr == NULL ||
+        (state->refcount != NULL && *state->refcount > 0)) {
+      FLAGCXCHECK(flagcxShmUnlink(handle));
+    } else {
+      state->shmPath = NULL;
     }
-
-    if (tmphandle->shmPtr) {
-      // if (tmphandle->devShmPtr)
-      // CUDACHECK(cudaHostUnregister(tmphandle->shmPtr));
-      if (munmap(tmphandle->shmPtr, tmphandle->realShmSize) != 0) {
-        WARN("munmap of shared memory %p size %ld failed, error: %s",
-             tmphandle->shmPtr, tmphandle->realShmSize, strerror(errno));
-        ret = flagcxSystemError;
-      }
-    }
-    free(tmphandle);
   }
-  return ret;
+  if (state->fd >= 0) {
+    int fd = state->fd;
+    state->fd = -1; // Linux close consumes the descriptor even on EINTR.
+    if (close(fd) != 0)
+      return flagcxSystemError;
+  }
+  if (state->shmPtr != NULL) {
+    if (munmap(state->shmPtr, state->realShmSize) != 0)
+      return flagcxSystemError;
+    state->shmPtr = NULL;
+    state->refcount = NULL;
+  }
+  free(state);
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxShmUnlink(flagcxShmHandle_t handle) {
-  flagcxResult_t ret = flagcxSuccess;
-  struct shmHandleInternal *tmphandle = (struct shmHandleInternal *)handle;
-  if (tmphandle) {
-    if (tmphandle->shmPath != NULL) {
-      if (unlink(tmphandle->shmPath) != 0) {
-        WARN("unlink shared memory %s failed, error: %s", tmphandle->shmPath,
-             strerror(errno));
-        ret = flagcxSystemError;
-      }
-      free(tmphandle->shmPath);
-      tmphandle->shmPath = NULL;
-    }
+  struct shmHandleInternal *state = (struct shmHandleInternal *)handle;
+  if (state != NULL && state->shmPath != NULL) {
+    if (unlink(state->shmPath) != 0 && errno != ENOENT)
+      return flagcxSystemError;
+    state->shmPath = NULL;
   }
-  return ret;
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxShmAllocateShareableBuffer(size_t size,
@@ -223,6 +220,7 @@ flagcxResult_t flagcxShmImportShareableBuffer(flagcxShmIpcDesc_t *desc,
 flagcxResult_t flagcxShmIpcClose(flagcxShmIpcDesc_t *desc) {
   if (desc) {
     FLAGCXCHECK(flagcxShmClose(desc->handle));
+    desc->handle = NULL;
   }
   return flagcxSuccess;
 }

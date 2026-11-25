@@ -121,6 +121,10 @@ bool operator==(const struct flagcxCommTag &lhs,
 
 extern flagcxTuner_t internalTuner;
 
+// Release a native owner and clear its aliases only after strict success.
+flagcxResult_t flagcxDestroyHomoCommOwner(flagcxComm_t comm,
+                                          struct flagcxInnerComm *inner);
+
 // On-demand communicator lifecycle helpers implemented in flagcx/flagcx.cc
 flagcxResult_t flagcxCreateHomoCommForTag(flagcxComm_t comm, uint32_t idx);
 flagcxResult_t flagcxDestroyHomoCommByTag(flagcxComm_t comm, uint32_t idx);
@@ -143,7 +147,9 @@ flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
     if (comm->isTuningWithFlagscale) {                                         \
       FLAGCXCHECK(comm->tuner->handleFlagscaleTuning(comm->tunerContext, comm, \
                                                      commOp, nBytes));         \
-      FLAGCXCHECK(call);                                                       \
+      flagcxResult_t submitted = (call);                                       \
+      if (submitted != flagcxSuccess)                                          \
+        return submitted;                                                      \
       return flagcxSuccess;                                                    \
     }                                                                          \
     comm->tunerInnerComm = nullptr;                                            \
@@ -153,7 +159,9 @@ flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
     flagcxProfileKey pkey;                                                     \
     FLAGCXCHECK(comm->tuner->startProfiling(comm->tunerContext, commOp,        \
                                             nBytes, stream, &tag, &pkey));     \
-    FLAGCXCHECK(call);                                                         \
+    flagcxResult_t submitted = (call);                                         \
+    if (submitted != flagcxSuccess)                                            \
+      return submitted;                                                        \
     FLAGCXCHECK(comm->tuner->stopProfiling(comm->tunerContext, &pkey));        \
     return flagcxSuccess;                                                      \
   } while (0);

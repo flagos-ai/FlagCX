@@ -10,6 +10,7 @@
 #define BOOTSTRAP_ADAPTOR_SEND_RECV_TAG -6767
 #define BOOTSTRAP_ADAPTOR_MAX_STAGED_BUFFER_SIZE (8 * 1024 * 1024) // 8MB
 struct stagedBuffer {
+  flagcxInnerComm_t owner;
   int offset;
   int size;
   void *buffer;
