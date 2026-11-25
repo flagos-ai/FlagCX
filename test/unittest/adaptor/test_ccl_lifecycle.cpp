@@ -119,3 +119,55 @@ TEST(CclOwnerContract, AbortFailureOrInProgressRetainsNativeOwner) {
     EXPECT_EQ(sdk.destroy(owner), flagcxSuccess);
   }
 }
+
+TEST(CclOwnerContract, MetaxRegistrationCleanupRetriesWithLiveNativeContext) {
+  using namespace mcclOwnerContract;
+  NativeOwnerProbe::reset();
+  deregistrations = windowDeregistrations = 0;
+  auto *comm = (flagcxInnerComm_t)make();
+  void *handle = nullptr;
+  mcclOwnerContract::flagcxInnerWindow_t win = nullptr;
+  ASSERT_EQ(mcclAdaptorCommRegister(comm, (void *)45, 16, &handle),
+            flagcxSuccess);
+  ASSERT_EQ(mcclAdaptorCommWindowRegister(comm, (void *)45, 16, &win, 0),
+            flagcxSuccess);
+  for (int result : {flagcxInProgress, flagcxRemoteError}) {
+    NativeOwnerProbe::result = result;
+    EXPECT_EQ(mcclAdaptorCommDeregister(comm, handle), result);
+    EXPECT_EQ(mcclAdaptorCommWindowDeregister(comm, win), result);
+    EXPECT_EQ(NativeOwnerProbe::owners.count(win), 1u);
+    EXPECT_EQ(win->base, (void *)44);
+    EXPECT_EQ(comm->base, (void *)42);
+    EXPECT_EQ(NativeOwnerProbe::frees, 0);
+  }
+  NativeOwnerProbe::result = 0;
+  EXPECT_EQ(mcclAdaptorCommDeregister(comm, handle), flagcxSuccess);
+  EXPECT_EQ(mcclAdaptorCommWindowDeregister(comm, win), flagcxSuccess);
+  EXPECT_EQ(deregistrations, 3);
+  EXPECT_EQ(windowDeregistrations, 3);
+  EXPECT_EQ(NativeOwnerProbe::frees, 1);
+  EXPECT_EQ(mcclAdaptorCommDestroy(comm), flagcxSuccess);
+  EXPECT_TRUE(NativeOwnerProbe::owners.empty());
+}
+
+TEST(CclOwnerContract, MetaxAbortCleanupDoesNotReenterRetiredNativeContext) {
+  using namespace mcclOwnerContract;
+  NativeOwnerProbe::reset();
+  deregistrations = windowDeregistrations = 0;
+  auto *comm = (flagcxInnerComm_t)make();
+  void *handle = nullptr;
+  mcclOwnerContract::flagcxInnerWindow_t win = nullptr;
+  ASSERT_EQ(mcclAdaptorCommRegister(comm, (void *)45, 16, &handle),
+            flagcxSuccess);
+  ASSERT_EQ(mcclAdaptorCommWindowRegister(comm, (void *)45, 16, &win, 0),
+            flagcxSuccess);
+  ASSERT_EQ(mcclAdaptorCommAbort(comm), flagcxSuccess);
+  NativeOwnerProbe::result = flagcxRemoteError;
+  EXPECT_EQ(mcclAdaptorCommDeregister(comm, handle), flagcxSuccess);
+  EXPECT_EQ(mcclAdaptorCommWindowDeregister(comm, win), flagcxSuccess);
+  EXPECT_EQ(deregistrations + windowDeregistrations, 0);
+  EXPECT_EQ(mcclAdaptorCommDestroy(comm), flagcxSuccess);
+  EXPECT_EQ(NativeOwnerProbe::destroys, 0);
+  EXPECT_EQ(NativeOwnerProbe::frees, 2);
+  EXPECT_TRUE(NativeOwnerProbe::owners.empty());
+}

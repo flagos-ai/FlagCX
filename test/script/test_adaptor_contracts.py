@@ -77,6 +77,34 @@ static flagcxResult_t ppupcclResultToFlagcx(int r) { return (flagcxResult_t)r; }
             text += f'static int {abort_name}(void *p) {{ return abortSdk(p); }}\n'
         for op in ('Finalize', 'Destroy', 'Abort'):
             text += production_function(source, adaptor + 'AdaptorComm' + op) + '\n'
+        if file == 'mccl':
+            text += '''using mcclWindow_t = void *;
+struct flagcxInnerWindow { mcclWindow_t base; int winFlags; };
+using flagcxInnerWindow_t = flagcxInnerWindow *;
+static int deregistrations, windowDeregistrations;
+static flagcxResult_t flagcxCalloc(flagcxInnerWindow_t *p, int n) {
+  *p = (flagcxInnerWindow_t)std::calloc(n, sizeof(**p));
+  if (*p == nullptr) return flagcxSystemError;
+  NativeOwnerProbe::owners.insert(*p);
+  return flagcxSuccess;
+}
+static int mcclCommRegister(void *comm, void *, size_t, void **handle) {
+  EXPECT_EQ(comm, (void *)42); *handle = (void *)43; return 0;
+}
+static int mcclCommDeregister(void *comm, void *handle) {
+  EXPECT_EQ(comm, (void *)42); EXPECT_EQ(handle, (void *)43);
+  ++deregistrations; return NativeOwnerProbe::result;
+}
+static int mcclCommWindowRegister(void *comm, void *, size_t, void **window, int) {
+  EXPECT_EQ(comm, (void *)42); *window = (void *)44; return 0;
+}
+static int mcclCommWindowDeregister(void *comm, void *window) {
+  EXPECT_EQ(comm, (void *)42); EXPECT_EQ(window, (void *)44);
+  ++windowDeregistrations; return NativeOwnerProbe::result;
+}
+'''
+            for op in ('Register', 'Deregister', 'WindowRegister', 'WindowDeregister'):
+                text += production_function(source, adaptor + 'AdaptorComm' + op) + '\n'
         text += 'static void *make() { auto *p = (flagcxInnerComm *)std::calloc(1, sizeof(flagcxInnerComm)); p->base = (void *)42; NativeOwnerProbe::owners.insert(p); return p; }\n'
         text += '}\n'
         cases.append(f'''  {{"{file}", {str(native).lower()}, {ns}::make,

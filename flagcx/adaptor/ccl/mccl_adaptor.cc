@@ -124,7 +124,11 @@ flagcxResult_t mcclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 }
 
 flagcxResult_t mcclAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
-  return flagcxNotSupported;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL)
+    return flagcxSuccess;
+  return (flagcxResult_t)mcclCommDeregister(comm->base, handle);
 }
 
 flagcxResult_t mcclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
@@ -149,7 +153,17 @@ flagcxResult_t mcclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
 
 flagcxResult_t mcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
                                                flagcxInnerWindow_t win) {
-  return flagcxNotSupported;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->base == NULL) {
+    free(win);
+    return flagcxSuccess;
+  }
+  flagcxResult_t result =
+      (flagcxResult_t)mcclCommWindowDeregister(comm->base, win->base);
+  if (result == flagcxSuccess)
+    free(win);
+  return result;
 }
 #else  // MCCL_VERSION_CODE < MCCL_VERSION(2, 30, 4)
 flagcxResult_t mcclAdaptorMemAlloc(void **ptr, size_t size) {
