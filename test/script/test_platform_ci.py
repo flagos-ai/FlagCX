@@ -762,7 +762,9 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             )
             self.assertEqual(
                 self._run_platform_matrix(
-                    "push", configs_dir=configs_dir
+                    "push",
+                    "flagcx/adaptor/device/cuda_adaptor.cc",
+                    configs_dir,
                 ),
                 ["cuda"],
             )
