@@ -221,7 +221,9 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
       numChannels > std::numeric_limits<size_t>::max() /
                         sizeof(flagcxRingChannelProgress))
     return flagcxInvalidArgument;
-  comm->internalBuffersNeedPeerClose = true;
+  flagcxResult_t declaration = flagcxCommRequireIpcClose(comm, 1);
+  if (declaration != flagcxSuccess)
+    return declaration;
   if (runnerState->ipcRingCleanupPending) {
     flagcxResult_t local = closeUniRunnerIpcRingResources(runnerState, comm);
     flagcxResult_t common = flagcxSuccess;
@@ -5391,7 +5393,9 @@ closeUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
 flagcxResult_t ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
                                               flagcxComm_t comm,
                                               size_t requiredSlots) {
-  comm->internalBuffersNeedPeerClose = true;
+  flagcxResult_t declaration = flagcxCommRequireIpcClose(comm, 1);
+  if (declaration != flagcxSuccess)
+    return declaration;
   if (runnerState->ipcReadyCleanupPending) {
     bool allIgnoredReuse = false;
     flagcxResult_t local = closeUniRunnerIpcReadyStorage(runnerState, comm);
@@ -5961,6 +5965,14 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm, bool atSubmissionBoundary) {
   state->ipcCommStream = nullptr;
 
   if (state->fifo != nullptr) {
+    if (comm->finalizeState.lifecycle == flagcxCommFinalizing &&
+        state->fifo->buffer != NULL) {
+      flagcxResult_t transfer = flagcxCommReleaseBuffer(
+          comm, state->fifo->buffer, flagcxInternalBufferHost);
+      if (transfer != flagcxSuccess)
+        return transfer;
+      state->fifo->buffer = NULL;
+    }
     flagcxResult_t destroyResult = state->fifo->flagcxRedFifoDestroy();
     flagcxRunnerRecordFirstError(destroyResult, &result);
     if (destroyResult == flagcxSuccess) {
@@ -5970,6 +5982,14 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm, bool atSubmissionBoundary) {
   }
   hcomm->uniRunnerFifoBuffer = nullptr;
   if (state->ipcFifo != nullptr) {
+    if (comm->finalizeState.lifecycle == flagcxCommFinalizing &&
+        state->ipcFifo->buffer != NULL) {
+      flagcxResult_t transfer = flagcxCommReleaseBuffer(
+          comm, state->ipcFifo->buffer, flagcxInternalBufferHost);
+      if (transfer != flagcxSuccess)
+        return transfer;
+      state->ipcFifo->buffer = NULL;
+    }
     flagcxResult_t destroyResult = state->ipcFifo->flagcxIpcFifoDestroy();
     flagcxRunnerRecordFirstError(destroyResult, &result);
     if (destroyResult == flagcxSuccess) {
@@ -5979,8 +5999,8 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm, bool atSubmissionBoundary) {
   }
   state->ipcFifoDevicePtr = nullptr;
   if (state->ipcParentFlagsDevice != nullptr) {
-    flagcxResult_t freeResult = deviceAdaptor->deviceFree(
-        state->ipcParentFlagsDevice, flagcxMemDevice, nullptr);
+    flagcxResult_t freeResult = flagcxCommReleaseBuffer(
+        comm, state->ipcParentFlagsDevice, flagcxInternalBufferDevice);
     flagcxRunnerRecordFirstError(freeResult, &result);
     if (freeResult == flagcxSuccess) {
       state->ipcParentFlagsDevice = nullptr;
@@ -6957,8 +6977,9 @@ static flagcxResult_t
 releaseUniRunnerIpcRingInvocation(flagcxUniRunnerState *runnerState) {
   flagcxResult_t result = flagcxSuccess;
   if (runnerState->ipcRingTriggersDevice != NULL) {
-    flagcxResult_t freeResult = deviceAdaptor->deviceFree(
-        runnerState->ipcRingTriggersDevice, flagcxMemDevice, NULL);
+    flagcxResult_t freeResult = flagcxCommReleaseBuffer(
+        runnerState->ipcOwner, runnerState->ipcRingTriggersDevice,
+        flagcxInternalBufferDevice);
     preserveFirstUniRunnerError(freeResult, &result);
     if (freeResult == flagcxSuccess) {
       runnerState->ipcRingTriggersDevice = NULL;
@@ -6966,8 +6987,9 @@ releaseUniRunnerIpcRingInvocation(flagcxUniRunnerState *runnerState) {
     }
   }
   if (runnerState->ipcRingLanesDevice != NULL) {
-    flagcxResult_t laneResult = deviceAdaptor->deviceFree(
-        runnerState->ipcRingLanesDevice, flagcxMemDevice, NULL);
+    flagcxResult_t laneResult = flagcxCommReleaseBuffer(
+        runnerState->ipcOwner, runnerState->ipcRingLanesDevice,
+        flagcxInternalBufferDevice);
     preserveFirstUniRunnerError(laneResult, &result);
     if (laneResult == flagcxSuccess) {
       runnerState->ipcRingLanesDevice = NULL;
@@ -6975,8 +6997,9 @@ releaseUniRunnerIpcRingInvocation(flagcxUniRunnerState *runnerState) {
     }
   }
   if (runnerState->ipcRingControlHost != NULL) {
-    flagcxResult_t controlResult = deviceAdaptor->deviceFree(
-        runnerState->ipcRingControlHost, flagcxMemHost, NULL);
+    flagcxResult_t controlResult = flagcxCommReleaseBuffer(
+        runnerState->ipcOwner, runnerState->ipcRingControlHost,
+        flagcxInternalBufferHost);
     preserveFirstUniRunnerError(controlResult, &result);
     if (controlResult == flagcxSuccess) {
       runnerState->ipcRingControlHost = NULL;
@@ -7377,6 +7400,20 @@ flagcxResult_t runUniRunner(flagcxComm_t comm, bool convergeHostPreparation) {
   return result == flagcxSuccess ? recorded : result;
 }
 
+// Close borrowed views during Finalize; private scratch remains for Destroy.
+flagcxResult_t cleanupUniRunnerIpcImports(flagcxUniRunnerState *state) {
+  if (state == NULL)
+    return flagcxSuccess;
+  flagcxComm_t comm = state->ipcOwner;
+  flagcxResult_t result = destroyUniRunnerIpcDataViews(state);
+  if (result != flagcxSuccess)
+    return result;
+  result = closeUniRunnerIpcReadyStorage(state, comm);
+  if (result != flagcxSuccess)
+    return result;
+  return closeUniRunnerIpcRingResources(state, comm);
+}
+
 flagcxResult_t
 cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
   if (runnerState == NULL)
@@ -7437,9 +7474,8 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
       return cleanupResult;
   } while (0);
   runnerState->ipcReadySlots = 0;
-  // Only close imports here; Comm frees exporters after peer acknowledgment.
-  // TODO: replace the temporary cross-rank shutdown rendezvous with a lifetime
-  // protocol supporting local communicator teardown.
+  // Close imports before releasing storage. Comm Finalize confirms peer
+  // closure; the subsequent local Destroy releases retained exporters.
   do {
     flagcxResult_t cleanupResult =
         closeUniRunnerIpcRingResources(runnerState, comm);

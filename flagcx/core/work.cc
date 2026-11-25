@@ -29,6 +29,10 @@ struct flagcxWorkRecord *flagcxWorkSetCurrent(struct flagcxWorkRecord *record) {
   return previous;
 }
 
+int flagcxWorkHasCurrent(struct flagcxWorkTracker *tracker) {
+  return currentWork != NULL && currentWork->owner == tracker;
+}
+
 static flagcxResult_t workInit(struct flagcxWorkTracker *tracker) {
   for (;;) {
     int state = __atomic_load_n(&tracker->initialized, __ATOMIC_ACQUIRE);

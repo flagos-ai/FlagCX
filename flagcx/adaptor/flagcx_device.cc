@@ -61,8 +61,40 @@ flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
   return result;
 }
 
+flagcxResult_t flagcxCommReleaseBuffer(flagcxComm_t comm, void *pointer,
+                                       enum flagcxInternalBufferKind kind) {
+  if (pointer == NULL)
+    return flagcxSuccess;
+  if (comm != NULL && comm->finalizeState.lifecycle == flagcxCommFinalizing) {
+    // Publishing the node transfers ownership. An allocation failure leaves
+    // the caller's pointer and owner untouched; aliases are retired only once.
+    for (struct flagcxInternalBuffer *node = comm->internalBuffers;
+         node != NULL; node = node->next) {
+      if (node->pointer == pointer)
+        return node->kind == kind ? flagcxSuccess : flagcxInvalidUsage;
+    }
+    struct flagcxInternalBuffer *node =
+        (struct flagcxInternalBuffer *)malloc(sizeof(*node));
+    if (node == NULL)
+      return flagcxSystemError;
+    node->pointer = pointer;
+    node->kind = kind;
+    node->next = comm->internalBuffers;
+    comm->internalBuffers = node;
+    return flagcxSuccess;
+  }
+  if (kind == flagcxInternalBufferCcl)
+    return cclAdaptors[flagcxCCLAdaptorDevice]->memFree(pointer);
+  if (kind == flagcxInternalBufferGdr)
+    return deviceAdaptor->gdrMemFree(pointer, NULL);
+  return deviceAdaptor->deviceFree(
+      pointer,
+      kind == flagcxInternalBufferHost ? flagcxMemHost : flagcxMemDevice, NULL);
+}
+
 flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm) {
-  if (comm == nullptr || comm->destroyPhase < 7)
+  if (comm == nullptr ||
+      comm->finalizeState.commonPhase != flagcxFinalizeComplete)
     return flagcxInvalidUsage;
   while (comm->internalBuffers != nullptr) {
     auto *record = comm->internalBuffers;
@@ -107,15 +139,19 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
       reqsSize < FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE)
     return flagcxInvalidArgument;
   *devComm = nullptr;
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (devApiBackend->kind == flagcxDevApiDefault &&
       comm->commType == flagcxCommunicatorHomo && !useHeteroComm())
     return flagcxNotSupported;
   // Select this before rank-local allocation can fail. Pure vendor backends
   // keep their own resource lifetime; mixed communicators must agree even on
   // ranks that do not themselves allocate default-backend exporter storage.
-  if (comm->commType != flagcxCommunicatorHomo || comm->heteroComm != nullptr ||
-      strcmp(devApiBackend->name, "default") == 0)
-    comm->internalBuffersNeedPeerClose = true;
+  flagcxResult_t declaration = flagcxCommRequireIpcClose(
+      comm, comm->commType != flagcxCommunicatorHomo ||
+                comm->heteroComm != nullptr ||
+                strcmp(devApiBackend->name, "default") == 0);
+  if (declaration != flagcxSuccess)
+    return declaration;
   flagcxResult_t pendingCleanup = flagcxDevCommRetryPendingCleanup(comm);
   if (comm->internalBuffersNeedPeerClose && comm->bootstrap != nullptr) {
     flagcxResult_t commonCleanup = flagcxSuccess;
@@ -256,8 +292,8 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 
   if (devComm->cachedNetContextsPtr != nullptr) {
     do {
-      flagcxResult_t cleanupResult = deviceAdaptor->deviceFree(
-          devComm->cachedNetContextsPtr, flagcxMemDevice, nullptr);
+      flagcxResult_t cleanupResult = flagcxCommReleaseBuffer(
+          comm, devComm->cachedNetContextsPtr, flagcxInternalBufferDevice);
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     } while (0);
@@ -265,8 +301,8 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   }
   if (devComm->cachedDevicePtr != nullptr) {
     do {
-      flagcxResult_t cleanupResult = deviceAdaptor->deviceFree(
-          devComm->cachedDevicePtr, flagcxMemDevice, nullptr);
+      flagcxResult_t cleanupResult = flagcxCommReleaseBuffer(
+          comm, devComm->cachedDevicePtr, flagcxInternalBufferDevice);
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     } while (0);
@@ -274,8 +310,8 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   }
   if (devComm->cachedGridBarrierPtr != nullptr) {
     do {
-      flagcxResult_t cleanupResult = deviceAdaptor->deviceFree(
-          devComm->cachedGridBarrierPtr, flagcxMemDevice, nullptr);
+      flagcxResult_t cleanupResult = flagcxCommReleaseBuffer(
+          comm, devComm->cachedGridBarrierPtr, flagcxInternalBufferDevice);
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     } while (0);
@@ -307,6 +343,7 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
   if (devMem == nullptr)
     return flagcxInvalidArgument;
   *devMem = nullptr;
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (comm == nullptr)
     return flagcxInvalidArgument;
   flagcxResult_t localPrepare =
@@ -498,8 +535,8 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
   devMem->ipcIndex = -1;
   if (devMem->cachedDevicePtr != nullptr) {
     do {
-      flagcxResult_t cleanupResult = deviceAdaptor->deviceFree(
-          devMem->cachedDevicePtr, flagcxMemDevice, nullptr);
+      flagcxResult_t cleanupResult = flagcxCommReleaseBuffer(
+          comm, devMem->cachedDevicePtr, flagcxInternalBufferDevice);
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     } while (0);
@@ -507,8 +544,8 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
   }
   if (devMem->segmentedPeerLayouts != nullptr) {
     do {
-      flagcxResult_t cleanupResult = deviceAdaptor->deviceFree(
-          devMem->segmentedPeerLayouts, flagcxMemDevice, nullptr);
+      flagcxResult_t cleanupResult = flagcxCommReleaseBuffer(
+          comm, devMem->segmentedPeerLayouts, flagcxInternalBufferDevice);
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     } while (0);
@@ -601,10 +638,11 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
 flagcxResult_t releaseIpcTableSlot(flagcxComm_t comm, int slot) {
   if (comm == nullptr || slot < 0 || slot >= comm->ipcTableCapacity)
     return flagcxInvalidArgument;
-  return releaseIpcTableEntry(&comm->ipcTable[slot]);
+  return releaseIpcTableEntry(&comm->ipcTable[slot], comm);
 }
 
-flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e) {
+flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e,
+                                    flagcxComm_t comm) {
   if (e == nullptr)
     return flagcxInvalidArgument;
   if (e->refCount != 0)
@@ -629,8 +667,8 @@ flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e) {
   }
   if (e->devPeerPtrs != nullptr) {
     do {
-      flagcxResult_t cleanupResult =
-          deviceAdaptor->deviceFree(e->devPeerPtrs, flagcxMemDevice, nullptr);
+      flagcxResult_t cleanupResult = flagcxCommReleaseBuffer(
+          comm, e->devPeerPtrs, flagcxInternalBufferDevice);
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     } while (0);

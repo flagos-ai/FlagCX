@@ -1009,8 +1009,8 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   devComm->localBarrierShmPtr = NULL;
   devComm->barrierShmSize = 0;
   if (devComm->barrierDevPeerPtrsRaw != NULL) {
-    flagcxResult_t result = deviceAdaptor->deviceFree(
-        devComm->barrierDevPeerPtrsRaw, flagcxMemDevice, NULL);
+    flagcxResult_t result = flagcxCommReleaseBuffer(
+        comm, devComm->barrierDevPeerPtrsRaw, flagcxInternalBufferDevice);
     if (result != flagcxSuccess)
       return result;
     devComm->barrierDevPeerPtrsRaw = NULL;
@@ -1045,8 +1045,8 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   devComm->signalMrHostPtr = NULL;
   devComm->localSignalBuffer = NULL;
   if (devComm->signalDevPeerPtrsRaw != NULL) {
-    flagcxResult_t result = deviceAdaptor->deviceFree(
-        devComm->signalDevPeerPtrsRaw, flagcxMemDevice, NULL);
+    flagcxResult_t result = flagcxCommReleaseBuffer(
+        comm, devComm->signalDevPeerPtrsRaw, flagcxInternalBufferDevice);
     if (result != flagcxSuccess)
       return result;
     devComm->signalDevPeerPtrsRaw = NULL;
@@ -1058,8 +1058,8 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   devComm->localBarrierFlagsDeviceAllocated = false;
   if (devComm->epochBuffer) {
     do {
-      flagcxResult_t result = deviceAdaptor->deviceFree(devComm->epochBuffer,
-                                                        flagcxMemDevice, NULL);
+      flagcxResult_t result = flagcxCommReleaseBuffer(
+          comm, devComm->epochBuffer, flagcxInternalBufferDevice);
       if (result != flagcxSuccess)
         return result;
     } while (0);
@@ -1071,8 +1071,8 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   devComm->completionSignalBuffer = nullptr;
   if (devComm->shadowBuffer) {
     do {
-      flagcxResult_t result = deviceAdaptor->deviceFree(devComm->shadowBuffer,
-                                                        flagcxMemDevice, NULL);
+      flagcxResult_t result = flagcxCommReleaseBuffer(
+          comm, devComm->shadowBuffer, flagcxInternalBufferDevice);
       if (result != flagcxSuccess)
         return result;
     } while (0);
@@ -1080,8 +1080,8 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   }
   if (devComm->counterBuffer) {
     do {
-      flagcxResult_t result = deviceAdaptor->deviceFree(devComm->counterBuffer,
-                                                        flagcxMemHost, NULL);
+      flagcxResult_t result = flagcxCommReleaseBuffer(
+          comm, devComm->counterBuffer, flagcxInternalBufferHost);
       if (result != flagcxSuccess)
         return result;
     } while (0);
@@ -1090,8 +1090,8 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
     if (devComm->completionCounterBuffer) {
       do {
-        flagcxResult_t result = deviceAdaptor->deviceFree(
-            devComm->completionCounterBuffer, flagcxMemDevice, NULL);
+        flagcxResult_t result = flagcxCommReleaseBuffer(
+            comm, devComm->completionCounterBuffer, flagcxInternalBufferDevice);
         if (result != flagcxSuccess)
           return result;
       } while (0);

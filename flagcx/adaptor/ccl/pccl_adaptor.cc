@@ -97,7 +97,8 @@ flagcxResult_t pcclAdaptorCommInitAll(flagcxInnerComm_t *comm, int nranks,
 
 // TODO: unsupported
 flagcxResult_t pcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  return flagcxUnhandledDeviceError;
+  (void)comm;
+  return flagcxNotSupported;
 }
 
 flagcxResult_t pcclAdaptorCommDestroy(flagcxInnerComm_t comm) {

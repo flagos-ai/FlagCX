@@ -110,6 +110,7 @@ struct flagcxP2pResources {
   // is only the adjusted pointer consumed by the copy path.  The receiver
   // owns a local allocation; the sender owns the raw base returned by
   // ipcMemHandleOpen.  Only these owner fields may be released at teardown.
+  int importsClosedConfirmed;
   void *localRecvFifo;
   bool localFifoUnpublished;
   void *importedRecvFifoBase;

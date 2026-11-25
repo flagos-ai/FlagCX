@@ -96,4 +96,31 @@ TEST_F(FusedInvocationBuffersTest, KeepsBuffersUntilInvocationCompletes) {
   EXPECT_EQ(flagcxWorkRelease(&comm.submittedWork), flagcxSuccess);
 }
 
+TEST_F(FusedInvocationBuffersTest, FinalizeDefersSdkFreesUntilLocalDestroy) {
+  flagcxComm comm{};
+  flagcxHeteroComm hcomm{};
+  flagcxProxyState proxy{};
+  comm.heteroComm = &hcomm;
+  hcomm.proxyState = &proxy;
+  comm.finalizeState.lifecycle = flagcxCommFinalizing;
+  comm.finalizeState.commonPhase = flagcxFinalizeDrain;
+  flagcxFusedInvocationBuffers *buffers = nullptr;
+  ASSERT_EQ(flagcxCalloc(&buffers, 1), flagcxSuccess);
+  buffers->workspace = std::malloc(64);
+  buffers->counters = std::malloc(64);
+  ASSERT_NE(buffers->workspace, nullptr);
+  ASSERT_NE(buffers->counters, nullptr);
+  proxy.uniRunnerState.pendingFusedBuffers = buffers;
+  EXPECT_EQ(flagcxFusedDrainPendingBuffers(&comm), flagcxSuccess);
+  EXPECT_EQ(proxy.uniRunnerState.pendingFusedBuffers, nullptr);
+  EXPECT_EQ(freeCalls, 0);
+  EXPECT_NE(comm.internalBuffers, nullptr);
+  EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxInvalidUsage);
+  comm.finalizeState.commonPhase = flagcxFinalizeComplete;
+  EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
+  EXPECT_EQ(freeCalls, 2);
+  EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
+  EXPECT_EQ(freeCalls, 2);
+}
+
 } // namespace

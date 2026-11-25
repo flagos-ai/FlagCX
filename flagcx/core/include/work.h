@@ -106,4 +106,6 @@ flagcxResult_t flagcxCommDrainSnapshot(flagcxComm_t comm,
 void flagcxWorkSnapshotRelease(struct flagcxWorkSnapshot *snapshot);
 flagcxResult_t flagcxWorkRelease(struct flagcxWorkTracker *tracker);
 
+int flagcxWorkHasCurrent(struct flagcxWorkTracker *tracker);
+
 #endif

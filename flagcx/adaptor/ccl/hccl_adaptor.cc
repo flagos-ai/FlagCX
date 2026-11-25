@@ -113,7 +113,8 @@ flagcxResult_t hcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 
 // TODO: unsupported
 flagcxResult_t hcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  return flagcxUnhandledDeviceError;
+  (void)comm;
+  return flagcxNotSupported;
 }
 
 flagcxResult_t hcclAdaptorCommDestroy(flagcxInnerComm_t comm) {

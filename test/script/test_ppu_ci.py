@@ -86,7 +86,9 @@ import json, os, sys
 args = sys.argv[1:]
 label = os.environ.get("FLAGCX_CI_MPI_LABEL", os.environ.get("FLAGCX_CI_TEST_LABEL"))
 assert os.environ["PCCL_ENABLE_EXT_KERNEL"] == "0"
-assert os.environ["GTEST_FILTER"] == "*-CoverageSupplemental.*"
+positive, _, negative = os.environ["GTEST_FILTER"].partition("-")
+assert positive == "*"
+assert set(negative.split(":")) == {"CoverageSupplemental.*", "FlagCXCollTest.FinalizeThenRankLocalDestroy"}
 if args[0] != "make":
     exports = dict(arg.split("=", 1) for i, arg in enumerate(args)
                    if i > 0 and args[i - 1] == "-x")

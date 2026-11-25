@@ -41,6 +41,8 @@ TEST(CclOwnerContract, FinalizeRetainsWrapperAndNeverCallsNativeDestroy) {
     flagcxResult_t result = sdk.finalize(p);
     if (sdk.nativeFinalize) {
       EXPECT_EQ(result, flagcxSuccess);
+    } else {
+      EXPECT_EQ(result, flagcxNotSupported);
     }
     EXPECT_EQ(NativeOwnerProbe::owners.count(p), 1u);
     EXPECT_EQ(NativeOwnerProbe::finalizes, sdk.nativeFinalize ? 1 : 0);

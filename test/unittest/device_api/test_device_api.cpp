@@ -150,6 +150,8 @@ int main(int argc, char *argv[]) {
   if (localRegister == 0) {
     if (proc == 0)
       printf("One-sided ops require -R 1 or -R 2. Skipping.\n");
+    FLAGCXCHECK(flagcxCommFinalize(comm));
+    FLAGCXCHECK(flagcxCommFinalize(comm));
     FLAGCXCHECK(flagcxCommDestroy(comm));
     FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
     MPI_Finalize();
@@ -394,6 +396,8 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
   FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+  FLAGCXCHECK(flagcxCommFinalize(comm));
+  FLAGCXCHECK(flagcxCommFinalize(comm));
   FLAGCXCHECK(flagcxCommDestroy(comm));
   free(hostBuff);
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));

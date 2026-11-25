@@ -2,6 +2,7 @@
 #define FLAGCX_GLOBAL_COMM_H_
 
 #include "bootstrap.h"
+#include "comm_lifecycle.h"
 #include "dev_comm_state.h"
 #include "flagcx.h"
 #include "flagcx_tuner.h"
@@ -61,22 +62,23 @@ struct flagcxInternalBuffer {
 flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
                                              size_t size,
                                              flagcxInternalBufferKind kind);
+flagcxResult_t flagcxCommReleaseBuffer(flagcxComm_t comm, void *pointer,
+                                       flagcxInternalBufferKind kind);
 flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm);
 
 struct flagcxComm {
+  struct flagcxCommFinalizeState finalizeState;
+  enum flagcxNativeFinalizeScope nativeFinalizeScope;
+  bool allowNativeDestroyFinalize, ipcClosePolicyConfirmed;
+  bool initRollbackPending, initRollbackNeedsAgreement, deviceOrdinalValid;
+  int deviceOrdinal;
   struct flagcxWorkTracker submittedWork;
   struct flagcxC2cPendingResources *pendingC2cResources;
   bool devicePluginHeld;
   bool cclPluginHeld;
   bool netPluginHeld;
   bool pluginRollbackOnly;
-  // TODO: adjust code format
-  // 0: active, 1: locally quiescent, 2: transport cleanup completed,
-  // 3: local owners destroyed, 4: homo comms destroyed,
-  // 5: hetero resources prepared, 6: IPC imports closed,
-  // 7: peer closure acknowledged; remaining buffer frees are local.
-  // Failures before final host-state release resume at the last completed
-  // stage.
+  // 0: local SDK cleanup, 1: only plugin references remain.
   int destroyPhase;
   int rank;
   int nranks;

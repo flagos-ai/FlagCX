@@ -900,7 +900,7 @@ protected:
     failReadyFree = failReadyCopy = false;
     EXPECT_EQ(cleanupUniRunnerPersistentState(&runner), flagcxSuccess);
     EXPECT_EQ(flagcxCommCleanupIpcTable(&comm), flagcxSuccess);
-    comm.destroyPhase = 7;
+    comm.finalizeState.commonPhase = flagcxFinalizeComplete;
     EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
     devApiBackend = readySavedBackend;
     deviceAdaptor = savedDevice;
@@ -1055,7 +1055,8 @@ TEST_F(UniRunnerIpcRetryTest, PartialBarrierBuildStaysOwnedByFailedDevComm) {
   ASSERT_NE(comm.internalBuffers, nullptr); // Exporter remains Comm-owned.
 }
 
-TEST_F(UniRunnerIpcRetryTest, CommDestroyRetriesPartialSlotBeforeExporterFree) {
+TEST_F(UniRunnerIpcRetryTest,
+       CommDestroyRetainsDeferredSlotBackingUntilFreeSucceeds) {
   flagcxComm_t owned = nullptr;
   ASSERT_EQ(flagcxCalloc(&owned, 1), flagcxSuccess);
   owned->commType = flagcxCommunicatorHomo;
@@ -1076,8 +1077,12 @@ TEST_F(UniRunnerIpcRetryTest, CommDestroyRetriesPartialSlotBeforeExporterFree) {
   owned->bootstrap = nullptr;
   owned->localRankToRank = nullptr;
   EXPECT_EQ(flagcxCommDestroy(owned), flagcxRemoteError);
-  EXPECT_EQ(owned->internalBuffers->pointer, buffer);
-  EXPECT_NE(owned->ipcTable[failed.slot].devPeerPtrs, nullptr);
+  bool exporterRetained = false;
+  for (auto *node = owned->internalBuffers; node != nullptr; node = node->next)
+    exporterRetained |= node->pointer == buffer;
+  EXPECT_TRUE(exporterRetained);
+  EXPECT_EQ(owned->ipcTable[failed.slot].devPeerPtrs, nullptr);
+  EXPECT_EQ(owned->finalizeState.commonPhase, flagcxFinalizeComplete);
   failReadyCopy = failReadyFree = false;
   EXPECT_EQ(flagcxCommDestroy(owned), flagcxSuccess);
 }

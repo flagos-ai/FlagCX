@@ -49,8 +49,8 @@ flagcxResult_t ecclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 flagcxResult_t ecclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  // ECCL does not have a separate finalize function, use destroy
-  return flagcxSuccess;
+  (void)comm;
+  return flagcxNotSupported;
 }
 
 flagcxResult_t ecclAdaptorCommDestroy(flagcxInnerComm_t comm) {

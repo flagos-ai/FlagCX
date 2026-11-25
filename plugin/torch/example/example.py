@@ -193,6 +193,33 @@ def test_sendrecv():
         handle.wait()
         print(f"rank {MY_RANK} after send/recv with FLAGCX_GROUP2: x = {x}, y = {y}")
 
+def test_pair_teardown():
+    # Only P2P initializes this backend in homogeneous mode. The main native
+    # communicator remains absent, and each rank inserts pairs in a different
+    # local order before the common numeric shutdown order is exercised.
+    control = dist.new_group(backend="gloo")
+    group = dist.new_group(backend=f"cpu:gloo,{dev_name}:flagcx")
+    edges = [(a, b) for a in range(WORLD_SIZE) for b in range(a + 1, WORLD_SIZE)]
+    edges = edges[1::2] + edges[::2]
+    for low, high in edges:
+        if MY_RANK in (low, high):
+            peer = high if MY_RANK == low else low
+            send = torch.full((8,), MY_RANK, device="cuda", dtype=torch.int32)
+            recv = torch.empty_like(send)
+            operations = [dist.P2POp(dist.isend, send, peer, group=group),
+                          dist.P2POp(dist.irecv, recv, peer, group=group)]
+            for work in dist.batch_isend_irecv(operations):
+                work.wait()
+            torch.testing.assert_close(recv.cpu(), torch.full((8,), peer, dtype=torch.int32))
+        dist.barrier(group=control)
+    backend = group._get_backend(torch.device(dev_name, int(os.environ["LOCAL_RANK"])))
+    flagcx.shutdown_backend(backend)
+    # Repeated shutdown must not consume any native owner twice.
+    flagcx.shutdown_backend(backend)
+    dist.destroy_process_group(group)
+    dist.destroy_process_group(control)
+
+
 def test_allgather():
     if torch.cuda.is_available():
         # Create tensors
@@ -383,6 +410,8 @@ def test_all():
             print(f"[SKIP] PyTorch API operation {name} is excluded for this run", flush=True)
             continue
         operation()
+    if "sendrecv" not in skipped:
+        test_pair_teardown()
 
 dict_op_to_test = {
     "broadcast": test_broadcast,

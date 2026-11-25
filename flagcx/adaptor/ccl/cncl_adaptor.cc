@@ -80,8 +80,8 @@ flagcxResult_t cnclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 
 // TODO: unsupported
 flagcxResult_t cnclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  // return (flagcxResult_t)cnclCommFinalize(comm->base);
-  return flagcxUnhandledDeviceError;
+  (void)comm;
+  return flagcxNotSupported;
 }
 
 flagcxResult_t cnclAdaptorCommDestroy(flagcxInnerComm_t comm) {
