@@ -58,14 +58,14 @@ extern "C" flagcxResult_t flagcxFusedDrainPendingBuffers(flagcxComm_t comm) {
       result = waitFusedWorkspace(comm, buffers, 0);
     }
     if (result == flagcxSuccess && buffers->counters != NULL) {
-      result =
-          deviceAdaptor->deviceFree(buffers->counters, flagcxMemDevice, NULL);
+      result = flagcxCommReleaseBuffer(comm, buffers->counters,
+                                       flagcxInternalBufferDevice);
       if (result == flagcxSuccess)
         buffers->counters = NULL;
     }
     if (result == flagcxSuccess && buffers->workspace != NULL) {
-      result =
-          deviceAdaptor->deviceFree(buffers->workspace, flagcxMemDevice, NULL);
+      result = flagcxCommReleaseBuffer(comm, buffers->workspace,
+                                       flagcxInternalBufferDevice);
       if (result == flagcxSuccess)
         buffers->workspace = NULL;
     }
@@ -911,6 +911,7 @@ flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
                                    void *output, size_t mPerRank, size_t n,
                                    size_t k, flagcxDataType_t datatype,
                                    flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (comm == NULL || comm->heteroComm == NULL ||
       !comm->uniRunnerKernelSupported)
     return flagcxAllGatherGemmImpl(input, weight, output, mPerRank, n, k,
@@ -933,6 +934,7 @@ flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
                                        flagcxDataType_t datatype,
                                        flagcxRedOp_t op, flagcxComm_t comm,
                                        flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (comm == NULL || comm->heteroComm == NULL ||
       !comm->uniRunnerKernelSupported)
     return flagcxGemmReduceScatterImpl(input, weight, output, m, n, kPerRank,

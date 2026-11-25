@@ -183,6 +183,8 @@ int main(int argc, char *argv[]) {
              "totalRanks=%d intraSize=%d\n",
              totalProcs, intraSize);
     }
+    FLAGCXCHECK(flagcxCommFinalize(comm));
+    FLAGCXCHECK(flagcxCommFinalize(comm));
     FLAGCXCHECK(flagcxCommDestroy(comm));
     FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
     MPI_Finalize();
@@ -532,6 +534,8 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
   FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+  FLAGCXCHECK(flagcxCommFinalize(comm));
+  FLAGCXCHECK(flagcxCommFinalize(comm));
   FLAGCXCHECK(flagcxCommDestroy(comm));
   free(hostBuff);
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));

@@ -363,6 +363,12 @@ struct flagcxProxyLocalPeer {
   struct flagcxProxyAsyncOp *asyncOps;
 };
 
+struct flagcxProxyConnectionPool {
+  struct flagcxProxyConnection **pools;
+  int banks;
+  int offset;
+};
+
 struct flagcxProxyState {
   int refCount;
   int tpRank;
@@ -481,6 +487,7 @@ struct flagcxProxyConnection {
   void *relayBufferImport;
   size_t relayBufferCapacity;
   struct flagcxNetRelayImport *relayImport;
+  int relayReleaseAcked;
   uint32_t relayActiveOps;
   bool relayReleasePending;
   bool relayReleaseAcknowledged;
@@ -573,8 +580,13 @@ flagcxResult_t flagcxProxyClientGetFdBlocking(struct flagcxHeteroComm *comm,
                                               int rank, void *handle,
                                               int *convertedFd);
 
+flagcxResult_t flagcxProxyCloseImports(struct flagcxHeteroComm *comm);
+flagcxResult_t flagcxProxyCloseRelayImports(struct flagcxHeteroComm *comm);
+flagcxResult_t flagcxProxyRelayImportsClosed(struct flagcxHeteroComm *comm);
 flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm);
 flagcxResult_t flagcxProxyShmUnlink(struct flagcxHeteroComm *comm);
 flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm);
+
+flagcxResult_t flagcxProxyFinalize(struct flagcxHeteroComm *comm);
 
 #endif

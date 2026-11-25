@@ -68,6 +68,9 @@ end
 suites = config.fetch("unit_test_suites")
 abort "#{config_path}: unit_test_suites must be a non-empty array" unless suites.is_a?(Array) && !suites.empty?
 
+ignore_test = config.fetch("ignore_test", {})
+abort "#{config_path}: ignore_test must be a map" unless ignore_test.is_a?(Hash)
+
 set_env = config.fetch("set_env")
 abort "#{config_path}: set_env does not exist: #{set_env}" unless File.file?(set_env)
 
@@ -79,7 +82,8 @@ outputs = {
   "container_options" => container_options.join(" "),
   "container_volumes" => JSON.generate(job_container_volumes),
   "set_env" => set_env,
-  "unit_test_suites" => JSON.generate(suites)
+  "unit_test_suites" => JSON.generate(suites),
+  "ignore_test" => JSON.generate(ignore_test)
 }
 if ENV["GITHUB_OUTPUT"] && !ENV["GITHUB_OUTPUT"].empty?
   File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|

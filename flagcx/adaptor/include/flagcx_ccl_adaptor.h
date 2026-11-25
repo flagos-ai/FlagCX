@@ -55,6 +55,8 @@ struct flagcxCCLAdaptor_v1 {
                                  struct bootstrapState *bootstrap);
   flagcxResult_t (*commFinalize)(flagcxInnerComm_t comm);
   flagcxResult_t (*commDestroy)(flagcxInnerComm_t comm);
+  // Success retires native state and retains the wrapper (base == NULL).
+  // Destroy consumes that wrapper; errors/InProgress retain the native owner.
   flagcxResult_t (*commAbort)(flagcxInnerComm_t comm);
   flagcxResult_t (*commResume)(flagcxInnerComm_t comm);
   flagcxResult_t (*commSuspend)(flagcxInnerComm_t comm);
@@ -139,6 +141,7 @@ struct flagcxCCLAdaptor_latest {
                                  struct bootstrapState *bootstrap);
   flagcxResult_t (*commFinalize)(flagcxInnerComm_t comm);
   flagcxResult_t (*commDestroy)(flagcxInnerComm_t comm);
+  // Abort retains the host wrapper; Destroy consumes it after native close.
   flagcxResult_t (*commAbort)(flagcxInnerComm_t comm);
   flagcxResult_t (*commResume)(flagcxInnerComm_t comm);
   flagcxResult_t (*commSuspend)(flagcxInnerComm_t comm);

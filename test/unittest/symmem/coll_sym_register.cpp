@@ -2245,6 +2245,39 @@ TEST_F(SymMemTest, DuplicateWindowsShareMrUntilLastDeregister) {
   }
 }
 
+TEST_F(SymMemTest, FinalizeConfirmsImportsBeforeLocalExporterRelease) {
+  flagcxComm_t owned = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(createTestComm(&owned)));
+  void *exporter = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommRequireIpcClose(owned, 1)));
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommAllocInternalBuffer(
+      owned, &exporter, 64, flagcxInternalBufferDevice)));
+  auto binding = buildIpcPeerPointers(owned, exporter, 64);
+  ASSERT_TRUE(allRanksSucceeded(binding.buildStatus));
+  ASSERT_EQ(flagcxCommFinalize(owned), flagcxSuccess);
+  bool retained = false;
+  for (auto *buffer = owned->internalBuffers; buffer != nullptr;
+       buffer = buffer->next)
+    retained |= buffer->pointer == exporter;
+  EXPECT_TRUE(retained);
+  MPI_Barrier(MPI_COMM_WORLD);
+  int released = flagcxSuccess;
+  if (rank == 0) {
+    released = (int)flagcxCommFreeInternalBuffers(owned);
+    for (int peer = 1; peer < nranks; ++peer)
+      MPI_Send(&released, 1, MPI_INT, peer, 0x6c40, MPI_COMM_WORLD);
+  } else {
+    MPI_Recv(&released, 1, MPI_INT, 0, 0x6c40, MPI_COMM_WORLD,
+             MPI_STATUS_IGNORE);
+    EXPECT_EQ(flagcxCommFreeInternalBuffers(owned), flagcxSuccess);
+  }
+  EXPECT_EQ(released, flagcxSuccess);
+  EXPECT_EQ(owned->internalBuffers, nullptr);
+  // SDK local-Destroy conformance has its own runner case and PCCL exception.
+  MPI_Barrier(MPI_COMM_WORLD);
+  EXPECT_EQ(flagcxCommDestroy(owned), flagcxSuccess);
+}
+
 TEST_F(SymMemTest, CommDestroyReleasesLiveWindow) {
   flagcxComm_t testComm = nullptr;
   ASSERT_TRUE(allRanksSucceeded(createTestComm(&testComm)));
@@ -4117,7 +4150,7 @@ TEST_F(SymWindowRollback, PartialDevCommBarrierBuildRetriesCollectively) {
   ASSERT_EQ(flagcxDevCommDestroy(&testComm, view), flagcxSuccess);
   ASSERT_EQ(flagcxCommCleanupIpcTable(&testComm), flagcxSuccess);
   MPI_Barrier(MPI_COMM_WORLD);
-  testComm.destroyPhase = 7;
+  testComm.finalizeState.commonPhase = flagcxFinalizeComplete;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&testComm), flagcxSuccess);
 }
 
@@ -4148,7 +4181,7 @@ TEST_F(SymWindowRollback, PartialDevCommSignalBuildRetainsFailedRegistration) {
   ASSERT_EQ(flagcxDevCommRetryPendingCleanup(&testComm), flagcxSuccess);
   ASSERT_EQ(flagcxCommCleanupIpcTable(&testComm), flagcxSuccess);
   MPI_Barrier(MPI_COMM_WORLD);
-  testComm.destroyPhase = 7;
+  testComm.finalizeState.commonPhase = flagcxFinalizeComplete;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&testComm), flagcxSuccess);
 }
 
@@ -4186,24 +4219,35 @@ TEST_F(SymWindowRollback, CommDestroyPendingWindowKeepsLeaseUntilImportsClose) {
     backend.provider.commDestroy = [](flagcxInnerComm_t) {
       return flagcxRemoteError;
     };
-    testComm.destroyPhase = 2;
+    testComm.finalizeState.commonPhase = flagcxFinalizeOwners;
+    // This fixture has no proxy/service/runner owners. Model their completed
+    // local work and stop at the deliberately failing native Finalize.
+    testComm.finalizeState.localDoneMask = (1u << flagcxFinalizeRelayImports) |
+                                           (1u << flagcxFinalizeProxy) |
+                                           (1u << flagcxFinalizeImports);
+    backend.provider.commFinalize = [](flagcxInnerComm_t) {
+      return flagcxRemoteError;
+    };
     testComm.homoComm = reinterpret_cast<flagcxInnerComm_t>(0x1234);
     testComm.localRankToRank = nullptr; // The fixture owns the vector storage.
     hetero.rmaSignalIpcSlot = -1;
     ASSERT_EQ(flagcxCommDestroy(&testComm), flagcxRemoteError);
-    EXPECT_EQ(testComm.destroyPhase, 2);
+    EXPECT_EQ(testComm.finalizeState.commonPhase, flagcxFinalizeOwners);
     ASSERT_NE(window->defaultBase, nullptr);
     EXPECT_TRUE(window->defaultBase->hasAllocationLease);
     EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxInvalidUsage);
 
     rollbackFailCopy = rollbackFailClose = false;
     ASSERT_EQ(flagcxCommDestroy(&testComm), flagcxRemoteError);
-    EXPECT_EQ(testComm.destroyPhase, 3); // Failed after pending IPC closed.
+    EXPECT_EQ(testComm.finalizeState.commonPhase,
+              flagcxFinalizeVendors); // Pending IPC is closed.
     EXPECT_EQ(window->defaultBase, nullptr);
     EXPECT_EQ(hetero.pendingSymCleanup, nullptr);
     EXPECT_EQ(rollbackClosedImports, nranks - 1);
     EXPECT_EQ(rollbackFreedArrays, 1);
     testComm.homoComm = nullptr;
+    free(testComm.finalizeState.vendorOwners);
+    testComm.finalizeState.vendorOwners = nullptr;
   }
   MPI_Barrier(MPI_COMM_WORLD);
   EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxSuccess);

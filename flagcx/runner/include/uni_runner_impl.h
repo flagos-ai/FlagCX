@@ -513,4 +513,6 @@ flagcxResult_t
 cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState);
 flagcxResult_t runUniRunner(flagcxComm_t comm,
                             bool convergeHostPreparation = false);
+flagcxResult_t cleanupUniRunnerIpcImports(flagcxUniRunnerState *state);
+
 #endif // FLAGCX_UNIRUNNER_IMPL_H_

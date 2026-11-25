@@ -9,6 +9,7 @@ fi
 
 workload=$1
 project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
+export FLAGCX_CI_CONFIG_DIR="${FLAGCX_CI_CONFIG_DIR:-$project_root/.github/configs}"
 : "${FLAGCX_CI_SET_ENV:?The platform configuration must provide set_env}"
 source "$project_root/$FLAGCX_CI_SET_ENV"
 

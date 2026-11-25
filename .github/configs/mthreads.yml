@@ -43,3 +43,21 @@ unit_test_suites:
   - runner
   - service
   - symmem
+
+# Platform exclusions; every entry must document its reason.
+ignore_test:
+  gtest:
+  - suite: device_api_host
+    tests:
+    - CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator
+    - CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator
+    reason: Current MCCL SDK has no mcclCommFinalize; compatibility native Destroy may drain
+      unrelated work. Restore with the supported native Finalize SDK
+  phases:
+  - suite: symmem
+    name: vmm-local-and-remote-without-net
+    reason: MUSA does not implement SymMem VMM allocation and mapping; ordinary IPC is tested
+  - suite: symmem
+    name: vmm-net-data
+    reason: MUSA advertises neither DMA-BUF nor VA registration for VMM allocations; ordinary NET and
+      the VMM rejection contract are tested

@@ -39,7 +39,8 @@ protected:
     new (&comm->homoBestCommMap) decltype(comm->homoBestCommMap);
     new (&comm->commMap) decltype(comm->commMap);
     comm->commType = flagcxCommunicatorHomo;
-    comm->destroyPhase = 3;
+    comm->finalizeState.lifecycle = flagcxCommFinalized;
+    comm->finalizeState.commonPhase = flagcxFinalizeComplete;
     comm->nranks = comm->localRanks = 1;
     comm->ipcTable = comm->ipcTableInline;
     comm->ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
@@ -71,7 +72,7 @@ TEST_F(AdaptorOwnerCleanup, OldDestroyRetainsPendingOwnerAndClearsEveryAlias) {
   comm->homoBestCommMap[TunerCollCategory{}] = second;
   comm->commMap[flagcxCommTag{}] = first;
   EXPECT_EQ(flagcxCommDestroy(comm), flagcxInProgress);
-  EXPECT_EQ(comm->destroyPhase, 3);
+  EXPECT_EQ(comm->finalizeState.commonPhase, flagcxFinalizeComplete);
   EXPECT_EQ(comm->homoComm, nullptr);
   EXPECT_EQ(comm->tunerInnerComm, nullptr);
   EXPECT_EQ(comm->commMap.begin()->second, nullptr);

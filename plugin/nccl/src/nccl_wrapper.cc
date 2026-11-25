@@ -467,10 +467,18 @@ ncclResult_t ncclCommAbort(ncclComm_t comm) {
   recursionGuard guard(inWrapper);
   if (comm == nullptr)
     return ncclInvalidArgument;
-  flagcxResult_t res = flagcxCommAbort(comm->comm);
-  flagcxDeviceHandleFree(comm->devHandle);
+  if (comm->comm != nullptr) {
+    flagcxResult_t result = flagcxCommAbort(comm->comm);
+    if (result != flagcxSuccess)
+      return toNcclResult(result);
+    comm->comm = nullptr;
+  }
+  flagcxResult_t result = flagcxDeviceHandleFree(comm->devHandle);
+  if (result != flagcxSuccess)
+    return toNcclResult(result);
+  comm->devHandle = nullptr;
   free(comm);
-  return toNcclResult(res);
+  return ncclSuccess;
 }
 
 /* ──────────────────────────────────────────────────────────────────────
