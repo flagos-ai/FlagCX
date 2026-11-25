@@ -118,18 +118,35 @@ FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemRequireCompletionBits(int bits) {
 }
 
 // Circular comparison: wrap is well defined while the outstanding distance
-// stays below 2^31, the documented range of a 32-bit sequence number.
-FLAGCX_DEVICE_INLINE_DECORATOR bool aclshmemCompletionBefore(uint32_t current,
-                                                             uint32_t target) {
+// stays below 2^31, the documented range of a 32-bit sequence number.  The
+// barrier generation waits below use this comparison too; a plain `<` there
+// treats a peer still at UINT32_MAX as ahead of generation 0 and releases
+// early (MC952 review P2).  The wrap cases are pinned at compile time so a
+// later edit cannot quietly reintroduce the numeric ordering.
+FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
+aclshmemCompletionBefore(uint32_t current, uint32_t target) {
   return (int)(current - target) < 0;
 }
+
+static_assert(aclshmemCompletionBefore(0xffffffffu, 0u),
+              "a peer one generation behind the 32-bit wrap must keep waiting");
+static_assert(!aclshmemCompletionBefore(0u, 0xffffffffu),
+              "a peer one generation ahead of the 32-bit wrap must release");
+static_assert(!aclshmemCompletionBefore(7u, 7u),
+              "a peer at the awaited generation must release");
 
 // ---- cann-shmem device entry points, host-pass shims ----
 // The declarations are device-pass only in the vendor header, and no host
 // code ever executes these bodies.
+// Largest byte count handed to one vendor entry. The vendor length is a
+// 32-bit word, so a longer public transfer is split here, in order, instead
+// of narrowing to zero at 4 GiB (MC952 review P2). The chunk stays well
+// inside the signed 32-bit range the entry was measured with.
+static constexpr size_t FLAGCX_ACLSHMEM_CHUNK_BYTES = (size_t)0x40000000u;
+
 FLAGCX_DEVICE_INLINE_DECORATOR void
 aclshmemPutMemNbi(FLAGCX_ACLSHMEM_GM void *dst, FLAGCX_ACLSHMEM_GM void *src,
-                  uint32_t bytes, int pe) {
+                  size_t bytes, int pe) {
 #if defined(__CCE_IS_AICORE__)
   // A source this core just stored to GM has to be retired before the
   // engine reads it back. The first transfer of a kernel otherwise copies
@@ -138,9 +155,14 @@ aclshmemPutMemNbi(FLAGCX_ACLSHMEM_GM void *dst, FLAGCX_ACLSHMEM_GM void *src,
   // sizes, while every later combo arrived. Silent when it happens, so the
   // barrier is paid on every put rather than chased per call site.
   pipe_barrier(PIPE_ALL);
-  // shortcut: the vendor entry takes a 32-bit length; the IR suite moves
-  // at most a few MiB per call.  Widen when a caller can exceed 4 GiB.
-  aclshmem_putmem_nbi(dst, src, bytes, (int32_t)pe);
+  const size_t chunk = FLAGCX_ACLSHMEM_CHUNK_BYTES;
+  while (bytes > chunk) {
+    aclshmem_putmem_nbi(dst, src, (uint32_t)chunk, (int32_t)pe);
+    dst = (FLAGCX_ACLSHMEM_GM char *)dst + chunk;
+    src = (FLAGCX_ACLSHMEM_GM char *)src + chunk;
+    bytes -= chunk;
+  }
+  aclshmem_putmem_nbi(dst, src, (uint32_t)bytes, (int32_t)pe);
 #else
   (void)dst;
   (void)src;
@@ -153,9 +175,19 @@ FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemQuiet();
 
 FLAGCX_DEVICE_INLINE_DECORATOR void aclshmemGetMem(FLAGCX_ACLSHMEM_GM void *dst,
                                                    FLAGCX_ACLSHMEM_GM void *src,
-                                                   uint32_t bytes, int pe) {
+                                                   size_t bytes, int pe) {
 #if defined(__CCE_IS_AICORE__)
-  aclshmem_getmem(dst, src, bytes, (int32_t)pe);
+  // Same bounded vendor length as the put entry: chunks land in disjoint
+  // local ranges, so they issue back to back and the drain below covers
+  // all of them.
+  const size_t chunk = FLAGCX_ACLSHMEM_CHUNK_BYTES;
+  while (bytes > chunk) {
+    aclshmem_getmem(dst, src, (uint32_t)chunk, (int32_t)pe);
+    dst = (FLAGCX_ACLSHMEM_GM char *)dst + chunk;
+    src = (FLAGCX_ACLSHMEM_GM char *)src + chunk;
+    bytes -= chunk;
+  }
+  aclshmem_getmem(dst, src, (uint32_t)bytes, (int32_t)pe);
   // The vendor's get RMA pairs its nbi copy with mte_quiet (see
   // shmem_device_rma.hpp); the bare getmem entry does not promise the
   // destination is complete when it returns, so drain before the caller
@@ -202,6 +234,21 @@ aclshmemPeerWord(FLAGCX_ACLSHMEM_GM T *local, int pe) {
   (void)pe;
   return local;
 #endif
+}
+
+// Bit-preserving scalar encoding for putValue: the transport moves bytes, so
+// the value's object representation is what has to travel, not a numeric
+// (uint64_t)value conversion - that writes eight bytes over a narrower
+// destination and rewrites floating-point payloads (MC952 review P1).  Same
+// union pun as the XSHMEM trait; a non-trivial T fails to compile here.
+template <typename T>
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t aclshmemScalarBits(T value) {
+  union {
+    T value;
+    uint64_t bits;
+  } encoded;
+  encoded.value = value;
+  return encoded.bits;
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -447,40 +494,63 @@ struct CommTraits<AclshmemBackend> {
              Coop coop, Desc, flagcxDeviceScope_t, flagcxDeviceScope_t) const {
       coop.sync();
       if (coop.threadRank() == 0) {
+        // The destination owns sizeof(T) bytes, so exactly those bytes
+        // travel: a numeric conversion would also overwrite the neighbour
+        // of a narrower slot and rewrite a floating-point payload (MC952
+        // review P1).  Wider scalars are rejected at compile time.
+        static_assert(sizeof(T) <= sizeof(uint64_t),
+                      "putValue transfers at most 64-bit scalars");
         int pe = resolvePE(_dc, team, peer);
+        uint64_t bits = aclshmemScalarBits(value);
+        uint32_t bytes = (uint32_t)sizeof(T);
         // MTE sources must be GM; the value arrives in a register.
         FLAGCX_ACLSHMEM_GM volatile uint32_t *scratch =
             (FLAGCX_ACLSHMEM_GM volatile uint32_t *)_dc.scratchBuffer +
             2 * _contextId;
-        uint64_t v = (uint64_t)value;
-        aclshmemGmStore32(scratch, (uint32_t)v);
-        aclshmemGmStore32(scratch + 1, (uint32_t)(v >> 32));
+        aclshmemGmStore32(scratch, (uint32_t)bits);
+        aclshmemGmStore32(scratch + 1, (uint32_t)(bits >> 32));
         FLAGCX_ACLSHMEM_GM char *dstPtr =
             (FLAGCX_ACLSHMEM_GM char *)dst.symBase + dstOff;
-        aclshmemPutMemNbi(dstPtr, (FLAGCX_ACLSHMEM_GM void *)scratch, 8u, pe);
+        aclshmemPutMemNbi(dstPtr, (FLAGCX_ACLSHMEM_GM void *)scratch, bytes,
+                          pe);
         // The scratch word is reused by the next call: the transfer must
         // have read it before it can be overwritten.
         aclshmemQuiet();
-        // A posted 8B put can be dropped outright and the peer's copy can
+        // A posted put can be dropped outright and the peer's copy can
         // surface only much later; neither is visible from the sender
         // without a read-back, and putValue is the primitive both measured
         // as S18B's lost combo 0. The destination lives in the symmetric
         // heap, so poll the peer mapping (the one lossless direction) and
-        // re-issue the same bytes until they are there.  The 8B value is
-        // the whole payload, so observing it at the peer is this call's
-        // completion proof; there is no retry budget, because a value that
-        // never arrives must not fall through to the remote action (the
-        // old code sent the signal anyway - MC952 review P1).
+        // re-issue the same bytes until they are there.  Observing the
+        // transferred bytes at the peer is this call's completion proof;
+        // there is no retry budget, because a value that never arrives must
+        // not fall through to the remote action (the old code sent the
+        // signal anyway - MC952 review P1).
         FLAGCX_ACLSHMEM_GM volatile uint32_t *remoteWord =
             aclshmemPeerWord((FLAGCX_ACLSHMEM_GM uint32_t *)dstPtr, pe);
+        // Compare exactly the transferred bytes.  A sub-word tail masks the
+        // rest of its word, which belongs to a neighbour this call did not
+        // write.
+        uint32_t words = (bytes + 3u) / 4u;
+        uint32_t tail = bytes % 4u;
         for (int spins = 0;; ++spins) {
-          uint32_t lo = aclshmemGmLoad32(remoteWord);
-          uint32_t hi = aclshmemGmLoad32(remoteWord + 1);
-          if (lo == (uint32_t)v && hi == (uint32_t)(v >> 32))
+          bool arrived = true;
+          for (uint32_t i = 0; i < words; ++i) {
+            uint32_t mask = 0xffffffffu;
+            if (tail != 0 && i + 1u == words)
+              mask = (1u << (8u * tail)) - 1u;
+            uint32_t want = (uint32_t)(bits >> (32u * i));
+            uint32_t got = aclshmemGmLoad32(remoteWord + i);
+            if ((got & mask) != (want & mask)) {
+              arrived = false;
+              break;
+            }
+          }
+          if (arrived)
             break;
           if ((spins & 31) == 31) {
-            aclshmemPutMemNbi(dstPtr, (FLAGCX_ACLSHMEM_GM void *)scratch, 8u,
-                              pe);
+            aclshmemPutMemNbi(dstPtr, (FLAGCX_ACLSHMEM_GM void *)scratch,
+                              bytes, pe);
             aclshmemQuiet();
           }
           Intrin::spinBackoff(spins < 16 ? spins : 16);
@@ -779,7 +849,7 @@ struct CommTraits<AclshmemBackend> {
 #if defined(__CCE_IS_AICORE__)
       asc_dcci_entire_out();
 #endif
-      aclshmemPutMemNbi(dst, src, (uint32_t)bytes, pe);
+      aclshmemPutMemNbi(dst, src, bytes, pe);
       aclshmemQuiet();
       if (bytes < 2u * sizeof(uint32_t) || (bytes % sizeof(uint32_t)) != 0u)
         return;
@@ -798,7 +868,7 @@ struct CommTraits<AclshmemBackend> {
             aclshmemGmLoad32(remoteTail) == tail)
           return;
         if ((spins & 31) == 31) {
-          aclshmemPutMemNbi(dst, src, (uint32_t)bytes, pe);
+          aclshmemPutMemNbi(dst, src, bytes, pe);
           aclshmemQuiet();
         }
         Intrin::spinBackoff(spins < 16 ? spins : 16);
@@ -885,9 +955,8 @@ struct Barrier<AclshmemBackend, flagcxTeamTagIntra, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, const Comm &dc, Team team, uint32_t index, bool = false,
           const Multimem & = {})
-      : _coop(coop), _state(dc.barrierState(0, index)),
-        _base(0), _teamSize(team.nRanks), _teamRank(team.rank),
-        _stride(team.stride) {
+      : _coop(coop), _state(dc.barrierState(0, index)), _base(0),
+        _teamSize(team.nRanks), _teamRank(team.rank), _stride(team.stride) {
     _base = dc.rank - team.rank * team.stride;
   }
 
@@ -914,7 +983,7 @@ struct Barrier<AclshmemBackend, flagcxTeamTagIntra, Coop> {
       FLAGCX_ACLSHMEM_GM volatile uint32_t *slot =
           aclshmemPeerWord(_state + 1 + m, _base + m * _stride);
       int iter = 0;
-      while (aclshmemGmLoad32(slot) < gen)
+      while (aclshmemCompletionBefore(aclshmemGmLoad32(slot), gen))
         Intrin::spinBackoff(iter < 1000 ? iter : 1000), ++iter;
     }
   }
@@ -979,7 +1048,7 @@ struct Barrier<AclshmemBackend, flagcxTeamTagInter, Coop> {
       FLAGCX_ACLSHMEM_GM volatile uint32_t *slot =
           aclshmemPeerWord(_state + 1 + m, _base + m * _stride);
       int iter = 0;
-      while (aclshmemGmLoad32(slot) < gen)
+      while (aclshmemCompletionBefore(aclshmemGmLoad32(slot), gen))
         Intrin::spinBackoff(iter < 1000 ? iter : 1000), ++iter;
     }
   }
@@ -1013,8 +1082,8 @@ struct Barrier<AclshmemBackend, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagWorld, const Net &, const Comm &dc,
           uint32_t index, bool, int)
-      : _coop(coop), _state(dc.barrierState(2, index)),
-        _base(0), _teamSize(dc.nRanks), _teamRank(dc.rank), _stride(1) {}
+      : _coop(coop), _state(dc.barrierState(2, index)), _base(0),
+        _teamSize(dc.nRanks), _teamRank(dc.rank), _stride(1) {}
 
   // Intra-only form of the world barrier.
   FLAGCX_DEVICE_INLINE_DECORATOR
@@ -1027,8 +1096,8 @@ struct Barrier<AclshmemBackend, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagInter, const Net &, const Comm &dc,
           uint32_t index, bool, int)
-      : _coop(coop), _state(dc.barrierState(2, index)),
-        _base(dc.rank), _teamSize(1), _teamRank(0), _stride(1) {
+      : _coop(coop), _state(dc.barrierState(2, index)), _base(dc.rank),
+        _teamSize(1), _teamRank(0), _stride(1) {
     (void)dc;
   }
 
@@ -1059,7 +1128,7 @@ struct Barrier<AclshmemBackend, flagcxTeamTagWorld, Coop> {
       FLAGCX_ACLSHMEM_GM volatile uint32_t *slot =
           aclshmemPeerWord(_state + 1 + m, _base + m * _stride);
       int iter = 0;
-      while (aclshmemGmLoad32(slot) < gen)
+      while (aclshmemCompletionBefore(aclshmemGmLoad32(slot), gen))
         Intrin::spinBackoff(iter < 1000 ? iter : 1000), ++iter;
     }
   }
