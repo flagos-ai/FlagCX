@@ -1,4 +1,4 @@
-"""Host checks of real MetaX error-handling functions with SDK type stubs.
+"""Host checks of MetaX runtime mappings and error handling with SDK stubs.
 
 These checks do not build MACA kernels or validate GPU ordering/residency.
 """
@@ -20,6 +20,7 @@ CXX = os.environ.get("CXX") or shutil.which("clang++") or shutil.which("g++")
 RUNTIME = r"""
 #pragma once
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 using mcStream_t = void *;
 enum mcError_t {
@@ -27,6 +28,26 @@ enum mcError_t {
   mcErrorLaunchOutOfResources = 43
 };
 enum class mcStreamWriteValue_flags { MC_STREAM_WRITE_VALUE_DEFAULT = 7 };
+enum mcDeviceAttribute_t {
+  mcDeviceAttributeCooperativeLaunch, mcDeviceAttributeConcurrentKernels,
+  mcDeviceAttributeMultiProcessorCount, mcDeviceAttributeMaxThreadsPerBlock
+};
+inline mcError_t mcGetDevice(int *device) {
+  *device = 3;
+  return mcSuccess;
+}
+inline mcError_t mcDeviceGetAttribute(int *out, mcDeviceAttribute_t attr,
+                                     int device) {
+  assert(device == 3);
+  const int values[] = {1, 1, 8, 1024};
+  *out = values[attr];
+  return mcSuccess;
+}
+inline mcError_t mcOccupancyMaxActiveBlocksPerMultiprocessor(
+    int *out, const void *, int, size_t) {
+  *out = 2;
+  return mcSuccess;
+}
 static mcError_t writeResult = mcSuccess, launchError = mcSuccess;
 static int writeCalls = 0, errorQueries = 0;
 inline mcError_t mcStreamWriteValue64(mcStream_t stream, void *address,
@@ -45,6 +66,7 @@ inline mcError_t mcGetLastError() {
 """
 
 PRELUDE = r"""
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <initializer_list>
@@ -86,6 +108,28 @@ class MetaxUniRunnerErrorTest(unittest.TestCase):
             result = subprocess.run([str(root / "test")], capture_output=True,
                                     text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_runtime_mapping_compiles_and_queries_residency(self):
+        source = (ROOT / "flagcx/adaptor/kernel/common/flagcx_reduce_kernel_device_impl.h").read_text()
+        start = source.index("#elif defined(USE_METAX_ADAPTOR)")
+        end = source.index("#elif defined(USE_MUSA_ADAPTOR)", start)
+        mapping = source[start:end].replace("#elif", "#if", 1) + "\n#endif\n"
+        residency = production_function(
+            (ROOT / "flagcx/runner/uni_runner_dag_plan.cc").read_text(),
+            "resolveUniRunnerStaticExecutorResidencyBudget",
+        )
+        query = production_function(source, "getStaticKernelMaxExecutorBlocks")
+        self.compile_and_run(mapping + residency + query + r"""
+int main() {
+  size_t budget = 99;
+  assert(getStaticKernelMaxExecutorBlocks(nullptr, "test", 256, &budget)
+         == flagcxSuccess);
+  assert(budget == 7);
+  assert(getStaticKernelMaxExecutorBlocks(nullptr, "test", 2048, &budget)
+         == flagcxInvalidArgument);
+  assert(budget == 0);
+}
+""")
 
     def test_write_preserves_only_explicit_unsupported(self):
         source = (ROOT / "flagcx/adaptor/device/maca_adaptor.cc").read_text()

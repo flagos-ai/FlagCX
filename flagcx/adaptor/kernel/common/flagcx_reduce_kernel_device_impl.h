@@ -32,7 +32,7 @@
 #define cudaDeviceGetAttribute mcDeviceGetAttribute
 #define cudaDevAttrCooperativeLaunch mcDeviceAttributeCooperativeLaunch
 #define cudaDevAttrConcurrentKernels mcDeviceAttributeConcurrentKernels
-#define cudaDevAttrMultiProcessorCount mcDeviceAttributeMultiprocessorCount
+#define cudaDevAttrMultiProcessorCount mcDeviceAttributeMultiProcessorCount
 #define cudaDevAttrMaxThreadsPerBlock mcDeviceAttributeMaxThreadsPerBlock
 #define cudaOccupancyMaxActiveBlocksPerMultiprocessor                          \
   mcOccupancyMaxActiveBlocksPerMultiprocessor
