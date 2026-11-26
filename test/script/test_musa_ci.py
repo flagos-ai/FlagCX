@@ -341,6 +341,25 @@ with open(os.environ["MUSA_DOCKER_CAPTURE"], "a") as out:
             self.assertIn("USE_MUSA=1", result.stdout)
             self.assertEqual(result.stdout.count("COMPILE_KERNEL=1"), 2 if suite in ("device_api", "device_api_unified_ir", "perf-test-experimental") else 0)
 
+    def test_native_device_suites_use_gpu_mr_with_net_enabled(self):
+        for suite in ("device_api", "device_api_unified_ir"):
+            with self.subTest(suite=suite):
+                result = subprocess.run(
+                    ["bash", "-eu", "-c", '''source "$1"
+flagcx_ci_configure_suite "$2"
+printf '%s\\n' "${FLAGCX_CI_DEVICE_API_MPI_ARGS[*]}" "${FLAGCX_CI_UNIFIED_IR_MPI_ARGS[*]}"
+''', "bash", str(ROOT / ".github/scripts/set_env/mthreads.sh"), suite],
+                    env={**os.environ, "FLAGCX_DMABUF_ENABLE": "1"},
+                    capture_output=True, text=True, check=True,
+                )
+                lines = result.stdout.splitlines()
+                self.assertEqual(len(lines), 2)
+                for line in lines:
+                    args = shlex.split(line)
+                    self.assertEqual(args.count("FLAGCX_DMABUF_ENABLE=0"), 1)
+                    self.assertNotIn("FLAGCX_DMABUF_ENABLE=1", args)
+                    self.assertIn("FLAGCX_IB_DISABLE=0", args)
+
     def run_experimental(self, directory, *, fail_label="", xml_mode="pass",
                          fail_project_build=False, fail_after_reports=False, umask="022"):
         root = Path(directory)

@@ -51,6 +51,11 @@ programs. The MUSA configuration enables local P2P with VMM disabled; unified
 IR additionally runs the existing forced-NET intra/inter phases. Full sweeps
 cover 1 KiB–16 MiB with factor 2; forced-NET sweeps cover 1–2 KiB.
 
+Both native Device API suites temporarily use ordinary GPU MR with
+`FLAGCX_DMABUF_ENABLE=0`, including forced-NET runs. DMA-BUF import currently
+fails with ENOMEM on the MUSA runner (PR #738, run 45783547817). The NET phases
+and required result checks remain enabled.
+
 `run_device_api_checked.py` delegates each invocation to the shared MPI timeout
 and diagnostic wrapper, then checks its output. K10/K14, legacy IR S10/S14,
 and unified IR S16–S25 must pass on every rank for every size. Missing, skipped,

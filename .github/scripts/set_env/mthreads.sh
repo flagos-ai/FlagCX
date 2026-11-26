@@ -92,9 +92,11 @@ flagcx_ci_configure_suite() {
       export FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=0
       FLAGCX_CI_DEVICE_API_FLAGS=(-b 1K -e 16M -f 2 -R 2)
       FLAGCX_CI_DEVICE_API_P2P_DISABLE=0
+      # Temporarily use ordinary GPU MR: DMA-BUF import fails with ENOMEM
+      # on the MUSA runner (PR #738, run 45783547817). Keep NET coverage.
       FLAGCX_CI_DEVICE_API_MPI_ARGS=(
         -x FLAGCX_IB_HCA
-        -x FLAGCX_IB_DISABLE=0 -x FLAGCX_DMABUF_ENABLE=1
+        -x FLAGCX_IB_DISABLE=0 -x FLAGCX_DMABUF_ENABLE=0
         -x FLAGCX_SIGNAL_HOST_ENABLE=1
         -x MCCL_IB_DISABLE=1 -x MCCL_TOPO_ENHANCE=0
       )
