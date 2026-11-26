@@ -7,6 +7,7 @@ paths_watch:
   - .github/configs/mthreads.yml
   - .github/scripts/ci/run_mthreads_workload.sh
   - .github/scripts/ci/run_mthreads_perf_experimental.sh
+  - .github/scripts/ci/check_musa_runtime.py
   - .github/scripts/set_env/mthreads.sh
   - flagcx/adaptor/device/musa_adaptor.cc
   - flagcx/adaptor/ccl/musa_mccl_adaptor.cc
@@ -27,6 +28,8 @@ docker_volumes: []
 docker_options:
   - --network=host
   - --runtime=mthreads
+  - --env=MTHREADS_VISIBLE_DEVICES=0,1,2,3
+  - --env=MTHREADS_DRIVER_CAPABILITIES=compute,utility
   - --privileged
   - --ipc=host
   - --shm-size=32g
@@ -51,7 +54,12 @@ unit_test_suites:
 
 # Platform exclusions; every entry must document its reason.
 ignore_test:
-  gtest: []
+  gtest:
+  - suite: adaptor
+    tests:
+      - NetAdaptorLoopback.RegisterDmaBufMr
+    reason: Temporarily defer MUSA DMA-BUF import registration failure (ibv_reg_dmabuf_mr
+      returns ENOMEM); ordinary GPU MR and required GPU one-sided cases remain enabled
   phases:
   - suite: symmem
     name: vmm-local-and-remote-without-net

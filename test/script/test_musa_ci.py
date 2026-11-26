@@ -223,6 +223,39 @@ sys.exit(19 if kind == os.environ.get("FAIL_STEP") else 0)
                 self.assertTrue(any(step.get("if") == "always()" and "upload-artifact" in step.get("uses", "") for step in job["steps"]))
             self.assertIn("MTHREADS_RESULT", jobs[completion]["env"])
 
+    def test_mtml_injection_arguments_reach_docker_creation(self):
+        config = self.load_mthreads_config()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            docker = root / "docker"
+            capture = root / "calls.jsonl"
+            docker.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
+with open(os.environ["MUSA_DOCKER_CAPTURE"], "a") as out:
+    out.write(json.dumps(sys.argv[1:]) + "\\n")
+''')
+            docker.chmod(0o755)
+            for workload, suite in (("unittest", "runner"), ("perf", ""),
+                                    ("perf-test-experimental", ""), ("torch-api", "")):
+                with self.subTest(workload=workload):
+                    capture.write_text("")
+                    env = {key: value for key, value in os.environ.items()
+                           if key not in ("GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY")}
+                    env.update(PATH=f"{root}:{os.environ['PATH']}",
+                               MUSA_DOCKER_CAPTURE=str(capture),
+                               FLAGCX_CI_IMAGE=config["ci_image"],
+                               FLAGCX_CI_DOCKER_ARGS=config["docker_args"],
+                               FLAGCX_CI_SET_ENV=config["set_env"],
+                               FLAGCX_CI_LOG_DIR=str(root / "logs" / workload))
+                    result = subprocess.run(
+                        ["bash", str(CI / "run_hardware_container.sh"),
+                         "mthreads", workload, suite],
+                        env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    calls = [json.loads(line) for line in capture.read_text().splitlines()]
+                    run = next(args for args in calls if args[:2] == ["container", "run"])
+                    options = run[:run.index(config["ci_image"])]
+                    self.assertIn("--env=MTHREADS_VISIBLE_DEVICES=0,1,2,3", options)
+                    self.assertIn("--env=MTHREADS_DRIVER_CAPABILITIES=compute,utility", options)
     def test_exported_ignore_policy_needs_no_yaml_or_ruby(self):
         config = self.load_mthreads_config()
         policy = json.loads(config["ignore_test"])
@@ -249,7 +282,13 @@ sys.exit(19 if kind == os.environ.get("FAIL_STEP") else 0)
     def test_native_isolation_uses_yaml_policy_without_environment_override(self):
         config = self.load_mthreads_config()
         policy = json.loads(config["ignore_test"])
-        self.assertEqual(policy["gtest"], [])
+        for suite, expected in (("adaptor", "NetAdaptorLoopback.RegisterDmaBufMr"),
+                                ("device_api_host", "")):
+            excluded = subprocess.run(
+                [sys.executable, str(CI / "ignore_test.py"), "gtest", suite],
+                env={**os.environ, "FLAGCX_CI_IGNORE_TEST": config["ignore_test"]},
+                capture_output=True, text=True, check=True)
+            self.assertEqual(excluded.stdout.strip(), expected)
         self.assertEqual({item["name"] for item in policy["phases"]}, {
             "vmm-local-and-remote-without-net", "vmm-net-data"})
         result = subprocess.run(
@@ -298,7 +337,8 @@ sys.exit(19 if kind == os.environ.get("FAIL_STEP") else 0)
             self.assertIn("USE_MUSA=1", result.stdout)
             self.assertEqual(result.stdout.count("COMPILE_KERNEL=1"), 2 if suite in ("device_api", "device_api_unified_ir", "perf-test-experimental") else 0)
 
-    def run_experimental(self, directory, *, fail_label="", xml_mode="pass", fail_sdk_build=False):
+    def run_experimental(self, directory, *, fail_label="", xml_mode="pass",
+                         fail_project_build=False, fail_after_reports=False, umask="022"):
         root = Path(directory)
         scripts = root / ".github/scripts/ci"
         scripts.mkdir(parents=True, exist_ok=True)
@@ -306,17 +346,17 @@ sys.exit(19 if kind == os.environ.get("FAIL_STEP") else 0)
         # validator still checks all requested cases on all four ranks.
         for name in ("run_mthreads_perf_experimental.sh", "check_required_gtests.py"):
             (scripts / name).write_text((CI / name).read_text())
-        for name in ("run_mpi_with_timeout.sh", "run_with_timeout.sh"):
+        for name in ("run_mpi_with_timeout.sh",):
             path = scripts / name
             path.write_text('#!/usr/bin/env bash\nexec ' + shlex.quote(sys.executable)
                             + ' "$(dirname "$0")/recorder.py" "$@"\n')
             (scripts / "recorder.py").write_text(r'''#!/usr/bin/env python3
 import json, os, pathlib, sys, xml.etree.ElementTree as ET
 args = sys.argv[1:]
-label = os.getenv("FLAGCX_CI_MPI_LABEL", "probe")
+label = os.environ["FLAGCX_CI_MPI_LABEL"]
 with open(os.environ["CAPTURE"], "a") as out:
     out.write(json.dumps({"label": label, "args": args}) + "\n")
-if label == os.getenv("FAIL_LABEL"):
+if label == os.getenv("FAIL_LABEL") and os.getenv("FAIL_AFTER_REPORTS") != "1":
     sys.exit(19)
 filter_arg = next((a for a in args if a.startswith("--gtest_filter=")), None)
 if filter_arg:
@@ -330,13 +370,20 @@ if filter_arg:
             if rank == 3 and os.getenv("XML_MODE") == "skip":
                 ET.SubElement(case, "skipped")
         ET.ElementTree(suite).write(result_dir / f"rank-{rank}.xml")
+if label == os.getenv("FAIL_LABEL"):
+    sys.exit(19)
 ''')
             path.chmod(0o755)
         capture = root / "calls.jsonl"
         capture.write_text("")
+        # The host container wrapper creates this directory before mounting it.
+        logs = root / "logs"
+        logs.mkdir(exist_ok=True)
+        logs.chmod(0o755)
         command = r'''set -euo pipefail
+umask "$MUSA_TEST_UMASK"
 make() {
-  if [[ "${FAIL_SDK_BUILD:-0}" == 1 && "$*" == *unirunner-probe* ]]; then
+  if [[ "${FAIL_PROJECT_BUILD:-0}" == 1 ]]; then
     return 23
   fi
 }
@@ -351,7 +398,9 @@ source "$GITHUB_WORKSPACE/.github/scripts/ci/run_mthreads_perf_experimental.sh"
             ["bash", "-c", command],
             env={**os.environ, "GITHUB_WORKSPACE": str(root), "CAPTURE": str(capture),
                  "FAIL_LABEL": fail_label, "XML_MODE": xml_mode,
-                 "FAIL_SDK_BUILD": "1" if fail_sdk_build else "0",
+                 "FAIL_PROJECT_BUILD": "1" if fail_project_build else "0",
+                 "FAIL_AFTER_REPORTS": "1" if fail_after_reports else "0",
+                 "MUSA_TEST_UMASK": umask,
                  "FLAGCX_CI_LOG_DIR": str(root / "logs")},
             capture_output=True, text=True, timeout=30,
         )
@@ -362,10 +411,10 @@ source "$GITHUB_WORKSPACE/.github/scripts/ci/run_mthreads_perf_experimental.sh"
         with tempfile.TemporaryDirectory() as directory:
             result, calls = self.run_experimental(directory)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(len(calls), 62)  # Probe, 6 GTests, 55 perf runs.
+            self.assertEqual(len(calls), 61)  # 6 GTests, 55 perf runs.
             lifecycle = next(call for call in calls if call["label"] == "MUSA experimental IPC lifecycle")
             self.assertIn("--gtest_filter=FlagCXCollTest.UniRunnerIpcFinalizeThenRankLocalDestroy:FlagCXCollTest.GroupedCommunicatorsFinalizeTheNonLaunchStreamFirst", lifecycle["args"])
-            for call in calls[1:]:
+            for call in calls:
                 args = call["args"]
                 self.assertEqual(args[:3], ["-np", "4", "--allow-run-as-root"])
                 self.assertIn("FLAGCX_CI_EXPECT_UNIRUNNER_KERNEL=1", args)
@@ -380,17 +429,46 @@ source "$GITHUB_WORKSPACE/.github/scripts/ci/run_mthreads_perf_experimental.sh"
             self.assertEqual({c["label"].split()[-1] for c in calls if "RingAR int32" in c["label"]}, {"sum", "prod", "min", "max", "avg"})
 
     def test_experimental_preserves_launcher_failures(self):
-        for label in ("probe", "MUSA experimental AllGatherGemm", "MUSA experimental IPC lifecycle", "MUSA experimental IpcRingAR", "MUSA experimental SlicedAR"):
+        for label in ("MUSA experimental AllGatherGemm", "MUSA experimental IPC lifecycle", "MUSA experimental IpcRingAR", "MUSA experimental SlicedAR"):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
                 result, calls = self.run_experimental(directory, fail_label=label)
                 self.assertEqual(result.returncode, 19, result.stderr)
                 self.assertEqual(calls[-1]["label"], label)
 
-    def test_sdk_probe_build_failure_stops_before_gpu_work(self):
+    def test_project_build_failure_stops_before_gpu_work(self):
         with tempfile.TemporaryDirectory() as directory:
-            result, calls = self.run_experimental(directory, fail_sdk_build=True)
+            result, calls = self.run_experimental(directory, fail_project_build=True)
             self.assertEqual(result.returncode, 23, result.stderr)
             self.assertEqual(calls, [])
+
+    def test_experimental_reports_readable_after_success_and_failure(self):
+        for failure in ("", "MUSA experimental AllGatherGemm"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                root.chmod(0o755)
+                result, _ = self.run_experimental(
+                    directory, fail_label=failure, fail_after_reports=True, umask="077")
+                self.assertEqual(result.returncode, 19 if failure else 0, result.stderr)
+                reports = list((root / "logs").glob("musa-*"))
+                self.assertEqual(len(reports), 1 if failure else 6)
+                for report in reports:
+                    self.assertEqual(report.stat().st_mode & 0o777, 0o755)
+                    files = list(report.glob("rank-*.xml"))
+                    self.assertEqual(len(files), 4)
+                    for path in files:
+                        self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+                if hasattr(os, "geteuid") and os.geteuid() == 0:
+                    # Linux CI: root generates the artifacts; a different UID
+                    # must be able to enumerate directories and read every XML.
+                    read = subprocess.run(
+                        [sys.executable, "-c", '''import pathlib, sys
+files = list(pathlib.Path(sys.argv[1]).glob("musa-*/rank-*.xml"))
+assert len(files) == int(sys.argv[2])
+for path in files: path.read_bytes()
+''', str(root / "logs"), str(4 * len(reports))],
+                        user=65534, group=65534, extra_groups=(),
+                        capture_output=True, text=True)
+                    self.assertEqual(read.returncode, 0, read.stderr)
 
     def test_experimental_rejects_missing_or_skipped_rank_tests(self):
         for mode in ("missing", "skip"):

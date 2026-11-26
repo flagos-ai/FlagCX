@@ -8,11 +8,6 @@ mpi_runner="$project_root/.github/scripts/ci/run_mpi_with_timeout.sh"
 log_dir=${FLAGCX_CI_LOG_DIR:-$project_root/.ci-logs}
 mkdir -p "$log_dir"
 
-echo "Checking MUSA SDK support for Device API (musa::atomic_ref)"
-make -C "$project_root/test/kernel/musa" --jobs="$(nproc)" \
-  "${FLAGCX_CI_TEST_MAKE_ARGS[@]}" unirunner-probe
-bash "$project_root/.github/scripts/ci/run_with_timeout.sh" \
-  "$project_root/test/kernel/musa/build/bin/unirunner_probe"
 make -C "$project_root" --jobs="$(nproc)" "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
 make -C "$project_root/test/perf" host_api --jobs="$(nproc)" \
   "${FLAGCX_CI_TEST_MAKE_ARGS[@]}"
@@ -42,11 +37,16 @@ run_runner_test() {
     algorithm_env=(-x FLAGCX_UNIRUNNER_ALGO="$algorithm")
   fi
   result_dir=$(mktemp -d "$log_dir/musa-${label// /_}.XXXXXX")
-  FLAGCX_CI_MPI_LABEL="MUSA experimental $label" \
-    env -u FLAGCX_UNIRUNNER_ALGO "$mpi_runner" -np 4 --allow-run-as-root \
-      "${common_env[@]}" ${algorithm_env[@]+"${algorithm_env[@]}"} \
-      bash "$project_root/.github/scripts/ci/run_gtest_rank_xml.sh" \
-      "$result_dir" "$runner_bin" --gtest_filter="$filter"
+  # The container writes as root; the host runner must read failure artifacts.
+  chmod 0755 "$result_dir"
+  (
+    umask 022
+    FLAGCX_CI_MPI_LABEL="MUSA experimental $label" \
+      env -u FLAGCX_UNIRUNNER_ALGO "$mpi_runner" -np 4 --allow-run-as-root \
+        "${common_env[@]}" ${algorithm_env[@]+"${algorithm_env[@]}"} \
+        bash "$project_root/.github/scripts/ci/run_gtest_rank_xml.sh" \
+        "$result_dir" "$runner_bin" --gtest_filter="$filter"
+  )
   IFS=: read -r -a cases <<< "$filter"
   for case_name in "${cases[@]}"; do
     required_cases+=(--case "$case_name")

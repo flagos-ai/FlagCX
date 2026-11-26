@@ -115,6 +115,11 @@ flagcx_ci_prepare() {
     echo "Building native Device API with the current MUSA SDK: $DEVICE_HOME"
     "$DEVICE_HOME/bin/mcc" --version || return
   fi
+  case "$suite" in
+    runner|device_api_host|device_api|device_api_unified_ir|rma|symmem|perf|torch-api|perf-test-experimental)
+      python3 "$FLAGCX_CI_ENV_DIR/../ci/check_musa_runtime.py" || return
+      ;;
+  esac
   command -v mthreads-gmi || command -v musa-smi || command -v mthreads-smi || true
   if command -v mthreads-gmi >/dev/null 2>&1; then
     mthreads-gmi

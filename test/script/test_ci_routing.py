@@ -191,11 +191,15 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 enabled_platform_or_matrix("mthreads"),
             ),
             (
+                ".github/scripts/ci/check_musa_runtime.py",
+                enabled_platform_or_matrix("mthreads"),
+            ),
+            (
                 "flagcx/adaptor/kernel/musa/flagcx_reduce_kernel_device.mu",
                 enabled_platform_or_matrix("mthreads"),
             ),
             (
-                "test/kernel/musa/unirunner_probe.mu",
+                "test/kernel/musa/device_api.mu",
                 enabled_platform_or_matrix("mthreads"),
             ),
             (

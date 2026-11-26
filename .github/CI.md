@@ -211,7 +211,6 @@ cases, while the weekly coverage workflow runs them.
 
 The Mthreads performance jobs display as `perf-test (musa)` and
 `perf-test-experimental (musa)`. Both select the same `mthreads` configuration
-and runner; the experimental workload adds `COMPILE_KERNEL=1` and requires
-the native MUSA Device API SDK probe. The current 4.3.6 image's missing
-`musa::atomic_ref` remains an explicit prerequisite failure for that workload.
+and runner; the experimental workload adds `COMPILE_KERNEL=1` and runs the
+four-rank UniRunner correctness suite on the pinned MUSA 5.2.0 image.
 See [MUSA UniRunner kernels](../docs/musa_unirunner.md) for validation details.

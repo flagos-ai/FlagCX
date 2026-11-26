@@ -92,9 +92,14 @@ configuration. The runner label is `mt-8g-cicd-flagcx`.
 The shared CI image is the pinned FlagOS MUSA 5.2.0 runtime (tag 2.3.0).
 Its SDK provides native `musa::atomic_ref`, `mcclCommFinalize`, and asynchronous
 completion queries. The CI Dockerfile uses the same pinned runtime and adds
-build/diagnostic dependencies for local reproduction. The native preflight
-checks cooperative launch, stream operations, IPC and system-scope atomics
-before running the full UniRunner workload.
+build/diagnostic dependencies for local reproduction.
+
+The container starts with `MTHREADS_VISIBLE_DEVICES=0,1,2,3` and
+`MTHREADS_DRIVER_CAPABILITIES=compute,utility` so the Mthreads runtime can
+inject the host MTML management library. Workloads that initialize native
+MCCL load `libmtml.so` before building; a missing library or dependency fails
+with loader diagnostics. The host must have a compatible MTML installation
+and a runtime utility mapping that includes the library.
 
 Run the same workload inside the configured MUSA environment:
 
@@ -105,11 +110,9 @@ bash .github/scripts/ci/run_hardware_workload.sh \
   mthreads perf-test-experimental "$FLAGCX_CI_SET_ENV" ''
 ```
 
-The workload first builds and runs `test/kernel/musa/unirunner_probe.mu` on
-four visible GPUs. This checks cooperative launch, occupancy, P2P capability,
-IPC allocation export, native system-scope atomics, and an actual stream
-wait/write64 sequence. The
-subsequent collective tests exercise cross-process IPC imports and rebinding.
+The workload builds the library and experimental test binaries, then runs
+the four-rank collective tests, including cross-process IPC imports and
+rebinding.
 
 The four-rank suite forces UniRunner, disables custom operations, and asserts
 the expected kernel, stream-value and local P2P capabilities. It covers:

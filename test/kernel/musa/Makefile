@@ -27,21 +27,13 @@ MUSA_TEST_CXX_ISYSTEM ?= $(shell $(CXX) -E -x c++ -v /dev/null 2>&1 >/dev/null |
 	sed -n 's|^ \(/[^ ]*include/[^ ]*c++[^ ]*\)$$|-isystem \1|p')
 # Match the library kernels: older mcc installations do not discover the
 # image's host C++ standard-library headers automatically.
-MUSA_HOST_CXX_LIBDIR ?= $(dir $(shell $(CXX) -print-file-name=libstdc++.so))
 MUSA_DEVICE_CXX_INCLUDES := -isystem $(MUSA_RESOURCE_DIR)/include/cuda_wrappers $(MUSA_TEST_CXX_ISYSTEM)
 MUSA_KERNEL_FLAGS += $(MUSA_DEVICE_CXX_INCLUDES)
 
 .PHONY: all clean device_api.o device_ir.o dlink.o dlink_api.o dlink_ir.o \
-	gdr_visibility.o unirunner-probe
+	gdr_visibility.o
 
 all: $(KERNEL_OBJECTS)
-
-unirunner-probe: $(BINDIR)/unirunner_probe
-
-$(BINDIR)/unirunner_probe: unirunner_probe.mu Makefile $(PROJECT_ROOT)/makefiles/musa.mk
-	@mkdir -p $(BINDIR)
-	$(DEVICE_COMPILER) $(filter-out -c -fgpu-rdc,$(DEVICE_COMPILE_FLAG)) \
-		$(MUSA_DEVICE_CXX_INCLUDES) -L$(MUSA_HOST_CXX_LIBDIR) -o $@ $< $(DEVICE_LINK)
 
 device_api.o: $(OBJDIR)/device_api.o
 device_ir.o: $(OBJDIR)/device_ir.o
@@ -84,7 +76,6 @@ $(OBJDIR)/gdr_visibility.o: gdr_visibility.mu \
 clean:
 	$(RM) $(KERNEL_OBJECTS) $(DEVICE_OBJECTS) $(DEVICE_IMAGES) \
 		$(KERNEL_OBJECTS:.o=.d) $(DEVICE_OBJECTS:.o=.d) \
-		$(OBJDIR)/gdr_visibility.o $(BINDIR)/unirunner_probe \
-		$(BINDIR)/unirunner_probe.d
+		$(OBJDIR)/gdr_visibility.o
 
 -include $(KERNEL_OBJECTS:.o=.d) $(DEVICE_OBJECTS:.o=.d)
