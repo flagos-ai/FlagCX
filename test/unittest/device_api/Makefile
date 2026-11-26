@@ -138,8 +138,10 @@ endif
 
 # Enflame: use platform-specific test files with dual-buffer pattern
 ifeq ($(KERNEL_PLATFORM), enflame)
-  ENFLAME_IR_TARGETS  := $(BINDIR)/test_device_ir_intra_enflame
-  ENFLAME_API_TARGETS := $(BINDIR)/test_device_api_intra_enflame
+  ENFLAME_IR_TARGETS  := $(BINDIR)/test_device_ir_intra_enflame \
+                         $(BINDIR)/test_device_ir_inter_enflame
+  ENFLAME_API_TARGETS := $(BINDIR)/test_device_api_intra_enflame \
+                         $(BINDIR)/test_device_api_inter_enflame
   SKIPPED_TARGETS := $(notdir $(filter-out $(ENFLAME_IR_TARGETS) $(ENFLAME_API_TARGETS),\
                        $(IR_TARGETS) $(API_TARGETS)))
   IR_TARGETS      := $(ENFLAME_IR_TARGETS)
@@ -225,9 +227,6 @@ MPI_TARGETS := $(IR_TARGETS) $(API_TARGETS)
         run-mpi-unified-intra run-mpi-unified-inter run
 
 all: require-compile-kernel unit mpi
-ifneq ($(SKIPPED_TARGETS),)
-	@echo "Skipped unsupported targets on $(KERNEL_PLATFORM): $(SKIPPED_TARGETS)"
-endif
 
 unit: $(UNIT_TARGET) $(PROVIDER_UNIT_TARGET)
 
@@ -332,6 +331,26 @@ $(BINDIR)/test_device_ir_intra_enflame: $(OBJDIR)/test_device_ir_intra_enflame.o
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
 
+$(OBJDIR)/test_device_api_inter_enflame.o: enflame/test_device_api_inter.cpp | require-compile-kernel
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling $<"
+	@$(CXX) $(CXXFLAGS) -c -o $@ $< $(ALL_INCLUDES)
+
+$(OBJDIR)/test_device_ir_inter_enflame.o: enflame/test_device_ir_inter.cpp | require-compile-kernel
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling $<"
+	@$(CXX) $(CXXFLAGS) -c -o $@ $< $(ALL_INCLUDES)
+
+$(BINDIR)/test_device_api_inter_enflame: $(OBJDIR)/test_device_api_inter_enflame.o $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+
+$(BINDIR)/test_device_ir_inter_enflame: $(OBJDIR)/test_device_ir_inter_enflame.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+
 clean:
 	@rm -rf $(BUILDDIR)
 
@@ -412,7 +431,9 @@ endif
 INTER_NP ?= 2
 
 run-mpi-inter: $(filter $(BINDIR)/test_device_ir_inter,$(MPI_TARGETS)) \
-               $(filter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS))
+               $(filter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS)) \
+               $(filter $(BINDIR)/test_device_ir_inter_enflame,$(MPI_TARGETS)) \
+               $(filter $(BINDIR)/test_device_api_inter_enflame,$(MPI_TARGETS))
 ifneq ($(filter $(BINDIR)/test_device_ir_inter,$(MPI_TARGETS)),)
 	@echo "Running inter-node Device IR tests..."
 	$(MPIRUN) $(MPI_ROOT_ARGS) \
@@ -427,7 +448,21 @@ ifneq ($(filter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS)),)
 		: -n $(INTER_NP) $(INTER_ENV) $(INTER_NODE1_ENV) \
 		$(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2
 endif
-ifeq ($(filter $(BINDIR)/test_device_ir_inter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS)),)
+ifneq ($(filter $(BINDIR)/test_device_ir_inter_enflame,$(MPI_TARGETS)),)
+	@echo "Running Enflame inter-node IR tests..."
+	$(MPIRUN) $(MPI_ROOT_ARGS) \
+		-n $(INTER_NP) $(INTER_ENV) $(INTER_NODE0_ENV) $(BINDIR)/test_device_ir_inter_enflame \
+		: -n $(INTER_NP) $(INTER_ENV) $(INTER_NODE1_ENV) $(BINDIR)/test_device_ir_inter_enflame
+endif
+ifneq ($(filter $(BINDIR)/test_device_api_inter_enflame,$(MPI_TARGETS)),)
+	@echo "Running Enflame inter-node API tests..."
+	$(MPIRUN) $(MPI_ROOT_ARGS) \
+		-n $(INTER_NP) $(INTER_ENV) $(INTER_NODE0_ENV) \
+		$(BINDIR)/test_device_api_inter_enflame -b 1M -e 4M -f 2 -R 2 \
+		: -n $(INTER_NP) $(INTER_ENV) $(INTER_NODE1_ENV) \
+		$(BINDIR)/test_device_api_inter_enflame -b 1M -e 4M -f 2 -R 2
+endif
+ifeq ($(filter $(BINDIR)/test_device_ir_inter $(BINDIR)/test_device_api_inter $(BINDIR)/test_device_ir_inter_enflame $(BINDIR)/test_device_api_inter_enflame,$(MPI_TARGETS)),)
 	@echo "Skipped legacy inter Device API/IR tests on $(KERNEL_PLATFORM)"
 endif
 

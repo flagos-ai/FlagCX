@@ -21,40 +21,80 @@
  * A shared object may carry undefined symbols, so `make USE_ENFLAME=1
  * COMPILE_KERNEL=1` reports success and only the *test executable* link fails.
  *
- * The bodies are deliberately minimal because Enflame has neither a device-side
- * net nor a device collective kernel yet:
- *   * `flagcxDevNetSizeOf()` returns 0 -- the same value
- *     eccl_dev_api_backend.cc's own non-kernel fallback returns (line 27), and
- *     exactly what makes its
- *     `if (hostCopy._contextCount > 0 && flagcxDevNetSizeOf() > 0)` guard skip
- *     both the net-array allocation and the construct launch.
- *   * `flagcxLaunchCollectiveKernel()` is a no-op, matching KunlunXin
+ * With ECCL GIN now functional on TOPS, this file provides real
+ * implementations of the device net helpers:
+ *   * `flagcxDevNetSizeOf()` returns `sizeof(flagcxDevNet)`, enabling
+ *     eccl_dev_api_backend.cc's guard
+ *     `if (hostCopy._contextCount > 0 && flagcxDevNetSizeOf() > 0)` to
+ *     allocate the net-array and call the construct launch.
+ *   * `flagcxDevNetLaunchConstruct()` launches a TOPS kernel that
+ *     placement-news `flagcxDevNet` objects into device memory.
+ *   * `flagcxLaunchCollectiveKernel()` remains a no-op, matching KunlunXin
  *     (`kunlunxin/device_api_host_helpers.xpu`), whose comment records the same
  *     reasoning: the only call site is under COMPILE_KERNEL_HOST, and the
  *     platform schedules collectives from the host, so a no-op satisfies the
  *     link.
- *
- * This file intentionally does NOT include the device headers
- * (flagcx_device_internal.h / flagcx_device_core.h / flagcx_kernel_internal.h).
- * Nothing here needs a device type or `sizeof(flagcxDevNet)`, and pulling them
- * in would drag the ECCL device path -- whose GIN cannot be compiled on TOPS --
- * into a translation unit that has no reason to see it.
  ************************************************************************/
 
 #include <cstddef>
+#include <new>
 
 #include "flagcx.h" // flagcxStream_t
+#include "device_api/flagcx_device_internal.h"
+#include "device_api/flagcx_device_core.h"
+#include "device_utils.h" // FLAGCX_DEVICE_HAS_PLACEMENT_NEW
+#include <tops/tops_runtime.h>
 
-// extern "C" spelling copied from eccl_dev_api_backend.cc:23-24 and from
-// nvidia/device_api_host_helpers.cu, so the names match at link time.
-extern "C" size_t flagcxDevNetSizeOf() { return 0; }
+extern "C" size_t flagcxDevNetSizeOf() { return sizeof(flagcxDevNet); }
+
+static __global__ void flagcxDevNetConstructKernel(flagcxDevNet *nets,
+                                                   flagcxDevComm *comm,
+                                                   int count) {
+  int i = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
+  if (i < count) {
+#if FLAGCX_DEVICE_HAS_PLACEMENT_NEW
+    ::new (&nets[i]) flagcxDevNet(*comm, i);
+#else
+    // TOPS device compiler does not support placement new; use copy-assign
+    // instead. flagcxDevNet is trivially copyable, so the observable result
+    // is the same value in the same storage.
+    nets[i] = flagcxDevNet(*comm, i);
+#endif
+  }
+}
 
 extern "C" void flagcxDevNetLaunchConstruct(void *devNets, void *devComm,
                                             int count, void *stream) {
-  (void)devNets;
-  (void)devComm;
-  (void)count;
-  (void)stream;
+  if (count <= 0 || devNets == nullptr || devComm == nullptr)
+    return;
+
+  int threads = (count < 256) ? count : 256;
+  int blocks = (count + threads - 1) / threads;
+
+  topsLaunchConfig_t cfg = {};
+  cfg.gridDim = {(unsigned int)blocks, 1, 1};
+  cfg.blockDim = {(unsigned int)threads, 1, 1};
+  if (stream != nullptr) {
+    cfg.stream = *(topsStream_t *)stream;
+  }
+  // else cfg.stream remains 0 (default stream) from zero-initialization
+
+  // Thread dimension is passed as a launch attribute on TOPS
+  topsLaunchAttribute attr[2];
+  attr[0].id = topsLaunchAttributeThreadDimension;
+  attr[0].val.threadDim = {(unsigned int)threads, 1, 1};
+  attr[1].id = topsLaunchAttributeCooperative;
+  attr[1].val.cooperative = 0; // Non-cooperative launch for construction
+  cfg.attrs = attr;
+  cfg.numAttrs = 2;
+
+  flagcxDevNet *netsArg = (flagcxDevNet *)devNets;
+  flagcxDevComm *commArg = (flagcxDevComm *)devComm;
+  int countArg = count;
+  void *kernelArgs[] = {&netsArg, &commArg, &countArg};
+
+  topsLaunchKernelExC(&cfg, (const void *)flagcxDevNetConstructKernel,
+                      kernelArgs);
 }
 
 // Declared in flagcx/include/flagcx_kernel_internal.h:61 with plain C++

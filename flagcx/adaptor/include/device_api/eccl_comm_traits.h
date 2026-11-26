@@ -411,6 +411,7 @@ struct CommTraits<EcclBackend> {
   FLAGCX_DEVICE_INLINE_DECORATOR static memory_order
   toEccl(flagcxDeviceMemoryOrder_t o) {
     switch (o) {
+      case flagcxDeviceMemoryOrderWeak:
       case flagcxDeviceMemoryOrderRelaxed:
         return memory_order_relaxed;
       case flagcxDeviceMemoryOrderAcquire:

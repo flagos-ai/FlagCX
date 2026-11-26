@@ -58,7 +58,12 @@
 
 #define ECCL_DEVICE_GRID_DIM      4
 #define ECCL_DEVICE_BLOCK_DIM     2
-#define ECCL_DEVICE_THREAD_DIM    4
+#define ECCL_DEVICE_THREAD_DIM    8
+
+// Inter-node kernel launch config: 1 grid, 1 block, 8 threads
+#define ECCL_INTER_GRID_DIM       1
+#define ECCL_INTER_BLOCK_DIM      1
+#define ECCL_INTER_THREAD_DIM     8
 
 template <int GRID_DIM, int BLOCK_DIM, int THREAD_DIM,
           typename KernelFn, typename... Args>
@@ -684,17 +689,17 @@ void launchKernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 FLAGCX_GLOBAL_DECORATOR void
 kernelNetGetFromCommS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                       int *results) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)results;
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    results[0] = (net != nullptr) ? 1 : 0;
+    results[1] = flagcxDevCommGetIntraSize(devCommPtr);
+  }
 }
 
 void launchKernelNetGetFromCommS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                  int *devResults, flagcxStream_t stream) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)devResults;
-  (void)stream;
+  if (!devCommPtr || !devResults) return;
+  launchKernelExC<1, 1, 1>(kernelNetGetFromCommS, stream, devCommPtr, devResults);
 }
 
 // ---------------------------------------------------------------------------
@@ -703,17 +708,52 @@ void launchKernelNetGetFromCommS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 FLAGCX_GLOBAL_DECORATOR void
 kernelNetResetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *results) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)results;
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) {
+    if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+      results[0] = 0;
+      results[1] = 0;
+      results[2] = 0;
+      results[3] = 0;
+    }
+    return;
+  }
+
+  // World barrier before reset
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    flagcxDevNetResetSignal(net, (flagcxDevSignal_t)0);
+    flagcxDevNetResetSignal(net, (flagcxDevSignal_t)1);
+    flagcxDevNetResetSignal(net, (flagcxDevSignal_t)2);
+    flagcxDevNetResetCounter(net, (flagcxDevCounter_t)0);
+    // Read back post-reset values and check they are zero
+    uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
+                                          flagcxDeviceMemoryOrderRelaxed);
+    uint64_t s1 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)1, kCompletionBits,
+                                          flagcxDeviceMemoryOrderRelaxed);
+    uint64_t s2 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)2, kCompletionBits,
+                                          flagcxDeviceMemoryOrderRelaxed);
+    uint64_t c0 = flagcxDevNetReadCounterS(net, (flagcxDevCounter_t)0, kCompletionBits,
+                                           flagcxDeviceMemoryOrderRelaxed);
+    results[0] = (s0 == 0) ? 1 : 0;
+    results[1] = (s1 == 0) ? 1 : 0;
+    results[2] = (s2 == 0) ? 1 : 0;
+    results[3] = (c0 == 0) ? 1 : 0;
+  }
+
+  // World barrier after reset
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
 }
 
 void launchKernelNetResetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                            int *devResults, flagcxStream_t stream) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)devResults;
-  (void)stream;
+  if (!devCommPtr || !devResults) return;
+  launchKernelExC<ECCL_INTER_GRID_DIM, ECCL_INTER_BLOCK_DIM, ECCL_INTER_THREAD_DIM>(kernelNetResetS, stream, devCommPtr, devResults);
 }
 
 // ---------------------------------------------------------------------------
@@ -724,15 +764,61 @@ void launchKernelNetResetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 FLAGCX_GLOBAL_DECORATOR void
 kernelNetWaitSignalFlushS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
-  // TODO, gin not support now
-  (void)devCommPtr;
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraBase = myRank - intraRank;
+
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) {
+    return;
+  }
+
+  int nInterRanks = nRanks - intraSize;
+  int tid = subThreadIdx.x + threadDim.x * (threadIdx.x + blockDim.x * blockIdx.x);
+  int nthreads = threadDim.x * blockDim.x * gridDim.x;
+
+  // Reset signal slot 0
+  flagcxDevNetResetSignal(net, (flagcxDevSignal_t)0);
+
+  // Read baseline signal
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
+                                        flagcxDeviceMemoryOrderRelaxed);
+
+  // World barrier sync
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Signal all inter peers using per-sender slot model with FLAGCX_COOP_BLOCK
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetSignalSigIncS(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                              FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)myRank);
+  }
+
+  // Wait for signals from all inter peers (per-sender slot, value >= 1)
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)peer,
+                            1, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
+  }
+
+  // Flush
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
+
+  // Final world barrier
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
 }
 
 void launchKernelNetWaitSignalFlushS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                      flagcxStream_t stream) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)stream;
+  if (!devCommPtr) return;
+  launchKernelExC<ECCL_INTER_GRID_DIM, ECCL_INTER_BLOCK_DIM, ECCL_INTER_THREAD_DIM>(kernelNetWaitSignalFlushS, stream, devCommPtr);
 }
 
 // ---------------------------------------------------------------------------
@@ -767,20 +853,31 @@ void launchKernelNetWaitSignalMeetShadowS(
 FLAGCX_GLOBAL_DECORATOR void
 kernelInterBarrierStress(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                          int *devResults, int nIters) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)devResults;
-  (void)nIters;
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) {
+    if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+      devResults[0] = -1; // no net context
+    }
+    return;
+  }
+
+  // Inter barrier loop
+  for (int i = 0; i < nIters; i++) {
+    flagcxInterBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X,
+                            flagcxDeviceMemoryOrderAcqRel,
+                            flagcxDevNetFenceLevel::Relaxed);
+  }
+
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    devResults[0] = 1; // success
+  }
 }
 
 void launchKernelInterBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                int *devResults, int nIters,
                                flagcxStream_t stream) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)devResults;
-  (void)nIters;
-  (void)stream;
+  if (!devCommPtr || !devResults) return;
+  launchKernelExC<ECCL_INTER_GRID_DIM, ECCL_INTER_BLOCK_DIM, ECCL_INTER_THREAD_DIM>(kernelInterBarrierStress, stream, devCommPtr, devResults, nIters);
 }
 
 // ---------------------------------------------------------------------------
@@ -793,23 +890,70 @@ kernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                         const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                         const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                         size_t countPerPeer) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)sendMemPtr;
-  (void)recvMemPtr;
-  (void)countPerPeer;
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraBase = myRank - intraRank;
+
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) {
+    return;
+  }
+
+  size_t chunkBytes = countPerPeer * sizeof(float);
+
+  // Read baseline signal
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
+                                        flagcxDeviceMemoryOrderRelaxed);
+
+  // Pre-barrier
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Sequential put with None+None using FLAGCX_COOP_BLOCK
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetPutS(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                     recvMemPtr, (size_t)myRank * chunkBytes,
+                     sendMemPtr, (size_t)peer * chunkBytes,
+                     chunkBytes, FLAGCX_COOP_BLOCK);
+  }
+
+  // Flush BEFORE signaling
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
+
+  // Sequential signal loop with per-sender slot model using FLAGCX_COOP_BLOCK
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetSignalSigIncS(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                              FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)myRank);
+  }
+
+  // Wait for all inter-node signals (per-sender slot, value >= 1)
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)peer,
+                            1, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
+  }
+
+  // Flush after wait
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
+
+  // Final barrier
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
 }
 
 void launchKernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                    const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                                    const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                    size_t countPerPeer, flagcxStream_t stream) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)sendMemPtr;
-  (void)recvMemPtr;
-  (void)countPerPeer;
-  (void)stream;
+  if (!devCommPtr || !sendMemPtr || !recvMemPtr) return;
+  launchKernelExC<ECCL_INTER_GRID_DIM, ECCL_INTER_BLOCK_DIM, ECCL_INTER_THREAD_DIM>(kernelNetFlushDecoupleS, stream, devCommPtr, sendMemPtr, recvMemPtr, countPerPeer);
 }
 
 // ---------------------------------------------------------------------------
@@ -822,23 +966,73 @@ kernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                        const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                        const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                        size_t countPerPeer) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)sendMemPtr;
-  (void)recvMemPtr;
-  (void)countPerPeer;
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraBase = myRank - intraRank;
+
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) {
+    return;
+  }
+
+  size_t chunkBytes = countPerPeer * sizeof(float);
+
+  // World barrier before reading baseline signal
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Read baseline signal
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
+                                        flagcxDeviceMemoryOrderRelaxed);
+
+  // World barrier sync
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Use sequential loop with FLAGCX_COOP_BLOCK to match K3 (API) behavior
+  // This ensures all threads participate in each put operation
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+
+    size_t dstOffset = (size_t)myRank * chunkBytes;
+    size_t srcOffset = (size_t)peer * chunkBytes;
+
+    // ECCL: SignalInc maps to SignalSet (write 1 to slot=myRank)
+    // Use FLAGCX_COOP_BLOCK to match K3 API version
+    flagcxDevNetPutS_RSigInc(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                             recvMemPtr, dstOffset,
+                             sendMemPtr, srcOffset,
+                             chunkBytes, FLAGCX_COOP_BLOCK,
+                             (flagcxDevSignal_t)myRank);
+  }
+
+  // Wait for all inter-node signals (per-sender slot, value >= 1)
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)peer,
+                            1, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
+  }
+
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
+
+  // Final world barrier
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
 }
 
 void launchKernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                   size_t countPerPeer, flagcxStream_t stream) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)sendMemPtr;
-  (void)recvMemPtr;
-  (void)countPerPeer;
-  (void)stream;
+  if (!devCommPtr || !sendMemPtr || !recvMemPtr) return;
+  launchKernelExC<ECCL_INTER_GRID_DIM, ECCL_INTER_BLOCK_DIM, ECCL_INTER_THREAD_DIM>(kernelNetPutSignalIncS, stream, devCommPtr, sendMemPtr, recvMemPtr, countPerPeer);
 }
 
 // ---------------------------------------------------------------------------
@@ -851,23 +1045,70 @@ kernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                        const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                        const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                        size_t countPerPeer) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)sendMemPtr;
-  (void)recvMemPtr;
-  (void)countPerPeer;
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraBase = myRank - intraRank;
+
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) {
+    return;
+  }
+
+  size_t chunkBytes = countPerPeer * sizeof(float);
+
+  // World barrier before reading baseline signal
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Read baseline signal
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
+                                        flagcxDeviceMemoryOrderRelaxed);
+
+  // World barrier sync
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Sequential put + signal loop with FLAGCX_COOP_BLOCK
+  // ECCL: SignalAdd not supported cross-NIC, use SignalInc with per-sender slots
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    // Put with None+None
+    flagcxDevNetPutS(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                     recvMemPtr, (size_t)myRank * chunkBytes,
+                     sendMemPtr, (size_t)peer * chunkBytes,
+                     chunkBytes, FLAGCX_COOP_BLOCK);
+    // Separate SignalInc (maps to SignalSet, write 1 to slot=myRank)
+    flagcxDevNetSignalSigIncS(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                              FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)myRank);
+  }
+
+  // Wait for all inter-node signals (per-sender slot, value >= 1)
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)peer,
+                            1, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
+  }
+
+  // Flush
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
+
+  // Final world barrier
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
 }
 
 void launchKernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                   size_t countPerPeer, flagcxStream_t stream) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)sendMemPtr;
-  (void)recvMemPtr;
-  (void)countPerPeer;
-  (void)stream;
+  if (!devCommPtr || !sendMemPtr || !recvMemPtr) return;
+  launchKernelExC<ECCL_INTER_GRID_DIM, ECCL_INTER_BLOCK_DIM, ECCL_INTER_THREAD_DIM>(kernelNetPutSignalAddS, stream, devCommPtr, sendMemPtr, recvMemPtr, countPerPeer);
 }
 
 // ---------------------------------------------------------------------------
@@ -880,11 +1121,110 @@ kernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                           const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                           const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                           size_t countPerPeer) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)sendMemPtr;
-  (void)recvMemPtr;
-  (void)countPerPeer;
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraBase = myRank - intraRank;
+
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) {
+    return;
+  }
+
+  size_t chunkBytes = countPerPeer * sizeof(float);
+  int nInterRanks = nRanks - intraSize;
+  int tid = subThreadIdx.x + threadDim.x * (threadIdx.x + blockDim.x * blockIdx.x);
+  int nthreads = threadDim.x * blockDim.x * gridDim.x;
+
+  // Reset signal slots used by this kernel (0 to 2*nRanks-1)
+  // This is critical to avoid state accumulation across test iterations
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    for (int i = 0; i < 2 * nRanks; i++) {
+      flagcxDevNetResetSignal(net, (flagcxDevSignal_t)i);
+    }
+    flagcxDevNetResetCounter(net, (flagcxDevCounter_t)0);
+  }
+
+  // Flush to ensure signal reset is visible to all peers before proceeding
+  // This is critical in stress testing to avoid race conditions with previous iterations
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelease);
+
+  // World barrier before reading baselines
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderAcquire,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Read baseline signal and counter
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
+                                        flagcxDeviceMemoryOrderRelaxed);
+  uint64_t c0 = flagcxDevNetReadCounterS(net, (flagcxDevCounter_t)0, kCompletionBits,
+                                          flagcxDeviceMemoryOrderRelaxed);
+
+  // World barrier sync
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Round 1: Put with SignalInc + CounterInc
+  // ECCL: CounterInc not supported, use SignalInc with per-sender slots
+  // Use slots 0..nRanks-1 for Round 1
+  // Use FLAGCX_COOP_BLOCK to ensure all threads participate synchronously
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetPutS_RSigInc(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                             recvMemPtr, (size_t)myRank * chunkBytes,
+                             sendMemPtr, (size_t)peer * chunkBytes,
+                             chunkBytes, FLAGCX_COOP_BLOCK,
+                             (flagcxDevSignal_t)myRank);
+  }
+
+  // Wait for all inter-node signals in Round 1 (per-sender slot, value >= 1)
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)peer,
+                            1, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
+  }
+
+  // Stamp sentinel: write 999.0f to first element of each peer's chunk
+  for (int peer = tid; peer < nRanks; peer += nthreads) {
+    float *slot = (float *)flagcxGetLocalPointerS(sendMemPtr, (size_t)peer * chunkBytes);
+    *slot = 999.0f;
+  }
+
+  // Barrier between rounds
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Round 2: Put with SignalInc again
+  // ECCL: Use slots nRanks..2*nRanks-1 for Round 2
+  // Use FLAGCX_COOP_BLOCK to ensure all threads participate synchronously
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetPutS_RSigInc(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                             recvMemPtr, (size_t)myRank * chunkBytes,
+                             sendMemPtr, (size_t)peer * chunkBytes,
+                             chunkBytes, FLAGCX_COOP_BLOCK,
+                             (flagcxDevSignal_t)(myRank + nRanks));
+  }
+
+  // Wait for all inter-node signals in Round 2 (slots nRanks..2*nRanks-1)
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)(peer + nRanks),
+                            1, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
+  }
+
+  // Flush
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
+
+  // Final world barrier
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
 }
 
 void launchKernelNetCounterPipelineS(
@@ -892,12 +1232,8 @@ void launchKernelNetCounterPipelineS(
     const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
     flagcxStream_t stream) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)sendMemPtr;
-  (void)recvMemPtr;
-  (void)countPerPeer;
-  (void)stream;
+  if (!devCommPtr || !sendMemPtr || !recvMemPtr) return;
+  launchKernelExC<ECCL_INTER_GRID_DIM, ECCL_INTER_BLOCK_DIM, ECCL_INTER_THREAD_DIM>(kernelNetCounterPipelineS, stream, devCommPtr, sendMemPtr, recvMemPtr, countPerPeer);
 }
 
 // ---------------------------------------------------------------------------
@@ -906,15 +1242,62 @@ void launchKernelNetCounterPipelineS(
 
 FLAGCX_GLOBAL_DECORATOR void
 kernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
-  // TODO, gin not support now
-  (void)devCommPtr;
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraBase = myRank - intraRank;
+
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) {
+    return;
+  }
+
+  int nInterRanks = nRanks - intraSize;
+  int tid = subThreadIdx.x + threadDim.x * (threadIdx.x + blockDim.x * blockIdx.x);
+  int nthreads = threadDim.x * blockDim.x * gridDim.x;
+
+  // World barrier before reading baseline
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Read baseline signal on slot 1
+  uint64_t s1 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)1, kCompletionBits,
+                                        flagcxDeviceMemoryOrderRelaxed);
+
+  // World barrier sync
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Signal loop with per-sender slot model
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer != myRank && (peer < intraBase || peer >= intraBase + intraSize)) {
+      // ECCL: SignalInc maps to SignalSet (write 1 to slot=myRank)
+      flagcxDevNetSignalSigIncS(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                                FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)myRank);
+    }
+  }
+
+  // Wait for all inter-node signals (per-sender slot, value >= 1)
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)peer,
+                            1, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
+  }
+
+  // Final world barrier
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
 }
 
 void launchKernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                             flagcxStream_t stream) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)stream;
+  if (!devCommPtr) return;
+  launchKernelExC<ECCL_INTER_GRID_DIM, ECCL_INTER_BLOCK_DIM, ECCL_INTER_THREAD_DIM>(kernelNetSignalS, stream, devCommPtr);
 }
 
 // ---------------------------------------------------------------------------
@@ -926,20 +1309,64 @@ FLAGCX_GLOBAL_DECORATOR void
 kernelNetPutValueS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                    const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                    size_t putValBase) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)recvMemPtr;
-  (void)putValBase;
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraBase = myRank - intraRank;
+
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) {
+    return;
+  }
+
+  int nInterRanks = nRanks - intraSize;
+  int tid = subThreadIdx.x + threadDim.x * (threadIdx.x + blockDim.x * blockIdx.x);
+  int nthreads = threadDim.x * blockDim.x * gridDim.x;
+
+  // World barrier before reading baseline
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Read baseline signal on slot 1
+  uint64_t s1 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)1, kCompletionBits,
+                                        flagcxDeviceMemoryOrderRelaxed);
+
+  // World barrier sync
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // PutValue loop with per-sender slot model
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    uint64_t val = (uint64_t)myRank * 1000u + (uint64_t)peer;
+    // ECCL: PutValueS_RSigInc maps to SignalSet (write 1 to slot=myRank)
+    flagcxDevNetPutValueS_RSigInc(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                                  recvMemPtr, putValBase + (size_t)myRank * sizeof(uint64_t),
+                                  val, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)myRank);
+  }
+
+  // Wait for all inter-node signals (per-sender slot, value >= 1)
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)peer,
+                            1, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
+  }
+
+  // Final world barrier
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
 }
 
 void launchKernelNetPutValueS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                               const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                               size_t putValBase, flagcxStream_t stream) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)recvMemPtr;
-  (void)putValBase;
-  (void)stream;
+  if (!devCommPtr || !recvMemPtr) return;
+  launchKernelExC<ECCL_INTER_GRID_DIM, ECCL_INTER_BLOCK_DIM, ECCL_INTER_THREAD_DIM>(kernelNetPutValueS, stream, devCommPtr, recvMemPtr, putValBase);
 }
 
 // ---------------------------------------------------------------------------
@@ -982,15 +1409,30 @@ void launchKernelNetGetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 FLAGCX_GLOBAL_DECORATOR void
 kernelWorldBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
-  // TODO, gin not support now
-  (void)devCommPtr;
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) {
+    return;
+  }
+
+  // Test sync mode
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderAcqRel,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Test arrive + wait (split) mode
+  flagcxWorldBarrierArriveS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                            flagcxDeviceMemoryOrderRelease,
+                            flagcxDevNetFenceLevel::Relaxed);
+
+  flagcxWorldBarrierWaitS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderAcquire,
+                          flagcxDevNetFenceLevel::Relaxed);
 }
 
 void launchKernelWorldBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                flagcxStream_t stream) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)stream;
+  if (!devCommPtr) return;
+  launchKernelExC<ECCL_INTER_GRID_DIM, ECCL_INTER_BLOCK_DIM, ECCL_INTER_THREAD_DIM>(kernelWorldBarrierS, stream, devCommPtr);
 }
 
 // ---------------------------------------------------------------------------
@@ -1003,11 +1445,54 @@ kernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                            const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                            const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                            size_t countPerPeer) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)sendMemPtr;
-  (void)recvMemPtr;
-  (void)countPerPeer;
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraBase = myRank - intraRank;
+
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) {
+    return;
+  }
+
+  size_t chunkBytes = countPerPeer * sizeof(float);
+
+  // Read signal baseline
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
+                                        flagcxDeviceMemoryOrderRelaxed);
+
+  // Pre-communication barrier
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  // Sequential put loop with FLAGCX_COOP_BLOCK
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    // ECCL: SignalInc maps to SignalSet (write 1 to slot=myRank)
+    flagcxDevNetPutS_RSigInc(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                             recvMemPtr, (size_t)myRank * chunkBytes,
+                             sendMemPtr, (size_t)peer * chunkBytes,
+                             chunkBytes, FLAGCX_COOP_BLOCK,
+                             (flagcxDevSignal_t)myRank);
+  }
+
+  // Wait for all inter-node signals (per-sender slot, value >= 1)
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)peer,
+                            1, kCompletionBits,
+                            flagcxDeviceMemoryOrderAcquire);
+  }
+
+  // Flush to ensure data visibility
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
+
+  // Post-communication barrier
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
 }
 
 void launchKernelNetOneSidedAlltoAllS(
@@ -1015,12 +1500,8 @@ void launchKernelNetOneSidedAlltoAllS(
     const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
     flagcxStream_t stream) {
-  // TODO, gin not support now
-  (void)devCommPtr;
-  (void)sendMemPtr;
-  (void)recvMemPtr;
-  (void)countPerPeer;
-  (void)stream;
+  if (!devCommPtr || !sendMemPtr || !recvMemPtr) return;
+  launchKernelExC<ECCL_INTER_GRID_DIM, ECCL_INTER_BLOCK_DIM, ECCL_INTER_THREAD_DIM>(kernelNetOneSidedAlltoAllS, stream, devCommPtr, sendMemPtr, recvMemPtr, countPerPeer);
 }
 
 // =========================================================================
