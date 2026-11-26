@@ -543,16 +543,25 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxHeteroCommCloseRegistrations(flagcxHeteroComm_t comm) {
+  if (!comm || !comm->proxyState)
+    return flagcxInvalidArgument;
+  if (comm->registrationsClosed)
+    return flagcxSuccess;
+  FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyStop(comm));
+  FLAGCXCHECKSTRICT(globalRegPool.removeAllP2pHandles(comm));
+  FLAGCXCHECKSTRICT(globalRegPool.removeAllNetHandles(comm));
+  FLAGCXCHECKSTRICT(flagcxProxyCloseRelayImports(comm));
+  comm->registrationsClosed = true;
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm) {
   if (!comm || !comm->proxyState)
     return flagcxInvalidArgument;
   FLAGCXCHECKSTRICT(deviceAdaptor->setDevice(comm->cudaDev));
+  FLAGCXCHECKSTRICT(flagcxHeteroCommCloseRegistrations(comm));
   if (!comm->destroyProxyComplete) {
-    FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyStop(comm));
-    // Registrations need live peer RPC services until imports have closed.
-    FLAGCXCHECKSTRICT(globalRegPool.removeAllP2pHandles(comm));
-    FLAGCXCHECKSTRICT(globalRegPool.removeAllNetHandles(comm));
-    FLAGCXCHECKSTRICT(flagcxProxyCloseRelayImports(comm));
     FLAGCXCHECKSTRICT(flagcxProxyStop(comm));
     FLAGCXCHECKSTRICT(flagcxProxyFinalize(comm));
     comm->destroyProxyComplete = true;
@@ -560,15 +569,76 @@ flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm) {
   return cleanupUniRunnerIpcImports(&comm->proxyState->uniRunnerState);
 }
 
-flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
-  FLAGCXCHECKSTRICT(flagcxHeteroCommPrepareDestroy(comm));
-  if (!comm->importsClosedConfirmed)
+static flagcxResult_t flagcxHeteroCommAgreeIpcClose(flagcxHeteroComm_t comm,
+                                                    flagcxResult_t local) {
+  if (comm->nRanks <= 1)
+    return local;
+  if (!comm->bootstrap)
     return flagcxInvalidUsage;
+  flagcxComm domain = {};
+  domain.rank = comm->rank;
+  domain.nranks = comm->nRanks;
+  domain.bootstrap = comm->bootstrap;
+  flagcxResult_t common = local;
+  FLAGCXCHECKSTRICT(flagcxConvergeBootstrapStatus(&domain, local, &common));
+  return common;
+}
+
+static flagcxResult_t
+flagcxHeteroCommFinalizeInternal(flagcxHeteroComm_t comm) {
+  if (flagcxGetGroupDepth() != 0)
+    return flagcxInvalidUsage;
+  while (comm->closePhase < 4) {
+    flagcxResult_t local = deviceAdaptor->setDevice(comm->cudaDev);
+    FLAGCXCHECKSTRICT(flagcxHeteroCommAgreeIpcClose(comm, local));
+    if (!comm->closeLocalDone) {
+      if (comm->closePhase == 0)
+        local = flagcxHeteroRmaProxyQuiesce(comm);
+      else if (comm->closePhase == 1)
+        local = flagcxHeteroCommCloseRegistrations(comm);
+      else if (comm->closePhase == 2)
+        local = flagcxHeteroCommPrepareDestroy(comm);
+      else {
+        for (int i = 0; local == flagcxSuccess && i < comm->ipcTableSize; ++i)
+          local = releaseIpcTableEntry(&comm->ipcTable[i]);
+      }
+      if (local == flagcxSuccess)
+        comm->closeLocalDone = true;
+    }
+    FLAGCXCHECKSTRICT(flagcxHeteroCommAgreeIpcClose(comm, local));
+    ++comm->closePhase;
+    comm->closeLocalDone = false;
+  }
+  comm->importsClosedConfirmed = true;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHeteroCommFinalize(flagcxHeteroComm_t comm) {
+  if (!comm)
+    return flagcxInvalidArgument;
+  if (comm->importsClosedConfirmed)
+    return flagcxSuccess;
+  if (comm->ownerComm)
+    return flagcxCommFinalize(comm->ownerComm);
+  int expected = 0;
+  if (!__atomic_compare_exchange_n(&comm->closeRunning, &expected, 1, false,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return flagcxInProgress;
+  flagcxResult_t result = flagcxHeteroCommFinalizeInternal(comm);
+  __atomic_store_n(&comm->closeRunning, 0, __ATOMIC_RELEASE);
+  return result;
+}
+
+flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
+  FLAGCXCHECKSTRICT(flagcxHeteroCommFinalize(comm));
   FLAGCXCHECKSTRICT(flagcxProxyDestroy(comm));
   FLAGCXCHECKSTRICT(
       cleanupUniRunnerPersistentState(&comm->proxyState->uniRunnerState));
   FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyRelease(comm));
-  flagcxResult_t proxyResult = comm->destroyProxyResult;
+  if (comm->bootstrap) {
+    FLAGCXCHECKSTRICT(bootstrapClose(comm->bootstrap));
+    comm->bootstrap = nullptr;
+  }
   delete comm->workerPool;
   comm->workerPool = NULL;
   for (int i = 0; i < MAXCHANNELS; i++) {
@@ -610,5 +680,5 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   free(comm->peerInfo);
   free(comm);
 
-  return proxyResult;
+  return flagcxSuccess;
 }

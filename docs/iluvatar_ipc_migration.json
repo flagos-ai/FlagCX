@@ -56,7 +56,8 @@
     {
       "step": 5,
       "description": "Finalize internal imports before local Destroy",
-      "status": "pending"
+      "status": "complete",
+      "validation": "Host/mock: core 249 pass/5 hardware skips, runner 102, RMA 54, service 57, adaptor 66 pass/2 skips, Device API host 45. Four real-bootstrap lifecycle tests passed on every rank at both 2 and 4 ranks. Final C-style core rebuild and owner/retry tests passed; no placement new or lifecycle lambdas in core. Hardware AllGather/local SDK teardown remains pending."
     },
     {
       "step": 6,

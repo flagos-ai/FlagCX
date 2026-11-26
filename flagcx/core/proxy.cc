@@ -352,12 +352,6 @@ static struct flagcxTransportComm *flagcxProxyTransportComm(int transport,
 #define FLAGCX_PROXY_CONN_POOL_SIZE (1 << (FLAGCX_PROXY_CONN_POOL_SIZE_POW2))
 #define FLAGCX_PROXY_CONN_POOL_MASK ((FLAGCX_PROXY_CONN_POOL_SIZE)-1)
 
-struct flagcxProxyConnectionPool {
-  struct flagcxProxyConnection **pools;
-  int banks;
-  int offset;
-};
-
 static flagcxResult_t
 flagcxProxyNewConnection(struct flagcxProxyConnectionPool *pool, int *id) {
   if (pool->offset == FLAGCX_PROXY_CONN_POOL_SIZE) {
@@ -3415,7 +3409,8 @@ flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm) {
   if (!comm || !comm->proxyState || !comm->importsClosedConfirmed)
     return flagcxInvalidUsage;
   auto *state = comm->proxyState;
-  FLAGCXCHECKSTRICT(flagcxProxyFinalize(comm));
+  if (state->initialized == 1 && !state->serviceJoined)
+    return flagcxInvalidUsage;
   FLAGCXCHECKSTRICT(
       flagcxProxyFreeConnections(state->connectionPool, comm, true));
   free(state->connectionPool);

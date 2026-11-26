@@ -1,0 +1,145 @@
+#include "ipc_lifecycle_mock.hpp"
+
+TEST_F(IpcLifecycleMock, FinalizeClosesImportsAndDestroyAloneFreesBacking) {
+  addBackingAndImport();
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_TRUE(comm->finalized);
+  EXPECT_TRUE(comm->internalImportsConfirmed);
+  EXPECT_EQ(closes.size(), 1u);
+  EXPECT_TRUE(frees.empty());
+  EXPECT_EQ(destroyCalls, 0);
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(finalizeCalls, 1);
+  destroySuccessfully();
+  EXPECT_EQ(frees.size(), 2u);
+  EXPECT_EQ(destroyCalls, 1);
+  EXPECT_EQ(syncs, 0);
+}
+
+TEST_F(IpcLifecycleMock, FailedImportKeepsAdmissionClosedAndOwnerRetryable) {
+  addBackingAndImport();
+  failImport = true;
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxRemoteError);
+  EXPECT_FALSE(comm->finalized);
+  EXPECT_FALSE(comm->internalImportsConfirmed);
+  EXPECT_TRUE(frees.empty());
+  EXPECT_EQ(flagcxAllGather(nullptr, nullptr, 0, flagcxFloat, comm, nullptr),
+            flagcxInvalidUsage);
+  EXPECT_EQ(flagcxGroupStart(comm), flagcxInvalidUsage);
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  flagcxDevComm_t view = nullptr;
+  EXPECT_EQ(flagcxDevCommCreate(comm, &reqs, &view), flagcxInvalidUsage);
+  EXPECT_EQ(view, nullptr);
+  failImport = false;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(closes.size(), 2u);
+}
+
+TEST_F(IpcLifecycleMock, FreeFailureRetriesWithoutRepeatingFinalize) {
+  addBackingAndImport();
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  failFree = true;
+  EXPECT_EQ(flagcxCommDestroy(comm), flagcxRemoteError);
+  EXPECT_NE(comm->internalBuffers, nullptr);
+  EXPECT_EQ(finalizeCalls, 1);
+  EXPECT_EQ(destroyCalls, 0);
+  failFree = false;
+  destroySuccessfully();
+  EXPECT_EQ(finalizeCalls, 1);
+  EXPECT_EQ(closes.size(), 1u);
+}
+
+TEST_F(IpcLifecycleMock, EveryNativeAliasIsFinalizedAndDestroyedOnce) {
+  auto first = (flagcxInnerComm_t)0x9000, second = (flagcxInnerComm_t)0xa000;
+  comm->homoComm = comm->tunerInnerComm = first;
+  comm->homoCommMap[TunerCollCategory{}] = first;
+  comm->commMap[flagcxCommTag{}] = second;
+  comm->homoInterComm = second;
+  comm->hostComm = (flagcxInnerComm_t)0xb000;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(finalizeCalls, 3);
+  destroySuccessfully();
+  EXPECT_EQ(destroyCalls, 3);
+}
+
+TEST_F(IpcLifecycleMock, AcceptedNativeFinalizeIsPolledWithoutResubmission) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  nativeResult = flagcxInProgress;
+  pendingPolls = 1;
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxInProgress);
+  EXPECT_FALSE(comm->finalized);
+  EXPECT_EQ(finalizeCalls, 1);
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(finalizeCalls, 1);
+  EXPECT_EQ(asyncPolls, 2);
+}
+
+TEST_F(IpcLifecycleMock, SynchronousNativeFinalizeDoesNotRequireAsyncPoller) {
+  comm->hostComm = (flagcxInnerComm_t)0x9000;
+  host.commGetAsyncError = nullptr;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(finalizeCalls, 1);
+  EXPECT_EQ(asyncPolls, 0);
+  destroySuccessfully();
+  EXPECT_EQ(destroyCalls, 1);
+}
+
+TEST_F(IpcLifecycleMock, NativePendingWithoutPollerNeverInventsCompletion) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  nativeResult = flagcxInProgress;
+  sdk.commGetAsyncError = nullptr;
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxNotSupported);
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxNotSupported);
+  EXPECT_FALSE(comm->finalized);
+  EXPECT_EQ(finalizeCalls, 1);
+  EXPECT_EQ(destroyCalls, 0);
+}
+
+TEST_F(IpcLifecycleMock,
+       ProxyCloseFailureAndLocalFreeFailureKeepTransportOwner) {
+  addTransport();
+  failTransportClose = true;
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxRemoteError);
+  EXPECT_EQ(transportCloses, 1);
+  EXPECT_EQ(transportFrees, 0);
+  failTransportClose = false;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(transportCloses, 2);
+  failTransportFree = true;
+  EXPECT_EQ(flagcxCommDestroy(comm), flagcxRemoteError);
+  EXPECT_NE(comm->heteroComm, nullptr);
+  EXPECT_EQ(transportCloses, 2);
+  failTransportFree = false;
+  destroySuccessfully();
+  EXPECT_EQ(transportCloses, 2);
+  EXPECT_EQ(transportFrees, 2);
+}
+
+TEST_F(IpcLifecycleMock, DeviceSelectionFailureDoesNotStartImportClosure) {
+  addBackingAndImport();
+  failDevice = true;
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxRemoteError);
+  EXPECT_TRUE(closes.empty());
+  EXPECT_EQ(comm->finalizePhase, 0);
+  failDevice = false;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+}
+
+TEST_F(IpcLifecycleMock, PendingPrivateScratchFreeKeepsChildForLocalRetry) {
+  addTransport();
+  auto &state = comm->heteroComm->proxyState->uniRunnerState;
+  state.groupedArScratch = calloc(1, 64);
+  ASSERT_NE(state.groupedArScratch, nullptr);
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  failFree = true;
+  freeError = flagcxInProgress;
+  EXPECT_EQ(flagcxCommDestroy(comm), flagcxInProgress);
+  EXPECT_NE(comm->heteroComm, nullptr);
+  EXPECT_NE(state.groupedArScratch, nullptr);
+  failFree = false;
+  destroySuccessfully();
+  EXPECT_EQ(frees.size(), 1u);
+  EXPECT_EQ(transportFrees, 1);
+}

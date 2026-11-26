@@ -1386,7 +1386,7 @@ destroyRedCompletionCounterPool(flagcxUniRunnerState *runnerState) {
     return flagcxSuccess;
   }
   if (runnerState->redCompletionCountersPool != NULL) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(
+    FLAGCXCHECKSTRICT(deviceAdaptor->deviceFree(
         runnerState->redCompletionCountersPool, flagcxMemDevice, NULL));
     runnerState->redCompletionCountersPool = NULL;
   }
@@ -1447,8 +1447,8 @@ destroyStreamFlagQueue(flagcxUniRunnerState *runnerState) {
   }
 
   if (runnerState->streamFlagsPool != NULL) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(runnerState->streamFlagsPool,
-                                          flagcxMemDevice, NULL));
+    FLAGCXCHECKSTRICT(deviceAdaptor->deviceFree(runnerState->streamFlagsPool,
+                                                flagcxMemDevice, NULL));
     runnerState->streamFlagsPool = NULL;
   }
 
@@ -5360,10 +5360,10 @@ static flagcxResult_t
 closeUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
                               flagcxComm_t comm) {
   if (runnerState->ipcReadyMem != NULL) {
-    FLAGCXCHECK(flagcxDevMemDestroy(comm, runnerState->ipcReadyMem));
+    FLAGCXCHECKSTRICT(flagcxDevMemDestroy(comm, runnerState->ipcReadyMem));
     runnerState->ipcReadyMem = NULL;
   }
-  FLAGCXCHECK(
+  FLAGCXCHECKSTRICT(
       releaseOrphanUniRunnerIpcWindow(comm, runnerState->ipcReadyBuffer));
   runnerState->ipcReadyBuffer = NULL;
   runnerState->ipcReadyCapacity = 0;
@@ -7343,16 +7343,16 @@ flagcxResult_t cleanupUniRunnerIpcImports(flagcxUniRunnerState *state) {
 
 flagcxResult_t
 cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
-  FLAGCXCHECK(cleanupDagScheduler(runnerState));
-  FLAGCXCHECK(destroyStreamFlagQueue(runnerState));
-  FLAGCXCHECK(destroyRedCompletionCounterPool(runnerState));
+  FLAGCXCHECKSTRICT(cleanupDagScheduler(runnerState));
+  FLAGCXCHECKSTRICT(destroyStreamFlagQueue(runnerState));
+  FLAGCXCHECKSTRICT(destroyRedCompletionCounterPool(runnerState));
   if (runnerState == NULL)
     return flagcxSuccess;
-  FLAGCXCHECK(releaseUniRunnerIpcRingInvocation(runnerState));
+  FLAGCXCHECKSTRICT(releaseUniRunnerIpcRingInvocation(runnerState));
 
   if (runnerState->groupedArScratch != NULL) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(runnerState->groupedArScratch,
-                                          flagcxMemDevice, NULL));
+    FLAGCXCHECKSTRICT(deviceAdaptor->deviceFree(runnerState->groupedArScratch,
+                                                flagcxMemDevice, NULL));
     runnerState->groupedArScratch = NULL;
     runnerState->groupedArScratchCapacity = 0;
   }
@@ -7366,13 +7366,11 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
        runnerState->ipcRingScratchBuffer != NULL ||
        runnerState->ipcRingProgressBuffer != NULL))
     return flagcxInternalError;
-  FLAGCXCHECK(destroyUniRunnerIpcDataViews(runnerState));
-  FLAGCXCHECK(closeUniRunnerIpcReadyStorage(runnerState, comm));
+  FLAGCXCHECKSTRICT(destroyUniRunnerIpcDataViews(runnerState));
+  FLAGCXCHECKSTRICT(closeUniRunnerIpcReadyStorage(runnerState, comm));
   runnerState->ipcReadySlots = 0;
   // Only close imports here; Comm frees exporters after peer acknowledgment.
-  // TODO: replace the temporary cross-rank shutdown rendezvous with a lifetime
-  // protocol supporting local communicator teardown.
-  FLAGCXCHECK(closeUniRunnerIpcRingResources(runnerState, comm));
+  FLAGCXCHECKSTRICT(closeUniRunnerIpcRingResources(runnerState, comm));
   runnerState->ipcRingChannels = 0;
   runnerState->ipcRingSimpleBufferBytes = 0;
   runnerState->ipcRingDatatype = flagcxInt8;
@@ -7380,8 +7378,8 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
   runnerState->ipcRingResourcesDirty = false;
   runnerState->ipcOwner = NULL;
   if (runnerState->ipcParentFlagsDevice != NULL) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(runnerState->ipcParentFlagsDevice,
-                                          flagcxMemDevice, NULL));
+    FLAGCXCHECKSTRICT(deviceAdaptor->deviceFree(
+        runnerState->ipcParentFlagsDevice, flagcxMemDevice, NULL));
   }
   runnerState->ipcParentFlagsDevice = NULL;
   runnerState->ipcParentFlagsCount = 0;

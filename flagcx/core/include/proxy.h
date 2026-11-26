@@ -360,6 +360,12 @@ struct flagcxProxyLocalPeer {
   struct flagcxProxyAsyncOp *asyncOps;
 };
 
+struct flagcxProxyConnectionPool {
+  struct flagcxProxyConnection **pools;
+  int banks;
+  int offset;
+};
+
 struct flagcxProxyState {
   int refCount;
   int tpRank;

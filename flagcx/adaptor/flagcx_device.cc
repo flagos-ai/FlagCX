@@ -152,6 +152,7 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
       reqsSize < FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE)
     return flagcxInvalidArgument;
   *devComm = nullptr;
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   if (devApiBackend->kind == flagcxDevApiDefault &&
       comm->commType == flagcxCommunicatorHomo && !useHeteroComm())
     return flagcxNotSupported;
@@ -168,7 +169,7 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
         flagcxConvergeBootstrapStatus(comm, pendingCleanup, &commonCleanup));
     pendingCleanup = commonCleanup;
   }
-  FLAGCXCHECK(pendingCleanup);
+  FLAGCXCHECKSTRICT(pendingCleanup);
   if (comm->devCommCount == INT_MAX)
     return flagcxInvalidUsage;
 
@@ -282,6 +283,9 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
       !comm->ipcClosingImports) {
     if (devComm->retired)
       return flagcxInvalidUsage;
+    for (int slot : {devComm->barrierIpcIndex, devComm->signalIpcSlot})
+      if (slot >= 0)
+        FLAGCXCHECKSTRICT(flagcxCommRetireIpcSlot(comm, slot));
     // Release active registrations so a later DevComm can create a new epoch.
     // Its internal IPC slots remain Comm-owned until Finalize.
     if (comm->heteroComm != nullptr) {
@@ -377,6 +381,7 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
   *devMem = nullptr;
   if (comm == nullptr)
     return flagcxInvalidArgument;
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   flagcxResult_t localPrepare =
       buff == nullptr || size == 0 ? flagcxInvalidArgument : flagcxSuccess;
   if (win != nullptr && win->cleanupStarted)

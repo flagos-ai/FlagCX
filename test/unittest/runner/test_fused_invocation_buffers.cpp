@@ -13,9 +13,13 @@ namespace {
 
 flagcxResult_t syncResult = flagcxSuccess;
 int freeCalls = 0;
+int syncCalls = 0;
 
 flagcxResult_t setDevice(int) { return flagcxSuccess; }
-flagcxResult_t synchronizeDevice() { return syncResult; }
+flagcxResult_t synchronizeDevice() {
+  ++syncCalls;
+  return syncResult;
+}
 flagcxResult_t freeDevice(void *ptr, flagcxMemType_t, flagcxStream_t) {
   ++freeCalls;
   std::free(ptr);
@@ -34,13 +38,14 @@ protected:
     fakeAdaptor.deviceFree = freeDevice;
     deviceAdaptor = &fakeAdaptor;
     syncResult = flagcxSuccess;
-    freeCalls = 0;
+    freeCalls = syncCalls = 0;
   }
 
   void TearDown() override { deviceAdaptor = savedAdaptor; }
 };
 
-TEST_F(FusedInvocationBuffersTest, KeepsBuffersUntilDeviceDrainSucceeds) {
+TEST_F(FusedInvocationBuffersTest,
+       FinalizeRetainsBackingWithoutDeviceWideSync) {
   flagcxComm comm{};
   flagcxHeteroComm hcomm{};
   flagcxProxyState proxy{};
@@ -57,14 +62,16 @@ TEST_F(FusedInvocationBuffersTest, KeepsBuffersUntilDeviceDrainSucceeds) {
   proxy.uniRunnerState.pendingFusedBuffers = buffers;
 
   syncResult = flagcxUnhandledDeviceError;
-  EXPECT_EQ(flagcxFusedDrainPendingBuffers(&comm), flagcxUnhandledDeviceError);
-  EXPECT_EQ(freeCalls, 0);
-  EXPECT_EQ(proxy.uniRunnerState.pendingFusedBuffers, buffers);
-
-  syncResult = flagcxSuccess;
+  comm.ipcClosingImports = true;
   EXPECT_EQ(flagcxFusedDrainPendingBuffers(&comm), flagcxSuccess);
-  EXPECT_EQ(freeCalls, 2);
+  EXPECT_EQ(syncCalls, 0);
+  EXPECT_EQ(freeCalls, 0);
   EXPECT_EQ(proxy.uniRunnerState.pendingFusedBuffers, nullptr);
+  EXPECT_NE(comm.internalBuffers, nullptr);
+  EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxInvalidUsage);
+  comm.internalImportsConfirmed = true;
+  EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
+  EXPECT_EQ(freeCalls, 2);
 }
 
 } // namespace

@@ -26,8 +26,7 @@ extern "C" flagcxResult_t flagcxFusedDrainPendingBuffers(flagcxComm_t comm) {
   auto *state = &comm->heteroComm->proxyState->uniRunnerState;
   if (state->pendingFusedBuffers == nullptr)
     return flagcxSuccess;
-  FLAGCXCHECK(deviceAdaptor->setDevice(comm->heteroComm->cudaDev));
-  FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
+  FLAGCXCHECKSTRICT(deviceAdaptor->setDevice(comm->heteroComm->cudaDev));
 
   bool needsRunnerCleanup = false;
   for (auto *node = state->pendingFusedBuffers; node != nullptr;
@@ -36,6 +35,8 @@ extern "C" flagcxResult_t flagcxFusedDrainPendingBuffers(flagcxComm_t comm) {
   flagcxResult_t cleanupResult =
       needsRunnerCleanup ? cleanupUniRunner(comm) : flagcxSuccess;
 
+  if (cleanupResult != flagcxSuccess)
+    return cleanupResult;
   flagcxResult_t result = cleanupResult;
   auto **link = &state->pendingFusedBuffers;
   while (*link != nullptr) {
@@ -43,16 +44,16 @@ extern "C" flagcxResult_t flagcxFusedDrainPendingBuffers(flagcxComm_t comm) {
     if (cleanupResult == flagcxSuccess)
       buffers->runnerCleanupPending = false;
     if (buffers->counters != nullptr) {
-      flagcxResult_t freeResult = deviceAdaptor->deviceFree(
-          buffers->counters, flagcxMemDevice, nullptr);
+      flagcxResult_t freeResult = flagcxCommReleaseBuffer(
+          comm, buffers->counters, flagcxInternalBufferDevice);
       if (freeResult == flagcxSuccess)
         buffers->counters = nullptr;
       else if (result == flagcxSuccess)
         result = freeResult;
     }
     if (buffers->workspace != nullptr) {
-      flagcxResult_t freeResult = deviceAdaptor->deviceFree(
-          buffers->workspace, flagcxMemDevice, nullptr);
+      flagcxResult_t freeResult = flagcxCommReleaseBuffer(
+          comm, buffers->workspace, flagcxInternalBufferDevice);
       if (freeResult == flagcxSuccess)
         buffers->workspace = nullptr;
       else if (result == flagcxSuccess)

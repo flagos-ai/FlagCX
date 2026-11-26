@@ -165,6 +165,13 @@ flagcxResult_t flagcxEnsureCommReady(flagcxComm_t comm) {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxCommCheckSubmission(flagcxComm_t comm) {
+  if (!comm)
+    return flagcxInvalidArgument;
+  return __atomic_load_n(&comm->closing, __ATOMIC_ACQUIRE) ? flagcxInvalidUsage
+                                                           : flagcxSuccess;
+}
+
 bool useHomoComm(flagcxComm_t comm) {
   return comm->commType == flagcxCommunicatorHomo;
 }
@@ -1813,6 +1820,7 @@ fail_info:
 
 flagcxResult_t flagcxOneSideRegister(flagcxComm_t comm, void *buff,
                                      size_t size) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (comm->heteroComm == nullptr)
     return flagcxNotSupported;
@@ -2142,6 +2150,7 @@ fail_mr:
 
 flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
                                            size_t size, int ptrType) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   const bool isVmmAllocation =
       ptrType == FLAGCX_PTR_CUDA && flagcxOneSideRegistryRangeIsVmm(buff, size);
   return flagcxOneSideSignalRegisterInternal(comm, buff, size, ptrType,
@@ -2184,6 +2193,7 @@ flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
 
 flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
                                             size_t size) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
     return flagcxSuccess;
   }
@@ -2897,6 +2907,7 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         size_t size, flagcxWindow_t *win,
                                         int winFlags,
                                         flagcxMemAllocator_t allocator) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   flagcxResult_t local = win == nullptr || buff == nullptr || size == 0
                              ? flagcxInvalidArgument
                              : flagcxSuccess;
@@ -3694,6 +3705,9 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   FLAGCXCHECK(flagcxCalloc(comm, 1));
   (*comm)->ipcTable = (*comm)->ipcTableInline;
   (*comm)->ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
+  (*comm)->deviceOrdinalValid =
+      deviceAdaptor->getDevice != nullptr &&
+      deviceAdaptor->getDevice(&(*comm)->deviceOrdinal) == flagcxSuccess;
   (*comm)->rank = rank;
   (*comm)->nranks = nranks;
   (*comm)->nclusters = -1;
@@ -3977,6 +3991,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     FLAGCXCHECK(bootstrapCollBroadcast(
         state, rank, nranks, 0, (void *)&heteroCommId, sizeof(heteroCommId)));
 
+    (*comm)->internalBuffersNeedPeerClose = true;
     // call flagcxHeteroCommInitRank
     FLAGCXCHECK(flagcxHeteroCommInitRank(&(*comm)->heteroComm, nranks,
                                          heteroCommId, rank));
@@ -4099,252 +4114,345 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  FLAGCXCHECK(
-      cclAdaptors[flagcxCCLAdaptorDevice]->commFinalize(comm->homoComm));
+static flagcxResult_t flagcxCommCloseLocalOwners(flagcxComm_t comm) {
 
-  if (!useHomoComm(comm) || useHeteroComm()) {
-    // Finalize initiates local RMA quiescence without adding a blocking rank
-    // collective. This preserves serial multi-rank lifecycle calls in one
-    // process; transport-specific peer shutdown remains in commCleanup.
-    FLAGCXCHECK(flagcxCommQuiesce(comm));
+  FLAGCXCHECKSTRICT(flagcxCommCloseRetiredDevComms(comm));
+  // A failed create rollback can exist for any Device API backend. Retry it
+  // while the outer communicator and its vendor communicator are still live.
+  FLAGCXCHECKSTRICT(flagcxDevCommRetryPendingCleanup(comm));
+
+  // Custom-op staged windows are also present in symWindows. Remove their
+  // device objects and explicit owners first so the generic live-window drain
+  // below cannot free a handle still referenced by devCommState.
+  TRACE(FLAGCX_INIT, "flagcxCommFinalize custom-op cleanup begin comm=%p",
+        comm);
+  if (comm->devCommState != nullptr && comm->devCommState->devComm != nullptr) {
+    const flagcxDevComm_t owner = comm->devCommState->devComm;
+    while (comm->activeDevComms != owner) {
+      if (comm->activeDevComms == nullptr)
+        return flagcxInvalidUsage;
+      FLAGCXCHECKSTRICT(flagcxDevCommDestroy(comm, comm->activeDevComms));
+    }
+  }
+  FLAGCXCHECKSTRICT(flagcxDevCommStateDestroy(comm));
+  TRACE(FLAGCX_INIT, "flagcxCommFinalize custom-op cleanup end comm=%p", comm);
+
+  // Public Windows must have no remaining device views or borrowed IPC
+  // references before their local mappings are released. UniRunner-owned
+  // views are destroyed later by its own state cleanup.
+  for (flagcxDevMem_t mem = comm->activeDevMems; mem != nullptr;) {
+    flagcxDevMem_t next = mem->activeNext;
+    if (!mem->runnerOwned)
+      FLAGCXCHECKSTRICT(flagcxDevMemDestroy(comm, mem));
+    mem = next;
+  }
+  while (comm->activeDevComms != nullptr)
+    FLAGCXCHECKSTRICT(flagcxDevCommDestroy(comm, comm->activeDevComms));
+
+  // Public vendor windows are not part of the symmetric-heap list.
+  for (flagcxWindow_t win = comm->publicWindows; win != nullptr;
+       win = win->nextOwned) {
+    if (win->vendorBase != nullptr) {
+      FLAGCXCHECKSTRICT(flagcxCommWindowDeregisterInternal(
+          comm, win, flagcxMemCCL, flagcxSymCleanupLocal));
+    }
+  }
+
+  if (comm->heteroComm != nullptr) {
+    // Each stage retains ownership on failure so the same rank can retry the
+    // call safely after transport shutdown coordination has completed.
+    FLAGCXCHECKSTRICT(flagcxOneSideStagingDeregister(comm));
+    FLAGCXCHECKSTRICT(flagcxOneSideSignalDeregister(comm));
+    FLAGCXCHECKSTRICT(
+        flagcxSymRetryPendingCleanup(comm->heteroComm, flagcxSymCleanupLocal));
+    // Applications are allowed to destroy a communicator without explicitly
+    // deregistering every window. Release local mappings before the shared MR
+    // table and its connections disappear. Each window remains linked if a
+    // fallible teardown step fails, so flagcxCommDestroy itself is retryable.
+    while (comm->heteroComm != NULL && comm->heteroComm->symWindows != NULL) {
+      flagcxWindow_t liveWindow = comm->heteroComm->symWindows->owner;
+      if (liveWindow == NULL)
+        return flagcxInternalError;
+      FLAGCXCHECKSTRICT(flagcxCommWindowDeregisterInternal(
+          comm, liveWindow, flagcxMemCCL, flagcxSymCleanupLocal));
+    }
+    FLAGCXCHECKSTRICT(flagcxOneSideDeregister(comm->heteroComm));
+    FLAGCXCHECKSTRICT(flagcxSymLsaDestroy(comm->heteroComm));
+  }
+
+  return flagcxSuccess;
+}
+
+static void flagcxCommAppendNativeOwner(struct flagcxCommNativeOwner *owners,
+                                        unsigned int *count,
+                                        flagcxInnerComm_t handle, bool host) {
+  if (handle == NULL)
+    return;
+  for (unsigned int i = 0; i < *count; ++i)
+    if (owners[i].handle == handle && owners[i].host == host)
+      return;
+  owners[*count].handle = handle;
+  owners[*count].host = host;
+  ++*count;
+}
+
+static flagcxResult_t flagcxCommCatalogNativeOwners(flagcxComm_t comm) {
+  struct flagcxCommNativeOwner *owners;
+  size_t capacity;
+  unsigned int count = 0;
+  if (comm->nativeCatalogReady)
+    return flagcxSuccess;
+  capacity = 4 + comm->homoCommMap.size() + comm->commMap.size() +
+             comm->homoBestCommMap.size();
+  FLAGCXCHECK(flagcxCalloc(&owners, capacity));
+  if (!comm->homoCommMap.empty())
+    for (std::map<TunerCollCategory, flagcxInnerComm_t>::const_iterator it =
+             comm->homoCommMap.begin();
+         it != comm->homoCommMap.end(); ++it)
+      flagcxCommAppendNativeOwner(owners, &count, it->second, false);
+  if (!comm->commMap.empty())
+    for (std::map<flagcxCommTag, flagcxInnerComm_t>::const_iterator it =
+             comm->commMap.begin();
+         it != comm->commMap.end(); ++it)
+      flagcxCommAppendNativeOwner(owners, &count, it->second, false);
+  if (!comm->homoBestCommMap.empty())
+    for (std::map<TunerCollCategory, flagcxInnerComm_t>::const_iterator it =
+             comm->homoBestCommMap.begin();
+         it != comm->homoBestCommMap.end(); ++it)
+      flagcxCommAppendNativeOwner(owners, &count, it->second, false);
+  flagcxCommAppendNativeOwner(owners, &count, comm->homoComm, false);
+  flagcxCommAppendNativeOwner(owners, &count, comm->homoInterComm, false);
+  flagcxCommAppendNativeOwner(owners, &count, comm->tunerInnerComm, false);
+  flagcxCommAppendNativeOwner(owners, &count, comm->hostComm, true);
+  comm->nativeOwners = owners;
+  comm->nativeOwnerCount = count;
+  comm->nativeCatalogReady = true;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxCommFinalizeNativeOwners(flagcxComm_t comm) {
+  flagcxResult_t result = flagcxSuccess;
+  FLAGCXCHECKSTRICT(flagcxCommCatalogNativeOwners(comm));
+  while (comm->nativeFinalizeIndex < comm->nativeOwnerCount) {
+    struct flagcxCommNativeOwner *owner =
+        &comm->nativeOwners[comm->nativeFinalizeIndex];
+    struct flagcxCCLAdaptor *adaptor =
+        cclAdaptors[owner->host ? flagcxCCLAdaptorHost
+                                : flagcxCCLAdaptorDevice];
+    if (!adaptor || !adaptor->commFinalize)
+      return flagcxNotSupported;
+    if (!owner->accepted) {
+      FLAGCXCHECKGOTO(adaptor->commFinalize(owner->handle), result, fail);
+      owner->accepted = true;
+      owner->pending = result == flagcxInProgress;
+    }
+    if (owner->pending && !adaptor->commGetAsyncError)
+      return flagcxNotSupported;
+    if (owner->pending) {
+      flagcxResult_t async = flagcxInProgress;
+      FLAGCXCHECKSTRICT(adaptor->commGetAsyncError(owner->handle, &async));
+      if (async != flagcxSuccess)
+        return async;
+    }
+    ++comm->nativeFinalizeIndex;
+  }
+  return flagcxSuccess;
+fail:
+  return result;
+}
+
+static flagcxResult_t flagcxCommDestroyNativeOwners(flagcxComm_t comm) {
+  for (unsigned int i = 0; i < comm->nativeOwnerCount; ++i) {
+    struct flagcxCommNativeOwner *owner = &comm->nativeOwners[i];
+    flagcxInnerComm_t handle = owner->handle;
+    if (!handle)
+      continue;
+    struct flagcxCCLAdaptor *adaptor =
+        cclAdaptors[owner->host ? flagcxCCLAdaptorHost
+                                : flagcxCCLAdaptorDevice];
+    FLAGCXCHECKSTRICT(adaptor->commDestroy(handle));
+    if (owner->host)
+      comm->hostComm = nullptr;
+    else {
+      if (comm->homoComm == handle)
+        comm->homoComm = nullptr;
+      if (comm->homoInterComm == handle)
+        comm->homoInterComm = nullptr;
+      if (comm->tunerInnerComm == handle)
+        comm->tunerInnerComm = nullptr;
+      if (!comm->homoCommMap.empty())
+        for (std::map<TunerCollCategory, flagcxInnerComm_t>::iterator it =
+                 comm->homoCommMap.begin();
+             it != comm->homoCommMap.end(); ++it)
+          if (it->second == handle)
+            it->second = NULL;
+      if (!comm->commMap.empty())
+        for (std::map<flagcxCommTag, flagcxInnerComm_t>::iterator it =
+                 comm->commMap.begin();
+             it != comm->commMap.end(); ++it)
+          if (it->second == handle)
+            it->second = NULL;
+      if (!comm->homoBestCommMap.empty())
+        for (std::map<TunerCollCategory, flagcxInnerComm_t>::iterator it =
+                 comm->homoBestCommMap.begin();
+             it != comm->homoBestCommMap.end(); ++it)
+          if (it->second == handle)
+            it->second = NULL;
+    }
+    owner->handle = nullptr;
   }
   return flagcxSuccess;
 }
 
-static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
-                                                    int stage) {
-  if (stage == 0) {
-    // Drain local producers before any rank enters transport shutdown.
-    if (!useHomoComm(comm) || useHeteroComm())
-      FLAGCXCHECK(flagcxCommQuiesce(comm));
-    FLAGCXCHECK(flagcxFusedDrainPendingBuffers(comm));
-  }
-  if (stage == 1) {
-    if (!useHomoComm(comm) || useHeteroComm())
-      FLAGCXCHECK(flagcxCommCleanup(comm));
-  }
-  if (stage == 2) {
-    comm->ipcClosingImports = true;
-    FLAGCXCHECKSTRICT(flagcxCommCloseRetiredDevComms(comm));
-    // A failed create rollback can exist for any Device API backend. Retry it
-    // while the outer communicator and its vendor communicator are still live.
-    flagcxResult_t cleanupResult = flagcxDevCommRetryPendingCleanup(comm);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
+static flagcxResult_t flagcxCommAgreeIpcClose(flagcxComm_t comm,
+                                              flagcxResult_t local) {
+  if (!comm->internalBuffersNeedPeerClose || comm->nranks <= 1)
+    return local;
+  if (!comm->bootstrap)
+    return flagcxInvalidUsage;
+  flagcxResult_t common = local;
+  FLAGCXCHECKSTRICT(flagcxConvergeBootstrapStatus(comm, local, &common));
+  return common;
+}
 
-    // Custom-op staged windows are also present in symWindows. Remove their
-    // device objects and explicit owners first so the generic live-window drain
-    // below cannot free a handle still referenced by devCommState.
-    TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup begin comm=%p",
-          comm);
-    if (comm->devCommState != nullptr &&
-        comm->devCommState->devComm != nullptr) {
-      const flagcxDevComm_t owner = comm->devCommState->devComm;
-      while (comm->activeDevComms != owner) {
-        if (comm->activeDevComms == nullptr)
-          return flagcxInvalidUsage;
-        FLAGCXCHECK(flagcxDevCommDestroy(comm, comm->activeDevComms));
-      }
+static flagcxResult_t flagcxCommFinalizePhase(flagcxComm_t comm, int phase) {
+  switch (phase) {
+    case 0:
+      if (comm->heteroComm)
+        FLAGCXCHECKSTRICT(flagcxCommQuiesce(comm));
+      return flagcxFusedDrainPendingBuffers(comm);
+    case 1:
+      return comm->heteroComm ? flagcxCommCleanup(comm) : flagcxSuccess;
+    case 2:
+      return flagcxCommCloseLocalOwners(comm);
+    case 3:
+      return comm->heteroComm
+                 ? flagcxHeteroCommCloseRegistrations(comm->heteroComm)
+                 : flagcxSuccess;
+    case 4:
+      if (comm->heteroComm)
+        FLAGCXCHECKSTRICT(flagcxHeteroCommPrepareDestroy(comm->heteroComm));
+      while (comm->activeDevMems)
+        FLAGCXCHECKSTRICT(flagcxDevMemDestroy(comm, comm->activeDevMems));
+      return flagcxSuccess;
+    case 5:
+      return flagcxCommCleanupIpcTable(comm);
+    case 6:
+      return flagcxCommFinalizeNativeOwners(comm);
+    default:
+      return flagcxInternalError;
+  }
+}
+
+static flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
+  if (comm->finalized)
+    return flagcxSuccess;
+  if (flagcxGetGroupDepth() != 0)
+    return flagcxInvalidUsage;
+  __atomic_store_n(&comm->closing, true, __ATOMIC_RELEASE);
+  comm->ipcClosingImports = true;
+  // All user streams/kernels must already be complete. Only internal
+  // producers and owned mappings are drained here; no tail events are added.
+  while (comm->finalizePhase < 7) {
+    flagcxResult_t local = flagcxSuccess;
+    if (comm->deviceOrdinalValid)
+      local = deviceAdaptor->setDevice(comm->deviceOrdinal);
+    // Some retained backend cleanup paths contain existing collectives.
+    FLAGCXCHECKSTRICT(flagcxCommAgreeIpcClose(comm, local));
+    if (!comm->finalizeLocalDone) {
+      local = flagcxCommFinalizePhase(comm, comm->finalizePhase);
+      if (local == flagcxSuccess)
+        comm->finalizeLocalDone = true;
     }
-    cleanupResult = flagcxDevCommStateDestroy(comm);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
-    TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup end comm=%p", comm);
-
-    // Public Windows must have no remaining device views or borrowed IPC
-    // references before their local mappings are released. UniRunner-owned
-    // views are destroyed later by its own state cleanup.
-    for (flagcxDevMem_t mem = comm->activeDevMems; mem != nullptr;) {
-      flagcxDevMem_t next = mem->activeNext;
-      if (!mem->runnerOwned)
-        FLAGCXCHECK(flagcxDevMemDestroy(comm, mem));
-      mem = next;
-    }
-    while (comm->activeDevComms != nullptr)
-      FLAGCXCHECK(flagcxDevCommDestroy(comm, comm->activeDevComms));
-
-    // Public vendor windows are not part of the symmetric-heap list.
-    for (flagcxWindow_t win = comm->publicWindows; win != nullptr;
-         win = win->nextOwned) {
-      if (win->vendorBase != nullptr) {
-        cleanupResult = flagcxCommWindowDeregisterInternal(
-            comm, win, flagcxMemCCL, flagcxSymCleanupLocal);
-        if (cleanupResult != flagcxSuccess)
-          return cleanupResult;
-      }
-    }
-
-    if (!useHomoComm(comm) || useHeteroComm()) {
-      // Each stage retains ownership on failure so the same rank can retry the
-      // call safely after transport shutdown coordination has completed.
-      cleanupResult = flagcxOneSideStagingDeregister(comm);
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-      cleanupResult = flagcxOneSideSignalDeregister(comm);
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-      cleanupResult =
-          flagcxSymRetryPendingCleanup(comm->heteroComm, flagcxSymCleanupLocal);
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-      // Applications are allowed to destroy a communicator without explicitly
-      // deregistering every window. Release local mappings before the shared MR
-      // table and its connections disappear. Each window remains linked if a
-      // fallible teardown step fails, so flagcxCommDestroy itself is retryable.
-      while (comm->heteroComm != NULL && comm->heteroComm->symWindows != NULL) {
-        flagcxWindow_t liveWindow = comm->heteroComm->symWindows->owner;
-        if (liveWindow == NULL)
-          return flagcxInternalError;
-        cleanupResult = flagcxCommWindowDeregisterInternal(
-            comm, liveWindow, flagcxMemCCL, flagcxSymCleanupLocal);
-        if (cleanupResult != flagcxSuccess)
-          return cleanupResult;
-      }
-      cleanupResult = flagcxOneSideDeregister(comm->heteroComm);
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-      cleanupResult = flagcxSymLsaDestroy(comm->heteroComm);
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-    }
+    FLAGCXCHECKSTRICT(flagcxCommAgreeIpcClose(comm, local));
+    ++comm->finalizePhase;
+    comm->finalizeLocalDone = false;
   }
+  comm->internalImportsConfirmed = true;
+  if (comm->heteroComm)
+    comm->heteroComm->importsClosedConfirmed = true;
+  __atomic_store_n(&comm->finalized, true, __ATOMIC_RELEASE);
+  return flagcxSuccess;
+}
 
-  if (stage == 3) {
-    // Keep the existing homo-before-hetero teardown order. Clear each owner
-    // only after its destruction succeeds so a later stage can be retried.
-    free(comm->clusterIds);
-    comm->clusterIds = NULL;
-    free(comm->clusterSizes);
-    comm->clusterSizes = NULL;
-    free(comm->globalRank2HomoRank);
-    comm->globalRank2HomoRank = NULL;
-    free(comm->localRankToRank);
-    comm->localRankToRank = NULL;
-    free(comm->c2cSchedule);
-    comm->c2cSchedule = NULL;
-    free(comm->clusterInterRanks);
-    comm->clusterInterRanks = NULL;
+flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
+  FLAGCXCHECKSTRICT(flagcxEnsureCommReady(comm));
+  int expected = 0;
+  if (!__atomic_compare_exchange_n(&comm->lifecycleRunning, &expected, 1, false,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return flagcxInProgress;
+  flagcxResult_t result = flagcxCommFinalizeInternal(comm);
+  __atomic_store_n(&comm->lifecycleRunning, 0, __ATOMIC_RELEASE);
+  return result;
+}
 
-    TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup begin comm=%p", comm);
-    if (comm->tuner) {
-      size_t homoCommIndex = 0;
-      for (auto &item : comm->homoCommMap) {
-        if (item.second != nullptr) {
-          TRACE(FLAGCX_INIT,
-                "flagcxCommDestroy homo comm begin comm=%p index=%zu inner=%p",
-                comm, homoCommIndex, item.second);
-          FLAGCXCHECK(
-              cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(item.second));
-          item.second = nullptr;
-        }
-        homoCommIndex++;
-      }
-    } else if (comm->homoComm != nullptr) {
-      FLAGCXCHECK(
-          cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoComm));
-      comm->homoComm = nullptr;
+static flagcxResult_t flagcxCommDestroyResources(flagcxComm_t comm) {
+  if (comm->destroyPhase == 0) {
+    if (comm->deviceOrdinalValid)
+      FLAGCXCHECKSTRICT(deviceAdaptor->setDevice(comm->deviceOrdinal));
+    FLAGCXCHECKSTRICT(flagcxCommFreeInternalBuffers(comm));
+    FLAGCXCHECKSTRICT(flagcxCommDestroyNativeOwners(comm));
+    if (comm->heteroComm) {
+      FLAGCXCHECKSTRICT(flagcxHeteroCommDestroy(comm->heteroComm));
+      comm->heteroComm = nullptr;
     }
-    TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup end comm=%p", comm);
+    if (comm->bootstrap) {
+      FLAGCXCHECKSTRICT(bootstrapClose(comm->bootstrap));
+      comm->bootstrap = nullptr;
+    }
+    if (comm->tuner && comm->tunerContext) {
+      FLAGCXCHECKSTRICT(comm->tuner->destroy(comm->tunerContext));
+      comm->tunerContext = nullptr;
+    }
+    comm->destroyPhase = 1;
   }
-
-  if (stage == 4) {
-    if (!useHomoComm(comm) || useHeteroComm())
-      FLAGCXCHECK(flagcxHeteroCommPrepareDestroy(comm->heteroComm));
-    while (comm->activeDevMems != nullptr)
-      FLAGCXCHECK(flagcxDevMemDestroy(comm, comm->activeDevMems));
+  if (!(comm->pluginDoneMask & 1)) {
+    FLAGCXCHECKSTRICT(flagcxNetAdaptorPluginFinalize());
+    comm->pluginDoneMask |= 1;
   }
-
-  if (stage == 5) {
-    // The proxy and UniRunner state are drained before the remaining IPC
-    // table entries are closed.
-    FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
+  if (!(comm->pluginDoneMask & 2)) {
+    FLAGCXCHECKSTRICT(flagcxCCLAdaptorPluginFinalize());
+    comm->pluginDoneMask |= 2;
   }
-
+  if (!(comm->pluginDoneMask & 4)) {
+    FLAGCXCHECKSTRICT(flagcxDeviceAdaptorPluginFinalize());
+    comm->pluginDoneMask |= 4;
+  }
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  flagcxResult_t destroyResult = flagcxSuccess;
-  TRACE(FLAGCX_INIT,
-        "flagcxCommDestroy begin comm=%p rank=%d tuner=%p homoComm=%p "
-        "homoCommMapSize=%zu commMapSize=%zu",
-        comm, comm->rank, comm->tuner, comm->homoComm, comm->homoCommMap.size(),
-        comm->commMap.size());
-
-  if (comm->destroyPhase < 7) {
-    // TODO: internal IPC (including UniRunner ready/scratch/progress) currently
-    // requires a temporary cross-rank shutdown rendezvous. Ranks that entered
-    // collective internal-resource creation must enter destroy concurrently,
-    // including retries after a reported cleanup failure. Replace this with a
-    // lifetime protocol supporting the public local-destroy contract.
-    for (int stage = 0; stage < 6; ++stage) {
-      flagcxResult_t local = flagcxSuccess;
-      if (comm->destroyPhase <= stage) {
-        local = flagcxCommPrepareDestroyStage(comm, stage);
-        if (local == flagcxSuccess)
-          comm->destroyPhase = stage + 1;
-      }
-      flagcxResult_t common = local;
-      if (comm->internalBuffersNeedPeerClose)
-        FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, local, &common));
-      if (common != flagcxSuccess)
-        return common;
-    }
-    // Every participating rank has now closed all imports successfully.
-    // A later allocation-free failure needs only a local destroy retry.
-    comm->destroyPhase = 7;
-    comm->internalImportsConfirmed = true;
-    if (comm->heteroComm)
-      comm->heteroComm->importsClosedConfirmed = true;
+  FLAGCXCHECKSTRICT(flagcxCommFinalize(comm));
+  int expected = 0;
+  if (!__atomic_compare_exchange_n(&comm->lifecycleRunning, &expected, 1, false,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return flagcxInProgress;
+  flagcxResult_t result = flagcxCommDestroyResources(comm);
+  if (result != flagcxSuccess) {
+    __atomic_store_n(&comm->lifecycleRunning, 0, __ATOMIC_RELEASE);
+    return result;
   }
-  FLAGCXCHECK(flagcxCommFreeInternalBuffers(comm));
-
-  if (!useHomoComm(comm) || useHeteroComm()) {
-    // The proxy and UniRunner resources were prepared above.
-    TRACE(FLAGCX_INIT,
-          "flagcxCommDestroy backend cleanup begin comm=%p heteroComm=%p", comm,
-          comm->heteroComm);
-    // Release the retained host state after all fallible device frees.
-    TRACE(FLAGCX_INIT,
-          "flagcxCommDestroy hetero cleanup begin comm=%p heteroComm=%p", comm,
-          comm->heteroComm);
-    destroyResult = flagcxHeteroCommDestroy(comm->heteroComm);
-    TRACE(FLAGCX_INIT, "flagcxCommDestroy hetero cleanup end comm=%p result=%d",
-          comm, destroyResult);
-    // Destroy host comm
-    if (useHostComm()) {
-      FLAGCXCHECK(
-          cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->hostComm));
-    }
-  }
-
-  // Destroy bootstrap state and net
-  bootstrapClose(comm->bootstrap);
-
-  // Destroy tuner
-  if (comm->tuner) {
-    comm->tuner->destroy(comm->tunerContext);
-  }
-
-  // Finalize net adaptor plugin (dlclose)
-  FLAGCXCHECK(flagcxNetAdaptorPluginFinalize());
-
-  // Finalize device/CCL adaptor plugins (ref-counted)
-  flagcxCCLAdaptorPluginFinalize();
-  flagcxResult_t devicePluginResult = flagcxDeviceAdaptorPluginFinalize();
-
-  while (comm->publicWindows != nullptr) {
+  while (comm->publicWindows) {
     flagcxWindow_t win = comm->publicWindows;
     comm->publicWindows = win->nextOwned;
     free(win);
   }
   if (comm->ipcTable != comm->ipcTableInline)
     free(comm->ipcTable);
+  free(comm->clusterIds);
+  free(comm->clusterSizes);
+  free(comm->globalRank2HomoRank);
+  free(comm->localRankToRank);
+  free(comm->c2cSchedule);
+  free(comm->clusterInterRanks);
+  free(comm->nativeOwners);
+  comm->homoCommMap.clear();
+  comm->commMap.clear();
+  comm->homoBestCommMap.clear();
+  std::vector<std::vector<int>>().swap(comm->clusterInterRankList);
+  std::vector<flagcxVendorType>().swap(comm->clusterVendorMap);
   free(comm);
-  return destroyResult != flagcxSuccess ? destroyResult : devicePluginResult;
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {
@@ -4478,6 +4586,7 @@ flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
 }
 
 flagcxResult_t flagcxBarrier(flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   void *barrierBuff;
   deviceAdaptor->deviceMalloc(&barrierBuff, comm->nranks, flagcxMemDevice,
                               stream);
@@ -4494,6 +4603,7 @@ flagcxResult_t flagcxReduce(const void *sendbuff, void *recvbuff, size_t count,
                             flagcxDataType_t datatype, flagcxRedOp_t op,
                             int root, flagcxComm_t comm,
                             flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->reduce(
@@ -4519,6 +4629,7 @@ flagcxResult_t flagcxReduce(const void *sendbuff, void *recvbuff, size_t count,
 flagcxResult_t flagcxGather(const void *sendbuff, void *recvbuff, size_t count,
                             flagcxDataType_t datatype, int root,
                             flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->gather(
@@ -4544,6 +4655,7 @@ flagcxResult_t flagcxGather(const void *sendbuff, void *recvbuff, size_t count,
 flagcxResult_t flagcxScatter(const void *sendbuff, void *recvbuff, size_t count,
                              flagcxDataType_t datatype, int root,
                              flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->scatter(
@@ -4570,6 +4682,7 @@ flagcxResult_t flagcxBroadcast(const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
                                int root, flagcxComm_t comm,
                                flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->broadcast(
@@ -4596,6 +4709,7 @@ flagcxResult_t flagcxAllReduce(const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
                                flagcxRedOp_t op, flagcxComm_t comm,
                                flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
 
   // Try custom allreduce if registered
@@ -4642,6 +4756,7 @@ flagcxResult_t flagcxReduceScatter(const void *sendbuff, void *recvbuff,
                                    size_t recvcount, flagcxDataType_t datatype,
                                    flagcxRedOp_t op, flagcxComm_t comm,
                                    flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->reduceScatter(
@@ -4667,6 +4782,7 @@ flagcxResult_t flagcxReduceScatter(const void *sendbuff, void *recvbuff,
 flagcxResult_t flagcxAllGather(const void *sendbuff, void *recvbuff,
                                size_t sendcount, flagcxDataType_t datatype,
                                flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->allGather(
@@ -4687,6 +4803,7 @@ flagcxResult_t flagcxAllGather(const void *sendbuff, void *recvbuff,
 flagcxResult_t flagcxAlltoAll(const void *sendbuff, void *recvbuff,
                               size_t count, flagcxDataType_t datatype,
                               flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->alltoAll(
@@ -4709,6 +4826,7 @@ flagcxResult_t flagcxAlltoAllv(const void *sendbuff, size_t *sendcounts,
                                size_t *recvcounts, size_t *rdispls,
                                flagcxDataType_t datatype, flagcxComm_t comm,
                                flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
 
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
@@ -4734,6 +4852,7 @@ flagcxResult_t flagcxAlltoAllv(const void *sendbuff, size_t *sendcounts,
 flagcxResult_t flagcxSend(const void *sendbuff, size_t count,
                           flagcxDataType_t datatype, int peer,
                           flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->send(sendbuff, count, datatype,
@@ -4754,6 +4873,7 @@ flagcxResult_t flagcxSend(const void *sendbuff, size_t count,
 flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
                           flagcxDataType_t datatype, int peer,
                           flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->recv(recvbuff, count, datatype,
@@ -5003,6 +5123,8 @@ flagcxResult_t flagcxWaitCounter(flagcxComm_t comm, uint64_t target) {
 }
 
 flagcxResult_t flagcxGroupStart(flagcxComm_t comm) {
+  if (comm)
+    FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->groupStart());
   } else if (comm == NULL || useHomoComm(comm)) {
