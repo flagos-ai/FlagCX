@@ -1,7 +1,7 @@
 # Device API bitcode
 
 FlagCX can build Device API LLVM bitcode for NVIDIA CUDA, Iluvatar CoreX,
-Hygon DU, PPU, and MetaX MACA. A kernel consumer links `libflagcx_device.bc` and
+Hygon DU, MUSA, PPU, and MetaX MACA. A kernel consumer links `libflagcx_device.bc` and
 includes the headers from the same build. Choose an architecture supported by
 the installed SDK.
 
@@ -18,6 +18,9 @@ make USE_ILUVATAR=1 DEVICE_BITCODE_ARCH=ivcore11 device_bitcode
 
 make USE_DU=1 DEVICE_HOME=/opt/dtk CCL_HOME=/opt/dtk \
   DEVICE_BITCODE_ARCH=gfx906 device_bitcode
+
+make USE_MUSA=1 DEVICE_HOME=/usr/local/musa CCL_HOME=/usr/local/musa \
+  DEVICE_BITCODE_ARCH=mp_31 BUILDDIR="$PWD/build/musa-bc" device_bitcode
 
 make USE_PPU=1 DEVICE_HOME=/usr/local/PPU_SDK \
   DEVICE_BITCODE_ARCH=ppu001 BUILDDIR="$PWD/build/ppu-bc" device_bitcode
@@ -39,6 +42,25 @@ host library's device kernels and the bitcode. Test kernels reuse the platform
 compiler flags. Ordinary builds default to `ivcore11` when the variable is
 unset; the root `device_bitcode` target requires an explicit architecture.
 The Iluvatar bitcode currently supports only `ivcore11`.
+
+## MUSA architecture selection
+
+For MUSA, `DEVICE_BITCODE_ARCH` selects the same `--offload-arch` for the
+device kernels embedded in `libflagcx.so` and for the Device API bitcode.
+It takes precedence over `MUSA_ARCH`, including when both are passed on the
+command line. Ordinary builds without `DEVICE_BITCODE_ARCH` continue to use
+`MUSA_ARCH`, which defaults to `mp_31`. The root `device_bitcode` target still
+requires an explicit `DEVICE_BITCODE_ARCH`.
+
+By default the build uses `mcc`, `opt`, `llvm-dis` and `llvm-as` from
+`$(DEVICE_HOME)/bin`. Set `MUSA_LLVM_BIN` for a different tool directory, or
+override `MCC`, `OPT`, `LLVM_DIS` and `LLVM_AS` individually, using matching
+SDK tools. As in native kernel builds, SDK device C++ wrappers precede the
+host C++ headers discovered through `CXX`. The readable IR is
+`build/musa-bc/obj/llvm_ir/libflagcx_device.ll`; its target CPU must match the
+architecture chosen above. Removing only `lib/libflagcx_device.bc` permits
+reassembly from the retained IR. Use a separate build directory for a
+different architecture.
 
 ## PPU Device IR for FlagTree
 

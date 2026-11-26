@@ -9,8 +9,10 @@ make -C test/perf host_api -j USE_MUSA=1 COMPILE_KERNEL=1
 ```
 
 `DEVICE_HOME` and `CCL_HOME` default to `/usr/local/musa`. The default target
-architecture is `MUSA_ARCH=mp_31`. The library retains compiler-managed kernel
-image registration and the MUSA fatbin export map.
+architecture is `MUSA_ARCH=mp_31`. When set, `DEVICE_BITCODE_ARCH` takes
+precedence over `MUSA_ARCH` so the native kernels and exported Device API
+bitcode use the same architecture. The library retains compiler-managed
+kernel image registration and the MUSA fatbin export map.
 
 ## Supported execution paths
 
