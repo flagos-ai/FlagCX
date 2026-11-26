@@ -454,7 +454,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "061890f32fe8e3bff63a48a078beed72084e2baa89c41ea985465aea8e2d8637",
       "audit_start_sha256": "061890f32fe8e3bff63a48a078beed72084e2baa89c41ea985465aea8e2d8637",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "061890f32fe8e3bff63a48a078beed72084e2baa89c41ea985465aea8e2d8637",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/configs/ascend.yml",
@@ -462,7 +464,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "3d39c52f3c668232e2cb2e5ccb53e640aafe11049e94e4995be61b167f6c1471",
       "audit_start_sha256": "3d39c52f3c668232e2cb2e5ccb53e640aafe11049e94e4995be61b167f6c1471",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "3d39c52f3c668232e2cb2e5ccb53e640aafe11049e94e4995be61b167f6c1471",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/configs/cuda.yml",
@@ -470,7 +474,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "9292a85c3107074683704d9fbc785a95abba369bdaa9694a5564e4b2c0c1f9a7",
       "audit_start_sha256": "9292a85c3107074683704d9fbc785a95abba369bdaa9694a5564e4b2c0c1f9a7",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "9292a85c3107074683704d9fbc785a95abba369bdaa9694a5564e4b2c0c1f9a7",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/configs/enflame.yml",
@@ -478,7 +484,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "82b7f08b39aa04d6df40a4f32833c8e4ffc5c21545d7d8fc4b4a673b2776210e",
       "audit_start_sha256": "82b7f08b39aa04d6df40a4f32833c8e4ffc5c21545d7d8fc4b4a673b2776210e",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "82b7f08b39aa04d6df40a4f32833c8e4ffc5c21545d7d8fc4b4a673b2776210e",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/configs/hygon.yml",
@@ -486,7 +494,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "1081572a09648bb078487f928b12b75e930ce6e4917c65b7b9ad5c4e4b5523bc",
       "audit_start_sha256": "1081572a09648bb078487f928b12b75e930ce6e4917c65b7b9ad5c4e4b5523bc",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "1081572a09648bb078487f928b12b75e930ce6e4917c65b7b9ad5c4e4b5523bc",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/configs/iluvatar.yml",
@@ -494,7 +504,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "4398d8e97bec3eacfaee6f19f006eaa2e5f29389270664ae4aba96a130b1393f",
       "audit_start_sha256": "4398d8e97bec3eacfaee6f19f006eaa2e5f29389270664ae4aba96a130b1393f",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "4398d8e97bec3eacfaee6f19f006eaa2e5f29389270664ae4aba96a130b1393f",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/configs/kunlunxin.yml",
@@ -502,7 +514,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "e62302e75ef25b7fce2fde4973805bc1c37c9cd9f4765036098f937236580ed7",
       "audit_start_sha256": "e62302e75ef25b7fce2fde4973805bc1c37c9cd9f4765036098f937236580ed7",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "e62302e75ef25b7fce2fde4973805bc1c37c9cd9f4765036098f937236580ed7",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/configs/metax.yml",
@@ -510,7 +524,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "5a1a9620eaa9234f957d31fe35d60dcc11f4c899fe579f07e1954ff8169b97fd",
       "audit_start_sha256": "5a1a9620eaa9234f957d31fe35d60dcc11f4c899fe579f07e1954ff8169b97fd",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "5a1a9620eaa9234f957d31fe35d60dcc11f4c899fe579f07e1954ff8169b97fd",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/configs/mthreads.yml",
@@ -518,7 +534,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "16f474021a1c2a8a7c6e1ccdf73f9019073188fac0e7de40c54d2d276829020e",
       "audit_start_sha256": "16f474021a1c2a8a7c6e1ccdf73f9019073188fac0e7de40c54d2d276829020e",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "16f474021a1c2a8a7c6e1ccdf73f9019073188fac0e7de40c54d2d276829020e",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/configs/ppu.yml",
@@ -526,7 +544,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "c12485351f0bfd0f7f8204b6bf5ed27a2e04a687ed5eaa87f97c0fe8643b3f87",
       "audit_start_sha256": "c12485351f0bfd0f7f8204b6bf5ed27a2e04a687ed5eaa87f97c0fe8643b3f87",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "c12485351f0bfd0f7f8204b6bf5ed27a2e04a687ed5eaa87f97c0fe8643b3f87",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/check_ci_results.sh",
@@ -534,7 +554,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "df61aa17a0c2d54e326ebba3b4df8b56ee917956de2172c7dba7a7beeb1db001",
       "audit_start_sha256": "df61aa17a0c2d54e326ebba3b4df8b56ee917956de2172c7dba7a7beeb1db001",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "df61aa17a0c2d54e326ebba3b4df8b56ee917956de2172c7dba7a7beeb1db001",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/check_platform_workflow.sh",
@@ -542,7 +564,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "1af53fde508a298bfeac581ab216c8392b1a67989dcf6621665b4c97d6134722",
       "audit_start_sha256": "1af53fde508a298bfeac581ab216c8392b1a67989dcf6621665b4c97d6134722",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "1af53fde508a298bfeac581ab216c8392b1a67989dcf6621665b4c97d6134722",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/check_shmem.sh",
@@ -550,7 +574,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "001ad7a18dc11185f1351e4ad2fec04e516e843f5be484a462f38e8f52a5cc8c",
       "audit_start_sha256": "001ad7a18dc11185f1351e4ad2fec04e516e843f5be484a462f38e8f52a5cc8c",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "001ad7a18dc11185f1351e4ad2fec04e516e843f5be484a462f38e8f52a5cc8c",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/ignore_test.py",
@@ -558,7 +584,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "0348d39a023f7af5da27ef726ad2373ff09c21ca4762828ff61ec571204aebcf",
       "audit_start_sha256": "0348d39a023f7af5da27ef726ad2373ff09c21ca4762828ff61ec571204aebcf",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "0348d39a023f7af5da27ef726ad2373ff09c21ca4762828ff61ec571204aebcf",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/load_platform_config.rb",
@@ -566,7 +594,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "a44d8818070bdd400e0145c26c91aed1e0fd35504c32fff34c3761f1f83ac142",
       "audit_start_sha256": "a44d8818070bdd400e0145c26c91aed1e0fd35504c32fff34c3761f1f83ac142",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "a44d8818070bdd400e0145c26c91aed1e0fd35504c32fff34c3761f1f83ac142",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/resolve_ci_matrix.rb",
@@ -574,7 +604,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "73e74a2be1b4051b73f9b2365228fcce203ae532941525efa457eb78efe0f17b",
       "audit_start_sha256": "73e74a2be1b4051b73f9b2365228fcce203ae532941525efa457eb78efe0f17b",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "73e74a2be1b4051b73f9b2365228fcce203ae532941525efa457eb78efe0f17b",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_ascend_diagnostics.sh",
@@ -582,7 +614,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "1e28fd1937d6730b75548ea239338d3b6d08b5a2ba225ed135ba9c636279df14",
       "audit_start_sha256": "1e28fd1937d6730b75548ea239338d3b6d08b5a2ba225ed135ba9c636279df14",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "1e28fd1937d6730b75548ea239338d3b6d08b5a2ba225ed135ba9c636279df14",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_ascend_runner_mpi.sh",
@@ -590,7 +624,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "354d3b17983918c9930c4e293ea07ec1c5433df90af4586a30448238abe29550",
       "audit_start_sha256": "354d3b17983918c9930c4e293ea07ec1c5433df90af4586a30448238abe29550",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "354d3b17983918c9930c4e293ea07ec1c5433df90af4586a30448238abe29550",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_ascend_workload.sh",
@@ -598,7 +634,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "6a1aae7fe75e2088559f008d40eae09f8a379c9b7e33ac5155a32aa95e4d3be7",
       "audit_start_sha256": "6a1aae7fe75e2088559f008d40eae09f8a379c9b7e33ac5155a32aa95e4d3be7",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "6a1aae7fe75e2088559f008d40eae09f8a379c9b7e33ac5155a32aa95e4d3be7",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_cuda_perf_experimental.sh",
@@ -606,7 +644,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "98e765565b4005473227189ff85750b7ac08654f082144ee6a028a75db28c583",
       "audit_start_sha256": "98e765565b4005473227189ff85750b7ac08654f082144ee6a028a75db28c583",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "98e765565b4005473227189ff85750b7ac08654f082144ee6a028a75db28c583",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_cuda_workload.sh",
@@ -614,7 +654,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "c5f3d2ffd610f737e61a1972f9250a3bb7e5e9d6324474413f47af48543bc61c",
       "audit_start_sha256": "c5f3d2ffd610f737e61a1972f9250a3bb7e5e9d6324474413f47af48543bc61c",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "c5f3d2ffd610f737e61a1972f9250a3bb7e5e9d6324474413f47af48543bc61c",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_gtest_rank_xml.sh",
@@ -622,7 +664,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "be15c80c7eb5780bd725500573649dab1d7ca7fdd447ae9e6d41839f4cbf0635",
       "audit_start_sha256": "be15c80c7eb5780bd725500573649dab1d7ca7fdd447ae9e6d41839f4cbf0635",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "be15c80c7eb5780bd725500573649dab1d7ca7fdd447ae9e6d41839f4cbf0635",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_hardware_container.sh",
@@ -630,7 +674,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "7b0ca480f84fd9c8a5d3796041dfba18092d12e047a6b13db70e557a5d4c671a",
       "audit_start_sha256": "7b0ca480f84fd9c8a5d3796041dfba18092d12e047a6b13db70e557a5d4c671a",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "7b0ca480f84fd9c8a5d3796041dfba18092d12e047a6b13db70e557a5d4c671a",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_hardware_workload.sh",
@@ -638,7 +684,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "b2fc3c1e6016839f08a6729c349e6176e7f5cf8c53162fe26583359ea7dd5149",
       "audit_start_sha256": "b2fc3c1e6016839f08a6729c349e6176e7f5cf8c53162fe26583359ea7dd5149",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "b2fc3c1e6016839f08a6729c349e6176e7f5cf8c53162fe26583359ea7dd5149",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_host_perf_suite.sh",
@@ -646,7 +694,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "70b5f0dd6e025689d2e7063c5535ed3e32601d5ab808fdd1043287c286fa5ed5",
       "audit_start_sha256": "70b5f0dd6e025689d2e7063c5535ed3e32601d5ab808fdd1043287c286fa5ed5",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "70b5f0dd6e025689d2e7063c5535ed3e32601d5ab808fdd1043287c286fa5ed5",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_hygon_perf_experimental.sh",
@@ -654,7 +704,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "7e1b9f9623b294e14ea1fa631680e966d959fd9da6c28ea3bd8efa975d41ec2d",
       "audit_start_sha256": "7e1b9f9623b294e14ea1fa631680e966d959fd9da6c28ea3bd8efa975d41ec2d",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "7e1b9f9623b294e14ea1fa631680e966d959fd9da6c28ea3bd8efa975d41ec2d",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_hygon_workload.sh",
@@ -662,7 +714,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "c04d3df01ce2db63da97d28c23fd931c7433cf75fbc2859e0969e678102a31bf",
       "audit_start_sha256": "c04d3df01ce2db63da97d28c23fd931c7433cf75fbc2859e0969e678102a31bf",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "c04d3df01ce2db63da97d28c23fd931c7433cf75fbc2859e0969e678102a31bf",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_iluvatar_runner_mpi.sh",
@@ -670,7 +724,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "7c151d0cd4798c8467226912b72c31a683c05df3becb5b51d7b1c22fae5fcdf6",
       "audit_start_sha256": "7c151d0cd4798c8467226912b72c31a683c05df3becb5b51d7b1c22fae5fcdf6",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "7c151d0cd4798c8467226912b72c31a683c05df3becb5b51d7b1c22fae5fcdf6",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_iluvatar_workload.sh",
@@ -678,7 +734,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "82a2d71fffbcd4da5c729f70cf5cdb00fcd861274fdc6156dddb93d7bad50506",
       "audit_start_sha256": "82a2d71fffbcd4da5c729f70cf5cdb00fcd861274fdc6156dddb93d7bad50506",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "82a2d71fffbcd4da5c729f70cf5cdb00fcd861274fdc6156dddb93d7bad50506",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_kunlunxin_workload.sh",
@@ -686,7 +744,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "63f74b2b42f6e64e6d21de95725b2b37517e84be8e792adfd5d1018cabee5b97",
       "audit_start_sha256": "63f74b2b42f6e64e6d21de95725b2b37517e84be8e792adfd5d1018cabee5b97",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "63f74b2b42f6e64e6d21de95725b2b37517e84be8e792adfd5d1018cabee5b97",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_metax_workload.sh",
@@ -694,7 +754,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "4d123f98ee18671338c2bc0c0f1fc376a83a384ced90e55190d136d985003add",
       "audit_start_sha256": "4d123f98ee18671338c2bc0c0f1fc376a83a384ced90e55190d136d985003add",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "4d123f98ee18671338c2bc0c0f1fc376a83a384ced90e55190d136d985003add",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_mpi_with_timeout.sh",
@@ -702,7 +764,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "ae1f50c3e16d78eb049eb6cf504cc42b97b0fa3ae38b082c0de743157828e0b6",
       "audit_start_sha256": "ae1f50c3e16d78eb049eb6cf504cc42b97b0fa3ae38b082c0de743157828e0b6",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "ae1f50c3e16d78eb049eb6cf504cc42b97b0fa3ae38b082c0de743157828e0b6",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_mthreads_workload.sh",
@@ -710,7 +774,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "6aba9df0e30707a251ee8c9586e87197abdb4346fcbc2e7edf0566bae28ae160",
       "audit_start_sha256": "6aba9df0e30707a251ee8c9586e87197abdb4346fcbc2e7edf0566bae28ae160",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "6aba9df0e30707a251ee8c9586e87197abdb4346fcbc2e7edf0566bae28ae160",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_ppu_perf_experimental.sh",
@@ -718,7 +784,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "9f6bca2763d68140874c866f615dd8e31e3f2c86e9372f87ce39eb2b1a5910e1",
       "audit_start_sha256": "9f6bca2763d68140874c866f615dd8e31e3f2c86e9372f87ce39eb2b1a5910e1",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "9f6bca2763d68140874c866f615dd8e31e3f2c86e9372f87ce39eb2b1a5910e1",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_ppu_workload.sh",
@@ -726,7 +794,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "ba94cdd7a541e9e95b45c43cd8b8665e4505a926148d85ff17ea3a31448a65ca",
       "audit_start_sha256": "ba94cdd7a541e9e95b45c43cd8b8665e4505a926148d85ff17ea3a31448a65ca",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "ba94cdd7a541e9e95b45c43cd8b8665e4505a926148d85ff17ea3a31448a65ca",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_runner_mpi.sh",
@@ -734,7 +804,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "7c10ca4cad95070510b990a31e6e2613335533789e69823405a19b596862db4b",
       "audit_start_sha256": "7c10ca4cad95070510b990a31e6e2613335533789e69823405a19b596862db4b",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "7c10ca4cad95070510b990a31e6e2613335533789e69823405a19b596862db4b",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_torch_coverage.sh",
@@ -742,7 +814,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "285fdfb2feb2711bc82ea3e4c1e8400e66df31a58472543545948f29092bf5f3",
       "audit_start_sha256": "285fdfb2feb2711bc82ea3e4c1e8400e66df31a58472543545948f29092bf5f3",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "285fdfb2feb2711bc82ea3e4c1e8400e66df31a58472543545948f29092bf5f3",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/run_unit_test.sh",
@@ -756,7 +830,9 @@
           "sha256": "8c9951b2e4c97cf51c1fdd7ff5be722958a75a4df3fb5f6e717919cfb65bf7dc",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "a44806aba5a6abc74164bbd719129138952da7e397ae92c34eea1b974f14af7f",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": ".github/scripts/ci/run_with_timeout.sh",
@@ -764,7 +840,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "4f3251877552f5bc2f3591141ebff3a9b818adcab97e339d99ca5e5150a59441",
       "audit_start_sha256": "4f3251877552f5bc2f3591141ebff3a9b818adcab97e339d99ca5e5150a59441",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "4f3251877552f5bc2f3591141ebff3a9b818adcab97e339d99ca5e5150a59441",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/ci/timeouts.sh",
@@ -772,7 +850,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "1b1c506e8575d66b45f756dee972a0e15ae01c637ef0dc551b09f84eb346aa5d",
       "audit_start_sha256": "1b1c506e8575d66b45f756dee972a0e15ae01c637ef0dc551b09f84eb346aa5d",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "1b1c506e8575d66b45f756dee972a0e15ae01c637ef0dc551b09f84eb346aa5d",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/set_env/ascend.sh",
@@ -780,7 +860,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "57b2d95a76c95a958499a5ebae48d9eee070432dde91d7481660ae1fa3f5293f",
       "audit_start_sha256": "57b2d95a76c95a958499a5ebae48d9eee070432dde91d7481660ae1fa3f5293f",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "57b2d95a76c95a958499a5ebae48d9eee070432dde91d7481660ae1fa3f5293f",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/set_env/enflame.sh",
@@ -788,7 +870,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "ab04aef873f559f51fbd5fed3f4cceb591470cacefa70674f9fa9a9dd5aada47",
       "audit_start_sha256": "ab04aef873f559f51fbd5fed3f4cceb591470cacefa70674f9fa9a9dd5aada47",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "ab04aef873f559f51fbd5fed3f4cceb591470cacefa70674f9fa9a9dd5aada47",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/set_env/hygon.sh",
@@ -796,7 +880,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "9ed3c5135a8c57ff334fbf6325526b53fb26b5992afba71b6dc74a9b8807eb0a",
       "audit_start_sha256": "9ed3c5135a8c57ff334fbf6325526b53fb26b5992afba71b6dc74a9b8807eb0a",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "9ed3c5135a8c57ff334fbf6325526b53fb26b5992afba71b6dc74a9b8807eb0a",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/set_env/iluvatar.sh",
@@ -804,7 +890,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "1cb74ab4be6d839ac82c794c2ed88ca1ad730b3724fbefd7c55adbc80ed5eec2",
       "audit_start_sha256": "1cb74ab4be6d839ac82c794c2ed88ca1ad730b3724fbefd7c55adbc80ed5eec2",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "1cb74ab4be6d839ac82c794c2ed88ca1ad730b3724fbefd7c55adbc80ed5eec2",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/set_env/kunlunxin.sh",
@@ -812,7 +900,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "b0aaa23bf8e440705bf0b27267680010e42a38302600fd0b0f7db98e4fd1c69e",
       "audit_start_sha256": "b0aaa23bf8e440705bf0b27267680010e42a38302600fd0b0f7db98e4fd1c69e",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "b0aaa23bf8e440705bf0b27267680010e42a38302600fd0b0f7db98e4fd1c69e",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/set_env/metax.sh",
@@ -820,7 +910,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "5ece5dd47ee018c09ac65c180f54a3ac39d80f1229d4008b3cf938298fc956f4",
       "audit_start_sha256": "5ece5dd47ee018c09ac65c180f54a3ac39d80f1229d4008b3cf938298fc956f4",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "5ece5dd47ee018c09ac65c180f54a3ac39d80f1229d4008b3cf938298fc956f4",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/set_env/mthreads.sh",
@@ -828,7 +920,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "ae2b18d9b0ea3eb9b12dcccb8888acf134fab82e5e4fd887a447e19b81c02ae4",
       "audit_start_sha256": "ae2b18d9b0ea3eb9b12dcccb8888acf134fab82e5e4fd887a447e19b81c02ae4",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "ae2b18d9b0ea3eb9b12dcccb8888acf134fab82e5e4fd887a447e19b81c02ae4",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/scripts/set_env/ppu.sh",
@@ -836,7 +930,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "a66174d2251847f5c3cdbf385f4bf3d86f239254b9894ef85e700686414e0654",
       "audit_start_sha256": "a66174d2251847f5c3cdbf385f4bf3d86f239254b9894ef85e700686414e0654",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "a66174d2251847f5c3cdbf385f4bf3d86f239254b9894ef85e700686414e0654",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/workflows/test.yml",
@@ -844,7 +940,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "db08c8a68d3bedf6afba1ce9bc306f1457c65cbc0b11fd5b26b851aa7dda8176",
       "audit_start_sha256": "db08c8a68d3bedf6afba1ce9bc306f1457c65cbc0b11fd5b26b851aa7dda8176",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "db08c8a68d3bedf6afba1ce9bc306f1457c65cbc0b11fd5b26b851aa7dda8176",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/workflows/torch-api-test.yml",
@@ -852,7 +950,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "49e0b1947ad40edc087e09562535756a6cb411b4b6faf0014aa47eb2edb380b3",
       "audit_start_sha256": "49e0b1947ad40edc087e09562535756a6cb411b4b6faf0014aa47eb2edb380b3",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "49e0b1947ad40edc087e09562535756a6cb411b4b6faf0014aa47eb2edb380b3",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/workflows/unit-test.yml",
@@ -860,7 +960,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "799843245f8c82c34175d5149edb3df83a886b0f7f25f6c045f0b1e5412dae2c",
       "audit_start_sha256": "799843245f8c82c34175d5149edb3df83a886b0f7f25f6c045f0b1e5412dae2c",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "799843245f8c82c34175d5149edb3df83a886b0f7f25f6c045f0b1e5412dae2c",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": ".github/workflows/unit_tests_common.yml",
@@ -868,7 +970,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "c4f34a69d3875dae366018ec19ff887478a982eac9e56c9cf6a4d7c0bf71c69a",
       "audit_start_sha256": "c4f34a69d3875dae366018ec19ff887478a982eac9e56c9cf6a4d7c0bf71c69a",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "c4f34a69d3875dae366018ec19ff887478a982eac9e56c9cf6a4d7c0bf71c69a",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "Makefile",
@@ -876,7 +980,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "a55876bc118dd95a0f94633388b4fc1988aad4addabc9220e28bba99815c9244",
       "audit_start_sha256": "a55876bc118dd95a0f94633388b4fc1988aad4addabc9220e28bba99815c9244",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "a55876bc118dd95a0f94633388b4fc1988aad4addabc9220e28bba99815c9244",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "bindings/ir/iluvatar/Makefile",
@@ -884,7 +990,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "6e1efc189dcf91b3265a020c3c7ad8b5336b5336c83e7ba0d656aa76e4876a4d",
       "audit_start_sha256": "6e1efc189dcf91b3265a020c3c7ad8b5336b5336c83e7ba0d656aa76e4876a4d",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "6e1efc189dcf91b3265a020c3c7ad8b5336b5336c83e7ba0d656aa76e4876a4d",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "bindings/ir/metax/Makefile",
@@ -892,7 +1000,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "dbc3b15ec34f306ff38db291151f5c47724f9732ee20d3257e9601bfe8415c56",
       "audit_start_sha256": "dbc3b15ec34f306ff38db291151f5c47724f9732ee20d3257e9601bfe8415c56",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "dbc3b15ec34f306ff38db291151f5c47724f9732ee20d3257e9601bfe8415c56",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "docs/comm_lifecycle.md",
@@ -911,7 +1021,9 @@
           "sha256": "a4997d21a7035b462d0131a8db12880510186deda4f9c8090db64dc413b57f33",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "5dbcb99acb6638d61614940161c0cdf38586caf09b587c63b186560cbb707271",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "docs/device_api_bitcode.md",
@@ -919,7 +1031,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "cc4e1f07ad0888e0322eae5969747f3ae75e0cac17a65945ba41e158917bbbec",
       "audit_start_sha256": "cc4e1f07ad0888e0322eae5969747f3ae75e0cac17a65945ba41e158917bbbec",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "cc4e1f07ad0888e0322eae5969747f3ae75e0cac17a65945ba41e158917bbbec",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "docs/iluvatar_ipc_migration.json",
@@ -933,7 +1047,9 @@
           "sha256": "f69b9bf8f1ed01975241f3cb03e3eaa73972837cc33553ef408e9711552403fb",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "f29dbb514f73bd056fb3a837169b447cff5604b7a479ae37636aebf52072c186",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "flagcx/adaptor/ccl/bootstrap_adaptor.cc",
@@ -941,7 +1057,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "9a080770ecb03db00e10280b5cd064de6ed5de352cddee73077691086f113026",
       "audit_start_sha256": "9a080770ecb03db00e10280b5cd064de6ed5de352cddee73077691086f113026",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "9a080770ecb03db00e10280b5cd064de6ed5de352cddee73077691086f113026",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/ccl_plugin_load.cc",
@@ -1000,7 +1118,9 @@
           "sha256": "a8f710410f9a8b41d733d59dba3d468aac9db8e56fe273c72bcb740858cac6c8",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "64531cfa5179fa3d0d381f9d695edc0fcfb2734570fe1c24ba525c3c2185190b",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/cncl_adaptor.cc",
@@ -1024,7 +1144,9 @@
           "sha256": "c33acc2ac1fb1c2bcb80cf3da72c51ce1490fcf508e359fa7eaa3f5c51c8b7d7",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "c82564c0ab1552769c35448a92e52887800a6457de40b40c3b6043cbfcd04d14",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/durccl_adaptor.cc",
@@ -1043,7 +1165,9 @@
           "sha256": "4698bfeed7ab31c8bba8089114634b248bea87f862c5823408e5cfb325cc8daf",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "02ac782df492eaeefd02d54b1d3160c96790b09a0f5db35e2c2f3f3bc0b360b6",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/eccl_adaptor.cc",
@@ -1077,7 +1201,9 @@
           "sha256": "a77a4b0bbc874a0c9e2e9627815018d07f75c733c363fa17c899eae1570decba",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "5fa7e054a18c7eb2dfa432eee24de93e3f4251825c8293183a25406c7ba83ae0",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/gloo_adaptor.cc",
@@ -1085,7 +1211,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "a901eda50d7de8ba57700a96683179cd6cd65880e0f1b3d3c3f0aeb72d59202d",
       "audit_start_sha256": "a901eda50d7de8ba57700a96683179cd6cd65880e0f1b3d3c3f0aeb72d59202d",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "a901eda50d7de8ba57700a96683179cd6cd65880e0f1b3d3c3f0aeb72d59202d",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/hccl_adaptor.cc",
@@ -1104,7 +1232,9 @@
           "sha256": "a7e2cd9e9cb90f11960fb6d3a976b2fcc0114f8d9c881be46e2bfbdd8235efc7",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "676cd7d4cc3458d175e2c6799cce0ac6c5f9003900284b2c64eaa4710e530faf",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/ixnccl_adaptor.cc",
@@ -1123,7 +1253,9 @@
           "sha256": "4698bfeed7ab31c8bba8089114634b248bea87f862c5823408e5cfb325cc8daf",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "7725308917fb9f5f779ae75c36d106b02bbeaa28539e4731583368ba2d69247a",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/mccl_adaptor.cc",
@@ -1157,7 +1289,9 @@
           "sha256": "b94a3268e163838a051bd311dff305675de8d9d1d068a2f1a49b38e44faff358",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "39b4549bc5c04f3ec024833ae07493cd21a3095875f398b743c6ba91bacefe11",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/mpi_adaptor.cc",
@@ -1165,7 +1299,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "9198f5e670cb7be69831fd6e4dccf51881aa2eec177291299e5c96a11a4d534a",
       "audit_start_sha256": "9198f5e670cb7be69831fd6e4dccf51881aa2eec177291299e5c96a11a4d534a",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "9198f5e670cb7be69831fd6e4dccf51881aa2eec177291299e5c96a11a4d534a",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/musa_mccl_adaptor.cc",
@@ -1184,7 +1320,9 @@
           "sha256": "f7e3b66978c922f5655c9a0b890b3e0f579ac6ede6d943a6f4410000bdf6afa6",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "0d0e745e3ae31f0d051e82125ad276b650ae838dd13f77221e59bd3aadc1879e",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/nccl_adaptor.cc",
@@ -1218,7 +1356,9 @@
           "sha256": "a77a4b0bbc874a0c9e2e9627815018d07f75c733c363fa17c899eae1570decba",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "f067200ee5d096f5ad79882305744bb5fac5b2e65b30d421fc0b1bd182f7a6cf",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/pccl_adaptor.cc",
@@ -1242,7 +1382,9 @@
           "sha256": "f0d9e41857df3099d1b0b7e03713846b686fb1aa5d3fa714d87a384a0ef4779d",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "bab8dc51fb2d45d5bea88dcdfb39b483e6ccd3a02cff05af07ea918cbddf0789",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/ppu_pccl_adaptor.cc",
@@ -1266,7 +1408,9 @@
           "sha256": "64a7a4cd41533359c3226b5bfa6173b35ac69471dd69c4e7b59f2750238729c5",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "90546c8519bbfcd2c17a72312674a0d00b87ae90365c4218c0cd529e58e551f4",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/rccl_adaptor.cc",
@@ -1285,7 +1429,9 @@
           "sha256": "4698bfeed7ab31c8bba8089114634b248bea87f862c5823408e5cfb325cc8daf",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "bc9f2c598c6762419b43e95e4522533d1404696a1c223956c686c011b5a041bd",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/tccl_adaptor.cc",
@@ -1314,7 +1460,9 @@
           "sha256": "b2fe5f58c1d1879a51bca5eb42e4e8e305132ac4bf1e910daa711f6c25165510",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "f2057d91a7e9e19d0c5bd6a91dffabea66b9f855de83da9f988df75985903c90",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/ccl/xccl_adaptor.cc",
@@ -1333,7 +1481,9 @@
           "sha256": "92a49cd57851545e851224eea693c55984243d12e4fd527c6a5a01137e8eb97a",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "a600555b643df21848fa24e400f94fd74daf61d4c42dc8d713dedaf5c9d833bc",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/cann_adaptor.cc",
@@ -1341,7 +1491,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "e300d11557ae4a7b73c1d922c6586d787da070a42c99370ea2bfb6a409e410aa",
       "audit_start_sha256": "e300d11557ae4a7b73c1d922c6586d787da070a42c99370ea2bfb6a409e410aa",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "e300d11557ae4a7b73c1d922c6586d787da070a42c99370ea2bfb6a409e410aa",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/cuda_adaptor.cc",
@@ -1349,7 +1501,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "66ca5f5663e9670ea69fe215756f9c2324bd5a99f46df5c1e4f26c99a4fd3481",
       "audit_start_sha256": "66ca5f5663e9670ea69fe215756f9c2324bd5a99f46df5c1e4f26c99a4fd3481",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "66ca5f5663e9670ea69fe215756f9c2324bd5a99f46df5c1e4f26c99a4fd3481",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/device_plugin_load.cc",
@@ -1428,7 +1582,9 @@
           "sha256": "9bc77d4ee660189fca6586141955066c0e7b3108dacf171d33ddf23ec206f071",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "2de23981f94b07c2167242ee07a1d4f6cadb8807e89f80b32ecbbd8b4d56d22a",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/duhip_adaptor.cc",
@@ -1436,7 +1592,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "1a103df9e796918dc906cdd80df62b62745cca744b75d8c912efd7f55990b216",
       "audit_start_sha256": "1a103df9e796918dc906cdd80df62b62745cca744b75d8c912efd7f55990b216",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "1a103df9e796918dc906cdd80df62b62745cca744b75d8c912efd7f55990b216",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/hggc_adaptor.cc",
@@ -1444,7 +1602,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "9a46a9a8840e9e627defcdba68c93f3d9a930badf7a7d7fcccc5f332f3edc9ad",
       "audit_start_sha256": "9a46a9a8840e9e627defcdba68c93f3d9a930badf7a7d7fcccc5f332f3edc9ad",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "9a46a9a8840e9e627defcdba68c93f3d9a930badf7a7d7fcccc5f332f3edc9ad",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/hip_adaptor.cc",
@@ -1452,7 +1612,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "464aed3bfe9b39839851c3b7f9dc9e4d6a974f51061ef612397c762328895099",
       "audit_start_sha256": "464aed3bfe9b39839851c3b7f9dc9e4d6a974f51061ef612397c762328895099",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "464aed3bfe9b39839851c3b7f9dc9e4d6a974f51061ef612397c762328895099",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/ixcuda_adaptor.cc",
@@ -1460,7 +1622,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "8444af9cc61d9221a1ec92bd9fc3aba6d72eb5b3fc5de7d6c9015870d59a6299",
       "audit_start_sha256": "8444af9cc61d9221a1ec92bd9fc3aba6d72eb5b3fc5de7d6c9015870d59a6299",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "8444af9cc61d9221a1ec92bd9fc3aba6d72eb5b3fc5de7d6c9015870d59a6299",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/kunlunxin_adaptor.cc",
@@ -1468,7 +1632,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "8f500e36c8726bf6ada1eb715750047155727d41386c011916eff5493e35a111",
       "audit_start_sha256": "8f500e36c8726bf6ada1eb715750047155727d41386c011916eff5493e35a111",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "8f500e36c8726bf6ada1eb715750047155727d41386c011916eff5493e35a111",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/maca_adaptor.cc",
@@ -1476,7 +1642,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "fc25aa15826b748732650e1c51422945d136fc76d68dc361df003dcc73f26a92",
       "audit_start_sha256": "fc25aa15826b748732650e1c51422945d136fc76d68dc361df003dcc73f26a92",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "fc25aa15826b748732650e1c51422945d136fc76d68dc361df003dcc73f26a92",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/mlu_adaptor.cc",
@@ -1484,7 +1652,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "371f9c42d8fc6eac39f20425f7b81a53b313efb24c1a04edbed6286f3734a0cc",
       "audit_start_sha256": "371f9c42d8fc6eac39f20425f7b81a53b313efb24c1a04edbed6286f3734a0cc",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "371f9c42d8fc6eac39f20425f7b81a53b313efb24c1a04edbed6286f3734a0cc",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/musa_adaptor.cc",
@@ -1492,7 +1662,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "a94f6acaaf1b054810f459c4c0f98e94a2959d1d1ff7caa8d720aaf26775d565",
       "audit_start_sha256": "a94f6acaaf1b054810f459c4c0f98e94a2959d1d1ff7caa8d720aaf26775d565",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "a94f6acaaf1b054810f459c4c0f98e94a2959d1d1ff7caa8d720aaf26775d565",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/ptpu_adaptor.cc",
@@ -1500,7 +1672,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "34b7d22f7d779bee1826ebb50da581fa5d8e6023aa47897eac8a14b1698d59ed",
       "audit_start_sha256": "34b7d22f7d779bee1826ebb50da581fa5d8e6023aa47897eac8a14b1698d59ed",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "34b7d22f7d779bee1826ebb50da581fa5d8e6023aa47897eac8a14b1698d59ed",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/tops_adaptor.cc",
@@ -1508,7 +1682,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "b10944ab98d9f6c5219162d698c1b4a127dc4b9891382a30ff7ae7d05bfee702",
       "audit_start_sha256": "b10944ab98d9f6c5219162d698c1b4a127dc4b9891382a30ff7ae7d05bfee702",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "b10944ab98d9f6c5219162d698c1b4a127dc4b9891382a30ff7ae7d05bfee702",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device/tsmicro_adaptor.cc",
@@ -1516,7 +1692,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "99566d500260c3b89924b1560ad7fddc68e7a6a6c6c35c21484bba4ffd055916",
       "audit_start_sha256": "99566d500260c3b89924b1560ad7fddc68e7a6a6c6c35c21484bba4ffd055916",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "99566d500260c3b89924b1560ad7fddc68e7a6a6c6c35c21484bba4ffd055916",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device_api/aclshmem_dev_api_backend.cc",
@@ -1524,7 +1702,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "8336a944990a612044ec06a928bc93c7ff98c0baa7c02c80d5b972269a04200a",
       "audit_start_sha256": "8336a944990a612044ec06a928bc93c7ff98c0baa7c02c80d5b972269a04200a",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "8336a944990a612044ec06a928bc93c7ff98c0baa7c02c80d5b972269a04200a",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device_api/default_dev_api_backend.cc",
@@ -1603,7 +1783,9 @@
           "sha256": "e06bad18da753ddb8f9fc85a29bd28cb68f5f0a85ea02957ff087afcd0d4e779",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "027cbb7cf8b4c74da783d4003f30960c253264fe865ff945b859e0acacc3f972",
+      "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
       "path": "flagcx/adaptor/device_api/eccl_dev_api_backend.cc",
@@ -1611,7 +1793,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "12fd6a3e7998a4eea0f0cebeab260dc0f3c77d8828bcc7c666317b01b970c571",
       "audit_start_sha256": "12fd6a3e7998a4eea0f0cebeab260dc0f3c77d8828bcc7c666317b01b970c571",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "12fd6a3e7998a4eea0f0cebeab260dc0f3c77d8828bcc7c666317b01b970c571",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/device_api/nccl_dev_api_backend.cc",
@@ -1619,7 +1803,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "17b84169653b028b522a228f2910d3a3c683c381b665d608c57def880f717ff8",
       "audit_start_sha256": "17b84169653b028b522a228f2910d3a3c683c381b665d608c57def880f717ff8",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "17b84169653b028b522a228f2910d3a3c683c381b665d608c57def880f717ff8",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/flagcx_device.cc",
@@ -1828,7 +2014,9 @@
           "sha256": "54bccd6832838e1d73dd3250b45e84644b8ed820f6fac9115d241309ddf5be11",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "6ba34aa4fe17141eed2cee08fe95e8a2737a27f1112bd97955d754425f3ac317",
+      "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
       "path": "flagcx/adaptor/include/adaptor_plugin_load.h",
@@ -1852,7 +2040,9 @@
           "sha256": "5507972114549011a2364dcdbfa3aab83176dcd8926feec5e46684d8b335c5d2",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "19e074523379b2528892c7691229256a71cc6ecb78ef6cc7d9989c9f2349d0e6",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/bootstrap_adaptor.h",
@@ -1860,7 +2050,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "7860e362e80e0f7f8329e3b700efe80e629527f3bd49efffef4d2ee90b08f911",
       "audit_start_sha256": "7860e362e80e0f7f8329e3b700efe80e629527f3bd49efffef4d2ee90b08f911",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "7860e362e80e0f7f8329e3b700efe80e629527f3bd49efffef4d2ee90b08f911",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/device_api/aclshmem_comm_traits.h",
@@ -1868,7 +2060,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "9e1049e6476fa0e705000816bef948fda5ba5035c705f67f185cc758f10fc01d",
       "audit_start_sha256": "9e1049e6476fa0e705000816bef948fda5ba5035c705f67f185cc758f10fc01d",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "9e1049e6476fa0e705000816bef948fda5ba5035c705f67f185cc758f10fc01d",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/device_api/aclshmem_state_layout.h",
@@ -1876,7 +2070,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "45d34fe0820e05dda1dd8b2305e9192cf4da0ca07444169df114e1dea6c5ae7c",
       "audit_start_sha256": "45d34fe0820e05dda1dd8b2305e9192cf4da0ca07444169df114e1dea6c5ae7c",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "45d34fe0820e05dda1dd8b2305e9192cf4da0ca07444169df114e1dea6c5ae7c",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/device_api/ascend_comm_traits.h",
@@ -1884,7 +2080,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "3edbff2b2be89d2b89a761c2622eb35797b5bc91d10d135d84cc5ee2bbdd0454",
       "audit_start_sha256": "3edbff2b2be89d2b89a761c2622eb35797b5bc91d10d135d84cc5ee2bbdd0454",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "3edbff2b2be89d2b89a761c2622eb35797b5bc91d10d135d84cc5ee2bbdd0454",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/device_api/ascend_platform_traits.h",
@@ -1892,7 +2090,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "d197957d7f6ea1e06a30e423a813c271601bb6be635b6fae6bd210f56bfb22e2",
       "audit_start_sha256": "d197957d7f6ea1e06a30e423a813c271601bb6be635b6fae6bd210f56bfb22e2",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "d197957d7f6ea1e06a30e423a813c271601bb6be635b6fae6bd210f56bfb22e2",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/device_api/comm_traits.h",
@@ -1900,7 +2100,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "4234f76852fdc02a8ee66ff883124b87ad61a53f551fcd198e12a1a03c7ec261",
       "audit_start_sha256": "4234f76852fdc02a8ee66ff883124b87ad61a53f551fcd198e12a1a03c7ec261",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "4234f76852fdc02a8ee66ff883124b87ad61a53f551fcd198e12a1a03c7ec261",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/device_api/flagcx_device_internal.h",
@@ -1924,7 +2126,9 @@
           "sha256": "12eb21620d31fb386641bafe77a0de7becbd146ed9c36b9f8134b01c33daa3d5",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "367c5a20ceb0452492443aab138db38fb555a052520fef90bc0ed8fe28cf18f8",
+      "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
       "path": "flagcx/adaptor/include/device_api/metax_comm_traits.h",
@@ -1932,7 +2136,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "2b75bd6b628e9cfcbdf544778426ae2aa20e0816e470d15c58a77fab988f3dd4",
       "audit_start_sha256": "2b75bd6b628e9cfcbdf544778426ae2aa20e0816e470d15c58a77fab988f3dd4",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "2b75bd6b628e9cfcbdf544778426ae2aa20e0816e470d15c58a77fab988f3dd4",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/device_api/metax_platform_traits.h",
@@ -1940,7 +2146,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "f99df08b8d20f2f72cd6c500f7fa6462f16b85546c440a5977dfa4c65e5efba5",
       "audit_start_sha256": "f99df08b8d20f2f72cd6c500f7fa6462f16b85546c440a5977dfa4c65e5efba5",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "f99df08b8d20f2f72cd6c500f7fa6462f16b85546c440a5977dfa4c65e5efba5",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/device_api/platform_traits.h",
@@ -1948,7 +2156,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "84026bdebe1d050b6f7f43e5e550785e0c3abd1ccfcd0c232b396ebd4606ee92",
       "audit_start_sha256": "84026bdebe1d050b6f7f43e5e550785e0c3abd1ccfcd0c232b396ebd4606ee92",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "84026bdebe1d050b6f7f43e5e550785e0c3abd1ccfcd0c232b396ebd4606ee92",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/device_utils.h",
@@ -1956,7 +2166,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "30f542956e23d8f715d6489a6dbcb199b24494c355a11ae292aee28cd2c1c95e",
       "audit_start_sha256": "30f542956e23d8f715d6489a6dbcb199b24494c355a11ae292aee28cd2c1c95e",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "30f542956e23d8f715d6489a6dbcb199b24494c355a11ae292aee28cd2c1c95e",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/enflame_adaptor.h",
@@ -1964,7 +2176,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "356be1ee3676dd7354242564999941cc6fe194da6b01e69e3c2100a725a4a9b8",
       "audit_start_sha256": "356be1ee3676dd7354242564999941cc6fe194da6b01e69e3c2100a725a4a9b8",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "356be1ee3676dd7354242564999941cc6fe194da6b01e69e3c2100a725a4a9b8",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/flagcx_ccl_adaptor.h",
@@ -1983,7 +2197,9 @@
           "sha256": "a3e42f2f9ceee40d4d4b7013892b26039acc03c1e387bdf3314d429f93813da9",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "722933a2aea203719549f155a6816f506cf0798461230f6147333e2f3e0dc0ec",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/gloo_adaptor.h",
@@ -1991,7 +2207,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "1ae757e943255af54c906eab45e404eb2a069856a3c3487bd3bdb434c7b88d12",
       "audit_start_sha256": "1ae757e943255af54c906eab45e404eb2a069856a3c3487bd3bdb434c7b88d12",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "1ae757e943255af54c906eab45e404eb2a069856a3c3487bd3bdb434c7b88d12",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/mpi_adaptor.h",
@@ -1999,7 +2217,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "50685436ef574ae848efbc77a50aa6ed3e2c9775a731a1a01c78ab353a6caaeb",
       "audit_start_sha256": "50685436ef574ae848efbc77a50aa6ed3e2c9775a731a1a01c78ab353a6caaeb",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "50685436ef574ae848efbc77a50aa6ed3e2c9775a731a1a01c78ab353a6caaeb",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/include/ucx_adaptor.h",
@@ -2013,7 +2233,9 @@
           "sha256": "70aefda07f96edc31bda1d23cb238c5eef7b422f537c6a4372acc8ff030cac58",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "afdea3bf57ab3d728d555cd34c64817f1680719eeb6f951697d5c0b15b7d413e",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/kernel/metax/device_api_host_helpers.cu",
@@ -2021,7 +2243,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "2a66e03c5ee72dc9c86189620cc341bc52b6c8e0a9eec2c29b9eb73cbb6f5d99",
       "audit_start_sha256": "2a66e03c5ee72dc9c86189620cc341bc52b6c8e0a9eec2c29b9eb73cbb6f5d99",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "2a66e03c5ee72dc9c86189620cc341bc52b6c8e0a9eec2c29b9eb73cbb6f5d99",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/net/barex_adaptor.cc",
@@ -2035,7 +2259,9 @@
           "sha256": "54e37b9e8e894ec54e43a6f12a8df69f685e7cb69264168da952a658fd5b4447",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "7baefb85ebb071b11a4935e50ec5cf6ee829737247e82a26807ad019c598b39d",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/net/ib_common.cc",
@@ -2079,7 +2305,9 @@
           "sha256": "97039c0c455d9aeb0f4dab5d418e47c17ad965c7b62710e2262710f920e597d1",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "e3af0b28b330b196b04e0548ce7db05e06598b7234a5075187298d895e77525e",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/net/ibrc_adaptor.cc",
@@ -2153,7 +2381,9 @@
           "sha256": "bf25e11c0af297dbbd69689de9c31d40acfed155c8caa49523c5d68fda2361b1",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "dbf58a70de291c21ae159005e345b6090299b399c0c751bdfdccf76934525908",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/net/ibrc_p2p_adaptor.cc",
@@ -2197,7 +2427,9 @@
           "sha256": "bd0d57239e5a70de3ff9c79dc055de3d9167b3fff2de6c9bc97ac4bdbcc55d95",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "74352b990bd042b002fe91b29c5cea8715e6c91e4e32bf605f0fc1da6c37d101",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/net/ibuc_adaptor.cc",
@@ -2276,7 +2508,9 @@
           "sha256": "dd2d2b419a5a715f3e301ab2f2791cc96437c3aa0540f3948c180d35b3e5ea91",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "b6a496277c71f71b9e4280328cb3a481ff43576d303fd00bdb60a6dc2799e7e0",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/net/net_plugin_load.cc",
@@ -2335,7 +2569,9 @@
           "sha256": "134a31f6aaf3045e9d14197fbf2a38d96fe183990efb4a62e61e94596a9053d3",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "655d63bf65f7a93073d2e93f5573e8ccd8ddba152716d9422d41ce35983a14d7",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/net/socket_adaptor.cc",
@@ -2384,7 +2620,9 @@
           "sha256": "e15c37191938ca1756d1ff01ae6c29d3a572c341b1521e4f3beb11fe95f74779",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "327765ecde4f6503a1ac8bf66b5eab45ad1b4282b6d53ad5c63173b7aff277dc",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/net/ucx_adaptor.cc",
@@ -2453,7 +2691,9 @@
           "sha256": "cd7e1ea812967355a51e5eb477d46f27ae6c8975a6614a9bb578216788524ec9",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "bea648c8da9dae816d7effef6193f7163327e6f6eab32e7d925c0b83c9ebc2f7",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/plugin_common.cc",
@@ -2467,7 +2707,9 @@
           "sha256": "ceb1f6bf75f71d5caa91b001f957b519bb21dd12c5100eb1e44b021ab37981b1",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "bbaf7882733abdb39f8d8a8467d5ff69548cd0eccdb8c9e63567ac1661e8eb2d",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/shmem/aclshmem_adaptor.cc",
@@ -2475,7 +2717,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "98f46d34d59cf8e78b1ff80549048d8e74136a4a2957b1371298d750d549ae63",
       "audit_start_sha256": "98f46d34d59cf8e78b1ff80549048d8e74136a4a2957b1371298d750d549ae63",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "98f46d34d59cf8e78b1ff80549048d8e74136a4a2957b1371298d750d549ae63",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/adaptor/shmem/aclshmem_adaptor.h",
@@ -2483,7 +2727,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "616a4f1a9a8a3d81915efaaf7dcb537e001f2faa142d606930ad1115a844e3de",
       "audit_start_sha256": "616a4f1a9a8a3d81915efaaf7dcb537e001f2faa142d606930ad1115a844e3de",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "616a4f1a9a8a3d81915efaaf7dcb537e001f2faa142d606930ad1115a844e3de",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/core/comm_lifecycle.cc",
@@ -2497,7 +2743,9 @@
           "sha256": "03a67761562704fdee0fe2fe46dd7b0425824e068fc2f273b505b1aacd2d5ce1",
           "decision": "remove-framework"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "generic tracker/lifecycle framework removed"
     },
     {
       "path": "flagcx/core/flagcx_hetero.cc",
@@ -2881,7 +3129,9 @@
           "sha256": "4dc6a607e94902026adca16b28d1e4e3c4e083d2c7a04c1874249c25c83de549",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "7f768dc4932d2fb15dccfa0c9f09d7752a72825c7d44d85ab5d536a6622d4a46",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/flagcx_kernel_host.cc",
@@ -2895,7 +3145,9 @@
           "sha256": "725000b87bf04f4b592d81b893ca1e5781419f88a36c7f2bcb0d69caf72a3f36",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "b5a039ba32aaa48f699251198f6b513110bfc7554c880ffc71aa120a19228f7b",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/core/flagcx_tuner.cc",
@@ -2919,7 +3171,9 @@
           "sha256": "fd9322abe0de6ce0f1474b15dbd2c640a616bc643fdba3427e6ea1c6f05a1e81",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "a01797cc949a59dc48a9d91ec6ebfed78a916863717056c60edc228cfb4a7f3b",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/core/group.cc",
@@ -3153,7 +3407,9 @@
           "sha256": "78774e933ee16aa3a0d7f820949f05144d6d31d3438a02747712cbce3e3b9b8d",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "eb7a1c95125f8ae70c4d66cc48cfbba70621be3f8b804cbf23d005bbd19f600a",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/include/buffer_owner.h",
@@ -3167,7 +3423,9 @@
           "sha256": "9a9c3987897500315589573bc87eda31722592ae47239ba0a7da9d8780262e6a",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "0ffebb9b8bdb2765c91d4c4d459eacf9f25272b50e5ef1b1b3950d306a1f1642",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/include/comm.h",
@@ -3201,7 +3459,9 @@
           "sha256": "58c435e459172ed69afd5bf99faa17b89829fd0ffeccdaf9542413199a9aa85e",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "053c827f7e5c8ae1a75711c00270057ff92d2fcd5350e48734da89bb5dba3cce",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/include/comm_lifecycle.h",
@@ -3215,7 +3475,9 @@
           "sha256": "b25f4adc64ba683c47bd1bb6a70d57b73c2bb3121a19e12733efcaaf7672548f",
           "decision": "remove-framework"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "generic tracker/lifecycle framework removed"
     },
     {
       "path": "flagcx/core/include/flagcx_hetero.h",
@@ -3269,7 +3531,9 @@
           "sha256": "eb90a36add170d195c3fab1bbd2b6f1609fc5d6f292813e79f65ae98b06cf0b8",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "27627c24aecb75c3211beb0154be062a118d8a142dd2432c69cd217f08e05a09",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/include/flagcx_tuner.h",
@@ -3293,7 +3557,9 @@
           "sha256": "4385f519faecadcd528a643936e0044af36963dfed688281a335e13a87517ff9",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "6706e11e9886922c392b443288ba49a9ad4b03a5413af76f486bd8f23df0d571",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/core/include/global_comm.h",
@@ -3347,7 +3613,9 @@
           "sha256": "fb6a8d899da4cbc5004c6be7935c049d1ca1c6ef19ad4da2a32943a32d96bb47",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "98742bcfce4c911ecfc84a402f4e31e1cf8c358b9d8c7bcba52064c097f62994",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/include/group.h",
@@ -3371,7 +3639,9 @@
           "sha256": "0475b543ff2d0f5159d38db5c57f4f9872dc948a3790a913af3750e117edb240",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "1ab1b31665dc4e8acc90510dace7517b0c61efe60645922adb51f7ec37a795f7",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/include/launch_kernel.h",
@@ -3515,7 +3785,9 @@
           "sha256": "75cb9c1d3a6078d78d9d07905bb6b35b2df54dc244bd1caaa20bf090e3007594",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "95726b8b3de554c52fcf108c2e407d0b5fe2e2cce8a7913e59cf90fddd001b71",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/include/net.h",
@@ -3534,7 +3806,9 @@
           "sha256": "5c9dd5efbededf9b8895cb534cca1329d385d818f4168845d99de8f0bcd0e20d",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "eb866f0e2260a13ab62305e47b89d63dd33faf9968986f74b2bbda23106588ef",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/core/include/p2p.h",
@@ -3553,7 +3827,9 @@
           "sha256": "972211ea864d3808776ccb37137c20a4c85859c552a7dcd23fb377c0e5108985",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "f9bdd02069ff404dbef6906f68befb882b562daf256481bc20e55ddb8697e965",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/core/include/proxy.h",
@@ -3627,7 +3903,9 @@
           "sha256": "64b748a62f4d29df4a4e543cf0d62128e53eb3122c5e6e2540771fd80ae671a6",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "f288b6abadda56f97b5751ea8ddded5a762288074732f63e01a9d5321a71d094",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/core/include/reg_pool.h",
@@ -3666,7 +3944,9 @@
           "sha256": "69ea65252d051627025ea020196d7719ff4f309af5da4e45ec2e7e44dffb781a",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "0934ddcbe11f03a186b700eb6bae46bbf5a8e610017eaef178d36c162aa7d8c9",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/core/include/register.h",
@@ -3705,7 +3985,9 @@
           "sha256": "b1155aff5b53ca2680b7c37446447aeda58dc071dbfb331eb84a4704dc3081db",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "567b7189ce27ea52ccc4116a95f4097572828352b2821a72d7bf92836dc01bea",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/core/include/sym_heap.h",
@@ -3724,7 +4006,9 @@
           "sha256": "52f71b33a5ba4ada197652b50901b67df692577678cd15ba46ccc91308d36cbd",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "a3b044a81d00921a8e204f0c2b0c9e8008bd39923f5f68b94575398c17e94c46",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/include/work.h",
@@ -3738,7 +4022,9 @@
           "sha256": "5ad1cdee98a2876188358ea26c0eaf9a05c56a8df6009783cf6296c7b28584a2",
           "decision": "remove-framework"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "generic tracker/lifecycle framework removed"
     },
     {
       "path": "flagcx/core/init.cc",
@@ -3867,7 +4153,9 @@
           "sha256": "abac08eec12a6ead96f67249dfba0903a839a3138965b7869bab4601300d4812",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "399082e9320429a1e7736b4c2316dab91c8d7f3b94158a9c171f78e51b07585a",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/launch_kernel.cc",
@@ -3996,7 +4284,9 @@
           "sha256": "00ead24da07a1a0f67d8624975520919f2327dc64e609bdd6ea0f221efe22b85",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "a5141817ac6d13c1235797ba1e05da0b1562e3ffff9cee925908d8e5adacff7c",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/net.cc",
@@ -4170,7 +4460,9 @@
           "sha256": "1677f1a73407069148eed198a8a1719196a8675ade381597a6c95efdbf3846e3",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "dbbe2ca689a63da0b0524bdf09f946c42abcd82878b69abc2ef21b12d9a9b3fc",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/core/p2p.cc",
@@ -4394,7 +4686,9 @@
           "sha256": "6ec71a73a8b1d40dcbf0260ccf96d6083ea0233c93aa45de3a0ab1d36e6d79dd",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "2ecd8dbf5c20b64413369947d6c6906ad442edf318e92cd06458b513dccbb42e",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/proxy.cc",
@@ -4838,7 +5132,9 @@
           "sha256": "b2d78c7012718c678c55fd3d046da348c61547b6b60ac1860d69fcd70a964ab1",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "0e05ebfc757153e2d8d3650ca686bbea10d6265c3ab3388bda5456c7a9250584",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/reg_pool.cc",
@@ -5127,7 +5423,9 @@
           "sha256": "b90a568d6a07d77ae5ea66664fc5051969a48d69dee24cf3ecaf521cc305d5a7",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "4dfb4e9524ce8b921329da77f9b30e8bc1346175f7c8b66ea1f07ff0774d0971",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/core/sym_heap.cc",
@@ -5191,7 +5489,9 @@
           "sha256": "3778238e04fbdce313de5f950a7a0b9f6c636f797e679aac2bfb709239426bc5",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "51baac028170b55b6afbe343fb8f84ade74c52a4544e28230104db8f8fa2fd0a",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/work.cc",
@@ -5205,7 +5505,9 @@
           "sha256": "9426c03e3187d563ad054483cc5085eed633b5f8ea4541edb35a48b61b527f3b",
           "decision": "remove-framework"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "generic tracker/lifecycle framework removed"
     },
     {
       "path": "flagcx/flagcx.cc",
@@ -6199,7 +6501,9 @@
           "sha256": "09d6776a7aa7f0d01434af44a6182f1eb2440e290f5cf1ed2c36df08c6d4e7fe",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "da1257fdda11aa4ddb119287aeac842af7eef5ac445fdd17e6e97cd29738d573",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/include/flagcx.h",
@@ -6253,7 +6557,9 @@
           "sha256": "68ab33b84d85d812c6e66cf3ce8b92ff7b7fdd8aeb7ebe111c7d87f9aaee4ede",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "ebf1e0c6df25b781e523049dc571742e9e410b110a8bd4dc7d9f56b5073f5b2a",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/include/flagcx_device_api.h",
@@ -6277,7 +6583,9 @@
           "sha256": "efdacefa1801ac9cf1fbc737bc830b30c9a24d7b7c3b9fa634435dd04bc3cb61",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "95080aea7424d5ece2f6c9e57e2c6d73af70b360c3222a2e4d28f5df826caf8d",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/include/flagcx_kernel_internal.h",
@@ -6291,7 +6599,9 @@
           "sha256": "13b8471db97db8827770c02ce6f847534d8283f1f8e93bc4cb2ee289d1e38df8",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "d211eb48b86ec40a63f34f3dcb5ca5118a120723ff418febc9b01c95fc7d3a7f",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/runner/c2c_algo.cc",
@@ -6370,7 +6680,9 @@
           "sha256": "5b2834342df938fc92b10cb938819f902b53ded3b90f910561f8d96a4f15df11",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "7a0d320665be6270e3423902c7d48132dff976fd71bdea86478a882d0ef19f8a",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/runner/homo_runner.cc",
@@ -6529,7 +6841,9 @@
           "sha256": "b6e27159f27d7ad2ae77d96f97ab83ac0a8bc0ed373cd68656638edb3dc4036f",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "e7511ddfe5c06722eff8e1678c29831b45f7fb251fc7d33dddfcfece70d884c8",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/runner/host_runner.cc",
@@ -6553,7 +6867,9 @@
           "sha256": "1b4602e48ef2fc44790a68af2fce657e1b667bfde55d448d323c286ae59843ea",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "25b40402612b80a7194676a8087543fc7ce8f8138047582cb65e165c3d04b140",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/runner/hybrid_runner.cc",
@@ -6567,7 +6883,9 @@
           "sha256": "1f011a6a027d040c14373f65ba352449f023dfc717f46b3a536421d9c0e9adf0",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "3845fcdf6b32466b125cd90680d351d96faae329a6df567df079c78075e6e200",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/runner/include/runner.h",
@@ -6581,7 +6899,9 @@
           "sha256": "b23ecd5d2cdbbb4e6ac9a534c6a06facb3225992de00fbb342d6356fd11f4b2a",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "c5a1a6a08aa4ff262d1d5d0d6f0649a77f754942a8aa372b9be3acab71bfd845",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/runner/include/uni_runner_impl.h",
@@ -6615,7 +6935,9 @@
           "sha256": "d49add940d57bf12eea00daf04b9f24ee5931c47e2484e9299bbb9eccf02cbb3",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "e855a4cd2a3780eba4d133550195946427979e50b9e7f30b814baf620e61acf1",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/runner/uni_runner.cc",
@@ -6699,7 +7021,9 @@
           "sha256": "8c27f53506b611b659152dbb6004ba71ae90c144a892d6ce108a4c50e4b43f50",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "73ed8d507986140c28ca24445dcbdc356b7184190d3a53bc0c7c4a4555887d8e",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/runner/uni_runner_fused.cc",
@@ -6853,7 +7177,9 @@
           "sha256": "6b66b85f0c61264240084d191c3087e3771da31d22e37d8d37492ffd46d9b1b7",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "79d82f07b9b2d947c80308d9dd9287b19ffbf6e04c6a433c1097932c10b9b419",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/runner/uni_runner_impl.cc",
@@ -7017,7 +7343,9 @@
           "sha256": "d058ad6fcba376d505c80d75179e1d4fa53777e968adf68cd7cc371e9117573b",
           "decision": "adapt-execution-and-ipc"
         }
-      ]
+      ],
+      "current_sha256": "0b1f3348f1a1da9820ada62f853fa58ddb28d4082adfe56798f06c5221f22efa",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/service/bootstrap.cc",
@@ -7046,7 +7374,9 @@
           "sha256": "67cd1822888a135aab9bc1141c1c282018ece2e04ef4ccb3a444cedff7c20b6c",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "78b64ce0181b2f3c5459cb97d5a488c024f96705ae647fb7d09c941fab9cb6ce",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/service/include/bootstrap.h",
@@ -7060,7 +7390,9 @@
           "sha256": "34a6d57bcc6b1989d6da001915263cab339a3677b8f70a5070ee257c9cd71794",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "6ef55a1c29d29bab426f828d045a4e4ee162dd342b846c8946a74485b7016faa",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "flagcx/service/include/check.h",
@@ -7074,7 +7406,9 @@
           "sha256": "2fe41d61d32e03b0bdf4cab5ead2a1503b847164dbf49661e8394c8245398735",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "d5082aaffbaf9dc44d5c21e769b1c89d746f9b8c6b97ab07ce72f31b41055b42",
+      "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
       "path": "flagcx/service/shmutils.cc",
@@ -7128,7 +7462,9 @@
           "sha256": "f9bb20468eb0dc5f1502c5bdb2e7a1970c5fe4b8a2d0127276bb5a61c7fd74ff",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "e103bb815108e137efd5886d7449f7ab947c875fccce8459b1884374f1afc0b2",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "makefiles/amd.mk",
@@ -7136,7 +7472,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "2f7be5ae82b875873fcd273129580c0341d6d7cc3e18c966263a5172f3de47a9",
       "audit_start_sha256": "2f7be5ae82b875873fcd273129580c0341d6d7cc3e18c966263a5172f3de47a9",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "2f7be5ae82b875873fcd273129580c0341d6d7cc3e18c966263a5172f3de47a9",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "makefiles/ascend.mk",
@@ -7144,7 +7482,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "c922036a771eac568f168d58e2b006c0d35d5d40f67d559c7a904bc29d1da6ff",
       "audit_start_sha256": "c922036a771eac568f168d58e2b006c0d35d5d40f67d559c7a904bc29d1da6ff",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "c922036a771eac568f168d58e2b006c0d35d5d40f67d559c7a904bc29d1da6ff",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "makefiles/iluvatar.mk",
@@ -7152,7 +7492,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "26a1523257e7abb27cfbbc39daa0d95f549fdb519c59d0a8c96cee3271b8209a",
       "audit_start_sha256": "26a1523257e7abb27cfbbc39daa0d95f549fdb519c59d0a8c96cee3271b8209a",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "26a1523257e7abb27cfbbc39daa0d95f549fdb519c59d0a8c96cee3271b8209a",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "makefiles/metax.mk",
@@ -7160,7 +7502,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "a65c23c7a17e0345eef5407e18e0a5828addc148f7760760a0e6203c29a5397e",
       "audit_start_sha256": "a65c23c7a17e0345eef5407e18e0a5828addc148f7760760a0e6203c29a5397e",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "a65c23c7a17e0345eef5407e18e0a5828addc148f7760760a0e6203c29a5397e",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "plugin/nccl/src/nccl_wrapper.cc",
@@ -7204,7 +7548,9 @@
           "sha256": "035d37e0326f6103c3fb39a1fe86f4c820db786c4f869dc4e711c2b267da4e8f",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "e82e7e0839e4abf866b4784346aed4bb2eedcbaa36b208e93c8417e4f04bf770",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "plugin/torch/example/example.py",
@@ -7223,7 +7569,9 @@
           "sha256": "26a4865c685574ce33df6d9a399b684d71df2d101dcfa6c04f624dc713754d04",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "ef4b8679ff653044e7b44c90a153d824ea7721262b2208266ff2fbcf144f1899",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "plugin/torch/flagcx/include/backend_flagcx.hpp",
@@ -7272,7 +7620,9 @@
           "sha256": "3496ea926e3f165ea67d5c8524fa5845a655d12e31331f017216d2a71b9475c0",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "190de6272439858df0d3dc6adad26dfa17102bd3201c25c99626f23c22c1072c",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "plugin/torch/flagcx/include/cleanup_flagcx.hpp",
@@ -7286,7 +7636,9 @@
           "sha256": "e1a037b4502974e9039c250d0ff7dd49aeca367a4b1eb28a4a6b7de9dd458175",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "8377a3ce53c220f180d2eb17c6af06a4ba1546b2d43b3e6f440309759d2a35be",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "plugin/torch/flagcx/src/backend_flagcx.cpp",
@@ -7490,7 +7842,9 @@
           "sha256": "f483544b48859ee4b0998d10c5e84767b791fb11a73de90b736b2a3d59f6bbb3",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "3a921339d0145e78119cd8bbb9093b5ff50cba2a0c53a590e3349bb27404f2d8",
+      "current_resolution": "Original Torch Work/shutdown ownership retained; shutdown explicitly completes backend streams before core teardown, retaining failed-sync owner and completed progress."
     },
     {
       "path": "plugin/torch/tests/test_backend_source.py",
@@ -7514,7 +7868,9 @@
           "sha256": "6a248c96202bca59bb8567db555f7d43ccf407f995667187f1cb26f019ffc0f6",
           "decision": "preserve-independent-fixes"
         }
-      ]
+      ],
+      "current_sha256": "a2e9ccd7b0d2263ec61e9c5223954dcd7dc1d81ba13fa1bfdb5af8c24ed0a12a",
+      "current_resolution": "Real shutdown/wait compilation regression now also injects InProgress stream drain and verifies no native owner is destroyed before drain succeeds."
     },
     {
       "path": "probe/msg_aiv.txt",
@@ -7522,7 +7878,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "e98dd7c3af3ef30f1464b28d0ef5352cd882d7798eddbc4c9c30c73395bd3689",
       "audit_start_sha256": "e98dd7c3af3ef30f1464b28d0ef5352cd882d7798eddbc4c9c30c73395bd3689",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "e98dd7c3af3ef30f1464b28d0ef5352cd882d7798eddbc4c9c30c73395bd3689",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "probe/msg_ffts.txt",
@@ -7530,7 +7888,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "ec8c7cc5c602a5a1bd22e0d5999ba6bd5f0a4f32272a27c7a0ce6ca64c0d459a",
       "audit_start_sha256": "ec8c7cc5c602a5a1bd22e0d5999ba6bd5f0a4f32272a27c7a0ce6ca64c0d459a",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "ec8c7cc5c602a5a1bd22e0d5999ba6bd5f0a4f32272a27c7a0ce6ca64c0d459a",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "probe/msg_ffts2.txt",
@@ -7538,7 +7898,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "e101ef5a87dbece749dc18dc76ecdaabecb59cd0187788e9ac49d65c2b6325a9",
       "audit_start_sha256": "e101ef5a87dbece749dc18dc76ecdaabecb59cd0187788e9ac49d65c2b6325a9",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "e101ef5a87dbece749dc18dc76ecdaabecb59cd0187788e9ac49d65c2b6325a9",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "probe/msg_pipe.txt",
@@ -7546,7 +7908,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "691e6962d8323f734a5b528efcfffb1411db2f6486e1925b0e47e235db2707e1",
       "audit_start_sha256": "691e6962d8323f734a5b528efcfffb1411db2f6486e1925b0e47e235db2707e1",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "691e6962d8323f734a5b528efcfffb1411db2f6486e1925b0e47e235db2707e1",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "probe/msg_pipe2.txt",
@@ -7554,7 +7918,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "35dd63d4fd664f63ace1d319940d33cf3dad711efe885fa318eb773216f95142",
       "audit_start_sha256": "35dd63d4fd664f63ace1d319940d33cf3dad711efe885fa318eb773216f95142",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "35dd63d4fd664f63ace1d319940d33cf3dad711efe885fa318eb773216f95142",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "probe/msg_s18diag.txt",
@@ -7562,7 +7928,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "cc1d403783ddce1df79256c82e9942ba66e975b8c19acd5fa4b7ad47047f2fb3",
       "audit_start_sha256": "cc1d403783ddce1df79256c82e9942ba66e975b8c19acd5fa4b7ad47047f2fb3",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "cc1d403783ddce1df79256c82e9942ba66e975b8c19acd5fa4b7ad47047f2fb3",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "probe/msg_sentinel.txt",
@@ -7570,7 +7938,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "f5fc507a38aa2596df803043a7580544a47491715a91f00bb90b685dc0748653",
       "audit_start_sha256": "f5fc507a38aa2596df803043a7580544a47491715a91f00bb90b685dc0748653",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "f5fc507a38aa2596df803043a7580544a47491715a91f00bb90b685dc0748653",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "setup.py",
@@ -7578,7 +7948,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "aac12ca22ddeccee40f379bbb6e1cc027a7f806f9ed17e4906f5ecf3ef5ad0fc",
       "audit_start_sha256": "aac12ca22ddeccee40f379bbb6e1cc027a7f806f9ed17e4906f5ecf3ef5ad0fc",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "aac12ca22ddeccee40f379bbb6e1cc027a7f806f9ed17e4906f5ecf3ef5ad0fc",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/fixtures/comm_lifecycle_check.hpp",
@@ -7597,7 +7969,9 @@
           "sha256": "d1a7e48aa38a03d9252337d55735b2749555a5f79dd9f818df864ab1c6b3f11b",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "cce479ef289598318098b73451d73c743cc46513b685010aa302d710c27117bf",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/fixtures/ipc_lifecycle_mock.hpp",
@@ -7611,7 +7985,9 @@
           "sha256": "a4c77786b9b9bc9cd90f8aea524f320d05bad0c1f45f877b4dc229403f37b2b2",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "903e10c2a44f9ad8a1b65e0fc020d5f7afc87df7dae3f60ec217ffadd234a240",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/fixtures/rma_init_rollback.hpp",
@@ -7625,7 +8001,9 @@
           "sha256": "128aa91abb038078be26b020ee74504a5c0f43d59fe66b89f999f9ece1eb5ba8",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/kernel/ascend/Makefile",
@@ -7633,7 +8011,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "af5e98a4d5bb39022c4a12f81061e13d586840e22359264110670886187a1c17",
       "audit_start_sha256": "af5e98a4d5bb39022c4a12f81061e13d586840e22359264110670886187a1c17",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "af5e98a4d5bb39022c4a12f81061e13d586840e22359264110670886187a1c17",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/kernel/ascend/device_api.asc",
@@ -7641,7 +8021,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "f7e01fe3bfb3360b6fee591b5f6a45ea34b6893ae9d08161cec0abf99369c261",
       "audit_start_sha256": "f7e01fe3bfb3360b6fee591b5f6a45ea34b6893ae9d08161cec0abf99369c261",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "f7e01fe3bfb3360b6fee591b5f6a45ea34b6893ae9d08161cec0abf99369c261",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/kernel/ascend/device_ir.asc",
@@ -7649,7 +8031,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "af9501b2648910ab9d361f65da25976e3cd9846ffca90cf9ca93bd26d0ed2679",
       "audit_start_sha256": "af9501b2648910ab9d361f65da25976e3cd9846ffca90cf9ca93bd26d0ed2679",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "af9501b2648910ab9d361f65da25976e3cd9846ffca90cf9ca93bd26d0ed2679",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/kernel/iluvatar/Makefile",
@@ -7657,7 +8041,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "a40712f9ec0f95f991aa5d43194d7899c8ceed4b6d97ce428924f4380a7192b3",
       "audit_start_sha256": "a40712f9ec0f95f991aa5d43194d7899c8ceed4b6d97ce428924f4380a7192b3",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "a40712f9ec0f95f991aa5d43194d7899c8ceed4b6d97ce428924f4380a7192b3",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/kernel/maca/Makefile",
@@ -7665,7 +8051,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "feec4c93a9031e74f1dea593b625cf99ce1fd275881128a2ccbe03786f3ca94b",
       "audit_start_sha256": "feec4c93a9031e74f1dea593b625cf99ce1fd275881128a2ccbe03786f3ca94b",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "feec4c93a9031e74f1dea593b625cf99ce1fd275881128a2ccbe03786f3ca94b",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/kernel/maca/device_api.cu",
@@ -7673,7 +8061,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "8c647496e0c0a166e991b0963da173fe4865dc0a755c24ccbb0b70a1d31292b3",
       "audit_start_sha256": "8c647496e0c0a166e991b0963da173fe4865dc0a755c24ccbb0b70a1d31292b3",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "8c647496e0c0a166e991b0963da173fe4865dc0a755c24ccbb0b70a1d31292b3",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/kernel/maca/device_ir.cu",
@@ -7681,7 +8071,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "187c6884fc7fe4f9263eee760653217c4e9359bde6e163ace5bc13bfef07c67d",
       "audit_start_sha256": "187c6884fc7fe4f9263eee760653217c4e9359bde6e163ace5bc13bfef07c67d",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "187c6884fc7fe4f9263eee760653217c4e9359bde6e163ace5bc13bfef07c67d",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/make.inc",
@@ -7689,7 +8081,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "fcecbf67f5348ddef7f6e0ef2a179b5434166e8e2b6ca10afe7d39fe8779920b",
       "audit_start_sha256": "fcecbf67f5348ddef7f6e0ef2a179b5434166e8e2b6ca10afe7d39fe8779920b",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "fcecbf67f5348ddef7f6e0ef2a179b5434166e8e2b6ca10afe7d39fe8779920b",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/perf/host_api/test_core_sendrecv.cpp",
@@ -7697,7 +8091,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "db4631eddec4cf1bd4d536ea2378550232599fd7106d2bf0b325c33244437b57",
       "audit_start_sha256": "db4631eddec4cf1bd4d536ea2378550232599fd7106d2bf0b325c33244437b57",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "db4631eddec4cf1bd4d536ea2378550232599fd7106d2bf0b325c33244437b57",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/host_mpi_cleanup_test.sh",
@@ -7705,7 +8101,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "14b4800d94c4939016bfb078f92ecfa735b531f149b36036807afc300afaed84",
       "audit_start_sha256": "14b4800d94c4939016bfb078f92ecfa735b531f149b36036807afc300afaed84",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "14b4800d94c4939016bfb078f92ecfa735b531f149b36036807afc300afaed84",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/symmem_test.sh",
@@ -7713,7 +8111,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "1b773940e517f80a5d688a3b50cf2fb637c9a7d303a1be565e5ac74a78e53e54",
       "audit_start_sha256": "1b773940e517f80a5d688a3b50cf2fb637c9a7d303a1be565e5ac74a78e53e54",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "1b773940e517f80a5d688a3b50cf2fb637c9a7d303a1be565e5ac74a78e53e54",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/test_adaptor_contracts.py",
@@ -7787,7 +8187,9 @@
           "sha256": "116ae9ca04db4c12b6f13e4e222d3f9127315a1d7ac753ce809fd1da9311181e",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "ed7ab950ff905e75437c3af5096aa97ccb78d5aacbc0c1430e08415804fd352b",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/test_ascend_ci.py",
@@ -7795,7 +8197,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "f7c1b4a29ca58bfaa8119f5104723a2ba9d5411ee0d37e469a41f893567874b1",
       "audit_start_sha256": "f7c1b4a29ca58bfaa8119f5104723a2ba9d5411ee0d37e469a41f893567874b1",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "f7c1b4a29ca58bfaa8119f5104723a2ba9d5411ee0d37e469a41f893567874b1",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/test_ci_routing.py",
@@ -7803,7 +8207,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "31e8adeab0f13eca05df9c3f725a92e4afb92e6f0223dbbf8a94d3f3bf16b19c",
       "audit_start_sha256": "31e8adeab0f13eca05df9c3f725a92e4afb92e6f0223dbbf8a94d3f3bf16b19c",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "31e8adeab0f13eca05df9c3f725a92e4afb92e6f0223dbbf8a94d3f3bf16b19c",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/test_comm_lifecycle_ci.py",
@@ -7822,7 +8228,9 @@
           "sha256": "613ccb76796fc3d32f0e106b7ca0ba881d5d0f6910b18686ad7281e132e9e861",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "3567bc44cec080ec1c84900adbc7beb6d8846cc2d98a1703c32b6f89f2e205c6",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/script/test_comm_traits_selection.py",
@@ -7830,15 +8238,19 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "2d0fae7f955dafb85b05dcfaccdf2ff614615e97b580101b3aaceac441fbcce9",
       "audit_start_sha256": "2d0fae7f955dafb85b05dcfaccdf2ff614615e97b580101b3aaceac441fbcce9",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "2d0fae7f955dafb85b05dcfaccdf2ff614615e97b580101b3aaceac441fbcce9",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/test_iluvatar_runner_ci.py",
-      "decision": "preserve-exact",
-      "reason": "Unchanged from feature reference.",
+      "decision": "align-tests-and-contracts",
+      "reason": "Preserve all CI assertions and production budget behavior; give the partial-execution budget fixture startup headroom on emulated hosts (5s budget, 6s mock task).",
       "reference_sha256": "3d1ad2beab6bc53ffab4168830feb7e4346ac5815b4672b6c9bb8be112c80b13",
       "audit_start_sha256": "3d1ad2beab6bc53ffab4168830feb7e4346ac5815b4672b6c9bb8be112c80b13",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "183cf17036d1e811b54d8ddff4d611ccd693f6ddc73edf98ec803af6cb7fc8a4",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/script/test_iluvatar_workloads.py",
@@ -7846,7 +8258,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "0ed6318e8fe2ae1d065da7e7f7b4f0c3b1ac2f5288ff15ea5899e9c068c275aa",
       "audit_start_sha256": "0ed6318e8fe2ae1d065da7e7f7b4f0c3b1ac2f5288ff15ea5899e9c068c275aa",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "0ed6318e8fe2ae1d065da7e7f7b4f0c3b1ac2f5288ff15ea5899e9c068c275aa",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/test_ipc_vmm_diagnostics.py",
@@ -7854,7 +8268,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "1fccbd1fa7b87bc44e1fdf40433c0e95cbe97d1e0406f3c60d585f73632ebc8f",
       "audit_start_sha256": "1fccbd1fa7b87bc44e1fdf40433c0e95cbe97d1e0406f3c60d585f73632ebc8f",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "1fccbd1fa7b87bc44e1fdf40433c0e95cbe97d1e0406f3c60d585f73632ebc8f",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/test_kunlunxin_ci.py",
@@ -7862,7 +8278,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "270bf9a4ff81434fb8d2135d9bf811fb95b49b21d8bf35fc57956622dd751e45",
       "audit_start_sha256": "270bf9a4ff81434fb8d2135d9bf811fb95b49b21d8bf35fc57956622dd751e45",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "270bf9a4ff81434fb8d2135d9bf811fb95b49b21d8bf35fc57956622dd751e45",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/test_metax_ci.py",
@@ -7870,7 +8288,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "72d77b4b3f28b3e96d9634eb3acfd7c5c8efddd69c2e63fe182bbc6306390648",
       "audit_start_sha256": "72d77b4b3f28b3e96d9634eb3acfd7c5c8efddd69c2e63fe182bbc6306390648",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "72d77b4b3f28b3e96d9634eb3acfd7c5c8efddd69c2e63fe182bbc6306390648",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/test_metax_device_api.py",
@@ -7878,7 +8298,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "8c097097192def34dd3d68363162960824a5f633fb2befee4ca7c329cd04f50f",
       "audit_start_sha256": "8c097097192def34dd3d68363162960824a5f633fb2befee4ca7c329cd04f50f",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "8c097097192def34dd3d68363162960824a5f633fb2befee4ca7c329cd04f50f",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/test_platform_ci.py",
@@ -7897,7 +8319,9 @@
           "sha256": "77a75a1c010a8ed4741cc4d939da944a6a08c7bca8ab5da0477cd58b9222afc5",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "b3a53de048f67acdd8ad86d1e9e948f3ed096b81dfa9f3d968b4ebd81ddd62b0",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/script/test_ppu_ci.py",
@@ -7905,7 +8329,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "f5bbb8610e795d9b347d712c504547590d0dd3107ec3a5ba4d52a79527128eda",
       "audit_start_sha256": "f5bbb8610e795d9b347d712c504547590d0dd3107ec3a5ba4d52a79527128eda",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "f5bbb8610e795d9b347d712c504547590d0dd3107ec3a5ba4d52a79527128eda",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/test_symmem_ci.py",
@@ -7913,7 +8339,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "69e718ae5ae6216f8cd9777cc229a4504881844e61f674a0b298793d5b33a611",
       "audit_start_sha256": "69e718ae5ae6216f8cd9777cc229a4504881844e61f674a0b298793d5b33a611",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "69e718ae5ae6216f8cd9777cc229a4504881844e61f674a0b298793d5b33a611",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/test_torch_api_test.py",
@@ -7921,7 +8349,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "496797e3709d369b19809bd2d4d6c8528fc34f8374d72b23d1f43a862193378f",
       "audit_start_sha256": "496797e3709d369b19809bd2d4d6c8528fc34f8374d72b23d1f43a862193378f",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "496797e3709d369b19809bd2d4d6c8528fc34f8374d72b23d1f43a862193378f",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/test_torch_coverage.py",
@@ -7929,7 +8359,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "45fd0c035db381127b9a08d78ad416ad869062347f52e0a292f88640c3d7cc99",
       "audit_start_sha256": "45fd0c035db381127b9a08d78ad416ad869062347f52e0a292f88640c3d7cc99",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "45fd0c035db381127b9a08d78ad416ad869062347f52e0a292f88640c3d7cc99",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/script/torch_api_test.sh",
@@ -7937,7 +8369,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "bf136177535f0b6a80754b2fde5bd5329ddd43ed80561c03483a1d0b67b4e28a",
       "audit_start_sha256": "bf136177535f0b6a80754b2fde5bd5329ddd43ed80561c03483a1d0b67b4e28a",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "bf136177535f0b6a80754b2fde5bd5329ddd43ed80561c03483a1d0b67b4e28a",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/adaptor/Makefile",
@@ -7945,7 +8379,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "ad4e38c862b59135c4b479c3a8d0c21ff26fa1ff9bfff9e1cfa9fa8ad7d4a5ad",
       "audit_start_sha256": "ad4e38c862b59135c4b479c3a8d0c21ff26fa1ff9bfff9e1cfa9fa8ad7d4a5ad",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "ad4e38c862b59135c4b479c3a8d0c21ff26fa1ff9bfff9e1cfa9fa8ad7d4a5ad",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/adaptor/fixtures/sunrise_sdk/pccl.h",
@@ -7953,7 +8389,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "8417c89c21002a5cec56c1b2342ea18242959a7365615ce53d6188ed9b8242a2",
       "audit_start_sha256": "8417c89c21002a5cec56c1b2342ea18242959a7365615ce53d6188ed9b8242a2",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "8417c89c21002a5cec56c1b2342ea18242959a7365615ce53d6188ed9b8242a2",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/adaptor/fixtures/sunrise_sdk/tang.h",
@@ -7961,7 +8399,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "92e6399fd034415bd04cf3d6c8155546f16130742a54912ffdd9d747463792a6",
       "audit_start_sha256": "92e6399fd034415bd04cf3d6c8155546f16130742a54912ffdd9d747463792a6",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "92e6399fd034415bd04cf3d6c8155546f16130742a54912ffdd9d747463792a6",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/adaptor/fixtures/sunrise_sdk/tang_runtime.h",
@@ -7969,7 +8409,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "0fc8a86b2d8c5db789dc3329812de32fe25abc9b207d55286495a6fffc251e67",
       "audit_start_sha256": "0fc8a86b2d8c5db789dc3329812de32fe25abc9b207d55286495a6fffc251e67",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "0fc8a86b2d8c5db789dc3329812de32fe25abc9b207d55286495a6fffc251e67",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/adaptor/host_mpi_cleanup.cpp",
@@ -7983,7 +8425,9 @@
           "sha256": "dfccd32fa83382c715f37c43db3d798b2ae23e759816cfe7985f1ad773e945d0",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "baea2f9620a6fc98648da3a96b515995b701359353dd16caa6295fadfc95a3f7",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/adaptor/test_ccl_lifecycle.cpp",
@@ -8017,7 +8461,9 @@
           "sha256": "f1670de030df4b0ffeeb0e06e398cef51697975e06e7349ad9498b378d1f5d72",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "6b80743de41b74e178e20399652eac1ca9a5b0f38fc8d4f7fbbabe6c4565a113",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/adaptor/test_device_event.cpp",
@@ -8025,7 +8471,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "8372cfa7fa44162745e1440be163006555efc6de63a3653a334f260b04867855",
       "audit_start_sha256": "8372cfa7fa44162745e1440be163006555efc6de63a3653a334f260b04867855",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "8372cfa7fa44162745e1440be163006555efc6de63a3653a334f260b04867855",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/adaptor/test_host_staging_cleanup.cpp",
@@ -8033,7 +8481,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "92ae85abc2f2c7de1e7c2136741a87f6078d24a91d80492c27742c426597c0a5",
       "audit_start_sha256": "92ae85abc2f2c7de1e7c2136741a87f6078d24a91d80492c27742c426597c0a5",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "92ae85abc2f2c7de1e7c2136741a87f6078d24a91d80492c27742c426597c0a5",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/adaptor/test_net_adaptor.cpp",
@@ -8057,7 +8507,9 @@
           "sha256": "9515c2781597b5ec31ac85333bcc0686a89ef804ec46c87e1ee14d0ae887e517",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "ed032be935cedee0bde3284d5e15724a1f3c9b9778ad2cd29b3e669aec68068a",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/core/test_adaptor_owner_cleanup.cpp",
@@ -8071,7 +8523,9 @@
           "sha256": "3cfbb6e86199fa7d4197d6e00dd997f7842eedb3e48dac0184274cd26725e424",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/core/test_comm_init_rollback.cpp",
@@ -8085,7 +8539,9 @@
           "sha256": "a0a70c2bdd4525c2c3302ecf5b8bf33825bf0cc7db0cc65227cce7cf553003b3",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/core/test_comm_lifecycle.cpp",
@@ -8099,7 +8555,9 @@
           "sha256": "fc0bf27cddc65b0969f71348683101a9852114301f4fa4b3c0381a427e02b98f",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/core/test_group_completion_failure.cpp",
@@ -8113,7 +8571,9 @@
           "sha256": "0b5eb43a9c1bd32ab71b0b6d66733fbf0d34d81afde742ff1aa2279c619bbb54",
           "decision": "replace-tracker-test"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "tracker tests replaced by IPC, owner retry and native-status regression tests"
     },
     {
       "path": "test/unittest/core/test_hetero_lifecycle.cpp",
@@ -8127,7 +8587,9 @@
           "sha256": "c8a3d553f048d2c561c71ab1207a4909237d0eb7ab149041d62f9f3c09d89730",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/core/test_internal_ipc_lifecycle.cpp",
@@ -8141,7 +8603,9 @@
           "sha256": "c369fb9d368b309050c2610f80e623a4501fb04f71c1230d08c79c0557ab3801",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "67e99c49b82e237439c7856513b33078eed08deaf5c125e7833614a9f952e64b",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/core/test_ipc_finalize.cpp",
@@ -8155,7 +8619,9 @@
           "sha256": "c709c0a4157e6e42a6925e8f73d188300e7e4d3693fef5830dc7e564dbab2886",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "6639dcbcd8f353f0e73dd0f4742285445026f749a71cb8f5424126706a02702c",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/core/test_p2p_teardown.cpp",
@@ -8204,7 +8670,9 @@
           "sha256": "061115b1a5d1c50fa25ba7a659a57327d6dfa8a58f8a24e8bfcfc3ef1ef4a875",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "770eb104e669a21866a1b6cce40a4bd01298cb32b36ea38fc13505cf65f18dd7",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/core/test_reg_pool.cpp",
@@ -8233,7 +8701,9 @@
           "sha256": "b3c1454593fe804063b3870621d7bac9faaa62f56ead77a6441d980be4cde47c",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "72dbb2dc12a0cdb60f465d3662b5c0017a61b97448869546fe6fde5be982481c",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/core/test_relay_lifecycle.cpp",
@@ -8247,7 +8717,9 @@
           "sha256": "c5cc31c4f2281918e8cbd4148a266af96cf6d5bf2e679d814da85d9e366a4909",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "6e3eeb9d8c9236f971e30e1e37d68cbe1715a4d631f072a456618c6ce7ee5aeb",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/core/test_stream_value_completion.cpp",
@@ -8271,7 +8743,9 @@
           "sha256": "4d5361299ea404ac2314fde3551287190919849292df4ec29ada097bc2a93acc",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "a1af7873e1e8783c5139ce598da6bbadc6cc006e6db10bc54190d49a13384b7d",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/core/test_stream_value_probe.cpp",
@@ -8285,7 +8759,9 @@
           "sha256": "1260c9462c89229a03c93d29f310b28bdb32579849c234e9b6754633fafa0aff",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "d83d59ad400d6ab42ef3cd15f11805a3943a50f60a977787a888432824d99515",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/core/test_torch_cleanup_order.cpp",
@@ -8299,7 +8775,9 @@
           "sha256": "2aebdf561834c2465fd6d167026c2c176d78dbb5f836a91ab5594ce841e29692",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/core/test_window_ipc_lifecycle.cpp",
@@ -8313,7 +8791,9 @@
           "sha256": "3279569b2691921ab01ebc2df77a07a9e6e99e330bad914160a7637f333ef908",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "6f5a26bc961bbaae407331a076722e150d042ec957410fa9b02085bd314efc33",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/core/test_work_collection.cpp",
@@ -8327,7 +8807,9 @@
           "sha256": "42f8274663af1c979ed462803634509ce344407adb35b6a9f2a82c3ac447eca4",
           "decision": "replace-tracker-test"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "tracker tests replaced by IPC, owner retry and native-status regression tests"
     },
     {
       "path": "test/unittest/device_api/Makefile",
@@ -8335,7 +8817,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "bf627b4cf68a801fed0785be18b4a24dd6a0e79289927189785fbd06fd9e3db5",
       "audit_start_sha256": "bf627b4cf68a801fed0785be18b4a24dd6a0e79289927189785fbd06fd9e3db5",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "bf627b4cf68a801fed0785be18b4a24dd6a0e79289927189785fbd06fd9e3db5",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/device_api/enflame/test_device_api_intra.cpp",
@@ -8343,7 +8827,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "b681a4b683d0935946e08a52d878793ad0cd1e21897b37cebf8a766d76053d7d",
       "audit_start_sha256": "b681a4b683d0935946e08a52d878793ad0cd1e21897b37cebf8a766d76053d7d",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "b681a4b683d0935946e08a52d878793ad0cd1e21897b37cebf8a766d76053d7d",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/device_api/enflame/test_device_ir_intra.cpp",
@@ -8351,7 +8837,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "d23e232b9da2eb2ac4e312251957e6ae0ea1d54bccb9854a184e4a7f7dd58140",
       "audit_start_sha256": "d23e232b9da2eb2ac4e312251957e6ae0ea1d54bccb9854a184e4a7f7dd58140",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "d23e232b9da2eb2ac4e312251957e6ae0ea1d54bccb9854a184e4a7f7dd58140",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/device_api/test_comm_stream_isolation.cpp",
@@ -8380,7 +8868,9 @@
           "sha256": "555fbf0623119554e8dadb31b5f28f5fd17a4c313ded5cd83cb1a06fbece638f",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "2a49cc97e1b59970b84442dd77699e30915d9a0b574ccd898c128c17c0bd5827",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/device_api/test_dev_comm_cleanup.cpp",
@@ -8499,7 +8989,9 @@
           "sha256": "c73a0bdc6bc92e489d3ac0c373df8472dde56c20b22137609e1aae11d15b42b6",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "8bf5d4fdb3d8734c16da420328d150b669d54f7a6606d91502b65776cffe168a",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/device_api/test_device_api.cpp",
@@ -8507,7 +8999,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "500319dddb9e03679366e383d029e382e1086194513abf0cb281dcb823c3dcac",
       "audit_start_sha256": "500319dddb9e03679366e383d029e382e1086194513abf0cb281dcb823c3dcac",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "500319dddb9e03679366e383d029e382e1086194513abf0cb281dcb823c3dcac",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/device_api/test_device_api_inter.cpp",
@@ -8515,7 +9009,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "2e318a80b3786c6b1071b2f55caa086472fc46daa57b9147b6c34146a496fc2d",
       "audit_start_sha256": "2e318a80b3786c6b1071b2f55caa086472fc46daa57b9147b6c34146a496fc2d",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "2e318a80b3786c6b1071b2f55caa086472fc46daa57b9147b6c34146a496fc2d",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/device_api/test_device_api_intra.cpp",
@@ -8523,7 +9019,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "9d9a3e6e6c7e76507ed244ffcda157882b61ebd6462f840abee279bf4a5ab9dd",
       "audit_start_sha256": "9d9a3e6e6c7e76507ed244ffcda157882b61ebd6462f840abee279bf4a5ab9dd",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "9d9a3e6e6c7e76507ed244ffcda157882b61ebd6462f840abee279bf4a5ab9dd",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/device_api/test_device_ir_inter.cpp",
@@ -8531,7 +9029,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "2287f7a6a2f8e782eb747d7385162f88623f4bd9dc27bc95009242227d4754ea",
       "audit_start_sha256": "2287f7a6a2f8e782eb747d7385162f88623f4bd9dc27bc95009242227d4754ea",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "2287f7a6a2f8e782eb747d7385162f88623f4bd9dc27bc95009242227d4754ea",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/device_api/test_device_ir_intra.cpp",
@@ -8539,7 +9039,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "c41ca7614e782dfbc1d12d61198be26349c6f80daa974be06f2b80c11f6ad063",
       "audit_start_sha256": "c41ca7614e782dfbc1d12d61198be26349c6f80daa974be06f2b80c11f6ad063",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "c41ca7614e782dfbc1d12d61198be26349c6f80daa974be06f2b80c11f6ad063",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/device_api/test_device_ir_unified_inter.cpp",
@@ -8547,7 +9049,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "6d41bfa21b62508edf9f08196ae8173df74f727ea61260f52d28095437665987",
       "audit_start_sha256": "6d41bfa21b62508edf9f08196ae8173df74f727ea61260f52d28095437665987",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "6d41bfa21b62508edf9f08196ae8173df74f727ea61260f52d28095437665987",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/device_api/test_device_ir_unified_intra.cpp",
@@ -8555,7 +9059,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "ac8ee2300e12ce3ece1713863c5644507468b41303e455ce8f85e6a869f3dca6",
       "audit_start_sha256": "ac8ee2300e12ce3ece1713863c5644507468b41303e455ce8f85e6a869f3dca6",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "ac8ee2300e12ce3ece1713863c5644507468b41303e455ce8f85e6a869f3dca6",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/rma/test_rma_cleanup.cpp",
@@ -8569,7 +9075,9 @@
           "sha256": "7f11c55330e5cdd4867234ebac8994ecb7b8044140246b74656f6afe2e653a4a",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "5b71416a61b31a4e3e876c6ca19166698cddd31d8b87e8676811b0037058ffcf",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/rma/test_rma_init_rollback.cpp",
@@ -8583,7 +9091,9 @@
           "sha256": "4d51e0928ad1ff124422313ad92c43d7591c3d569b46f2df29517455a4934b8e",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/rma/test_rma_post_result.cpp",
@@ -8612,7 +9122,9 @@
           "sha256": "97e8f63b88eba946705bab5c5d93caa49e0f22b784c35183ca36014a7e2ed412",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "f6c273052ef9b098118ddda3e80fac2c783f45699189ada5a8d8505e6a809d78",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/rma/test_signal_registration_ownership.cpp",
@@ -8636,7 +9148,9 @@
           "sha256": "954ab01688fa7065a408ba4cbc038cdf39a5740a0fff7777bd39728af8de1bed",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "6d86d598e6f2b9d03b675d4cef8dbeeda719bcb30502c645f3aaceede012b8ff",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/runner/coll_comm_lifecycle.cpp",
@@ -8644,7 +9158,9 @@
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "23d27309436e975235b6b74463ac130d66e5de6e67d12ce7275b9585c64bb1a2",
       "audit_start_sha256": "23d27309436e975235b6b74463ac130d66e5de6e67d12ce7275b9585c64bb1a2",
-      "rollback_hunks": []
+      "rollback_hunks": [],
+      "current_sha256": "23d27309436e975235b6b74463ac130d66e5de6e67d12ce7275b9585c64bb1a2",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/runner/test_fused_invocation_buffers.cpp",
@@ -8703,7 +9219,9 @@
           "sha256": "aeec29efd179509f964d9886c7f5c27569c70c5148da08bd093e8ecea9b4562f",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "0861d6eb9ed920c1506b233c813f31d49536a9515ae1bbdbb4cea1159b9af173",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/runner/test_homo_runner_status.cpp",
@@ -8717,7 +9235,9 @@
           "sha256": "f2f5cb63987a25807693454b60482c6f06d441977255b2c543af87bcef3de324",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "7851479a19627199dcf731fc934dcbc1194b7124527245d1f4eb15285dea41a0",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/runner/test_uni_runner_static_trigger.cpp",
@@ -8846,7 +9366,9 @@
           "sha256": "0b91b076f9eb440607ce2d40eaf14028c0a54d54326eff35e18be74aaeda244d",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "b7c78fabe05927a60be32039264ec7d95df5ecebc7f8da2f8b8ad3911cd2bdfe",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/service/test_bootstrap_intra_status.cpp",
@@ -8860,7 +9382,9 @@
           "sha256": "d5d473c725d48911c1afe96c501e8887e94bc8f16eb315230c39bb0f84f5df29",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "a1019b666d2849f6c785c99d71079f72bd1f963b30d2a89f61a83294e8007758",
+      "current_resolution": "exact feature-reference content"
     },
     {
       "path": "test/unittest/symmem/coll_hetero_lifecycle.cpp",
@@ -8874,7 +9398,9 @@
           "sha256": "ee98d3b65f0ed7f000689c61bdae5eda505eb271f0d765956c40ac67ffe2bf21",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": null,
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/symmem/coll_ipc_finalize.cpp",
@@ -8888,7 +9414,9 @@
           "sha256": "478135001ad511fe789409587690539ceb4fbb5a4e1188cf80b1b98c96b718a0",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "b5b07ae1348fba8e2bb99fb4fa59051211f9499790538e40cb30ed3775cac60d",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
       "path": "test/unittest/symmem/coll_sym_register.cpp",
@@ -9012,7 +9540,9 @@
           "sha256": "b70d88de513440b08046062b149183a9705a71447e1087826e66b96e62b48d28",
           "decision": "align-tests-and-contracts"
         }
-      ]
+      ],
+      "current_sha256": "bdf12b4929d27325d8a9d18acfe03750894acc03e3992af291593a599c65e747",
+      "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     }
   ],
   "graph_support": "No public graph capture/instantiate/launch API or end-to-end replay regression found in the baseline. UniRunner DAG templates are separate from runtime graph replay. Capture-mode handling and placeholder structs are not proof of full support.",
@@ -9035,11 +9565,13 @@
     {
       "step": 4,
       "status": "complete",
-      "validation": "Host/mock core 265 passed/5 hardware skips; runner 105 passed. Four real-bootstrap lifecycle cases passed on every rank at 2 and 4 ranks. Builtin compatibility, unknown plugin unsupported, partial init/native abort retry, closed diagnostics, and cached proxy errors covered. No accelerator attached."
+      "validation": "Host/mock core 265 passed/5 hardware skips; runner 105 passed. Four real-bootstrap lifecycle cases passed on every rank at 2 and 4 ranks. Builtin compatibility, unknown plugin unsupported, partial init/native abort retry, closed diagnostics, and cached proxy errors covered. No accelerator attached.",
+      "commit": "cd70528b"
     },
     {
       "step": 5,
-      "status": "pending"
+      "status": "complete",
+      "validation": "IBRC603 / IBUC611 host/mock tests passed; 4 bootstrap cases passed at 2/4 ranks per build. 294 scripts discovered, 8 tool skips; one emulated-host timing fixture corrected, all11 affected module tests passed. Torch7 source/method tests passed. Kernel-host syntax passed. 24 protected hashes and143 remaining exact-preservation paths match."
     }
   ],
   "repair_step3": {
@@ -9060,5 +9592,18 @@
       "logs": "/private/tmp/iluvatar-ipc-validation/preserve3-*-final.log"
     },
     "tracker_restored": false
+  },
+  "evidence_note": "Content hashes prove exact preservation where equal. Adapted paths require source review and regression tests; hashes/classifications alone do not certify behavior or accelerator acceptance.",
+  "repair_commits": [
+    "db9c863a",
+    "10d0fea1",
+    "ba4cb7c1",
+    "cd70528b"
+  ],
+  "native_review": {
+    "status": "pending",
+    "scope": "current branch vs main, fork at original feature_reference",
+    "associated_pr": "No associated PR feedback found",
+    "authorization": "User explicitly authorized cyclic native CR, fixes and one commit per review round until LGTM."
   }
 }

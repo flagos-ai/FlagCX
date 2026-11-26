@@ -3014,7 +3014,7 @@ run_suite
             immediate_completion.index("flagcxKernelProxyAdvanceCompleted("),
         )
         kernel_retire = proxy_source.index(
-            "static flagcxResult_t proxyRetireWorkers("
+            "static flagcxResult_t flagcxProxyRetireWorkers("
         )
         deferred_fifo_destroy = proxy_source.index(
             "->flagcxFifoDestroy()", kernel_retire

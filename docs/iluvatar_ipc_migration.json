@@ -69,6 +69,92 @@
   "validation_summary": {
     "artifact_directory": "/private/tmp/iluvatar-ipc-validation",
     "device_operations": "mock; no accelerator/NIC acceptance claimed",
+    "feature_reference": "34a81ae38e83ec571152d4a45b9276b44aff48c3",
+    "protected_device_api_hashes": 24,
+    "native_probe_in_feature_reference": false,
+    "IBRC": {
+      "core": {
+        "pass": 270,
+        "skip": 0
+      },
+      "runner": {
+        "pass": 105,
+        "skip": 0
+      },
+      "rma": {
+        "pass": 57,
+        "skip": 0
+      },
+      "service": {
+        "pass": 60,
+        "skip": 0
+      },
+      "adaptor": {
+        "pass": 73,
+        "skip": 0
+      },
+      "device_api_host": {
+        "pass": 48,
+        "skip": 0
+      }
+    },
+    "IBUC": {
+      "core": {
+        "pass": 270,
+        "skip": 0
+      },
+      "runner": {
+        "pass": 105,
+        "skip": 0
+      },
+      "rma": {
+        "pass": 57,
+        "skip": 0
+      },
+      "service": {
+        "pass": 60,
+        "skip": 0
+      },
+      "adaptor": {
+        "pass": 82,
+        "skip": 0
+      },
+      "device_api_host": {
+        "pass": 48,
+        "skip": 0
+      }
+    },
+    "bootstrap": {
+      "ranks": [
+        2,
+        4
+      ],
+      "cases_per_rank": 4,
+      "builds": [
+        "IBRC",
+        "IBUC"
+      ],
+      "result": "all passed on every rank"
+    },
+    "scripts": {
+      "discovered": 294,
+      "tool_skips": 8,
+      "initial_error": "1s partial-execution budget fixture expired before mock MPI launch on emulated host; reproduced in isolation",
+      "resolution": "Test-only 5s budget/6s mock task preserves strict production CI behavior and assertions. All 11 Iluvatar runner CI tests passed after adaptation. No unresolved failures.",
+      "torch_source_pass": 7,
+      "torch_details": "Real shutdown/wait methods compiled with SDK mocks for normal, FlagOS Ascend and Enflame configurations; failed stream synchronization retains owner before native destruction."
+    },
+    "kernel_host_syntax": "passed for proxy/group and kernel host sources",
+    "pending_hardware": [
+      "Iluvatar native callback/event probe",
+      "heterogeneous AllGather and Device API IPC/isolation",
+      "SDK-specific native Finalize/Destroy behavior and performance/overlap measurements"
+    ],
+    "caller_contract": "Caller completes user streams and directly launched kernels before lifecycle calls. Core generic work tracking removed; specific retryable cleanup owners and proxy copy completion events retained. Existing builtin SDK native-close compatibility policy retained. Torch shutdown explicitly drains its communication streams."
+  },
+  "historical_pre_repair_validation": {
+    "artifact_directory": "/private/tmp/iluvatar-ipc-validation",
+    "device_operations": "mock; no accelerator/NIC acceptance claimed",
     "IBRC": {
       "core": {
         "pass": 249,
@@ -149,5 +235,6 @@
       "SDK-specific native Finalize/Destroy behavior and performance/overlap measurements"
     ],
     "caller_contract": "Complete user streams, Device API kernels and graph replays before lifecycle calls. Native Finalize limitations are preserved; no Destroy fallback."
-  }
+  },
+  "preservation_repair": "Independent features/fixes reconciled with the original feature snapshot; see ipc_preservation_audit.json. Historical six-step validation is retained separately and is superseded by this summary."
 }

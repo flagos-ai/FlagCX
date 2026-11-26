@@ -9,7 +9,8 @@ thread; there is no lifecycle recycler thread.
 ## Caller completion boundary
 
 Before Finalize, finish every user stream, directly launched Device API kernel,
-and captured graph replay that can access the communicator or its buffers.
+and any application-managed device execution that can access the communicator
+or its buffers.
 Do not submit concurrently with lifecycle calls, and finish open groups first.
 Finalize drains internal producers and transport owners; it does not discover
 all previously accepted user work or synchronize the entire device. This is an
@@ -30,7 +31,7 @@ complete local device work and remote accesses
 
 WindowDeregister is local. It does not close another rank's imports, free the
 user buffer, or supply the application-wide confirmation. It also cannot
-revoke raw pointers or graph replays retained by the application. A successful
+revoke raw pointers or application-managed GPU execution. A successful
 Window handle is empty and reusable on the same Comm. If cleanup fails or
 returns InProgress, retain the handle and retry; completed close/unmap steps
 are saved and new views of that handle are rejected.
@@ -68,7 +69,8 @@ caller completes all user work
 The full FlagCX communicator participates in the internal IPC agreement,
 including ranks with no local allocation. Heterogeneous initialization declares
 this participation before publishing owners. Pure native communicators without
-FlagCX IPC resources add no FlagCX shutdown agreement.
+FlagCX IPC resources or collective native-close requirements add no FlagCX
+shutdown agreement.
 
 Each phase records local completion separately from common completion. A rank
 that succeeds locally retains backing while another rank reports failure. All
@@ -89,18 +91,67 @@ host communicator, is finalized once. Native Finalize returning InProgress is
 submitted once and polled through its asynchronous-error API on subsequent
 Finalize calls. A synchronous Success does not require an asynchronous poller.
 Errors, unsupported operations and missing progress support preserve the owner.
-There is no core fallback that substitutes native Destroy for Finalize, and no
-new platform conditional compilation to simulate support.
+The existing built-in SDK compatibility policy is retained: HCCL, CNCL,
+ECCL, MUSA MCCL, PCCL and XCCL use their supported native Destroy operation
+at the Finalize boundary. Selection uses the actual built-in adaptor identity;
+an unknown plugin does not inherit this behavior from its name. A failed or
+InProgress compatibility close retains the native owner and aliases. Only
+strict Success clears them. Exported FlagCX backing remains allocated until
+public Destroy. Required native collective closure is agreed during init,
+separately from the IPC participation bit.
 
-Consequently, an adaptor whose Finalize is unsupported or fails cannot satisfy
-successful public Finalize/Destroy through this path. Existing SDK-specific
-restrictions and CI exclusions remain visible; they are not a guarantee of
-rank-local SDK destruction. Ascend SHMEM and MetaX Device API integrations are
-preserved independently of those native lifecycle limitations.
+Initializer failures keep acquired plugin references and partial native owners
+for Destroy retry. This path does not call native Finalize on a half-built SDK
+communicator. Early local rollback is allowed only before exported Device API
+owners exist; later failures follow the agreed import-close phases. Each plugin
+reference is released only if the owner acquired it.
 
-This change does not retain the generic initialization-rollback state machine,
-Abort owner machinery, or explicit Torch shutdown/retry APIs introduced with the
-removed lifecycle series. Those features must not be assumed by callers.
+Heterogeneous Abort remains unsupported and consumes no native owner. A native
+Abort failure retains the public owner; an uncertain Abort must be retried
+before native Finalize can complete. Successful native Abort keeps its wrapper
+until local destruction. Abort does not enter a hidden peer rendezvous or imply
+permission to free exported backing; when agreement is still required it returns
+InProgress, and participants must explicitly Finalize together. Diagnostics on a
+closed owner use saved status or cached metadata, without querying retired SDK
+state.
+
+Torch's asynchronous Work objects, completion handling, and explicit
+shutdown/retry APIs are retained. Shutdown completes backend communication
+streams before Comm destruction, saving failed-sync owners and completed progress.
+They are separate from the removed core
+WorkRecord tracker. Existing platform limitations and CI exclusions remain
+visible; host mocks cannot establish rank-local behavior inside a vendor SDK.
+Ascend SHMEM and MetaX Device API integrations are preserved independently.
+
+## Callback and event boundary
+
+The ordinary host-callback group path is:
+
+```text
+launch stream:  readiness events -> host callback
+proxy stream:  accepted copy -> copy completion event
+```
+
+No core WorkFinish/group-associated completion events are appended to the
+callback's launch stream. Existing data-path events remain, including readiness,
+proxy copy completion, Device API semaphores, UniRunner DAG dependencies and
+Torch Work completion. Subsequent operations, Torch completion handling or the
+retained RMA host-function path can still put an
+event after an earlier callback. Removing the tracker does not establish that
+all SDK callback/event combinations are safe.
+
+Ordinary GroupEnd retains baseline submission behavior. Failed C2C/UniRunner
+cleanup retains concrete buffer/stream owners and retries stream-level cleanup;
+it creates no per-operation tracker events and adds no device-wide fallback.
+Caller completion before Finalize replaces the removed automatic user-work
+drain guarantee. Its performance and overlap effects need hardware measurement.
+
+## Graph terminology
+
+No complete public graph capture/instantiate/launch API or end-to-end replay
+regression was found in the baseline. UniRunner DAG templates are a different
+feature and remain supported. The caller-completion rule is a resource-use
+contract; it does not claim additional runtime graph-replay support.
 
 ## Validation
 
@@ -110,5 +161,11 @@ four ranks, empty ranks, collective retry and sequential rank-local Destroy.
 These use mocked local device operations and do not certify accelerator IPC.
 Hardware runner AllGather, Window/Device API IPC, independent-Comm isolation,
 and SDK teardown remain required on the corresponding platform. Iluvatar's
-native callback/event probe and runner regressions are pending hardware access;
+SDK callback/event diagnostic and runner regressions are pending hardware access;
 removing work events alone is not evidence of their measured completion.
+
+The standalone native callback/copy probe was on origin/fix-ci-issues, not in
+the original 34a81ae3 main snapshot; this change did not remove it from main.
+The separate ipc_vmm_repro diagnostic remains. Full path/hunk decisions and
+preservation hashes are recorded in ipc_preservation_audit.json. Hardware
+acceptance is separate from the host/mock review verdict.
