@@ -23,7 +23,7 @@ on:
         type: string
         default: all
       level:
-        description: "CI test level: L0, L1, L2, or L3"
+        description: "CI test level: L0, L0.5 (runner smoke), L1, L2, or L3"
         required: true
         type: string
         default: L2
@@ -54,6 +54,7 @@ jobs:
       repository: ${{ steps.resolve.outputs.repository }}
       ref: ${{ steps.resolve.outputs.ref }}
       level: ${{ steps.resolve.outputs.level }}
+      runner_matrix: ${{ steps.resolve.outputs.runner_matrix }}
       plan_status: ${{ steps.resolve.outputs.plan_status }}
     steps:
       - uses: ruby/setup-ruby@v1
@@ -167,7 +168,7 @@ jobs:
   unit_tests:
     name: Platform unit tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true' && needs.prepare.outputs.level != 'L0'
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true' && needs.prepare.outputs.level != 'L0' && needs.prepare.outputs.level != 'L0.5'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -175,6 +176,19 @@ jobs:
     with:
       platform: ${{ matrix.platform }}
       suites: ${{ toJSON(matrix.suites) }}
+      repository: ${{ needs.prepare.outputs.repository }}
+      ref: ${{ needs.prepare.outputs.ref }}
+
+  runner_smoke:
+    name: Platform runner smoke
+    needs: prepare
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true' && needs.prepare.outputs.level == 'L0.5'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.runner_matrix) }}
+    uses: ./.github/workflows/runner_smoke_common.yml
+    with:
+      platform: ${{ matrix.platform }}
       repository: ${{ needs.prepare.outputs.repository }}
       ref: ${{ needs.prepare.outputs.ref }}
 
@@ -212,7 +226,7 @@ jobs:
   ci_complete:
     name: ci-complete
     if: always() && (github.event_name != 'issue_comment' || needs.prepare.outputs.active == 'true')
-    needs: [prepare, unit_tests, performance_tests, torch_api_tests, format-check]
+    needs: [prepare, unit_tests, runner_smoke, performance_tests, torch_api_tests, format-check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -224,6 +238,7 @@ jobs:
           HAS_PLATFORMS: ${{ needs.prepare.outputs.has_platforms }}
           PREPARE_RESULT: ${{ needs.prepare.result }}
           UNIT_RESULT: ${{ needs.unit_tests.result }}
+          RUNNER_RESULT: ${{ needs.runner_smoke.result }}
           PERF_RESULT: ${{ needs.performance_tests.result }}
           TORCH_RESULT: ${{ needs.torch_api_tests.result }}
           FORMAT_RESULT: ${{ needs.format-check.result }}
@@ -234,4 +249,4 @@ jobs:
           bash .github/scripts/ci/check_ci_results.sh \
             "$ACTIVE" "$HAS_PLATFORMS" "$PREPARE_RESULT" "$UNIT_RESULT" \
             "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT" "$LEVEL" \
-            "$SUITE_FILTER_ACTIVE"
+            "$SUITE_FILTER_ACTIVE" "$RUNNER_RESULT"

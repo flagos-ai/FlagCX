@@ -60,6 +60,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
             )
             outputs = dict(line.split("=", 1) for line in output_path.read_text().splitlines())
             outputs["matrix"] = json.loads(outputs["matrix"])
+            outputs["runner_matrix"] = json.loads(outputs["runner_matrix"])
             outputs["platforms"] = json.loads(outputs["platforms"])
             return outputs, result.stdout
 
@@ -345,12 +346,23 @@ class CiMatrixRoutingTest(unittest.TestCase):
             self.assertIn("full platform matrix", summary)
 
     def test_levels_select_the_expected_workloads(self):
-        for level in ("L0", "L1", "L2", "L3"):
+        for level in ("L0", "L0.5", "L1", "L2", "L3"):
             with self.subTest(level=level):
                 outputs, _ = self.resolve({
                     "event_name": "workflow_dispatch", "selection": "cuda", "level": level
                 })
                 self.assertEqual(outputs["level"], level)
+
+    def test_l05_selects_runner_smoke_without_test_workloads(self):
+        outputs, _ = self.resolve({
+            "event_name": "pull_request",
+            "labels": ["platform:metax", "level:L0.5"],
+            "files": ["test/unittest/p2p/test_p2p.cc"],
+        })
+        self.assertEqual(outputs["platforms"], ["metax"])
+        self.assertEqual(outputs["runner_matrix"]["include"], [
+            {"platform": "metax", "display_name": "MetaX Tests"}
+        ])
 
     def test_level_labels_escalate_without_downgrading(self):
         outputs, _ = self.resolve({
@@ -677,7 +689,7 @@ class CiWorkflowWiringTest(unittest.TestCase):
         self.assertIn("name: FlagCX CI", workflow)
         self.assertIn("  ci_complete:\n    name: ci-complete", workflow)
         self.assertIn(
-            "needs: [prepare, unit_tests, performance_tests, torch_api_tests, format-check]",
+            "needs: [prepare, unit_tests, runner_smoke, performance_tests, torch_api_tests, format-check]",
             workflow,
         )
         for reusable in (
@@ -800,13 +812,19 @@ class CiWorkflowWiringTest(unittest.TestCase):
 
 
 class CiCompletionGateTest(unittest.TestCase):
-    def check(self, *results, level=None, suite_filter_active=None):
+    def check(self, *results, level=None, suite_filter_active=None, runner_smoke=None):
         if level is not None:
             results += (level,)
         if suite_filter_active is not None:
             if level is None:
                 results += ("L2",)
             results += (suite_filter_active,)
+        if runner_smoke is not None:
+            if level is None:
+                results += ("L2",)
+            if suite_filter_active is None:
+                results += ("false",)
+            results += (runner_smoke,)
         return subprocess.run(
             ["bash", str(GATE_SCRIPT), *results],
             capture_output=True,
@@ -852,6 +870,18 @@ class CiCompletionGateTest(unittest.TestCase):
             "true", "true", "success", "success", "cancelled", "skipped", "success", "L1"
         )
         self.assertNotEqual(cancelled.returncode, 0)
+
+    def test_l05_requires_runner_smoke_but_allows_test_jobs_to_skip(self):
+        passed = self.check(
+            "true", "true", "success", "skipped", "skipped", "skipped", "success",
+            level="L0.5", suite_filter_active="false", runner_smoke="success",
+        )
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        failed = self.check(
+            "true", "true", "success", "skipped", "skipped", "skipped", "success",
+            level="L0.5", suite_filter_active="false", runner_smoke="failure",
+        )
+        self.assertNotEqual(failed.returncode, 0)
 
     def test_focused_suite_run_allows_perf_and_torch_skips_only(self):
         passed = self.check(

@@ -45,13 +45,13 @@ suites_config_path = File.join(config_dir, "suites.yml")
 suites_config = File.file?(suites_config_path) ? load_yaml.call(suites_config_path) : {}
 
 canonical_platform = ->(name) { name == "musa" ? "mthreads" : name }
-valid_levels = %w[L0 L1 L2 L3]
+valid_levels = %w[L0 L0.5 L1 L2 L3]
 normalise_level = lambda do |value|
   level = value.to_s.upcase
   abort "Unknown CI test level: #{value}" unless valid_levels.include?(level)
   level
 end
-level_number = ->(value) { value.delete_prefix("L").to_i }
+level_number = ->(value) { value.delete_prefix("L").to_f }
 
 labels = Array(context["labels"]).map(&:to_s).map do |label|
   if label.start_with?("platform:")
@@ -214,7 +214,8 @@ suite_filter_active = matrix_entries.any? do |entry|
 end
 suite_filter_active ||= requested_suites.any?
 planned_groups = []
-planned_groups << "unit suites" unless level == "L0"
+planned_groups << "runner smoke (no tests)" if level == "L0.5"
+planned_groups << "unit suites" unless %w[L0 L0.5].include?(level)
 planned_groups.concat(["performance", "Torch API"]) if %w[L2 L3].include?(level)
 plan = {
   "schema_version" => 1,
@@ -283,6 +284,9 @@ abort "GITHUB_OUTPUT is required" if output_path.nil? || output_path.empty?
 outputs = {
   "active" => active.to_s,
   "matrix" => JSON.generate(matrix),
+  "runner_matrix" => JSON.generate({"include" => selected.map do |entry|
+    {"platform" => entry.fetch("platform"), "display_name" => entry.fetch("display_name")}
+  end}),
   "platforms" => JSON.generate(selected.map { |entry| entry.fetch("platform") }),
   "platform_csv" => selected.map { |entry| entry.fetch("platform") }.join(","),
   "suites" => JSON.generate(matrix_entries.to_h { |entry| [entry.fetch("platform"), entry.fetch("suites")] }),

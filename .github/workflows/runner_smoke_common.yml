@@ -1,0 +1,51 @@
+name: Hardware Runner Smoke
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: Platform configuration name
+        required: true
+        type: string
+      repository:
+        description: Repository containing the source under test
+        required: false
+        type: string
+      ref:
+        description: Commit under test
+        required: false
+        type: string
+
+jobs:
+  load_config:
+    name: Load platform configuration
+    runs-on: ubuntu-latest
+    outputs:
+      display_name: ${{ steps.config.outputs.display_name }}
+      runs_on: ${{ steps.config.outputs.runs_on }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository || github.repository }}
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+      - name: Load platform configuration
+        id: config
+        env:
+          FLAGCX_CI_PLATFORM: ${{ inputs.platform }}
+        run: ruby .github/scripts/ci/load_platform_config.rb "$FLAGCX_CI_PLATFORM"
+
+  runner_smoke:
+    name: ${{ needs.load_config.outputs.display_name }} / runner smoke (no tests)
+    needs: load_config
+    runs-on: ${{ fromJSON(needs.load_config.outputs.runs_on) }}
+    steps:
+      - name: Confirm hardware runner scheduling
+        shell: bash
+        env:
+          FLAGCX_CI_PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          echo "Scheduled platform runner: $FLAGCX_CI_PLATFORM"
+          echo "Runner: $RUNNER_NAME"
+          echo "OS: $RUNNER_OS / $RUNNER_ARCH"
