@@ -103,6 +103,7 @@ struct flagcxRmaIpcState {
 // worker. inProgress queues: RMA worker only (no locking needed).
 struct flagcxRmaProxyState {
   bool stopComplete, doneSeqsMapped, readySeqsMapped;
+  flagcxResult_t workerCleanupResult;
   int destroyedPeerMutexes;
   bool doneCondDestroyed, doneMutexDestroyed;
   uint32_t queueSize;                     // power of two
@@ -169,6 +170,8 @@ struct flagcxRmaProxyState {
   // Set before communicator teardown starts. Producers fail fast while the
   // progress thread drains already-published descriptors and native requests.
   volatile int quiesced;
+  volatile unsigned int callbacks;
+  struct flagcxRmaDesc *cleanupDescs;
 
   void *const *fullSendComms; // [nRanks] or NULL until published
   int nRanks;
@@ -189,8 +192,8 @@ struct flagcxRmaProxyState {
 
   // Optional internal test notification. Called by the thread entering a
   // communicator-wide drain before it waits for accepted RMA operations.
-  void (*flushAllEnterForTest)(void *);
-  void *flushAllEnterContextForTest;
+  void (*drainEnterForTest)(void *);
+  void *drainEnterContextForTest;
 };
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
@@ -215,6 +218,10 @@ flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
 
 // Internal collective entry point. channelId is part of the transport order
 // key; callers must choose it deterministically on both endpoints.
+flagcxResult_t flagcxHeteroProxySend(const void *, size_t, flagcxDataType_t,
+                                     int, flagcxHeteroComm_t, flagcxStream_t);
+flagcxResult_t flagcxHeteroProxyRecv(void *, size_t, flagcxDataType_t, int,
+                                     flagcxHeteroComm_t, flagcxStream_t);
 flagcxResult_t flagcxHeteroSendOnChannel(const void *sendbuff, size_t count,
                                          flagcxDataType_t datatype, int peer,
                                          flagcxHeteroComm_t comm,

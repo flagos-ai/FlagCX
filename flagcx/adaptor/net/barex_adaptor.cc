@@ -1520,12 +1520,8 @@ static flagcxResult_t barexTest(void *request, int *done, int *sizes) {
     return flagcxInternalError;
   const flagcxResult_t result =
       static_cast<flagcxResult_t>(req->result.load(std::memory_order_relaxed));
-  // The legacy collective proxy ignores test()'s return value and advances
-  // only on done. Keep a failed two-sided request incomplete so it cannot be
-  // mistaken for successfully transferred data. Generic proxy async-error
-  // propagation belongs to the dedicated proxy-error refactor.
-  if (st == BAREX_REQ_ERROR && req->twoSided)
-    return result;
+  // The callback is terminal in both states. Report its error separately from
+  // physical retirement so cancellation can release the consumed request.
   *done = 1;
   if (sizes != nullptr)
     sizes[0] = (int)req->size;

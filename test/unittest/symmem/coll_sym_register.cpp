@@ -275,8 +275,8 @@ public:
     }
     savedMixedIput = net_->iput;
     savedMixedDeregMr = net_->deregMr;
-    savedFlushEnter_ = proxy_->flushAllEnterForTest;
-    savedFlushContext_ = proxy_->flushAllEnterContextForTest;
+    savedFlushEnter_ = proxy_->drainEnterForTest;
+    savedFlushContext_ = proxy_->drainEnterContextForTest;
     net_->iput = holdMixedIput;
     net_->deregMr = trackMixedDeregMr;
   }
@@ -285,8 +285,8 @@ public:
     mixedIputGate.peer = peer;
     mixedIputGate.targetSeq =
         __atomic_load_n(&proxy_->opSeqs[peer], __ATOMIC_ACQUIRE);
-    proxy_->flushAllEnterContextForTest = &mixedIputGate;
-    proxy_->flushAllEnterForTest = signalMixedDrainEnter;
+    proxy_->drainEnterContextForTest = &mixedIputGate;
+    proxy_->drainEnterForTest = signalMixedDrainEnter;
   }
 
   ~ScopedMixedIputDelay() {
@@ -295,8 +295,8 @@ public:
       mixedIputGate.held = false;
       mixedIputGate.cv.notify_all();
     }
-    proxy_->flushAllEnterForTest = savedFlushEnter_;
-    proxy_->flushAllEnterContextForTest = savedFlushContext_;
+    proxy_->drainEnterForTest = savedFlushEnter_;
+    proxy_->drainEnterContextForTest = savedFlushContext_;
     net_->iput = savedMixedIput;
     net_->deregMr = savedMixedDeregMr;
   }

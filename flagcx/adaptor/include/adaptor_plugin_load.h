@@ -36,16 +36,18 @@ flagcxResult_t flagcxDeviceAdaptorPluginUnload();
 
 // CCL adaptor plugin init/finalize
 // Init calls Load, with fallback logic on failure.
-// Finalize calls Unload, with best-effort cleanup on failure.
-flagcxResult_t flagcxCCLAdaptorPluginInit();
+// Finalize retains the last reference when cleanup/unload fails.
+// Init reports references retained for either normal use or failed-load
+// cleanup.
+flagcxResult_t flagcxCCLAdaptorPluginInit(bool *acquired = nullptr);
 flagcxResult_t flagcxCCLAdaptorPluginFinalize();
 
 // Device adaptor plugin init/finalize
-flagcxResult_t flagcxDeviceAdaptorPluginInit();
+flagcxResult_t flagcxDeviceAdaptorPluginInit(bool *acquired = nullptr);
 flagcxResult_t flagcxDeviceAdaptorPluginFinalize();
 
 // Net adaptor plugin init/finalize
-flagcxResult_t flagcxNetAdaptorPluginInit();
+flagcxResult_t flagcxNetAdaptorPluginInit(bool *acquired = nullptr);
 flagcxResult_t flagcxNetAdaptorPluginFinalize();
 
 // Top-level orchestrators removed: each plugin type (device, ccl, net)

@@ -175,6 +175,7 @@ class flagcxWorkerPool;
 struct flagcxHeteroComm {
   struct flagcxComm *ownerComm;
   bool importsClosedConfirmed, registrationsClosed, closeLocalDone;
+  bool netPluginHeld;
   int closePhase, closeRunning;
   uint64_t startMagic;
   bool destroyProxyComplete;

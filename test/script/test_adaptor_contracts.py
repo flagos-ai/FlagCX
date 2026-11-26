@@ -1,4 +1,4 @@
-"""Host contract tests for native adaptor conversions and async allocation.
+"""Host contract tests for SDK adaptors and the NCCL wrapper.
 
 SDK stubs deliberately use different enum values from FlagCX. These tests
 check API wiring and error propagation; PPU CI checks the actual SDK ABI and
@@ -52,9 +52,10 @@ def generate_native_contracts(output):
         text += 'static void free(void *p) { NativeOwnerProbe::release(p); }\n'
         text += 'static int finalizeSdk(void *p) { EXPECT_EQ(p, (void *)42); ++NativeOwnerProbe::finalizes; return NativeOwnerProbe::result; }\n'
         text += 'static int destroySdk(void *p) { EXPECT_EQ(p, (void *)42); ++NativeOwnerProbe::destroys; return NativeOwnerProbe::result; }\n'
+        text += 'static int abortSdk(void *p) { EXPECT_EQ(p, (void *)42); ++NativeOwnerProbe::aborts; return NativeOwnerProbe::result; }\n'
         if file == 'ppu_pccl':
-            text += '''struct ppupcclSymbols { int (*pcclCommFinalize)(void *); int (*pcclCommDestroy)(void *); };
-static const ppupcclSymbols api = {finalizeSdk, destroySdk};
+            text += '''struct ppupcclSymbols { int (*pcclCommFinalize)(void *); int (*pcclCommDestroy)(void *); int (*pcclCommAbort)(void *); };
+static const ppupcclSymbols api = {finalizeSdk, destroySdk, abortSdk};
 static flagcxResult_t ppupcclLoadApi(const ppupcclSymbols **p) { *p = &api; return flagcxSuccess; }
 static flagcxResult_t ppupcclResultToFlagcx(int r) { return (flagcxResult_t)r; }
 '''
@@ -71,13 +72,46 @@ static flagcxResult_t ppupcclResultToFlagcx(int r) { return (flagcxResult_t)r; }
             text += f'static const int {name}_ret_map[] = {{0,1,2,3,4,5,6,7,8}};\n'
         if file == 'tccl':
             text += 'using tcclResult_t = int;\nstatic flagcxResult_t fromTcclResult(int r) { return (flagcxResult_t)r; }\n'
-        for op in ('Finalize', 'Destroy'):
+        if file != 'ppu_pccl' and file != 'hccl':
+            abort_name = {'cncl': 'cnclAbortComm', 'xccl': 'bkcl_comm_abort'}.get(file, sdk + 'CommAbort')
+            text += f'static int {abort_name}(void *p) {{ return abortSdk(p); }}\n'
+        for op in ('Finalize', 'Destroy', 'Abort'):
             text += production_function(source, adaptor + 'AdaptorComm' + op) + '\n'
+        if file == 'mccl':
+            text += '''using mcclWindow_t = void *;
+struct flagcxInnerWindow { mcclWindow_t base; int winFlags; };
+using flagcxInnerWindow_t = flagcxInnerWindow *;
+static int deregistrations, windowDeregistrations;
+static flagcxResult_t flagcxCalloc(flagcxInnerWindow_t *p, int n) {
+  *p = (flagcxInnerWindow_t)std::calloc(n, sizeof(**p));
+  if (*p == nullptr) return flagcxSystemError;
+  NativeOwnerProbe::owners.insert(*p);
+  return flagcxSuccess;
+}
+static int mcclCommRegister(void *comm, void *, size_t, void **handle) {
+  EXPECT_EQ(comm, (void *)42); *handle = (void *)43; return 0;
+}
+static int mcclCommDeregister(void *comm, void *handle) {
+  EXPECT_EQ(comm, (void *)42); EXPECT_EQ(handle, (void *)43);
+  ++deregistrations; return NativeOwnerProbe::result;
+}
+static int mcclCommWindowRegister(void *comm, void *, size_t, void **window, int) {
+  EXPECT_EQ(comm, (void *)42); *window = (void *)44; return 0;
+}
+static int mcclCommWindowDeregister(void *comm, void *window) {
+  EXPECT_EQ(comm, (void *)42); EXPECT_EQ(window, (void *)44);
+  ++windowDeregistrations; return NativeOwnerProbe::result;
+}
+'''
+            for op in ('Register', 'Deregister', 'WindowRegister', 'WindowDeregister'):
+                text += production_function(source, adaptor + 'AdaptorComm' + op) + '\n'
         text += 'static void *make() { auto *p = (flagcxInnerComm *)std::calloc(1, sizeof(flagcxInnerComm)); p->base = (void *)42; NativeOwnerProbe::owners.insert(p); return p; }\n'
         text += '}\n'
         cases.append(f'''  {{"{file}", {str(native).lower()}, {ns}::make,
     [](void *p) {{ return {ns}::{adaptor}AdaptorCommFinalize(({ns}::flagcxInnerComm_t)p); }},
-    [](void *p) {{ return {ns}::{adaptor}AdaptorCommDestroy(({ns}::flagcxInnerComm_t)p); }} }}''')
+    [](void *p) {{ return {ns}::{adaptor}AdaptorCommDestroy(({ns}::flagcxInnerComm_t)p); }},
+    [](void *p) {{ return {ns}::{adaptor}AdaptorCommAbort(({ns}::flagcxInnerComm_t)p); }},
+    [](void *p) {{ return (({ns}::flagcxInnerComm_t)p)->base != nullptr; }} }}''')
     text += 'static const NativeOwnerContract nativeOwners[] = {\n' + ',\n'.join(cases) + '\n};\n'
     (Path(output) / 'native_owners.h').write_text(text)
 
@@ -576,7 +610,7 @@ int main() {
 #include "flagcx.h"
 #include <cstdlib>
 #include <cassert>
-struct flagcxInnerComm { int unused; };
+struct flagcxInnerComm { void *base = (void *)42; };
 using flagcxInnerComm_t = flagcxInnerComm *;
 struct flagcxInnerDevComm { int base; };
 using flagcxInnerDevComm_t = flagcxInnerDevComm *;
@@ -591,8 +625,6 @@ static void releaseWrapper(void *p) { ++frees; std::free(p); }
 '''
                 if vendor == 'nccl':
                     # Actual native callback also uses comm->base.
-                    source = source.replace('struct flagcxInnerComm { int unused; };',
-                                            'struct flagcxInnerComm { void *base; };')
                     source += 'static flagcxResult_t ncclDevCommDestroyHelper(void *, int *) { ++closes; return (flagcxResult_t)status; }\n'
                 else:
                     source += 'static flagcxResult_t flagcxEcclDevCommDestroy(flagcxInnerComm *, flagcxInnerDevComm *) { ++closes; return (flagcxResult_t)status; }\n'
@@ -607,7 +639,9 @@ static void releaseWrapper(void *p) { ++frees; std::free(p); }
                 source += f'assert({vendor}DevApiCommDestroy(&comm, &dev) == r);\n'
                 source += 'assert(dev.devComm == p && p->base == 42 && frees == 0); }\nstatus = 0;\n'
                 source += f'assert({vendor}DevApiCommDestroy(&comm, &dev) == flagcxSuccess);\n'
-                source += f'assert(dev.devComm == nullptr && frees == 1 && closes == 3); assert({vendor}DevApiCommDestroy(&comm, &dev) == flagcxSuccess && closes == 3); }}\n'
+                source += f'assert(dev.devComm == nullptr && frees == 1 && closes == 3); assert({vendor}DevApiCommDestroy(&comm, &dev) == flagcxSuccess && closes == 3);\n'
+                source += 'inner.base = nullptr; dev.devComm = (flagcxInnerDevComm_t)std::calloc(1, sizeof(flagcxInnerDevComm));\n'
+                source += f'assert({vendor}DevApiCommDestroy(&comm, &dev) == flagcxSuccess && dev.devComm == nullptr && frees == 2 && closes == 3); }}\n'
                 source = '#include <initializer_list>\n' + source
                 (tmp / 'devcomm.cc').write_text(source)
                 result = subprocess.run([CXX, '-std=c++11', f'-I{ROOT / "flagcx/include"}',
@@ -705,6 +739,7 @@ int main() {
  assert(ecclAdaptorMemAlloc(&p, 64) == flagcxSuccess && p);
  assert(ecclAdaptorMemFree(p) == flagcxSuccess);
  flagcxInnerComm comm{}; flagcxDevCommRequirements reqs{};
+ comm.base = (decltype(comm.base))42;
  flagcxInnerDevComm_t device = nullptr;
  flagcxInnerWindow_t win = nullptr;
 #ifdef FLAGCX_ENFLAME_DEVICE_API
@@ -828,7 +863,7 @@ int main() {{
         source = '#include "' + str(ROOT / 'flagcx/adaptor/ccl/ppu_pccl_adaptor.cc') + '"\n'
         self.compile_and_run(source + r"""
 int main() {
-  flagcxInnerComm comm{};
+ flagcxInnerComm comm{};
   flagcxStream stream{};
   assert(ppupcclAdaptorAllReduce(nullptr, nullptr, 1, flagcxFloat32,
                                flagcxMax, &comm, &stream) == flagcxSuccess);

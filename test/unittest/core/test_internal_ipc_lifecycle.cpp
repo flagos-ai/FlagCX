@@ -173,7 +173,8 @@ TEST_F(InternalIpcLifecycle, P2pClosePhaseDoesNotReleaseFifoBacking) {
   ASSERT_EQ(flagcxP2pCleanupProxyConnection(
                 &send, flagcxTransportCleanupReleaseResources),
             flagcxSuccess);
-  EXPECT_EQ(send.transportResources, nullptr);
+  EXPECT_EQ(send.transportResources, sender);
+  free(sender);
   auto *receiver = (flagcxP2pResources *)calloc(1, sizeof(flagcxP2pResources));
   receiver->localRecvFifo = malloc(64);
   receiver->importsClosedConfirmed = true;
@@ -187,5 +188,6 @@ TEST_F(InternalIpcLifecycle, P2pClosePhaseDoesNotReleaseFifoBacking) {
                 &recv, flagcxTransportCleanupReleaseResources),
             flagcxSuccess);
   EXPECT_EQ(freed.size(), 1u);
+  free(receiver);
 }
 } // namespace

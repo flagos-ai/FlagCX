@@ -100,6 +100,9 @@ struct flagcxProxySubArgs {
 };
 
 struct flagcxProxyArgs {
+  flagcxEvent_t pendingCopyEvents[FLAGCX_NET_MAX_STEPS] = {};
+  bool copyUncertain = false;
+  bool nativeUncertain = false;
   struct flagcxProxySubArgs subs[FLAGCX_NET_MAX_STEPS];
   proxyProgressFunc_t progress;
   int nsubs;
@@ -315,6 +318,7 @@ struct flagcxExpectedProxyResponse {
 struct flagcxProxyAsyncOp {
   int type;
   bool done;
+  bool cleanupOnly;
   flagcxProxyArgs args;
   struct flagcxProxyConnection *connection;
   int reqSize, respSize;
@@ -382,6 +386,14 @@ struct flagcxProxyState {
   volatile uint32_t *abortFlag;
   // Service threads
   pthread_t thread;
+  bool serviceJoined;
+  uint32_t serviceExited;
+  uint32_t relayExportsPending;
+  struct flagcxProxyConnectionPool *connectionPool;
+  struct flagcxProxyLocalPeer *servicePeers;
+  struct pollfd *servicePollFds;
+  int nServicePeers;
+  flagcxResult_t workerCleanupResult;
   pthread_t threadUDS;
   struct flagcxSocket listenSock;
   struct flagcxSocket ipcSock;
@@ -394,8 +406,6 @@ struct flagcxProxyState {
   // accepting work. Kept separate from asyncResult so cleanup failures do not
   // masquerade as data-plane completion failures.
   flagcxResult_t cleanupResult;
-  struct flagcxProxyConnectionPool *connectionPool;
-  bool serviceJoined;
   int nRanks;
 
   // Used by main thread
@@ -459,6 +469,8 @@ struct flagcxProxyConnection {
   struct flagcxProxyArgs *proxyAppend;
   struct flagcxProxyArgs **proxyAppendPtr;
   void *transportResources;
+  bool cleanupImportsDone;
+  bool cleanupResourcesDone;
   flagcxNetDeviceHandle_t *netDeviceHandle;
   void *mhandles[FLAGCX_NUM_PROTOCOLS];
   proxyConnectState state;
@@ -476,8 +488,10 @@ struct flagcxProxyConnection {
   void *relayBufferImport;
   size_t relayBufferCapacity;
   struct flagcxNetRelayImport *relayImport;
-  uint32_t relayActiveOps;
   int relayReleaseAcked;
+  uint32_t relayActiveOps;
+  bool relayReleasePending;
+  bool relayReleaseAcknowledged;
   struct flagcxCollNetSharedRes *collNet;
   int needsProxyProgress;
 };
@@ -490,6 +504,9 @@ void *flagcxProxyService(void *args);
 flagcxResult_t flagcxProxySaveOp(struct flagcxHeteroComm *comm,
                                  struct flagcxProxyOp *proxyOp,
                                  bool *justInquire = NULL);
+flagcxResult_t flagcxProxyRecordCopy(struct flagcxProxyArgs *args,
+                                     flagcxEvent_t event,
+                                     flagcxStream_t stream);
 flagcxResult_t flagcxProxyRecordAsyncError(struct flagcxProxyState *proxyState,
                                            flagcxResult_t result);
 flagcxResult_t flagcxProxyFailProgressQueue(
@@ -543,10 +560,12 @@ flagcxResult_t flagcxProxyCallAsync(struct flagcxHeteroComm *comm,
 
 // This function will internally call flagcxProxyCallAsync() and spin until
 // flagcxPollProxyResponse() confirms the result is received
+// responseReceived distinguishes a complete error reply from a lost reply.
 flagcxResult_t flagcxProxyCallBlocking(struct flagcxHeteroComm *comm,
                                        struct flagcxProxyConnector *proxyConn,
                                        int type, void *reqBuff, int reqSize,
-                                       void *respBuff, int respSize);
+                                       void *respBuff, int respSize,
+                                       bool *responseReceived = NULL);
 flagcxResult_t flagcxPollProxyResponse(struct flagcxHeteroComm *comm,
                                        struct flagcxProxyConnector *proxyConn,
                                        void *respBuff, void *opId);
@@ -562,10 +581,13 @@ flagcxResult_t flagcxProxyClientGetFdBlocking(struct flagcxHeteroComm *comm,
                                               int rank, void *handle,
                                               int *convertedFd);
 
+flagcxResult_t flagcxProxyCloseImports(struct flagcxHeteroComm *comm);
+flagcxResult_t flagcxProxyCloseRelayImports(struct flagcxHeteroComm *comm);
+flagcxResult_t flagcxProxyRelayImportsClosed(struct flagcxHeteroComm *comm);
 flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm);
 flagcxResult_t flagcxProxyShmUnlink(struct flagcxHeteroComm *comm);
 flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm);
+
 flagcxResult_t flagcxProxyFinalize(struct flagcxHeteroComm *comm);
-flagcxResult_t flagcxProxyCloseRelayImports(struct flagcxHeteroComm *comm);
 
 #endif

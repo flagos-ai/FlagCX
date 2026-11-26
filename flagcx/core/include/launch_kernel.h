@@ -134,11 +134,12 @@ struct flagcxDeviceSemaphoreBufferPool {
   ~flagcxDeviceSemaphoreBufferPool();
   int getSlotId();
   void initialize();
+  flagcxResult_t clear();
   void setEvent(int id, flagcxEvent_t event);
   int *getHostPtr(int id);
   void *getDevicePtr(int id);
 };
-static flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
+extern flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
 
 struct flagcxStreamValueBufferPool {
   struct Chunk {
@@ -165,6 +166,7 @@ extern flagcxStreamValueBufferPool streamValueBufferPool;
 // Probe on a private stream before group operations are submitted. Results are
 // cached for the current adaptor and device until the adaptor is unloaded.
 flagcxResult_t flagcxStreamValueSupported(bool *supported);
+flagcxResult_t flagcxStreamValueProbeCleanup();
 void flagcxClearStreamValueProbeCache();
 
 // Device semaphore derived class

@@ -420,6 +420,8 @@ def test_all():
             print(f"[SKIP] PyTorch API operation {name} is excluded for this run", flush=True)
             continue
         operation()
+    if "sendrecv" not in skipped:
+        test_pair_teardown()
 
 dict_op_to_test = {
     "broadcast": test_broadcast,

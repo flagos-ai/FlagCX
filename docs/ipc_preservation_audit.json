@@ -9024,7 +9024,8 @@
     },
     {
       "step": 2,
-      "status": "pending"
+      "status": "complete",
+      "validation": "IBRC host/mock library build and kernel-host syntax passed. core 251 pass/5 skip, runner 102, RMA 57, service 60, adaptor 71 pass/2 skip, Device API host 45 pass/3 hardware skips. Four bootstrap cases passed at 2 and 4 ranks. Torch source 7 and adaptor script 18 passed. Protected Device API hashes 24/24."
     },
     {
       "step": 3,

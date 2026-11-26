@@ -1,11 +1,12 @@
+#include <climits>
 /*************************************************************************
  * Copyright (c) 2016-2022, NVIDIA CORPORATION. All rights reserved.
  *
  * See LICENSE-NCCL.txt for license information
  ************************************************************************/
 
-#include "bootstrap.h"
 #include "alloc.h"
+#include "bootstrap.h"
 #include "check.h"
 #include "comm.h"
 #include "debug.h"
@@ -1389,5 +1390,51 @@ flagcxResult_t bootstrapP2pAccept(struct bootstrapState *listenState,
   wrapper->p2p = connP2p;
 
   *connStateOut = wrapper;
+  return flagcxSuccess;
+}
+
+flagcxResult_t bootstrapCollIntraNodeStatus(struct bootstrapState *state,
+                                            const int *ranks, int rank,
+                                            int nranks, int tag,
+                                            flagcxResult_t local,
+                                            flagcxResult_t *common) {
+  if (common == NULL || nranks <= 0 || rank < 0 || rank >= nranks || tag < 0 ||
+      tag == INT_MAX)
+    return flagcxInvalidArgument;
+  if (nranks == 1) {
+    *common = local;
+    return flagcxSuccess;
+  }
+  if (state == NULL || state->mode != FLAGCX_BOOTSTRAP_COLL ||
+      state->coll == NULL || ranks == NULL || ranks[rank] != state->coll->rank)
+    return flagcxInvalidArgument;
+  for (int i = 0; i < nranks; i++) {
+    if (ranks[i] < 0 || ranks[i] >= state->coll->nranks)
+      return flagcxInvalidArgument;
+    for (int j = 0; j < i; j++)
+      if (ranks[i] == ranks[j])
+        return flagcxInvalidArgument;
+  }
+  int value = (int)local;
+  int result = value;
+  if (rank == 0) {
+    for (int peer = 1; peer < nranks; peer++) {
+      int peerValue;
+      FLAGCXCHECK(bootstrapRecv(state, ranks[peer], tag, &peerValue,
+                                sizeof(peerValue)));
+      if ((result == flagcxSuccess && peerValue != flagcxSuccess) ||
+          (result == flagcxInProgress && peerValue != flagcxSuccess &&
+           peerValue != flagcxInProgress))
+        result = peerValue;
+    }
+    for (int peer = 1; peer < nranks; peer++)
+      FLAGCXCHECK(
+          bootstrapSend(state, ranks[peer], tag + 1, &result, sizeof(result)));
+  } else {
+    FLAGCXCHECK(bootstrapSend(state, ranks[0], tag, &value, sizeof(value)));
+    FLAGCXCHECK(
+        bootstrapRecv(state, ranks[0], tag + 1, &result, sizeof(result)));
+  }
+  *common = (flagcxResult_t)result;
   return flagcxSuccess;
 }
