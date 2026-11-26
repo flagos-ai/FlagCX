@@ -1,6 +1,7 @@
 # Changed paths select unit-test suites; unmatched paths run all suites.
 shared_paths_watch:
   - flagcx/core/**
+  - flagcx/adaptor/flagcx_device.cc
   - flagcx/include/**
   - include/**
   - Makefile

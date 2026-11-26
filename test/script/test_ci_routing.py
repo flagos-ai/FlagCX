@@ -265,10 +265,37 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 self.assertEqual(outputs["platforms"], [platform])
 
     def test_all_label_forces_full_matrix(self):
-        outputs, _ = self.resolve(
-            {"event_name": "pull_request", "labels": ["platform:all"]}
-        )
+        for label in ("platform:all", "platform:all,cuda", "platform:cuda,all"):
+            with self.subTest(label=label):
+                outputs, _ = self.resolve(
+                    {"event_name": "pull_request", "labels": [label]}
+                )
+                self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+
+    def test_shared_device_api_entry_point_selects_all_suites(self):
+        outputs, _ = self.resolve({
+            "event_name": "pull_request",
+            "files": ["flagcx/adaptor/flagcx_device.cc"],
+        })
         self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+        for entry in outputs["matrix"]["include"]:
+            config = yaml.safe_load(
+                (CONFIG_DIR / f"{entry['platform']}.yml").read_text()
+            )
+            self.assertEqual(entry["suites"], config["unit_test_suites"])
+
+    def test_push_routes_both_sides_of_renames(self):
+        outputs, _ = self.resolve({
+            "event_name": "push",
+            "files": [
+                "test/kernel/nvidia/common.cuh",
+                "test/kernel/maca/common.cuh",
+            ],
+        })
+        self.assertEqual(
+            outputs["platforms"],
+            [platform for platform in ("cuda", "metax") if platform in ALL_ENABLED_PLATFORMS],
+        )
 
     def test_empty_pr_changes_skip_hardware_matrix(self):
         outputs, _ = self.resolve(

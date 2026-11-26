@@ -122,9 +122,9 @@ when "pull_request"
   invalid_labels = requested_platforms
                                 .reject { |name| name == "all" || platform_names.include?(name) }
   abort "Unknown platform label(s): #{invalid_labels.join(", ")}" unless invalid_labels.empty?
-  if route_labels.include?("platform:all")
+  if requested_platforms.include?("all")
     selection = platform_names
-    routing_reason << "platform:all label selected the full platform matrix"
+    routing_reason << "Platform label included all and selected the full platform matrix"
   elsif !route_labels.empty?
     selection = requested_platforms.uniq
     routing_reason << "Platform labels selected #{selection.join(", ")}"
