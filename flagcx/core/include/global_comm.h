@@ -79,7 +79,7 @@ struct flagcxC2cResources {
 
 struct flagcxCommNativeOwner {
   flagcxInnerComm_t handle;
-  bool host, accepted, pending;
+  bool host, accepted, pending, aborted;
 };
 
 flagcxResult_t flagcxCommCheckSubmission(flagcxComm_t comm);
@@ -88,6 +88,11 @@ struct flagcxComm {
   bool closing, finalized, finalizeLocalDone, deviceOrdinalValid;
   int finalizePhase, lifecycleRunning, deviceOrdinal;
   unsigned int pluginDoneMask;
+  bool devicePluginHeld, cclPluginHeld, netPluginHeld;
+  bool pluginRollbackOnly, initRollbackPending, initRollbackNeedsAgreement;
+  bool nativeDestroyFinalize, nativeCloseNeedsAgreement, abortStarted;
+  unsigned int abortIndex;
+  flagcxResult_t lastResult;
   struct flagcxCommNativeOwner *nativeOwners;
   unsigned int nativeOwnerCount, nativeFinalizeIndex;
   bool nativeCatalogReady;

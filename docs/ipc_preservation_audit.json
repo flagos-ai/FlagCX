@@ -9029,11 +9029,13 @@
     },
     {
       "step": 3,
-      "status": "pending"
+      "status": "complete",
+      "commit": "ba4cb7c1"
     },
     {
       "step": 4,
-      "status": "pending"
+      "status": "complete",
+      "validation": "Host/mock core 265 passed/5 hardware skips; runner 105 passed. Four real-bootstrap lifecycle cases passed on every rank at 2 and 4 ranks. Builtin compatibility, unknown plugin unsupported, partial init/native abort retry, closed diagnostics, and cached proxy errors covered. No accelerator attached."
     },
     {
       "step": 5,

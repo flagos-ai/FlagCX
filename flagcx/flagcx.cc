@@ -168,8 +168,10 @@ flagcxResult_t flagcxEnsureCommReady(flagcxComm_t comm) {
 flagcxResult_t flagcxCommCheckSubmission(flagcxComm_t comm) {
   if (!comm)
     return flagcxInvalidArgument;
-  return __atomic_load_n(&comm->closing, __ATOMIC_ACQUIRE) ? flagcxInvalidUsage
-                                                           : flagcxSuccess;
+  return __atomic_load_n(&comm->closing, __ATOMIC_ACQUIRE) ||
+                 comm->initRollbackPending || comm->pluginRollbackOnly
+             ? flagcxInvalidUsage
+             : flagcxSuccess;
 }
 
 bool useHomoComm(flagcxComm_t comm) {
@@ -3135,14 +3137,14 @@ const char *flagcxGetErrorString(flagcxResult_t result) {
 }
 
 const char *flagcxGetLastError(flagcxComm_t comm) {
-  // TODO: implement a method to retrieve last error string
-  if (comm == NULL) {
+  if (comm == NULL)
     return "Undefined: flagcxComm is not fully initialized.";
-  }
-  if (useHomoComm(comm)) {
+  if (!comm->closing && !comm->pluginRollbackOnly &&
+      !comm->initRollbackPending && useHomoComm(comm) &&
+      comm->homoComm != NULL &&
+      cclAdaptors[flagcxCCLAdaptorDevice]->getLastError != NULL)
     return cclAdaptors[flagcxCCLAdaptorDevice]->getLastError(comm->homoComm);
-  }
-  return "Not implemented.";
+  return flagcxGetErrorString(comm->lastResult);
 }
 
 // ---- Custom op DevComm state init/destroy ----
@@ -3703,30 +3705,100 @@ static flagcxResult_t initUniRunnerCapabilities(flagcxComm_t comm) {
   return result;
 }
 
-flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
-                                  flagcxUniqueId_t commId, int rank) {
-  if (nranks < 1 || rank < 0 || rank >= nranks) {
-    WARN("Invalid rank requested : %d/%d", rank, nranks);
-    return flagcxInvalidArgument;
+static flagcxResult_t flagcxCommReleasePluginRefs(flagcxComm_t comm) {
+  if (comm->netPluginHeld) {
+    FLAGCXCHECKSTRICT(flagcxNetAdaptorPluginFinalize());
+    comm->netPluginHeld = false;
   }
-  if (commId == NULL || comm == NULL) {
-    WARN("flagcxCommInitRank: commId or comm is NULL");
-    return flagcxInvalidArgument;
+  if (comm->cclPluginHeld) {
+    FLAGCXCHECKSTRICT(flagcxCCLAdaptorPluginFinalize());
+    comm->cclPluginHeld = false;
   }
+  if (comm->devicePluginHeld) {
+    flagcxResult_t result = flagcxDeviceAdaptorPluginFinalize();
+    if (result != flagcxSuccess)
+      return result;
+    comm->devicePluginHeld = false;
+  }
+  return flagcxSuccess;
+}
 
-  // Ensure device/CCL plugins are loaded (idempotent, ref-counted)
-  flagcxResult_t pluginInitResult = flagcxDeviceAdaptorPluginInit();
-  if (pluginInitResult != flagcxSuccess)
-    return pluginInitResult;
-  flagcxCCLAdaptorPluginInit();
+static bool builtinCompatFinalize(flagcxCCLAdaptor *adaptor) {
+#if defined(USE_ASCEND_ADAPTOR)
+  return adaptor == &hcclAdaptor;
+#elif defined(USE_CAMBRICON_ADAPTOR)
+  return adaptor == &cnclAdaptor;
+#elif defined(USE_ENFLAME_ADAPTOR)
+  return adaptor == &ecclAdaptor;
+#elif defined(USE_MUSA_ADAPTOR)
+  return adaptor == &musa_mcclAdaptor;
+#elif defined(USE_SUNRISE_ADAPTOR)
+  return adaptor == &pcclAdaptor;
+#elif defined(USE_KUNLUNXIN_ADAPTOR)
+  return adaptor == &xcclAdaptor;
+#else
+  (void)adaptor;
+  return false;
+#endif
+}
 
-  (*comm) = NULL;
+// Agree the IPC participation bit before any optional Device API initialization
+// can fail. Empty ranks must join the same close protocol as allocation owners.
+static flagcxResult_t flagcxCommInitIpcPolicy(flagcxComm_t comm) {
+  comm->nativeDestroyFinalize =
+      builtinCompatFinalize(cclAdaptors[flagcxCCLAdaptorDevice]);
+  if (comm->nranks <= 1)
+    return flagcxSuccess;
+  int *required = NULL;
+  flagcxResult_t local = flagcxCalloc(&required, comm->nranks), common = local;
+  flagcxResult_t result = flagcxConvergeBootstrapStatus(comm, local, &common);
+  if (result == flagcxSuccess)
+    result = common;
+  if (result == flagcxSuccess) {
+    required[comm->rank] =
+        (comm->internalBuffersNeedPeerClose || comm->heteroComm != NULL ? 1
+                                                                        : 0) |
+        (comm->nativeDestroyFinalize || comm->hostComm != NULL ? 2 : 0);
+    result = bootstrapCollAllGather(comm->bootstrap, required, sizeof(int));
+  }
+  if (result == flagcxSuccess) {
+    for (int i = 0; i < comm->nranks; ++i) {
+      comm->internalBuffersNeedPeerClose |= (required[i] & 1) != 0;
+      comm->nativeCloseNeedsAgreement |= (required[i] & 2) != 0;
+    }
+  }
+  free(required);
+  return result;
+}
+
+static flagcxResult_t flagcxCommInitRankInternal(flagcxComm_t *comm, int nranks,
+                                                 flagcxUniqueId_t commId,
+                                                 int rank) {
+  *comm = NULL;
   FLAGCXCHECK(flagcxCalloc(comm, 1));
+  (*comm)->pluginRollbackOnly = true;
+  flagcxResult_t pluginInitResult =
+      flagcxDeviceAdaptorPluginInit(&(*comm)->devicePluginHeld);
+  if (pluginInitResult == flagcxSuccess)
+    pluginInitResult = flagcxCCLAdaptorPluginInit(&(*comm)->cclPluginHeld);
+  if (pluginInitResult != flagcxSuccess) {
+    flagcxResult_t cleanup = flagcxCommReleasePluginRefs(*comm);
+    if (cleanup != flagcxSuccess)
+      return cleanup;
+    free(*comm);
+    *comm = NULL;
+    return pluginInitResult;
+  }
+  (*comm)->pluginRollbackOnly = false;
+  flagcxResult_t deviceResult =
+      deviceAdaptor->getDevice(&(*comm)->deviceOrdinal);
+  if (deviceResult != flagcxSuccess) {
+    (*comm)->pluginRollbackOnly = true;
+    return deviceResult;
+  }
+  (*comm)->deviceOrdinalValid = true;
   (*comm)->ipcTable = (*comm)->ipcTableInline;
   (*comm)->ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
-  (*comm)->deviceOrdinalValid =
-      deviceAdaptor->getDevice != nullptr &&
-      deviceAdaptor->getDevice(&(*comm)->deviceOrdinal) == flagcxSuccess;
   (*comm)->rank = rank;
   (*comm)->nranks = nranks;
   (*comm)->nclusters = -1;
@@ -4012,11 +4084,20 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
 
     (*comm)->internalBuffersNeedPeerClose = true;
     // call flagcxHeteroCommInitRank
-    FLAGCXCHECK(flagcxHeteroCommInitRank(&(*comm)->heteroComm, nranks,
-                                         heteroCommId, rank));
+    flagcxResult_t heteroResult = flagcxHeteroCommInitRank(
+        &(*comm)->heteroComm, nranks, heteroCommId, rank);
+    flagcxResult_t commonInit = heteroResult;
+    flagcxResult_t agreement =
+        flagcxConvergeBootstrapStatus(*comm, heteroResult, &commonInit);
+    if (agreement != flagcxSuccess || commonInit != flagcxSuccess) {
+      (*comm)->initRollbackPending = true;
+      if ((*comm)->heteroComm != NULL)
+        (*comm)->heteroComm->initRollbackPending = true;
+      return agreement != flagcxSuccess ? agreement : commonInit;
+    }
+    (*comm)->heteroComm->ownerComm = *comm;
 
     // Share ipcTable with heteroComm for intra-node D2D bypass
-    (*comm)->heteroComm->ownerComm = *comm;
     (*comm)->heteroComm->ipcTable = (*comm)->ipcTable;
     (*comm)->heteroComm->ipcTableSize = (*comm)->ipcTableCapacity;
 
@@ -4127,10 +4208,45 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
 
   free(clusterInterRankData);
   free(vendorData);
-  // Initialize custom op state (non-fatal if fails)
-  FLAGCXCHECK(flagcxDevCommStateInit(*comm));
+  flagcxResult_t policy = flagcxCommInitIpcPolicy(*comm);
+  if (policy != flagcxSuccess) {
+    (*comm)->initRollbackPending = true;
+    return policy;
+  }
+  (*comm)->initRollbackNeedsAgreement = true;
+  flagcxResult_t custom = flagcxDevCommStateInit(*comm);
+  flagcxResult_t commonCustom = custom;
+  flagcxResult_t agreement =
+      flagcxConvergeBootstrapStatus(*comm, custom, &commonCustom);
+  if (agreement != flagcxSuccess || commonCustom != flagcxSuccess) {
+    (*comm)->initRollbackPending = true;
+    return agreement != flagcxSuccess ? agreement : commonCustom;
+  }
 
   return flagcxSuccess;
+}
+
+flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
+                                  flagcxUniqueId_t commId, int rank) {
+  if (nranks < 1 || rank < 0 || rank >= nranks) {
+    WARN("Invalid rank requested : %d/%d", rank, nranks);
+    return flagcxInvalidArgument;
+  }
+  if (commId == NULL || comm == NULL) {
+    WARN("flagcxCommInitRank: commId or comm is NULL");
+    return flagcxInvalidArgument;
+  }
+  flagcxResult_t result =
+      flagcxCommInitRankInternal(comm, nranks, commId, rank);
+  if (result != flagcxSuccess && *comm != NULL) {
+    // All failed outputs retain a cleanup owner, including errors before
+    // finalize policy initialization. Plugin-only rollback stays separate.
+    if (!(*comm)->pluginRollbackOnly)
+      (*comm)->initRollbackPending = true;
+    (*comm)->lastResult = result;
+    (*comm)->closing = true;
+  }
+  return result;
 }
 
 static flagcxResult_t flagcxCommCloseLocalOwners(flagcxComm_t comm) {
@@ -4251,6 +4367,9 @@ static flagcxResult_t flagcxCommCatalogNativeOwners(flagcxComm_t comm) {
   return flagcxSuccess;
 }
 
+static void flagcxCommClearNativeAliases(flagcxComm_t comm,
+                                         flagcxInnerComm_t inner);
+
 static flagcxResult_t flagcxCommFinalizeNativeOwners(flagcxComm_t comm) {
   flagcxResult_t result = flagcxSuccess;
   FLAGCXCHECKSTRICT(flagcxCommCatalogNativeOwners(comm));
@@ -4260,6 +4379,21 @@ static flagcxResult_t flagcxCommFinalizeNativeOwners(flagcxComm_t comm) {
     struct flagcxCCLAdaptor *adaptor =
         cclAdaptors[owner->host ? flagcxCCLAdaptorHost
                                 : flagcxCCLAdaptorDevice];
+    if (owner->handle == NULL || owner->aborted) {
+      ++comm->nativeFinalizeIndex;
+      continue;
+    }
+    if (!owner->host && comm->abortStarted && !owner->aborted)
+      return flagcxInProgress;
+    if (!owner->host && comm->nativeDestroyFinalize) {
+      FLAGCXCHECKSTRICT(
+          globalRegPool.releaseOwner(owner->handle, owner->handle));
+      FLAGCXCHECKSTRICT(adaptor->commDestroy(owner->handle));
+      flagcxCommClearNativeAliases(comm, owner->handle);
+      owner->handle = NULL;
+      ++comm->nativeFinalizeIndex;
+      continue;
+    }
     if (!adaptor || !adaptor->commFinalize)
       return flagcxNotSupported;
     if (!owner->accepted) {
@@ -4343,7 +4477,9 @@ static flagcxResult_t flagcxCommDestroyNativeOwners(flagcxComm_t comm) {
 
 static flagcxResult_t flagcxCommAgreeIpcClose(flagcxComm_t comm,
                                               flagcxResult_t local) {
-  if (!comm->internalBuffersNeedPeerClose || comm->nranks <= 1)
+  if ((!comm->internalBuffersNeedPeerClose &&
+       !comm->nativeCloseNeedsAgreement) ||
+      comm->nranks <= 1)
     return local;
   if (!comm->bootstrap)
     return flagcxInvalidUsage;
@@ -4356,6 +4492,14 @@ static flagcxResult_t flagcxCommFinalizePhase(flagcxComm_t comm, int phase) {
   switch (phase) {
     case 0:
       FLAGCXCHECKSTRICT(flagcxC2cDrainPendingResources(comm));
+      if (comm->heteroComm != NULL && comm->heteroComm->proxyState != NULL) {
+        flagcxUniRunnerState *state =
+            &comm->heteroComm->proxyState->uniRunnerState;
+        if (state->redStream != NULL || state->cpyStream != NULL ||
+            state->ipcCommStream != NULL || state->netCommStream != NULL ||
+            state->fifo != NULL || state->ipcFifo != NULL)
+          FLAGCXCHECKSTRICT(cleanupUniRunner(comm));
+      }
       if (comm->heteroComm)
         FLAGCXCHECKSTRICT(flagcxCommQuiesce(comm));
       return flagcxFusedDrainPendingBuffers(comm);
@@ -4414,12 +4558,15 @@ static flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
 }
 
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
+  if (comm == NULL || comm->initRollbackPending || comm->pluginRollbackOnly)
+    return flagcxInvalidUsage;
   FLAGCXCHECKSTRICT(flagcxEnsureCommReady(comm));
   int expected = 0;
   if (!__atomic_compare_exchange_n(&comm->lifecycleRunning, &expected, 1, false,
                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
     return flagcxInProgress;
   flagcxResult_t result = flagcxCommFinalizeInternal(comm);
+  comm->lastResult = result;
   __atomic_store_n(&comm->lifecycleRunning, 0, __ATOMIC_RELEASE);
   return result;
 }
@@ -4444,29 +4591,64 @@ static flagcxResult_t flagcxCommDestroyResources(flagcxComm_t comm) {
     }
     comm->destroyPhase = 1;
   }
-  if (!(comm->pluginDoneMask & 1)) {
-    FLAGCXCHECKSTRICT(flagcxNetAdaptorPluginFinalize());
-    comm->pluginDoneMask |= 1;
+  FLAGCXCHECKSTRICT(flagcxCommReleasePluginRefs(comm));
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxCommRollbackInit(flagcxComm_t comm) {
+  if (!comm->initRollbackNeedsAgreement) {
+    // Optional Device API allocation starts only after the agreement boundary.
+    // Never grant local permission if an unexpected exporter is already owned.
+    if (comm->internalBuffers != NULL || comm->activeDevMems != NULL ||
+        comm->activeDevComms != NULL)
+      return flagcxInvalidUsage;
+    FLAGCXCHECKSTRICT(flagcxHeteroCommRollbackInit(&comm->heteroComm));
+    comm->internalImportsConfirmed = true;
+    FLAGCXCHECKSTRICT(flagcxCommCatalogNativeOwners(comm));
+    return flagcxSuccess;
   }
-  if (!(comm->pluginDoneMask & 2)) {
-    FLAGCXCHECKSTRICT(flagcxCCLAdaptorPluginFinalize());
-    comm->pluginDoneMask |= 2;
+  comm->ipcClosingImports = true;
+  while (comm->finalizePhase < 6) {
+    flagcxResult_t local = flagcxSuccess;
+    if (comm->deviceOrdinalValid)
+      local = deviceAdaptor->setDevice(comm->deviceOrdinal);
+    FLAGCXCHECKSTRICT(flagcxCommAgreeIpcClose(comm, local));
+    if (!comm->finalizeLocalDone) {
+      local = flagcxCommFinalizePhase(comm, comm->finalizePhase);
+      if (local == flagcxSuccess)
+        comm->finalizeLocalDone = true;
+    }
+    FLAGCXCHECKSTRICT(flagcxCommAgreeIpcClose(comm, local));
+    ++comm->finalizePhase;
+    comm->finalizeLocalDone = false;
   }
-  if (!(comm->pluginDoneMask & 4)) {
-    FLAGCXCHECKSTRICT(flagcxDeviceAdaptorPluginFinalize());
-    comm->pluginDoneMask |= 4;
-  }
+  comm->internalImportsConfirmed = true;
+  if (comm->heteroComm != NULL)
+    comm->heteroComm->importsClosedConfirmed = true;
+  FLAGCXCHECKSTRICT(flagcxCommCatalogNativeOwners(comm));
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
-  FLAGCXCHECKSTRICT(flagcxCommFinalize(comm));
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->pluginRollbackOnly) {
+    FLAGCXCHECKSTRICT(flagcxCommReleasePluginRefs(comm));
+    free(comm);
+    return flagcxSuccess;
+  }
+  if (!comm->initRollbackPending)
+    FLAGCXCHECKSTRICT(flagcxCommFinalize(comm));
   int expected = 0;
   if (!__atomic_compare_exchange_n(&comm->lifecycleRunning, &expected, 1, false,
                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
     return flagcxInProgress;
-  flagcxResult_t result = flagcxCommDestroyResources(comm);
+  flagcxResult_t result =
+      comm->initRollbackPending ? flagcxCommRollbackInit(comm) : flagcxSuccess;
+  if (result == flagcxSuccess)
+    result = flagcxCommDestroyResources(comm);
   if (result != flagcxSuccess) {
+    comm->lastResult = result;
     __atomic_store_n(&comm->lifecycleRunning, 0, __ATOMIC_RELEASE);
     return result;
   }
@@ -4494,16 +4676,57 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
 }
 
 flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commAbort(comm->homoComm));
-  if (!useHomoComm(comm)) {
-    // TODO: to be implemented.
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECKSTRICT(flagcxEnsureCommReady(comm));
+  if (comm->initRollbackPending || comm->pluginRollbackOnly)
+    return flagcxInvalidUsage;
+  if (!useHomoComm(comm) || comm->heteroComm != NULL)
     return flagcxNotSupported;
+  int expected = 0;
+  if (!__atomic_compare_exchange_n(&comm->lifecycleRunning, &expected, 1, false,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return flagcxInProgress;
+  flagcxResult_t result = flagcxSuccess;
+  bool wasClosing = comm->closing;
+  comm->closing = true;
+  FLAGCXCHECKGOTO(flagcxCommCatalogNativeOwners(comm), result, exit);
+  while (comm->abortIndex < comm->nativeOwnerCount) {
+    struct flagcxCommNativeOwner *owner = &comm->nativeOwners[comm->abortIndex];
+    if (!owner->host && owner->handle != NULL && !owner->aborted) {
+      struct flagcxCCLAdaptor *adaptor = cclAdaptors[flagcxCCLAdaptorDevice];
+      result = adaptor->commAbort ? adaptor->commAbort(owner->handle)
+                                  : flagcxNotSupported;
+      if (result != flagcxNotSupported)
+        comm->abortStarted = true;
+      if (result != flagcxSuccess)
+        goto exit;
+      owner->aborted = true;
+      comm->abortStarted = true;
+    }
+    ++comm->abortIndex;
   }
-  return flagcxSuccess;
+  if (!comm->internalImportsConfirmed && comm->nranks > 1 &&
+      (comm->internalBuffersNeedPeerClose || comm->nativeCloseNeedsAgreement ||
+       comm->hostComm != NULL))
+    result = flagcxInProgress;
+exit:
+  if (result == flagcxNotSupported && !comm->abortStarted) {
+    comm->closing = wasClosing;
+    free(comm->nativeOwners);
+    comm->nativeOwners = NULL;
+    comm->nativeOwnerCount = comm->nativeFinalizeIndex = comm->abortIndex = 0;
+    comm->nativeCatalogReady = false;
+  }
+  comm->lastResult = result;
+  __atomic_store_n(&comm->lifecycleRunning, 0, __ATOMIC_RELEASE);
+  if (result != flagcxSuccess)
+    return result;
+  return flagcxCommDestroy(comm);
 }
 
 flagcxResult_t flagcxCommResume(flagcxComm_t comm) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commResume(comm->homoComm));
   if (!useHomoComm(comm)) {
@@ -4514,6 +4737,7 @@ flagcxResult_t flagcxCommResume(flagcxComm_t comm) {
 }
 
 flagcxResult_t flagcxCommSuspend(flagcxComm_t comm) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commSuspend(comm->homoComm));
   if (!useHomoComm(comm)) {
@@ -4524,6 +4748,12 @@ flagcxResult_t flagcxCommSuspend(flagcxComm_t comm) {
 }
 
 flagcxResult_t flagcxCommCount(const flagcxComm_t comm, int *count) {
+  if (comm == NULL || count == NULL)
+    return flagcxInvalidArgument;
+  if (comm->closing) {
+    *count = comm->nranks;
+    return flagcxSuccess;
+  }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm)) {
     return cclAdaptors[flagcxCCLAdaptorDevice]->commCount(comm->homoComm,
@@ -4533,11 +4763,25 @@ flagcxResult_t flagcxCommCount(const flagcxComm_t comm, int *count) {
 }
 
 flagcxResult_t flagcxCommGetDeviceNumber(const flagcxComm_t comm, int *device) {
+  if (comm == NULL || device == NULL)
+    return flagcxInvalidArgument;
+  if (comm->closing) {
+    if (!comm->deviceOrdinalValid)
+      return flagcxInvalidUsage;
+    *device = comm->deviceOrdinal;
+    return flagcxSuccess;
+  }
   return cclAdaptors[flagcxCCLAdaptorDevice]->commGetDeviceNumber(
       comm->homoComm, device);
 }
 
 flagcxResult_t flagcxCommUserRank(const flagcxComm_t comm, int *rank) {
+  if (comm == NULL || rank == NULL)
+    return flagcxInvalidArgument;
+  if (comm->closing) {
+    *rank = comm->rank;
+    return flagcxSuccess;
+  }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm)) {
     return cclAdaptors[flagcxCCLAdaptorDevice]->commUserRank(comm->homoComm,
@@ -4548,6 +4792,7 @@ flagcxResult_t flagcxCommUserRank(const flagcxComm_t comm, int *rank) {
 
 flagcxResult_t flagcxCommFifoBuffer(const flagcxComm_t comm, int contextId,
                                     void **buffer) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
 
   if (buffer == nullptr) {
@@ -4577,9 +4822,14 @@ flagcxResult_t flagcxCommFifoBuffer(const flagcxComm_t comm, int contextId,
 
 flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
                                        flagcxResult_t *asyncError) {
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  if (asyncError == nullptr)
+  if (comm == NULL || asyncError == nullptr)
     return flagcxInvalidArgument;
+  if (comm->closing || comm->initRollbackPending || comm->pluginRollbackOnly) {
+    *asyncError = comm->lastResult;
+    return flagcxSuccess;
+  }
+
+  FLAGCXCHECKSTRICT(flagcxEnsureCommReady(comm));
 
   if (comm->heteroComm != nullptr && (!useHomoComm(comm) || useHeteroComm())) {
     flagcxResult_t result = flagcxSuccess;
@@ -4932,6 +5182,7 @@ flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
 flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
                          size_t dstOffset, size_t size, int srcMrIdx,
                          int dstMrIdx) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
   return flagcxHeteroGet(comm->heteroComm, peer, srcOffset, dstOffset, size,
@@ -5008,6 +5259,7 @@ flagcxResult_t flagcxGetAsync(void *localbuff, size_t count,
 flagcxResult_t flagcxPut(flagcxComm_t comm, int peer, size_t srcOffset,
                          size_t dstOffset, size_t size, int srcMrIdx,
                          int dstMrIdx) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
   return flagcxHeteroPut(comm->heteroComm, peer, srcOffset, dstOffset, size,
@@ -5033,6 +5285,7 @@ flagcxResult_t flagcxPutSignal(const void *localbuff, size_t count,
                                flagcxWindow_t peerWin, size_t peerWinOffset,
                                unsigned int flags, flagcxComm_t comm,
                                flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   (void)flags;
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
@@ -5095,6 +5348,7 @@ flagcxResult_t flagcxPutSignal(const void *localbuff, size_t count,
 
 flagcxResult_t flagcxSignal(int peer, unsigned int flags, flagcxComm_t comm,
                             flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   (void)flags;
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
@@ -5115,6 +5369,7 @@ flagcxResult_t flagcxSignal(int peer, unsigned int flags, flagcxComm_t comm,
 flagcxResult_t flagcxWaitSignal(int nDesc,
                                 const flagcxWaitSignalDesc_t *signalDescs,
                                 flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   if (nDesc == 0)
     return flagcxSuccess;
   if (comm == NULL || comm->heteroComm == NULL)
@@ -5155,6 +5410,7 @@ flagcxResult_t flagcxReadCounter(flagcxComm_t comm, uint64_t *count) {
 }
 
 flagcxResult_t flagcxWaitCounter(flagcxComm_t comm, uint64_t target) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
   return flagcxHeteroWaitCounter(comm->heteroComm, target);

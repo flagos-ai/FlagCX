@@ -5,6 +5,7 @@
  ************************************************************************/
 
 #include "adaptor.h"
+#include "adaptor_plugin_load.h"
 #include "bootstrap.h"
 #include "check.h"
 #include "flagcx.h"
@@ -13,6 +14,7 @@
 #include "net.h"
 #include "p2p.h"
 #include "reg_pool.h"
+#include "sym_heap.h"
 #include "topo.h"
 #include "transport.h"
 #include "type.h"
@@ -512,23 +514,26 @@ flagcxResult_t flagcxHeteroCommInitRank(flagcxHeteroComm_t *newcomm, int nranks,
                                         flagcxUniqueId commId, int myrank) {
   FLAGCXCHECK(flagcxInit());
   int cudaDev = 0;
-  flagcxConfig_t config;
+  flagcxConfig_t config = {};
   // flagcxGetDevice(&cudaDev);
-  deviceAdaptor->getDevice(&cudaDev);
-  FLAGCXCHECK(
-      flagcxCommInitRankDev(newcomm, nranks, commId, myrank, cudaDev, &config));
-  flagcxResult_t proxyRes = flagcxHeteroRmaProxyStart(*newcomm);
-  if (proxyRes != flagcxSuccess) {
-    // Preserve the owner if device cleanup fails; the caller can retry
-    // destruction instead of losing the remaining persistent allocations.
-    flagcxResult_t cleanupRes = flagcxHeteroCommPrepareDestroy(*newcomm);
-    if (cleanupRes != flagcxSuccess)
-      return cleanupRes;
-    // Preserve the owner. Import closure on this rank alone cannot authorize
-    // freeing an exporter; normal Finalize must still confirm peer closure.
-    return proxyRes;
-  }
-  return flagcxSuccess;
+  flagcxResult_t deviceResult = deviceAdaptor->getDevice(&cudaDev);
+  if (deviceResult != flagcxSuccess)
+    return deviceResult;
+  flagcxResult_t initResult =
+      flagcxCommInitRankDev(newcomm, nranks, commId, myrank, cudaDev, &config);
+  if (initResult != flagcxSuccess)
+    return initResult;
+  return flagcxHeteroCommStartRma(newcomm);
+}
+
+flagcxResult_t flagcxHeteroCommStartRma(flagcxHeteroComm_t *owner) {
+  if (owner == NULL || *owner == NULL)
+    return flagcxInvalidArgument;
+  flagcxResult_t result = flagcxHeteroRmaProxyStart(*owner);
+  if (result == flagcxSuccess)
+    return result;
+  flagcxResult_t cleanup = flagcxHeteroCommRollbackInit(owner);
+  return cleanup != flagcxSuccess ? cleanup : result;
 }
 
 flagcxResult_t flagcxHeteroCommCount(const flagcxHeteroComm_t comm,
@@ -548,7 +553,16 @@ flagcxResult_t flagcxHeteroCommCloseRegistrations(flagcxHeteroComm_t comm) {
     return flagcxInvalidArgument;
   if (comm->registrationsClosed)
     return flagcxSuccess;
+  FLAGCXCHECKSTRICT(flagcxSymRetryPendingCleanup(comm, flagcxSymCleanupLocal));
+  while (comm->symWindows != NULL) {
+    if (comm->symWindows->owner == NULL)
+      return flagcxInvalidUsage;
+    FLAGCXCHECKSTRICT(flagcxSymWindowDeregister(comm, comm->symWindows->owner,
+                                                flagcxSymCleanupLocal));
+  }
+  FLAGCXCHECKSTRICT(flagcxSymLsaDestroy(comm));
   FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyStop(comm));
+  FLAGCXCHECKSTRICT(globalRegPool.releaseOwner(comm));
   FLAGCXCHECKSTRICT(globalRegPool.removeAllP2pHandles(comm));
   FLAGCXCHECKSTRICT(globalRegPool.removeAllNetHandles(comm));
   FLAGCXCHECKSTRICT(flagcxProxyCloseRelayImports(comm));
@@ -564,7 +578,15 @@ flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm) {
   if (!comm->destroyProxyComplete) {
     FLAGCXCHECKSTRICT(flagcxProxyStop(comm));
     FLAGCXCHECKSTRICT(flagcxProxyFinalize(comm));
+#ifdef USE_IBUC
+    FLAGCXCHECKSTRICT(flagcxIbucDrainDeferredCleanup());
+#endif
     comm->destroyProxyComplete = true;
+    // Retirement can complete safely while reporting an earlier worker error.
+    // Report it once with the owner retained; a retry resumes import cleanup.
+    comm->destroyProxyResult = comm->proxyState->workerCleanupResult;
+    if (comm->destroyProxyResult != flagcxSuccess)
+      return comm->destroyProxyResult;
   }
   return cleanupUniRunnerIpcImports(&comm->proxyState->uniRunnerState);
 }
@@ -630,7 +652,17 @@ flagcxResult_t flagcxHeteroCommFinalize(flagcxHeteroComm_t comm) {
 }
 
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
-  FLAGCXCHECKSTRICT(flagcxHeteroCommFinalize(comm));
+  if (comm == NULL)
+    return flagcxSuccess;
+  if (comm->initRollbackPending) {
+    FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyQuiesce(comm));
+    FLAGCXCHECKSTRICT(flagcxHeteroCommPrepareDestroy(comm));
+    // Initializers have not admitted application operations or published a
+    // Device API exporter. Local rollback may release these private owners.
+    comm->importsClosedConfirmed = true;
+  } else {
+    FLAGCXCHECKSTRICT(flagcxHeteroCommFinalize(comm));
+  }
   FLAGCXCHECKSTRICT(flagcxProxyDestroy(comm));
   FLAGCXCHECKSTRICT(
       cleanupUniRunnerPersistentState(&comm->proxyState->uniRunnerState));
@@ -638,6 +670,10 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   if (comm->bootstrap) {
     FLAGCXCHECKSTRICT(bootstrapClose(comm->bootstrap));
     comm->bootstrap = nullptr;
+  }
+  if (comm->netPluginHeld) {
+    FLAGCXCHECKSTRICT(flagcxNetAdaptorPluginFinalize());
+    comm->netPluginHeld = false;
   }
   delete comm->workerPool;
   comm->workerPool = NULL;
@@ -677,8 +713,29 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   if (comm->interServerTopo) {
     flagcxInterServerTopoFree(comm->interServerTopo);
   }
+  if (comm->nodeRanks != NULL) {
+    // Flat scheduling may change nNodes; rankToNode retains the allocation's
+    // original node domain.
+    int allocatedNodes = 0;
+    for (int rank = 0; rank < comm->nRanks; ++rank)
+      allocatedNodes = std::max(allocatedNodes, comm->rankToNode[rank] + 1);
+    for (int node = 0; node < allocatedNodes; ++node)
+      free(comm->nodeRanks[node].localRankToRank);
+    free(comm->nodeRanks);
+  }
+  free(comm->rankToNode);
+  free(comm->rankToLocalRank);
   free(comm->peerInfo);
   free(comm);
 
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHeteroCommRollbackInit(flagcxHeteroComm_t *owner) {
+  if (owner == NULL || *owner == NULL)
+    return flagcxSuccess;
+  (*owner)->initRollbackPending = true;
+  FLAGCXCHECKSTRICT(flagcxHeteroCommDestroy(*owner));
+  *owner = NULL;
   return flagcxSuccess;
 }

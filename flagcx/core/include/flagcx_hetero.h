@@ -254,6 +254,8 @@ flagcxResult_t flagcxHeteroCommCount(const flagcxHeteroComm_t comm, int *count);
 flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
                                         int *rank);
 
+flagcxResult_t flagcxHeteroCommStartRma(flagcxHeteroComm_t *owner);
+flagcxResult_t flagcxHeteroCommRollbackInit(flagcxHeteroComm_t *owner);
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxHeteroCommCloseRegistrations(flagcxHeteroComm_t comm);
