@@ -56,6 +56,7 @@ jobs:
       mthreads_ci_image: ${{ steps.mthreads.outputs.ci_image }}
       mthreads_docker_args: ${{ steps.mthreads.outputs.docker_args }}
       mthreads_set_env: ${{ steps.mthreads.outputs.set_env }}
+      mthreads_ignore_test: ${{ steps.mthreads.outputs.ignore_test }}
       mthreads_runs_on: ${{ steps.mthreads.outputs.runs_on }}
       ascend_ci_image: ${{ steps.ascend.outputs.ci_image }}
       ascend_docker_args: ${{ steps.ascend.outputs.docker_args }}
@@ -541,6 +542,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.mthreads_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.mthreads_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.mthreads_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.mthreads_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           mthreads torch-api

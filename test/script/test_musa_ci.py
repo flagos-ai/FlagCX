@@ -185,6 +185,9 @@ sys.exit(19 if kind == os.environ.get("FAIL_STEP") else 0)
             ("torch-api-test.yml", "torch-api-test", ("torch-api",), "torch_api_complete"),
         ):
             jobs = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())["jobs"]
+            self.assertEqual(
+                jobs["load-hardware-container-configs"]["outputs"]["mthreads_ignore_test"],
+                "${{ steps.mthreads.outputs.ignore_test }}")
             for workload in workloads:
                 key = "perf-test-experimental-mthreads" if workload == "perf-test-experimental" else f"{prefix}-mthreads"
                 job = jobs[key]
@@ -195,8 +198,36 @@ sys.exit(19 if kind == os.environ.get("FAIL_STEP") else 0)
                 self.assertIn(key, jobs[completion]["needs"])
                 commands = "\n".join(step.get("run", "") for step in job["steps"])
                 self.assertIn(f"mthreads {workload}", commands)
+                run_step = next(step for step in job["steps"]
+                                if "run_hardware_container.sh" in step.get("run", ""))
+                self.assertEqual(
+                    run_step["env"]["FLAGCX_CI_IGNORE_TEST"],
+                    "${{ needs.load-hardware-container-configs.outputs.mthreads_ignore_test }}")
                 self.assertTrue(any(step.get("if") == "always()" and "upload-artifact" in step.get("uses", "") for step in job["steps"]))
             self.assertIn("MTHREADS_RESULT", jobs[completion]["env"])
+
+    def test_exported_ignore_policy_needs_no_yaml_or_ruby(self):
+        config = self.load_mthreads_config()
+        policy = json.loads(config["ignore_test"])
+        phase = next(item for item in policy["phases"]
+                     if item["name"] == "vmm-net-data")
+        with tempfile.TemporaryDirectory() as directory:
+            # -S disables site-packages, including PyYAML. A Ruby fallback
+            # must fail, as it does in the unmodified runtime image.
+            ruby = Path(directory) / "ruby"
+            ruby.write_text("#!/bin/sh\necho 'Unexpected Ruby fallback' >&2\nexit 97\n")
+            ruby.chmod(0o755)
+            env = {**os.environ, "PATH": directory, "PYTHONPATH": "",
+                   "FLAGCX_CI_PLATFORM": "mthreads",
+                   "FLAGCX_CI_IGNORE_TEST": config["ignore_test"]}
+            for args, expected in ((["torch", "homogeneous"], ""),
+                                   (["phase", "symmem", "vmm-net-data"], phase["reason"])):
+                with self.subTest(args=args):
+                    result = subprocess.run(
+                        [sys.executable, "-S", str(CI / "ignore_test.py"), *args],
+                        env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), expected)
 
     def test_native_isolation_uses_yaml_policy_without_environment_override(self):
         config = self.load_mthreads_config()

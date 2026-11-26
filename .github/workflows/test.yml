@@ -595,6 +595,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.mthreads_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.mthreads_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.mthreads_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.mthreads_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           mthreads perf-test-experimental
