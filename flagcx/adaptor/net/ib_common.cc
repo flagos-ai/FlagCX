@@ -223,12 +223,14 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
                          const struct flagcxIbCommonTestOps *ops) {
   if (!r || !done)
     return flagcxInternalError;
-  *done = 0;
 
   flagcxResult_t commError = flagcxIbCommonGetCommError(r->base);
-  // A communicator error does not retire another request's accepted WRs.
-  // Continue polling their CQEs; only zero outstanding events consumes it.
-  if (commError == flagcxSuccess && ops && ops->pre_check) {
+  if (commError != flagcxSuccess && commError != flagcxInProgress) {
+    *done = 1;
+    return commError;
+  }
+
+  if (ops && ops->pre_check) {
     FLAGCXCHECK(ops->pre_check(r));
   }
 
@@ -237,9 +239,7 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
     if (r->events[0] == 0 && r->events[1] == 0) {
       TRACE(FLAGCX_NET, "r=%p done", r);
       *done = 1;
-      flagcxResult_t result = r->result != flagcxSuccess
-                                  ? r->result
-                                  : flagcxIbCommonGetCommError(r->base);
+      flagcxResult_t result = r->result;
       if (sizes && r->type == FLAGCX_NET_IB_REQ_RECV) {
         for (int i = 0; i < r->nreqs; i++)
           sizes[i] = r->recv.sizes[i];
@@ -258,8 +258,6 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
     for (int i = 0; i < FLAGCX_IB_MAX_DEVS_PER_NIC; i++) {
       TIME_START(3);
       if (r->events[i] || (ops && ops->pollAllCqs && r->devBases[i] != NULL)) {
-        if (r->devBases[i] == NULL)
-          return commError != flagcxSuccess ? commError : flagcxInternalError;
         int wrDone = 0;
         FLAGCXCHECK(flagcxWrapIbvPollCq(r->devBases[i]->cq, 4, wcs, &wrDone));
         totalWrDone += wrDone;
@@ -287,7 +285,8 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
                    "vendor_err=%d qp_num=%u wr_id=%llu",
                    flagcxIbCommonComponent(ops), wc->status, wc->opcode,
                    wc->vendor_err, wc->qp_num, (unsigned long long)wc->wr_id);
-              flagcxIbCommonRecordCommError(r->base, flagcxRemoteError);
+              *done = 1;
+              return flagcxIbCommonRecordCommError(r->base, flagcxRemoteError);
             }
             continue;
           }
@@ -328,8 +327,8 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
                  remoteGidStr ? " remoteGid " : "", remoteGidString);
             FLAGCXCHECK(flagcxIbCommonRecordDataCompletion(
                 r->base, wc->wr_id, i, flagcxRemoteError));
-            flagcxIbCommonRecordCommError(r->base, flagcxRemoteError);
-            continue;
+            *done = 1;
+            return flagcxIbCommonRecordCommError(r->base, flagcxRemoteError);
           }
 
           uint32_t req_idx = wc->wr_id & 0xffu;
@@ -376,6 +375,6 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
     }
 
     if (totalWrDone == 0)
-      return flagcxIbCommonGetCommError(r->base);
+      return flagcxSuccess;
   }
 }

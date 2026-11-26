@@ -43,14 +43,14 @@ static flagcxResult_t flagcxNetAdaptorPluginLoad() {
     WARN("ADAPTOR/Plugin: Failed to find symbol 'flagcxNetAdaptorPlugin_v1' in "
          "'%s': %s",
          envValue, dlerror());
-    FLAGCXCHECK(flagcxAdaptorClosePluginLib(netPluginDlHandle));
+    flagcxAdaptorClosePluginLib(netPluginDlHandle);
     netPluginDlHandle = NULL;
     return flagcxSuccess;
   }
 
   if (flagcxCalloc(&upgradedNetPluginAdaptor, 1) != flagcxSuccess) {
     WARN("ADAPTOR/Plugin: Failed to allocate upgraded net adaptor struct");
-    FLAGCXCHECK(flagcxAdaptorClosePluginLib(netPluginDlHandle));
+    flagcxAdaptorClosePluginLib(netPluginDlHandle);
     netPluginDlHandle = NULL;
     return flagcxSystemError;
   }
@@ -73,7 +73,7 @@ static flagcxResult_t flagcxNetAdaptorPluginLoad() {
          envValue);
     free(upgradedNetPluginAdaptor);
     upgradedNetPluginAdaptor = NULL;
-    FLAGCXCHECK(flagcxAdaptorClosePluginLib(netPluginDlHandle));
+    flagcxAdaptorClosePluginLib(netPluginDlHandle);
     netPluginDlHandle = NULL;
     return flagcxSuccess;
   }
@@ -85,37 +85,31 @@ static flagcxResult_t flagcxNetAdaptorPluginLoad() {
 }
 
 static flagcxResult_t flagcxNetAdaptorPluginUnload() {
-  FLAGCXCHECK(flagcxAdaptorClosePluginLib(netPluginDlHandle));
-  flagcxNetAdaptors[0] = NULL;
+  flagcxNetAdaptors[0] = nullptr;
   flagcxNetStates[0] = flagcxNetStateInit;
-  free(upgradedNetPluginAdaptor);
-  upgradedNetPluginAdaptor = NULL;
+  if (upgradedNetPluginAdaptor != NULL) {
+    free(upgradedNetPluginAdaptor);
+    upgradedNetPluginAdaptor = NULL;
+  }
+  flagcxAdaptorClosePluginLib(netPluginDlHandle);
   netPluginDlHandle = NULL;
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxNetAdaptorPluginInit(bool *acquired) {
+flagcxResult_t flagcxNetAdaptorPluginInit() {
   std::lock_guard<std::mutex> lock(netPluginMutex);
-  if (acquired != NULL)
-    *acquired = false;
-  flagcxResult_t result = flagcxNetAdaptorPluginLoad();
-  // A failed load may retain a library whose rollback failed. Give that
-  // cleanup reference to the same owner instead of losing it at Init failure.
-  if (result == flagcxSuccess || netPluginDlHandle != NULL) {
-    ++netPluginRefCount;
-    if (acquired != NULL)
-      *acquired = true;
+  FLAGCXCHECK(flagcxNetAdaptorPluginLoad());
+  if (netPluginDlHandle != NULL) {
+    netPluginRefCount++;
   }
-  return result;
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxNetAdaptorPluginFinalize() {
   std::lock_guard<std::mutex> lock(netPluginMutex);
-  if (netPluginRefCount == 0)
-    return flagcxSuccess;
-  if (netPluginRefCount == 1) {
+  if (netPluginRefCount > 0 && --netPluginRefCount == 0) {
+    INFO(FLAGCX_NET, "Unloading net adaptor plugin");
     FLAGCXCHECK(flagcxNetAdaptorPluginUnload());
   }
-  --netPluginRefCount;
   return flagcxSuccess;
 }

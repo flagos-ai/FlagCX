@@ -382,15 +382,11 @@ flagcxCreateOrReplaceHomoComm(flagcxComm_t *comm,
   // collCat has only one communicator.
   auto it = (*comm)->homoCommMap.find(collCat);
   if (it != (*comm)->homoCommMap.end()) {
-    // A previous owner release may have cleared an aliased map entry.
-    if (it->second != NULL) {
-      flagcxResult_t result = deviceAdaptor->streamSynchronize(stream);
-      if (result != flagcxSuccess)
-        return result;
-      result = flagcxDestroyHomoCommOwner(*comm, it->second);
-      if (result != flagcxSuccess)
-        return result;
-    }
+    // make sure all operations on the comm stream is done before destroying
+    // communicator
+    deviceAdaptor->streamSynchronize(stream);
+    // Destroy Comm of collCat
+    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(it->second));
     // Remove entry from map
     (*comm)->homoCommMap.erase(it);
   }
@@ -666,9 +662,7 @@ flagcxResult_t flagcxTunerSwitchCommConfig(void *context, flagcxComm_t *comm,
         return flagcxInternalError;
       }
 
-      flagcxResult_t result = flagcxDestroyHomoCommOwner(*comm, inner);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(inner));
       FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_CREATION));
       flagcxInnerComm_t newInner = NULL;
       FLAGCXCHECK(flagcxHomoCommInit((struct bootstrapState *)(ctx->bootstrap),
@@ -710,9 +704,7 @@ flagcxResult_t flagcxTunerSwitchCommConfig(void *context, flagcxComm_t *comm,
         return flagcxInternalError;
       }
 
-      flagcxResult_t result = flagcxDestroyHomoCommOwner(*comm, inner);
-      if (result != flagcxSuccess)
-        return result;
+      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(inner));
       FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_CREATION));
       flagcxInnerComm_t newInner = NULL;
       FLAGCXCHECK(flagcxHomoCommInit((struct bootstrapState *)(ctx->bootstrap),

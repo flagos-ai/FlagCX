@@ -45,7 +45,7 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
     WARN("ADAPTOR/Plugin: Failed to find symbol "
          "'flagcxCCLAdaptorPlugin_v1' in '%s': %s",
          envValue, dlerror());
-    FLAGCXCHECK(flagcxAdaptorClosePluginLib(cclPluginDlHandle));
+    flagcxAdaptorClosePluginLib(cclPluginDlHandle);
     cclPluginDlHandle = NULL;
     return flagcxSuccess;
   }
@@ -53,7 +53,7 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
   cclUpgradedPlugin =
       (struct flagcxCCLAdaptor *)malloc(sizeof(struct flagcxCCLAdaptor));
   if (cclUpgradedPlugin == NULL) {
-    FLAGCXCHECK(flagcxAdaptorClosePluginLib(cclPluginDlHandle));
+    flagcxAdaptorClosePluginLib(cclPluginDlHandle);
     cclPluginDlHandle = NULL;
     return flagcxSystemError;
   }
@@ -84,7 +84,7 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
          envValue);
     free(cclUpgradedPlugin);
     cclUpgradedPlugin = NULL;
-    FLAGCXCHECK(flagcxAdaptorClosePluginLib(cclPluginDlHandle));
+    flagcxAdaptorClosePluginLib(cclPluginDlHandle);
     cclPluginDlHandle = NULL;
     return flagcxSuccess;
   }
@@ -97,39 +97,31 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
 }
 
 flagcxResult_t flagcxCCLAdaptorPluginUnload() {
-  FLAGCXCHECK(flagcxAdaptorClosePluginLib(cclPluginDlHandle));
   if (cclDefaultDeviceAdaptor != NULL) {
     cclAdaptors[flagcxCCLAdaptorDevice] = cclDefaultDeviceAdaptor;
     cclDefaultDeviceAdaptor = NULL;
   }
   free(cclUpgradedPlugin);
   cclUpgradedPlugin = NULL;
+  flagcxAdaptorClosePluginLib(cclPluginDlHandle);
   cclPluginDlHandle = NULL;
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxCCLAdaptorPluginInit(bool *acquired) {
+flagcxResult_t flagcxCCLAdaptorPluginInit() {
   std::lock_guard<std::mutex> lock(cclPluginMutex);
-  if (acquired != NULL)
-    *acquired = false;
-  flagcxResult_t result = flagcxCCLAdaptorPluginLoad();
-  // A failed load may retain a library whose rollback failed. Give that
-  // cleanup reference to the same owner instead of losing it at Init failure.
-  if (result == flagcxSuccess || cclPluginDlHandle != NULL) {
-    ++cclPluginRefCount;
-    if (acquired != NULL)
-      *acquired = true;
+  flagcxCCLAdaptorPluginLoad();
+  if (cclPluginDlHandle != NULL) {
+    cclPluginRefCount++;
   }
-  return result;
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCCLAdaptorPluginFinalize() {
   std::lock_guard<std::mutex> lock(cclPluginMutex);
-  if (cclPluginRefCount == 0)
-    return flagcxSuccess;
-  if (cclPluginRefCount == 1) {
-    FLAGCXCHECK(flagcxCCLAdaptorPluginUnload());
+  if (cclPluginRefCount > 0 && --cclPluginRefCount == 0) {
+    INFO(FLAGCX_INIT, "Unloading CCL adaptor plugin");
+    flagcxCCLAdaptorPluginUnload();
   }
-  --cclPluginRefCount;
   return flagcxSuccess;
 }

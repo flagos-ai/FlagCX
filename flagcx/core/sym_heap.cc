@@ -1167,8 +1167,7 @@ static flagcxResult_t flagcxSymCleanupUnpublished(flagcxHeteroComm_t comm,
     if (comm->ipcTable == nullptr || d->ipcSlot >= comm->ipcTableSize)
       local = flagcxInvalidUsage;
     else
-      local =
-          releaseIpcTableEntry(&comm->ipcTable[d->ipcSlot], comm->ownerComm);
+      local = releaseIpcTableEntry(&comm->ipcTable[d->ipcSlot]);
     if (local == flagcxSuccess)
       d->ipcSlot = -1;
   }
@@ -1195,10 +1194,6 @@ static void flagcxSymFinishPendingCleanup(flagcxSymWindow_t d) {
     owner->winFlags = 0;
   }
   flagcxSymFreeWindowState(d);
-  if (owner != NULL) {
-    flagcxWorkSnapshotRelease(&owner->cleanupWork);
-    owner->cleanupStarted = false;
-  }
   if (!publicOwner)
     free(owner);
 }
@@ -2744,8 +2739,6 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
     win->defaultBase = nullptr;
   }
 
-  flagcxWorkSnapshotRelease(&win->cleanupWork);
-  win->cleanupStarted = false;
   if (win->ownerComm == nullptr)
     free(win);
   return flagcxSuccess;

@@ -51,11 +51,6 @@ flagcxResult_t rcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 flagcxResult_t rcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
   if (comm == NULL)
     return flagcxInvalidArgument;
-  if (comm->base == NULL) {
-    free(comm);
-    return flagcxSuccess;
-  }
-
   flagcxResult_t result = (flagcxResult_t)ncclCommDestroy(comm->base);
   if (result != flagcxSuccess)
     return result;
@@ -64,16 +59,7 @@ flagcxResult_t rcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t rcclAdaptorCommAbort(flagcxInnerComm_t comm) {
-  if (comm == NULL)
-    return flagcxInvalidArgument;
-  if (comm->base == NULL)
-    return flagcxSuccess;
-  flagcxResult_t result = (flagcxResult_t)ncclCommAbort(comm->base);
-  if (result != flagcxSuccess)
-    return result;
-  // Native Abort consumes the SDK context. Keep the wrapper for owner cleanup.
-  comm->base = NULL;
-  return flagcxSuccess;
+  return (flagcxResult_t)ncclCommAbort(comm->base);
 }
 
 flagcxResult_t rcclAdaptorCommResume(flagcxInnerComm_t comm) {

@@ -1,150 +1,75 @@
 #include "launch_kernel.h"
 #include "group.h"
-#include <climits>
 #include <map>
-#include <new>
 #include <stdio.h>
 
 flagcxLaunchFunc_t deviceAsyncKernel = NULL;
 
 FLAGCX_PARAM(SemaphoreBufferPoolCapacity, "SEMAPHORE_BUFFER_POOL_CAPACITY", 32);
 
-flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
-
 flagcxDeviceSemaphoreBufferPool::flagcxDeviceSemaphoreBufferPool()
-    : capacity(0), chunks(NULL), pending(NULL) {}
+    : capacity(-1), slotId(-1), signalsPool(nullptr), dSignalsPool(nullptr),
+      events(nullptr) {}
 
 flagcxDeviceSemaphoreBufferPool::~flagcxDeviceSemaphoreBufferPool() {
-  (void)clear();
+  free(events);
+  dSignalsPool = nullptr;
+  if (signalsPool != nullptr) {
+    deviceAdaptor->deviceFree((void *)signalsPool, flagcxMemHost, nullptr);
+  }
 }
 
-flagcxResult_t flagcxDeviceSemaphoreBufferPool::getSlotId(int *id) {
-  *id = -1;
-  std::lock_guard<std::mutex> lock(mutex);
-  for (;;) {
-    for (auto *chunk = chunks; chunk != NULL; chunk = chunk->next) {
-      for (int i = 0; i < chunk->capacity; ++i) {
-        if (chunk->inUse[i])
-          continue;
-        chunk->inUse[i] = 1;
-        memset(chunk->signals + (size_t)FLAGCX_SIGNALS_PER_SEMAPHORE * i, 0,
-               FLAGCX_SIGNALS_PER_SEMAPHORE * sizeof(int));
-        *id = chunk->first + i;
-        return flagcxSuccess;
-      }
+int flagcxDeviceSemaphoreBufferPool::getSlotId() {
+  assert(capacity != -1);
+  if (events[slotId] != nullptr) {
+    // wait for the previous event to complete
+    while (deviceAdaptor->eventQuery(events[slotId]) != flagcxSuccess) {
+      sched_yield();
     }
-    // Completed groups may still have live Comm owners. Grow without moving
-    // their signals or reclaiming any slot before its owner releases it.
-    flagcxResult_t result = grow();
-    if (result != flagcxSuccess)
-      return result;
+    events[slotId] = nullptr;
+  }
+  // set this slot signals to zero
+  int offset = FLAGCX_SIGNALS_PER_SEMAPHORE * slotId;
+  memset(signalsPool + offset, 0, FLAGCX_SIGNALS_PER_SEMAPHORE * sizeof(int));
+  int ret = slotId;
+  // Move to next slot
+  slotId = (slotId + 1) % capacity;
+  return ret;
+}
+
+void flagcxDeviceSemaphoreBufferPool::initialize() {
+  capacity = flagcxParamSemaphoreBufferPoolCapacity();
+  slotId = 0;
+  // Allocate host-pinned memory for all semaphores (3 ints each)
+  deviceAdaptor->deviceMalloc((void **)&signalsPool,
+                              capacity * FLAGCX_SIGNALS_PER_SEMAPHORE *
+                                  sizeof(int),
+                              flagcxMemHost, nullptr);
+  // Get device pointer alias
+  deviceAdaptor->hostGetDevicePointer(&dSignalsPool, (void *)signalsPool);
+  // Init events to nullptr
+  flagcxCalloc(&events, capacity);
+  for (int i = 0; i < capacity; i++) {
+    events[i] = nullptr;
   }
 }
 
-flagcxResult_t flagcxDeviceSemaphoreBufferPool::grow() {
-  if (pending == NULL) {
-    int count = flagcxParamSemaphoreBufferPoolCapacity();
-    if (count <= 0 || count > INT_MAX - capacity ||
-        (size_t)count > SIZE_MAX / FLAGCX_SIGNALS_PER_SEMAPHORE / sizeof(int))
-      return flagcxInvalidArgument;
-    pending = (Chunk *)calloc(1, sizeof(Chunk));
-    if (pending == NULL)
-      return flagcxSystemError;
-    pending->capacity = count;
-    pending->first = capacity;
-  }
-  if (pending->inUse == NULL) {
-    pending->inUse = (int *)calloc(pending->capacity, sizeof(int));
-    if (pending->inUse == NULL)
-      return flagcxSystemError;
-  }
-  if (!pending->allocated) {
-    // Some adaptors return an owner even when allocation fails. Retain it
-    // until cleanup succeeds; never publish it as a usable signal buffer.
-    if (pending->signals != NULL) {
-      flagcxResult_t result =
-          deviceAdaptor->deviceFree(pending->signals, flagcxMemHost, NULL);
-      if (result != flagcxSuccess)
-        return result;
-      pending->signals = NULL;
-    }
-    flagcxResult_t result = deviceAdaptor->deviceMalloc(
-        (void **)&pending->signals,
-        (size_t)pending->capacity * FLAGCX_SIGNALS_PER_SEMAPHORE * sizeof(int),
-        flagcxMemHost, NULL);
-    if (result != flagcxSuccess)
-      return result;
-    if (pending->signals == NULL)
-      return flagcxSystemError;
-    pending->allocated = 1;
-  }
-  flagcxResult_t result =
-      deviceAdaptor->hostGetDevicePointer(&pending->dSignals, pending->signals);
-  if (result != flagcxSuccess)
-    return result;
-  if (pending->dSignals == NULL)
-    return flagcxSystemError;
-  capacity += pending->capacity;
-  pending->next = chunks;
-  chunks = pending;
-  pending = NULL;
-  return flagcxSuccess;
+// Set event for a semaphore
+void flagcxDeviceSemaphoreBufferPool::setEvent(int id, flagcxEvent_t event) {
+  assert(id >= 0 && id < capacity);
+  // events[id] should be set to nullptr before
+  events[id] = event;
 }
 
-flagcxDeviceSemaphoreBufferPool::Chunk *
-flagcxDeviceSemaphoreBufferPool::findChunk(int id) {
-  for (auto *chunk = chunks; chunk != NULL; chunk = chunk->next)
-    if (id >= chunk->first && id - chunk->first < chunk->capacity)
-      return chunk;
-  assert(false);
-  return NULL;
-}
-
-void flagcxDeviceSemaphoreBufferPool::releaseSlot(int id) {
-  std::lock_guard<std::mutex> lock(mutex);
-  auto *chunk = findChunk(id);
-  assert(chunk->inUse[id - chunk->first]);
-  chunk->inUse[id - chunk->first] = 0;
-}
-
-flagcxResult_t flagcxDeviceSemaphoreBufferPool::clear() {
-  std::lock_guard<std::mutex> lock(mutex);
-  for (auto *chunk = chunks; chunk != NULL; chunk = chunk->next)
-    for (int i = 0; i < chunk->capacity; ++i)
-      if (chunk->inUse[i])
-        return flagcxInProgress;
-  // Each successful free removes its owner. A later failure retains only the
-  // remaining chunks, including any partially initialized growth allocation.
-  Chunk **lists[] = {&pending, &chunks};
-  for (auto **list : lists) {
-    while (*list != NULL) {
-      auto *chunk = *list;
-      if (chunk->signals != NULL) {
-        flagcxResult_t result =
-            deviceAdaptor->deviceFree(chunk->signals, flagcxMemHost, NULL);
-        if (result != flagcxSuccess)
-          return result;
-      }
-      *list = chunk->next;
-      free(chunk->inUse);
-      free(chunk);
-    }
-  }
-  capacity = 0;
-  return flagcxSuccess;
-}
-
+// Return pointer to the start of a semaphore’s signals (host/device)
 int *flagcxDeviceSemaphoreBufferPool::getHostPtr(int id) {
-  std::lock_guard<std::mutex> lock(mutex);
-  auto *chunk = findChunk(id);
-  return chunk->signals +
-         (size_t)FLAGCX_SIGNALS_PER_SEMAPHORE * (id - chunk->first);
+  assert(id >= 0 && id < capacity);
+  return signalsPool + FLAGCX_SIGNALS_PER_SEMAPHORE * id;
 }
 void *flagcxDeviceSemaphoreBufferPool::getDevicePtr(int id) {
-  std::lock_guard<std::mutex> lock(mutex);
-  auto *chunk = findChunk(id);
-  return (char *)chunk->dSignals + (size_t)FLAGCX_SIGNALS_PER_SEMAPHORE *
-                                       (id - chunk->first) * sizeof(int);
+  assert(id >= 0 && id < capacity);
+  return static_cast<void *>((static_cast<char *>(dSignalsPool) +
+                              FLAGCX_SIGNALS_PER_SEMAPHORE * id * sizeof(int)));
 }
 
 void cpuAsyncKernel(void *args) {
@@ -187,92 +112,60 @@ std::mutex streamValueProbeMutex;
 std::map<const flagcxDeviceAdaptor *, std::map<int, bool>>
     streamValueProbeCache;
 
-struct flagcxStreamValueProbeResources {
-  flagcxStreamValueProbeResources *next;
-  flagcxDeviceAdaptor *adaptor;
-  int device;
-  flagcxStream_t stream;
-  uint64_t *hostValue;
-  bool writeQueued;
-};
-flagcxStreamValueProbeResources *pendingProbes;
+// The write precedes the wait on the same private stream, so a supported wait
+// cannot block indefinitely. A queued write must finish before its memory is
+// released, including when the wait operation returns NotSupported.
+flagcxResult_t probeStreamValueOps(flagcxDeviceAdaptor *adaptor) {
+  flagcxStream_t stream = nullptr;
+  uint64_t *hostValue = nullptr;
+  void *deviceValue = nullptr;
+  bool writeQueued = false;
 
-static flagcxResult_t releaseProbe(flagcxStreamValueProbeResources *probe) {
-  if (probe->writeQueued) {
-    flagcxResult_t result = probe->adaptor->streamSynchronize(probe->stream);
-    if (result != flagcxSuccess)
-      return result;
-    probe->writeQueued = false;
-  }
-  if (probe->hostValue != NULL) {
-    flagcxResult_t result =
-        probe->adaptor->deviceFree(probe->hostValue, flagcxMemHost, NULL);
-    if (result != flagcxSuccess)
-      return result;
-    probe->hostValue = NULL;
-  }
-  if (probe->stream != NULL) {
-    flagcxResult_t result = probe->adaptor->streamDestroy(probe->stream);
-    if (result != flagcxSuccess)
-      return result;
-    probe->stream = NULL;
-  }
-  return flagcxSuccess;
-}
-static flagcxResult_t retryProbes(flagcxDeviceAdaptor *adaptor, int device) {
-  auto **link = &pendingProbes;
-  while (*link != NULL) {
-    auto *probe = *link;
-    if (probe->adaptor != adaptor || probe->device != device) {
-      link = &probe->next;
-      continue;
-    }
-    flagcxResult_t result = releaseProbe(probe);
-    if (result != flagcxSuccess)
-      return result;
-    *link = probe->next;
-    free(probe);
-  }
-  return flagcxSuccess;
-}
-
-// The stream is private to this probe. A failed drain retains its owner and
-// prevents plugin unload; no device-wide fallback can wait for unrelated work.
-flagcxResult_t probeStreamValueOps(flagcxDeviceAdaptor *adaptor, int device) {
-  flagcxResult_t result = retryProbes(adaptor, device);
+  flagcxResult_t result = adaptor->streamCreate(&stream);
   if (result != flagcxSuccess)
     return result;
-  auto *probe = (flagcxStreamValueProbeResources *)calloc(
-      1, sizeof(flagcxStreamValueProbeResources));
-  if (probe == NULL)
+  if (stream == nullptr)
     return flagcxSystemError;
-  probe->adaptor = adaptor;
-  probe->device = device;
-  probe->next = pendingProbes;
-  pendingProbes = probe;
-  result = adaptor->streamCreate(&probe->stream);
-  if (result == flagcxSuccess && probe->stream == NULL)
+
+  result = adaptor->deviceMalloc(reinterpret_cast<void **>(&hostValue),
+                                 sizeof(*hostValue), flagcxMemHost, nullptr);
+  if (result == flagcxSuccess && hostValue == nullptr)
     result = flagcxSystemError;
-  if (result == flagcxSuccess)
-    result = adaptor->deviceMalloc((void **)&probe->hostValue, sizeof(uint64_t),
-                                   flagcxMemHost, NULL);
-  if (result == flagcxSuccess && probe->hostValue == NULL)
-    result = flagcxSystemError;
-  void *deviceValue = NULL;
   if (result == flagcxSuccess) {
-    *probe->hostValue = 0;
-    result = adaptor->hostGetDevicePointer(&deviceValue, probe->hostValue);
-    if (result == flagcxSuccess && deviceValue == NULL)
+    *hostValue = 0;
+    result = adaptor->hostGetDevicePointer(&deviceValue, hostValue);
+    if (result == flagcxSuccess && deviceValue == nullptr)
       result = flagcxSystemError;
   }
   if (result == flagcxSuccess) {
-    result = adaptor->streamWriteValue64(probe->stream, deviceValue, 1, 0);
-    probe->writeQueued = result == flagcxSuccess;
+    result = adaptor->streamWriteValue64(stream, deviceValue, 1, 0);
+    writeQueued = result == flagcxSuccess;
   }
-  if (result == flagcxSuccess)
-    result = adaptor->streamWaitValue64(probe->stream, deviceValue, 1, 0);
-  flagcxResult_t cleanup = retryProbes(adaptor, device);
-  return cleanup == flagcxSuccess ? result : cleanup;
+  if (writeQueued && result == flagcxSuccess)
+    result = adaptor->streamWaitValue64(stream, deviceValue, 1, 0);
+
+  if (writeQueued) {
+    flagcxResult_t syncResult = adaptor->streamSynchronize(stream);
+    if (syncResult != flagcxSuccess) {
+      // An asynchronous write may still reference hostValue. Keep both probe
+      // resources alive if even a device-wide synchronization cannot drain it.
+      if (adaptor->deviceSynchronize() != flagcxSuccess) {
+        WARN("Stream-value probe could not drain its private stream");
+        return syncResult;
+      }
+      result = syncResult;
+    }
+  }
+
+  flagcxResult_t cleanupResult = flagcxSuccess;
+  if (hostValue != nullptr)
+    cleanupResult = adaptor->deviceFree(hostValue, flagcxMemHost, nullptr);
+  flagcxResult_t destroyResult = adaptor->streamDestroy(stream);
+  if (cleanupResult != flagcxSuccess)
+    return cleanupResult;
+  if (destroyResult != flagcxSuccess)
+    return destroyResult;
+  return result;
 }
 
 } // namespace
@@ -297,7 +190,7 @@ flagcxResult_t flagcxStreamValueSupported(bool *supported) {
     return flagcxSuccess;
   }
 
-  flagcxResult_t result = probeStreamValueOps(adaptor, device);
+  flagcxResult_t result = probeStreamValueOps(adaptor);
   if (result == flagcxNotSupported) {
     devices[device] = false;
     return flagcxSuccess;
@@ -306,20 +199,6 @@ flagcxResult_t flagcxStreamValueSupported(bool *supported) {
     return result;
   devices[device] = true;
   *supported = true;
-  return flagcxSuccess;
-}
-
-flagcxResult_t flagcxStreamValueProbeCleanup() {
-  std::lock_guard<std::mutex> lock(streamValueProbeMutex);
-  while (pendingProbes != NULL) {
-    auto *probe = pendingProbes;
-    flagcxResult_t result = probe->adaptor->setDevice(probe->device);
-    if (result != flagcxSuccess)
-      return result;
-    result = retryProbes(probe->adaptor, probe->device);
-    if (result != flagcxSuccess)
-      return result;
-  }
   return flagcxSuccess;
 }
 
@@ -525,8 +404,6 @@ void flagcxStreamValueSemaphore::traceCompletion(const char *reason,
 }
 
 int flagcxStreamValueSemaphore::pollEnd() {
-  if (isCompletionCancelled())
-    return 1;
   const int remaining = __atomic_load_n(&counter, __ATOMIC_ACQUIRE);
   const int state = __atomic_load_n(&completionState, __ATOMIC_ACQUIRE);
   if (remaining != 0) {

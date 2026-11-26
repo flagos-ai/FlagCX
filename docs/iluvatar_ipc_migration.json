@@ -32,12 +32,14 @@
     {
       "step": 1,
       "description": "Record Device API preservation boundaries",
-      "status": "complete"
+      "status": "complete",
+      "validation": "MetaX 11 tests and traits selection passed."
     },
     {
       "step": 2,
       "description": "Restore baseline communication execution without work tracking",
-      "status": "pending"
+      "status": "complete",
+      "validation": "Linux host/mock library build; core 229 pass/5 hardware skips; runner 102; RMA 54; service 57; adaptor results in /private/tmp/iluvatar-ipc-validation. Device SDK hardware tests pending."
     },
     {
       "step": 3,

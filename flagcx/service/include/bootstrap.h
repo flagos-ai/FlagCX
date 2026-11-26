@@ -114,12 +114,6 @@ flagcxResult_t
 bootstrapCollSubgroupBroadcast(struct bootstrapState *state, int *globalRanks,
                                int subgroupRank, int subgroupSize,
                                int subgroupRoot, void *bcastData, int size);
-// Reduce close status within a validated communicator-local rank list.
-flagcxResult_t bootstrapCollIntraNodeStatus(struct bootstrapState *state,
-                                            const int *ranks, int rank,
-                                            int nranks, int tag,
-                                            flagcxResult_t local,
-                                            flagcxResult_t *common);
 flagcxResult_t bootstrapCollIntraNodeBarrier(struct bootstrapState *state,
                                              int *ranks, int rank, int nranks,
                                              int tag);

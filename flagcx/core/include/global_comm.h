@@ -2,12 +2,10 @@
 #define FLAGCX_GLOBAL_COMM_H_
 
 #include "bootstrap.h"
-#include "comm_lifecycle.h"
 #include "dev_comm_state.h"
 #include "flagcx.h"
 #include "flagcx_tuner.h"
 #include "utils.h"
-#include "work.h"
 
 #include <map>
 #include <vector>
@@ -44,41 +42,34 @@ typedef enum {
 // Whether the user selected the hetero execution path, even on homo hardware.
 bool useHeteroComm();
 
-typedef enum flagcxInternalBufferKind {
+enum flagcxInternalBufferKind {
   flagcxInternalBufferDevice,
   flagcxInternalBufferHost,
   flagcxInternalBufferGdr,
   flagcxInternalBufferCcl
-} flagcxInternalBufferKind_t;
+};
 
 // One record per allocation, including buffers whose creation rolled back.
 // Device views borrow these pointers; only CommDestroy frees the allocation.
 struct flagcxInternalBuffer {
   void *pointer;
-  flagcxInternalBufferKind_t kind;
+  flagcxInternalBufferKind kind;
   flagcxInternalBuffer *next;
 };
 
 flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
                                              size_t size,
-                                             flagcxInternalBufferKind_t kind);
-flagcxResult_t flagcxCommReleaseBuffer(flagcxComm_t comm, void *pointer,
-                                       flagcxInternalBufferKind_t kind);
+                                             flagcxInternalBufferKind kind);
 flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm);
 
 struct flagcxComm {
-  struct flagcxCommFinalizeState finalizeState;
-  enum flagcxNativeFinalizeScope nativeFinalizeScope;
-  bool allowNativeDestroyFinalize, ipcClosePolicyConfirmed;
-  bool initRollbackPending, initRollbackNeedsAgreement, deviceOrdinalValid;
-  int deviceOrdinal;
-  struct flagcxWorkTracker submittedWork;
-  struct flagcxC2cPendingResources *pendingC2cResources;
-  bool devicePluginHeld;
-  bool cclPluginHeld;
-  bool netPluginHeld;
-  bool pluginRollbackOnly;
-  // 0: local SDK cleanup, 1: only plugin references remain.
+  // TODO: adjust code format
+  // 0: active, 1: locally quiescent, 2: transport cleanup completed,
+  // 3: local owners destroyed, 4: homo comms destroyed,
+  // 5: hetero resources prepared, 6: IPC imports closed,
+  // 7: peer closure acknowledged; remaining buffer frees are local.
+  // Failures before final host-state release resume at the last completed
+  // stage.
   int destroyPhase;
   int rank;
   int nranks;

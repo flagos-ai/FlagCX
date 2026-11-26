@@ -901,7 +901,7 @@ TEST(IbucOwnershipTest, SrqCleanupPreservesPostedBuffersUntilDestroySucceeds) {
   EXPECT_EQ(ibucDestroyCqCalls, 1);
 }
 
-TEST(IbucOwnershipTest, SendCloseRetainsOwnerUntilRetrySucceeds) {
+TEST(IbucOwnershipTest, SendCloseRetriesNewlyDeferredCleanup) {
   ScopedIbucVerbsSymbols symbols;
   ibvSymbols.ibv_internal_dereg_mr = fakeIbucDeregisterMr;
   ibucDeregisterCalls = 0;
@@ -921,13 +921,11 @@ TEST(IbucOwnershipTest, SendCloseRetainsOwnerUntilRetrySucceeds) {
   ibucDeregisterFailure = retransMr;
 
   EXPECT_EQ(flagcxIbucCloseSend(comm), flagcxSystemError);
-  ASSERT_EQ(ibucDeregisteredMrs.size(), 2u);
+  ASSERT_EQ(ibucDeregisteredMrs.size(), 3u);
   EXPECT_EQ(ibucDeregisteredMrs[0], fifoMr);
   EXPECT_EQ(ibucDeregisteredMrs[1], retransMr);
-  EXPECT_EQ(comm->devs[0].fifoMr, nullptr);
-  EXPECT_EQ(comm->retransHdrMr, retransMr);
-  EXPECT_EQ(flagcxIbucCloseSend(comm), flagcxSuccess);
-  ASSERT_EQ(ibucDeregisteredMrs.size(), 3u);
+  // closeSend consumes the handle and immediately retries newly deferred
+  // ownership. Only the MR whose first deregistration failed is retried.
   EXPECT_EQ(ibucDeregisteredMrs[2], retransMr);
 }
 

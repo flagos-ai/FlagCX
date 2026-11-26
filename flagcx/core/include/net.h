@@ -43,7 +43,6 @@ extern struct flagcxNetAdaptor flagcxNetSocket;
 extern struct flagcxNetAdaptor flagcxNetIb;
 #ifdef USE_IBUC
 extern struct flagcxNetAdaptor flagcxNetIbuc;
-flagcxResult_t flagcxIbucDrainDeferredCleanup(void);
 #endif
 #ifdef USE_ACCL_BAREX
 extern struct flagcxNetAdaptor flagcxNetBarex;
@@ -244,8 +243,8 @@ flagcxResult_t flagcxNetPrepareProxyOp(struct flagcxHeteroComm *comm,
 flagcxResult_t
 flagcxNetProgressProxyOp(struct flagcxProxyConnection *connection,
                          struct flagcxProxyOp *op);
-flagcxResult_t flagcxNetCleanupRelaySendOp(struct flagcxProxyOp *op);
-flagcxResult_t flagcxNetCancelRelaySendOp(struct flagcxProxyOp *op);
+void flagcxNetCleanupRelaySendOp(struct flagcxProxyOp *op);
+void flagcxNetAbandonRelaySendOp(struct flagcxProxyOp *op);
 flagcxResult_t
 flagcxNetCleanupProxyConnection(struct flagcxProxyConnection *connection,
                                 int cleanupPhase);

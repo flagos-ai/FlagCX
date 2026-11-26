@@ -604,7 +604,7 @@ static flagcxResult_t flagcxIbucCleanupRecv(struct flagcxIbRecvComm *comm,
 static flagcxResult_t flagcxIbucDestroyMr(struct ibv_mr **mr);
 static flagcxResult_t flagcxIbucDestroyQp(struct flagcxIbQp *qp);
 static void flagcxIbucRetainDeferredCleanup(struct flagcxIbNetCommBase *base);
-flagcxResult_t flagcxIbucDrainDeferredCleanup(void);
+static void flagcxIbucDrainDeferredCleanup(void);
 static void
 flagcxIbucRetainAndRetryDeferredCleanup(struct flagcxIbNetCommBase *base);
 flagcxResult_t flagcxIbucCreateQpWithType(uint8_t ib_port,
@@ -2732,7 +2732,7 @@ static flagcxResult_t flagcxIbucCleanupSend(struct flagcxIbSendComm *comm,
                    comm->remSizesFifo.mrs[i] == NULL &&
                    commDev->base.cq == NULL && commDev->base.pd == NULL;
   }
-  if (allReleased && result == flagcxSuccess) {
+  if (allReleased) {
     free(comm);
     *released = true;
   } else if (result == flagcxSuccess) {
@@ -2847,7 +2847,7 @@ static flagcxResult_t flagcxIbucCleanupRecv(struct flagcxIbRecvComm *comm,
         commDev->retransRecvBufCount == 0 && commDev->base.cq == NULL &&
         commDev->base.pd == NULL;
   }
-  if (allReleased && result == flagcxSuccess) {
+  if (allReleased) {
     free(comm);
     *released = true;
   } else if (result == flagcxSuccess) {
@@ -2872,7 +2872,7 @@ static void flagcxIbucRetainDeferredCleanup(struct flagcxIbNetCommBase *base) {
   pthread_mutex_unlock(&flagcxIbucDeferredCleanupLock);
 }
 
-flagcxResult_t flagcxIbucDrainDeferredCleanup(void) {
+static void flagcxIbucDrainDeferredCleanup(void) {
   pthread_mutex_lock(&flagcxIbucDeferredCleanupLock);
   struct flagcxIbNetCommBase *pending = flagcxIbucDeferredCleanupHead;
   flagcxIbucDeferredCleanupHead = NULL;
@@ -2882,7 +2882,6 @@ flagcxResult_t flagcxIbucDrainDeferredCleanup(void) {
   }
   pthread_mutex_unlock(&flagcxIbucDeferredCleanupLock);
 
-  flagcxResult_t first = flagcxSuccess;
   while (pending != NULL) {
     struct flagcxIbNetCommBase *base = pending;
     pending = base->nextDeferredCleanup;
@@ -2894,8 +2893,6 @@ flagcxResult_t flagcxIbucDrainDeferredCleanup(void) {
             ? flagcxIbucCleanupSend((struct flagcxIbSendComm *)base, &released)
             : flagcxIbucCleanupRecv((struct flagcxIbRecvComm *)base, &released);
     if (!released) {
-      if (first == flagcxSuccess)
-        first = result != flagcxSuccess ? result : flagcxInProgress;
       flagcxIbucRetainDeferredCleanup(base);
       TRACE(FLAGCX_NET,
             "NET/IBUC : deferred communicator cleanup still pending with "
@@ -2903,7 +2900,6 @@ flagcxResult_t flagcxIbucDrainDeferredCleanup(void) {
             result);
     }
   }
-  return first;
 }
 
 static void
@@ -2917,32 +2913,52 @@ flagcxIbucRetainAndRetryDeferredCleanup(struct flagcxIbNetCommBase *base) {
 }
 
 flagcxResult_t flagcxIbucCloseSend(void *sendComm) {
+  struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
+  flagcxIbucDrainDeferredCleanup();
   bool released = false;
-  return flagcxIbucCleanupSend((struct flagcxIbSendComm *)sendComm, &released);
+  flagcxResult_t result = flagcxIbucCleanupSend(comm, &released);
+  // Net adaptor close consumes the public handle even when teardown reports
+  // an error. Keep any remaining dependencies reachable for a later internal
+  // cleanup pass; existing callers discard the handle after close returns.
+  if (!released && comm != NULL)
+    flagcxIbucRetainAndRetryDeferredCleanup(&comm->base);
+  TIME_PRINT("IBUC");
+  return result;
 }
 
 flagcxResult_t flagcxIbucCloseRecv(void *recvComm) {
+  struct flagcxIbRecvComm *comm = (struct flagcxIbRecvComm *)recvComm;
+  flagcxIbucDrainDeferredCleanup();
   bool released = false;
-  return flagcxIbucCleanupRecv((struct flagcxIbRecvComm *)recvComm, &released);
+  flagcxResult_t result = flagcxIbucCleanupRecv(comm, &released);
+  if (!released && comm != NULL)
+    flagcxIbucRetainAndRetryDeferredCleanup(&comm->base);
+  return result;
 }
 
 flagcxResult_t flagcxIbucCloseListen(void *listenComm) {
   struct flagcxIbListenComm *comm = (struct flagcxIbListenComm *)listenComm;
-  if (comm == NULL)
-    return flagcxSuccess;
-  if (comm->stage.comm != NULL) {
-    bool released = false;
-    flagcxResult_t result = flagcxIbucCleanupRecv(
-        (struct flagcxIbRecvComm *)comm->stage.comm, &released);
-    if (released)
+  if (comm) {
+    flagcxIbucDrainDeferredCleanup();
+    flagcxResult_t result = flagcxSuccess;
+    if (comm->stage.comm != NULL) {
+      bool released = false;
+      flagcxResult_t cleanupResult = flagcxIbucCleanupRecv(
+          (struct flagcxIbRecvComm *)comm->stage.comm, &released);
+      if (!released) {
+        struct flagcxIbRecvComm *staged =
+            (struct flagcxIbRecvComm *)comm->stage.comm;
+        flagcxIbucRetainAndRetryDeferredCleanup(&staged->base);
+      }
       comm->stage.comm = NULL;
-    if (result != flagcxSuccess)
-      return result;
+      flagcxIbucRecordCleanupError(cleanupResult, &result);
+    }
+    free(comm->stage.buffer);
+    comm->stage.buffer = NULL;
+    flagcxIbucRecordCleanupError(flagcxSocketClose(&comm->sock), &result);
+    free(comm);
+    return result;
   }
-  FLAGCXCHECK(flagcxSocketClose(&comm->sock));
-  free(comm->stage.buffer);
-  comm->stage.buffer = NULL;
-  free(comm);
   return flagcxSuccess;
 }
 

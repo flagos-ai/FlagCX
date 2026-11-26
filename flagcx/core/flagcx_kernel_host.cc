@@ -138,13 +138,7 @@ flagcxResult_t flagcxFifo::flagcxFifoInit() {
 
 flagcxResult_t flagcxFifo::flagcxFifoDestroy() {
   INFO(FLAGCX_KERNEL, "flagcxFifoDestroy called");
-  if (buffer == NULL)
-    return flagcxSuccess;
-  flagcxResult_t result =
-      deviceAdaptor->deviceFree((void *)buffer, flagcxMemHost, NULL);
-  if (result != flagcxSuccess)
-    return result;
-  buffer = NULL;
+  FLAGCXCHECK(deviceAdaptor->deviceFree((void *)buffer, flagcxMemHost, NULL));
   return flagcxSuccess;
 }
 

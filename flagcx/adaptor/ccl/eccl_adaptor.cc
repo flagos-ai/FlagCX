@@ -49,18 +49,13 @@ flagcxResult_t ecclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 flagcxResult_t ecclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  (void)comm;
-  return flagcxNotSupported;
+  // ECCL does not have a separate finalize function, use destroy
+  return flagcxSuccess;
 }
 
 flagcxResult_t ecclAdaptorCommDestroy(flagcxInnerComm_t comm) {
   if (comm == NULL)
     return flagcxInvalidArgument;
-  if (comm->base == NULL) {
-    free(comm);
-    return flagcxSuccess;
-  }
-
   flagcxResult_t result = (flagcxResult_t)ecclCommDestroy(comm->base);
   if (result != flagcxSuccess)
     return result;
@@ -69,16 +64,7 @@ flagcxResult_t ecclAdaptorCommDestroy(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t ecclAdaptorCommAbort(flagcxInnerComm_t comm) {
-  if (comm == NULL)
-    return flagcxInvalidArgument;
-  if (comm->base == NULL)
-    return flagcxSuccess;
-  flagcxResult_t result = (flagcxResult_t)ecclCommAbort(comm->base);
-  if (result != flagcxSuccess)
-    return result;
-  // Native Abort consumes the SDK context. Keep the wrapper for owner cleanup.
-  comm->base = NULL;
-  return flagcxSuccess;
+  return (flagcxResult_t)ecclCommAbort(comm->base);
 }
 
 flagcxResult_t ecclAdaptorCommResume(flagcxInnerComm_t comm) {
@@ -147,13 +133,6 @@ flagcxResult_t ecclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
 
 flagcxResult_t ecclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
                                                flagcxInnerWindow_t win) {
-  if (comm == NULL)
-    return flagcxInvalidArgument;
-  if (comm->base == NULL) {
-    free(win); // Only the host wrapper remains after native Abort.
-    return flagcxSuccess;
-  }
-
   flagcxResult_t res = flagcxEcclWindowDeregister(comm, win);
   if (res == flagcxSuccess)
     free(win);
@@ -289,13 +268,6 @@ flagcxResult_t ecclAdaptorDevCommCreate(flagcxInnerComm_t comm,
 
 flagcxResult_t ecclAdaptorDevCommDestroy(flagcxInnerComm_t comm,
                                          flagcxInnerDevComm_t devComm) {
-  if (comm == NULL)
-    return flagcxInvalidArgument;
-  if (comm->base == NULL) {
-    free(devComm); // Only the host wrapper remains after native Abort.
-    return flagcxSuccess;
-  }
-
   if (!devComm)
     return flagcxSuccess;
   flagcxResult_t ret = flagcxEcclDevCommDestroy(comm, devComm);

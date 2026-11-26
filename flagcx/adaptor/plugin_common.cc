@@ -21,9 +21,8 @@ void *flagcxAdaptorOpenPluginLib(const char *path) {
 }
 
 flagcxResult_t flagcxAdaptorClosePluginLib(void *handle) {
-  if (handle != NULL && dlclose(handle) != 0) {
-    WARN("ADAPTOR/Plugin: dlclose failed: %s", dlerror());
-    return flagcxSystemError;
+  if (handle != NULL) {
+    dlclose(handle);
   }
   return flagcxSuccess;
 }

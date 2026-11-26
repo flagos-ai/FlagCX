@@ -375,7 +375,6 @@ ncclResult_t ncclCommInitRank(ncclComm_t *comm, int nranks, ncclUniqueId commId,
   if (comm == nullptr)
     return ncclInvalidArgument;
 
-  *comm = nullptr;
   ncclComm_t c = (ncclComm_t)calloc(1, sizeof(struct ncclComm));
   if (c == nullptr)
     return ncclSystemError;
@@ -383,10 +382,7 @@ ncclResult_t ncclCommInitRank(ncclComm_t *comm, int nranks, ncclUniqueId commId,
   /* Init FlagCX device handle */
   flagcxResult_t res = flagcxDeviceHandleInit(&c->devHandle);
   if (res != flagcxSuccess) {
-    if (c->devHandle != nullptr)
-      *comm = c; // The failed Init retained a cleanup owner.
-    else
-      free(c);
+    free(c);
     return toNcclResult(res);
   }
 
@@ -399,15 +395,7 @@ ncclResult_t ncclCommInitRank(ncclComm_t *comm, int nranks, ncclUniqueId commId,
   /* Init the FlagCX communicator */
   res = flagcxCommInitRank(&c->comm, nranks, &uniqueId, rank);
   if (res != flagcxSuccess) {
-    if (c->comm != nullptr) {
-      *comm = c;
-      return toNcclResult(res);
-    }
-    flagcxResult_t cleanup = flagcxDeviceHandleFree(c->devHandle);
-    if (cleanup != flagcxSuccess) {
-      *comm = c;
-      return toNcclResult(cleanup);
-    }
+    flagcxDeviceHandleFree(c->devHandle);
     free(c);
     return toNcclResult(res);
   }
@@ -446,18 +434,12 @@ ncclResult_t ncclCommDestroy(ncclComm_t comm) {
   recursionGuard guard(inWrapper);
   if (comm == nullptr)
     return ncclInvalidArgument;
-  if (comm->comm != nullptr) {
-    flagcxResult_t result = flagcxCommDestroy(comm->comm);
-    if (result != flagcxSuccess)
-      return toNcclResult(result);
-    comm->comm = nullptr;
-  }
-  flagcxResult_t result = flagcxDeviceHandleFree(comm->devHandle);
-  if (result != flagcxSuccess)
-    return toNcclResult(result);
-  comm->devHandle = nullptr;
+  flagcxResult_t res = flagcxCommDestroy(comm->comm);
+  /* flagcxCommDestroy finalizes plugins. flagcxDeviceHandleFree frees the
+   * device handle and decrements plugin ref counts. */
+  flagcxDeviceHandleFree(comm->devHandle);
   free(comm);
-  return ncclSuccess;
+  return toNcclResult(res);
 }
 
 ncclResult_t ncclCommAbort(ncclComm_t comm) {
@@ -467,18 +449,10 @@ ncclResult_t ncclCommAbort(ncclComm_t comm) {
   recursionGuard guard(inWrapper);
   if (comm == nullptr)
     return ncclInvalidArgument;
-  if (comm->comm != nullptr) {
-    flagcxResult_t result = flagcxCommAbort(comm->comm);
-    if (result != flagcxSuccess)
-      return toNcclResult(result);
-    comm->comm = nullptr;
-  }
-  flagcxResult_t result = flagcxDeviceHandleFree(comm->devHandle);
-  if (result != flagcxSuccess)
-    return toNcclResult(result);
-  comm->devHandle = nullptr;
+  flagcxResult_t res = flagcxCommAbort(comm->comm);
+  flagcxDeviceHandleFree(comm->devHandle);
   free(comm);
-  return ncclSuccess;
+  return toNcclResult(res);
 }
 
 /* ──────────────────────────────────────────────────────────────────────

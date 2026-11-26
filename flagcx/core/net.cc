@@ -274,86 +274,34 @@ static uint64_t flagcxRelayMonotonicNs() {
   return uint64_t(now.tv_sec) * 1000000000ULL + now.tv_nsec;
 }
 
-flagcxResult_t flagcxNetCleanupRelaySendOp(struct flagcxProxyOp *op) {
+void flagcxNetCleanupRelaySendOp(struct flagcxProxyOp *op) {
   if (op == NULL || op->relaySendState == NULL)
-    return flagcxSuccess;
+    return;
   auto *state = static_cast<flagcxNetRelaySendState *>(op->relaySendState);
-  if (state->phase != 0)
-    return flagcxInProgress;
-  if (state->event != NULL) {
-    flagcxResult_t result = deviceAdaptor->eventDestroy(state->event);
-    if (result != flagcxSuccess)
-      return result;
-    state->event = NULL;
+  // An uncertain RPC keeps the connection mapping alive until process exit.
+  // The relay owns the allocation and can still be reading from it.
+  if (state->phase != 0) {
+    WARN("PXN relay slot ownership is uncertain; retaining shared IPC "
+         "mapping until process exit");
+    op->relaySendState = NULL;
+    return;
   }
-  if (state->stream != NULL) {
-    flagcxResult_t result = deviceAdaptor->streamDestroy(state->stream);
-    if (result != flagcxSuccess)
-      return result;
-    state->stream = NULL;
-  }
+  if (state->event != NULL)
+    (void)deviceAdaptor->eventDestroy(state->event);
+  if (state->stream != NULL)
+    (void)deviceAdaptor->streamDestroy(state->stream);
   if (state->counted && op->connection != NULL)
     __atomic_sub_fetch(&op->connection->relayActiveOps, 1, __ATOMIC_ACQ_REL);
   free(state);
   op->relaySendState = NULL;
-  return flagcxSuccess;
 }
 
-flagcxResult_t flagcxNetCancelRelaySendOp(struct flagcxProxyOp *op) {
-  if (op == NULL || op->relaySendState == NULL)
-    return flagcxSuccess;
-  auto *state = static_cast<flagcxNetRelaySendState *>(op->relaySendState);
-  if (state->phase == 0)
-    return flagcxNetCleanupRelaySendOp(op);
-  auto *connector =
-      &op->comm->channels[op->channelId].peers[op->root]->send[0].proxyConn;
-  if (state->phase == 1 || state->phase == 3) {
-    bool received = false;
-    void *id = state->phase == 1 ? (void *)state : (void *)op;
-    void *response =
-        state->phase == 1 ? (void *)&state->slot : (void *)&state->sendReleased;
-    flagcxResult_t result = flagcxPollProxyResponseWithStatus(
-        op->comm, connector, response, id, &received);
-    if (result == flagcxInProgress)
-      return result;
-    if (received && state->phase == 3 && state->sendReleased != 0)
-      state->phase = 0;
-    else if (received && state->phase == 1 && state->slot == UINT32_MAX)
-      state->phase = 0;
-    else
-      state->phase = 4;
+void flagcxNetAbandonRelaySendOp(struct flagcxProxyOp *op) {
+  if (op != NULL && op->relaySendState != NULL) {
+    WARN("PXN relay abort before group completion; retaining connection IPC "
+         "mapping until process exit");
+    op->relaySendState = NULL;
   }
-  // The caller has already retired local copies. Do not post another copy or
-  // send while cancelling a lease whose data path was never published.
-  if (state->phase == 2 || state->phase == 6)
-    state->phase = 4;
-  if (state->phase == 4) {
-    flagcxNetRelayCancelRequest request = {state->requestId};
-    state->cancelReleased = 0;
-    flagcxResult_t result = flagcxProxyCallAsync(
-        op->comm, connector, flagcxProxyMsgCancelRelay, &request,
-        sizeof(request), 1, &state->cancelReleased);
-    if (result != flagcxSuccess)
-      return result;
-    state->phase = 5;
-  }
-  if (state->phase == 5) {
-    bool received = false;
-    flagcxResult_t result = flagcxPollProxyResponseWithStatus(
-        op->comm, connector, &state->cancelReleased, &state->cancelReleased,
-        &received);
-    if (!received)
-      return result;
-    if (result != flagcxSuccess || state->cancelReleased == 0) {
-      state->phase = 4;
-      return result == flagcxSuccess ? flagcxInProgress : result;
-    }
-    // Cancel ACK is the existing protocol's proof that the relay is idle.
-    flagcxProxyForgetResponse(op->comm, op);
-    flagcxProxyForgetResponse(op->comm, state);
-    state->phase = 0;
-  }
-  return flagcxNetCleanupRelaySendOp(op);
 }
 
 static flagcxResult_t flagcxNetProgressRelaySend(struct flagcxProxyOp *op) {
@@ -411,13 +359,12 @@ static flagcxResult_t flagcxNetProgressRelaySend(struct flagcxProxyOp *op) {
   }
 
   if (state->phase == 2) {
-    op->args.copyUncertain = true;
     FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
         static_cast<char *>(op->connection->relayBufferImport) +
             flagcxNetRelaySlotOffset(state->slot),
         reinterpret_cast<char *>(op->recvbuff) + state->offset,
         state->chunkBytes, flagcxMemcpyDeviceToDevice, state->stream, NULL));
-    FLAGCXCHECK(flagcxProxyRecordCopy(&op->args, state->event, state->stream));
+    FLAGCXCHECK(deviceAdaptor->eventRecord(state->event, state->stream));
     state->phase = 6; // copy in flight
   }
 
@@ -481,7 +428,7 @@ static flagcxResult_t flagcxNetProgressRelaySend(struct flagcxProxyOp *op) {
     state->cancelReleased = 0;
     if (flagcxProxyCallAsync(op->comm, connector, flagcxProxyMsgCancelRelay,
                              &cancel, sizeof(cancel), 1,
-                             &state->cancelReleased) != flagcxSuccess) {
+                             state) != flagcxSuccess) {
       // No reliable reply is possible. Retain the connection IPC mapping.
       state->phase = 3;
       return state->terminalResult;
@@ -495,8 +442,7 @@ static flagcxResult_t flagcxNetProgressRelaySend(struct flagcxProxyOp *op) {
         &op->comm->channels[op->channelId].peers[op->root]->send[0].proxyConn;
     bool responseReceived = false;
     flagcxResult_t cancelResult = flagcxPollProxyResponseWithStatus(
-        op->comm, connector, &state->cancelReleased, &state->cancelReleased,
-        &responseReceived);
+        op->comm, connector, &state->cancelReleased, state, &responseReceived);
     if (cancelResult == flagcxInProgress && state->cancelDeadlineNs != 0 &&
         flagcxRelayMonotonicNs() < state->cancelDeadlineNs)
       return flagcxSuccess;
@@ -693,11 +639,9 @@ flagcxNetCleanupProxyConnection(struct flagcxProxyConnection *connection,
                 (struct sendNetResources *)connection->transportResources)
           : flagcxRecvProxyFree(
                 (struct recvNetResources *)connection->transportResources);
-  if (result != flagcxSuccess)
-    return result;
   free(connection->transportResources);
   connection->transportResources = NULL;
-  return flagcxSuccess;
+  return result;
 }
 
 static pthread_mutex_t netLock = PTHREAD_MUTEX_INITIALIZER;
@@ -888,9 +832,7 @@ flagcxResult_t flagcxNetInit(struct flagcxHeteroComm *comm) {
     // Load net plugin if FLAGCX_NET_ADAPTOR_PLUGIN is set.
     // This populates flagcxNetAdaptors[0] with the plugin.
     // Must be called before the selection loop below.
-    if (!comm->netPluginHeld) {
-      FLAGCXCHECK(flagcxNetAdaptorPluginInit(&comm->netPluginHeld));
-    }
+    FLAGCXCHECK(flagcxNetAdaptorPluginInit());
   }
 
   if (forceSocket) {
@@ -1003,7 +945,6 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
               args->waitCopy, step, (char *)data + args->totalCopySize,
               args->subs[step].stepBuff, args->subs[step].stepSize,
               resources->cpStream);
-        args->copyUncertain = true;
         flagcxResult_t copyResult;
         if (resources->netAdaptor == getNetAdaptor(RDMA)) {
           copyResult = deviceAdaptor->deviceMemcpy(
@@ -1040,8 +981,8 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
               resources->tpRemoteRank, resources->channelId, args->opId,
               args->waitCopy, step, resources->cpEvents[step],
               resources->cpStream);
-        flagcxResult_t recordResult = flagcxProxyRecordCopy(
-            args, resources->cpEvents[step], resources->cpStream);
+        flagcxResult_t recordResult = deviceAdaptor->eventRecord(
+            resources->cpEvents[step], resources->cpStream);
         TRACE(FLAGCX_NET,
               "NET proxy send rank=%d peer=%d channel=%d op_id=%d "
               "stage=event-record-return chunk=%d slot=%d result=%d",
@@ -1141,10 +1082,7 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
               resources->tpRemoteRank, resources->channelId, args->opId,
               args->posted, step, sendRes, req);
         if (sendRes != flagcxSuccess && sendRes != flagcxInProgress) {
-          if (req != NULL)
-            args->subs[step].requests[0] = req;
-          else
-            FLAGCXCHECK(flagcxCollProxyCancel(&args->collTransport, submit));
+          FLAGCXCHECK(flagcxCollProxyCancel(&args->collTransport, submit));
           return sendRes;
         }
         if (req) {
@@ -1190,8 +1128,6 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
                                            : resources->commPtr->rank,
                 resources->tpRemoteRank, resources->channelId, args->opId,
                 sequence, slot, req, testRes, done, sizes);
-        if (done)
-          args->subs[slot].requests[0] = NULL;
         if (testRes != flagcxSuccess && testRes != flagcxInProgress)
           return testRes;
         if (done) {
@@ -1310,10 +1246,7 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
             &req);
       }
       if (recvRes != flagcxSuccess && recvRes != flagcxInProgress) {
-        if (req != NULL)
-          args->subs[slot].requests[0] = req;
-        else
-          FLAGCXCHECK(flagcxCollProxyCancel(&args->collTransport, submit));
+        FLAGCXCHECK(flagcxCollProxyCancel(&args->collTransport, submit));
         return recvRes;
       }
       if (req) {
@@ -1338,8 +1271,6 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
       flagcxResult_t testRes = resources->netAdaptor->test(req, &done, &sizes);
       flagcxTraceNetRecv(resources, args, done ? 4 : 3,
                          done ? "recv-done" : "recv-wait", req, testRes, done);
-      if (done)
-        args->subs[slot].requests[0] = NULL;
       if (testRes != flagcxSuccess && testRes != flagcxInProgress)
         return testRes;
       if (done) {
@@ -1367,10 +1298,8 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
               &args->subs[args->postFlush & stepMask].stepBuff,
               &args->subs[args->postFlush & stepMask].stepSize,
               args->regBufFlag ? &args->regHandle : resources->mhandles, &req);
-          if (flushRes != flagcxSuccess && flushRes != flagcxInProgress) {
-            args->subs[args->postFlush & stepMask].requests[0] = req;
+          if (flushRes != flagcxSuccess && flushRes != flagcxInProgress)
             return flushRes;
-          }
           if (req) {
             args->subs[args->postFlush++ & stepMask].requests[0] = req;
           } else if (flushRes == flagcxSuccess) {
@@ -1404,10 +1333,8 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
                 &args->subs[args->postFlush & stepMask].stepSize,
                 args->regBufFlag ? &args->regHandle : resources->mhandles,
                 &req);
-            if (flushRes != flagcxSuccess && flushRes != flagcxInProgress) {
-              args->subs[args->postFlush & stepMask].requests[0] = req;
+            if (flushRes != flagcxSuccess && flushRes != flagcxInProgress)
               return flushRes;
-            }
             if (req) {
               args->subs[args->postFlush++ & stepMask].requests[0] = req;
             } else if (flushRes == flagcxSuccess) {
@@ -1445,13 +1372,10 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
         flagcxTraceNetRecv(resources, args, done ? 8 : 7,
                            done ? "flush-done" : "flush-wait", req, testRes,
                            done);
-        if (done)
-          args->subs[step].requests[0] = NULL;
         if (testRes != flagcxSuccess && testRes != flagcxInProgress)
           return testRes;
       }
       if (done) {
-        args->subs[step].requests[0] = NULL;
         if (!args->regBufFlag) {
           flagcxTraceNetRecv(resources, args, 9, "copy-submit", req,
                              flagcxInProgress, 0, -1, args->subs[step].stepBuff,
@@ -1473,7 +1397,6 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
                 args->waitCopy, step, args->subs[step].stepBuff,
                 (char *)data + args->totalCopySize, args->subs[step].stepSize,
                 resources->cpStream);
-          args->copyUncertain = true;
           flagcxResult_t copyResult = deviceAdaptor->deviceMemcpy(
               (char *)data + args->totalCopySize, args->subs[step].stepBuff,
               args->subs[step].stepSize, copyType, resources->cpStream,
@@ -1495,8 +1418,8 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
                 resources->tpRemoteRank, resources->channelId, args->opId,
                 args->waitCopy, step, resources->cpEvents[step],
                 resources->cpStream);
-          flagcxResult_t recordResult = flagcxProxyRecordCopy(
-              args, resources->cpEvents[step], resources->cpStream);
+          flagcxResult_t recordResult = deviceAdaptor->eventRecord(
+              resources->cpEvents[step], resources->cpStream);
           TRACE(FLAGCX_NET,
                 "NET proxy recv rank=%d peer=%d channel=%d op_id=%d "
                 "stage=event-record-return chunk=%d slot=%d result=%d",
@@ -1597,137 +1520,145 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
   return flagcxSuccess;
 }
 
+static void flagcxProxyCleanupResult(flagcxResult_t cleanupResult,
+                                     flagcxResult_t *firstResult) {
+  if (cleanupResult != flagcxSuccess && cleanupResult != flagcxInProgress &&
+      *firstResult == flagcxSuccess)
+    *firstResult = cleanupResult;
+}
+
 flagcxResult_t flagcxSendProxyFree(sendNetResources *resources) {
   if (resources == NULL)
     return flagcxSuccess;
-  // The existing release ACK and outstanding-slot checks remain the authority
-  // for releasing the relay allocation. Keep the descriptor while pending.
-  if (resources->relayPool != NULL) {
-    if (!resources->relaySourceReleased)
-      return flagcxInProgress;
-    for (uint32_t i = 0; i < resources->relayPool->slotCount; ++i)
-      if (resources->relayPool->slots[i].requestId != 0)
-        return flagcxInProgress;
-  }
-  flagcxResult_t result;
-  for (int s = 0; s < FLAGCX_NET_MAX_STEPS; ++s) {
-    if (resources->cpEvents[s] == NULL)
-      continue;
-    result = deviceAdaptor->eventDestroy(resources->cpEvents[s]);
-    if (result != flagcxSuccess)
-      return result;
-    resources->cpEvents[s] = NULL;
+
+  flagcxResult_t result = flagcxSuccess;
+  bool relayNetReleased = true;
+  for (int s = 0; s < flagcxNetChunks; s++) {
+    if (resources->cpEvents[s] != NULL) {
+      flagcxProxyCleanupResult(
+          deviceAdaptor->eventDestroy(resources->cpEvents[s]), &result);
+      resources->cpEvents[s] = NULL;
+    }
   }
   if (resources->cpStream != NULL) {
-    result = deviceAdaptor->streamDestroy(resources->cpStream);
-    if (result != flagcxSuccess)
-      return result;
+    flagcxProxyCleanupResult(deviceAdaptor->streamDestroy(resources->cpStream),
+                             &result);
     resources->cpStream = NULL;
   }
-  if (resources->mhandles[0] != NULL) {
-    if (resources->netSendComm == NULL)
-      return flagcxInternalError;
-    result = resources->netAdaptor->deregMr(resources->netSendComm,
-                                            resources->mhandles[0]);
-    if (result != flagcxSuccess)
-      return result;
+  if (resources->netSendComm != NULL && resources->mhandles[0] != NULL) {
+    flagcxResult_t deregResult = resources->netAdaptor->deregMr(
+        resources->netSendComm, resources->mhandles[0]);
+    if (deregResult != flagcxSuccess)
+      relayNetReleased = false;
+    flagcxProxyCleanupResult(deregResult, &result);
     resources->mhandles[0] = NULL;
   }
   if (resources->netSendComm != NULL) {
-    result = resources->netAdaptor->closeSend(resources->netSendComm);
-    if (result != flagcxSuccess)
-      return result;
+    flagcxResult_t closeResult =
+        resources->netAdaptor->closeSend(resources->netSendComm);
+    if (closeResult != flagcxSuccess)
+      relayNetReleased = false;
+    flagcxProxyCleanupResult(closeResult, &result);
     resources->netSendComm = NULL;
   }
   if (resources->relayPool != NULL) {
     flagcxNetRelayPool *pool = resources->relayPool;
-    if (pool->refs == 0)
-      return flagcxInternalError;
-    if (pool->refs == 1) {
-      result = deviceAdaptor->gdrMemFree(pool->base, NULL);
-      if (result != flagcxSuccess)
-        return result;
-      pool->base = NULL;
+    if (!relayNetReleased || !resources->relaySourceReleased)
+      pool->unsafe = true;
+    for (uint32_t i = 0; i < pool->slotCount; ++i) {
+      if (pool->slots[i].requestId != 0)
+        pool->unsafe = true;
+    }
+    if (--pool->refs == 0) {
       flagcxNetRelayPool **link = &pool->owner->relayPools;
       while (*link != NULL && *link != pool)
         link = &(*link)->next;
       if (*link == pool)
         *link = pool->next;
+      if (pool->unsafe) {
+        WARN("PXN shared relay pool %llu may still be in use; retaining %zu "
+             "bytes until process exit",
+             static_cast<unsigned long long>(pool->id), pool->capacity);
+      } else {
+        flagcxProxyCleanupResult(deviceAdaptor->gdrMemFree(pool->base, NULL),
+                                 &result);
+      }
       free(pool->slots);
       free(pool);
-    } else {
-      --pool->refs;
     }
     resources->relayPool = NULL;
     resources->relayExportBuffer = NULL;
     resources->buffers[0] = NULL;
   } else if (resources->buffers[0] != NULL) {
-    if (resources->netAdaptor == getNetAdaptor(SOCKET) ||
-        (resources->netAdaptor != getNetAdaptor(RDMA) &&
-         !(resources->ptrSupport & FLAGCX_PTR_CUDA))) {
+    if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
       free(resources->buffers[0]);
+    } else if (resources->netAdaptor == getNetAdaptor(RDMA)) {
+      flagcxProxyCleanupResult(
+          deviceAdaptor->gdrMemFree(resources->buffers[0], NULL), &result);
     } else {
-      result = deviceAdaptor->gdrMemFree(resources->buffers[0], NULL);
-      if (result != flagcxSuccess)
-        return result;
+      if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
+        flagcxProxyCleanupResult(
+            deviceAdaptor->gdrMemFree(resources->buffers[0], NULL), &result);
+      } else {
+        free(resources->buffers[0]);
+      }
     }
     resources->buffers[0] = NULL;
   }
-  return flagcxSuccess;
+  return result;
 }
 
 flagcxResult_t flagcxRecvProxyFree(recvNetResources *resources) {
   if (resources == NULL)
     return flagcxSuccess;
-  flagcxResult_t result;
-  for (int s = 0; s < FLAGCX_NET_MAX_STEPS; ++s) {
-    if (resources->cpEvents[s] == NULL)
-      continue;
-    result = deviceAdaptor->eventDestroy(resources->cpEvents[s]);
-    if (result != flagcxSuccess)
-      return result;
-    resources->cpEvents[s] = NULL;
+
+  flagcxResult_t result = flagcxSuccess;
+  for (int s = 0; s < flagcxNetChunks; s++) {
+    if (resources->cpEvents[s] != NULL) {
+      flagcxProxyCleanupResult(
+          deviceAdaptor->eventDestroy(resources->cpEvents[s]), &result);
+      resources->cpEvents[s] = NULL;
+    }
   }
   if (resources->cpStream != NULL) {
-    result = deviceAdaptor->streamDestroy(resources->cpStream);
-    if (result != flagcxSuccess)
-      return result;
+    flagcxProxyCleanupResult(deviceAdaptor->streamDestroy(resources->cpStream),
+                             &result);
     resources->cpStream = NULL;
   }
-  if (resources->mhandles[0] != NULL) {
-    if (resources->netRecvComm == NULL)
-      return flagcxInternalError;
-    result = resources->netAdaptor->deregMr(resources->netRecvComm,
-                                            resources->mhandles[0]);
-    if (result != flagcxSuccess)
-      return result;
+  if (resources->netRecvComm != NULL && resources->mhandles[0] != NULL) {
+    flagcxProxyCleanupResult(
+        resources->netAdaptor->deregMr(resources->netRecvComm,
+                                       resources->mhandles[0]),
+        &result);
     resources->mhandles[0] = NULL;
   }
   if (resources->netRecvComm != NULL) {
-    result = resources->netAdaptor->closeRecv(resources->netRecvComm);
-    if (result != flagcxSuccess)
-      return result;
+    flagcxProxyCleanupResult(
+        resources->netAdaptor->closeRecv(resources->netRecvComm), &result);
     resources->netRecvComm = NULL;
   }
   if (resources->netListenComm != NULL) {
-    result = resources->netAdaptor->closeListen(resources->netListenComm);
-    if (result != flagcxSuccess)
-      return result;
+    flagcxProxyCleanupResult(
+        resources->netAdaptor->closeListen(resources->netListenComm), &result);
     resources->netListenComm = NULL;
   }
   if (resources->buffers[0] != NULL) {
-    if (resources->netAdaptor == getNetAdaptor(SOCKET) ||
-        (resources->netAdaptor != getNetAdaptor(RDMA) &&
-         !(resources->ptrSupport & FLAGCX_PTR_CUDA))) {
+    if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
       free(resources->buffers[0]);
+    } else if (resources->netAdaptor == getNetAdaptor(RDMA)) {
+      flagcxProxyCleanupResult(
+          deviceAdaptor->gdrMemFree(resources->buffers[0], NULL), &result);
     } else {
-      result = deviceAdaptor->gdrMemFree(resources->buffers[0], NULL);
-      if (result != flagcxSuccess)
-        return result;
+      if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
+        flagcxProxyCleanupResult(
+            deviceAdaptor->gdrMemFree(resources->buffers[0], NULL), &result);
+      } else {
+        free(resources->buffers[0]);
+      }
     }
     resources->buffers[0] = NULL;
   }
-  return flagcxSuccess;
+  return result;
 }
 
 static flagcxResult_t netRegisterBuffer(flagcxHeteroComm *comm,
@@ -1744,32 +1675,31 @@ static flagcxResult_t netRegisterBuffer(flagcxHeteroComm *comm,
       if (peerConn == NULL)
         continue;
       peerProxyConn = &peerConn->proxyConn;
-      void *cached = globalRegPool.getNetHandle(regRecord, comm, peerProxyConn);
-      if (cached != NULL) {
-        found = true;
-        outHandle[p] = cached;
-        *outRegBufFlag = 1;
+      for (auto it = regRecord->handles.begin(); it != regRecord->handles.end();
+           it++) {
+        if (it->first.proxyConn == peerProxyConn && it->first.handle &&
+            it->first.ownerComm == comm) {
+          found = true;
+          outHandle[p] = it->first.handle;
+          *outRegBufFlag = 1;
+          TRACE(FLAGCX_REG,
+                "rank %d - NET reuse buffer %p size %ld (baseAddr %p size %ld) "
+                "handle %p",
+                comm->rank, userbuff, buffSize, (void *)regRecord->beginAddr,
+                regRecord->endAddr - regRecord->beginAddr, it->first.handle);
+          break;
+        }
       }
       if (!found) {
         struct netRegInfo info = {regRecord->beginAddr,
                                   regRecord->endAddr - regRecord->beginAddr};
         void *handle = NULL;
-        flagcxResult_t result =
-            globalRegPool.reserveNetHandle(regRecord, comm, peerProxyConn);
-        if (result != flagcxSuccess)
-          return result;
-        bool responseReceived = false;
-        result =
-            flagcxProxyCallBlocking(comm, peerProxyConn, flagcxProxyMsgRegister,
-                                    &info, sizeof(struct netRegInfo), &handle,
-                                    sizeof(void *), &responseReceived);
-        FLAGCXCHECK(globalRegPool.addNetHandle(
-            comm, regRecord, handle, peerProxyConn,
-            responseReceived || result == flagcxSuccess,
-            result == flagcxSuccess));
-        if (result != flagcxSuccess)
-          return result;
+        FLAGCXCHECK(flagcxProxyCallBlocking(
+            (flagcxHeteroComm *)comm, peerProxyConn, flagcxProxyMsgRegister,
+            &info, sizeof(struct netRegInfo), &handle, sizeof(void *)));
         if (handle) {
+          FLAGCXCHECK(globalRegPool.addNetHandle(comm, regRecord, handle,
+                                                 peerProxyConn));
           outHandle[p] = handle;
           *outRegBufFlag = 1;
           INFO(FLAGCX_REG,
@@ -1795,15 +1725,11 @@ flagcxResult_t flagcxNetRegisterBuffer(flagcxHeteroComm *comm,
         comm, userbuff, buffSize, nPeers);
   *outRegBufFlag = 0;
   if (comm && userbuff && buffSize > 0 && nPeers > 0) {
-    flagcxRegItem *reg = globalRegPool.acquireItem(
-        reinterpret_cast<void *>(comm), const_cast<void *>(userbuff));
-    if (reg != NULL) {
-      flagcxResult_t result =
-          netRegisterBuffer(comm, userbuff, buffSize, peerConns, nPeers, reg,
-                            outRegBufFlag, outHandle);
-      globalRegPool.releaseItem(reg);
-      if (result != flagcxSuccess)
-        return result;
+    flagcxRegItem *reg = globalRegPool.getItem(reinterpret_cast<void *>(comm),
+                                               const_cast<void *>(userbuff));
+    if (reg != NULL && reg->refCount > 0) {
+      FLAGCXCHECK(netRegisterBuffer(comm, userbuff, buffSize, peerConns, nPeers,
+                                    reg, outRegBufFlag, outHandle));
     }
   }
   return flagcxSuccess;
@@ -1814,7 +1740,8 @@ flagcxResult_t flagcxNetDeregisterBuffer(void *comm,
                                          void *handle) {
   INFO(FLAGCX_REG, "rank %d - deregister net buffer handle %p",
        reinterpret_cast<flagcxHeteroComm *>(comm)->rank, handle);
-  return flagcxProxyCallBlocking(reinterpret_cast<flagcxHeteroComm *>(comm),
-                                 proxyConn, flagcxProxyMsgDeregister, &handle,
-                                 sizeof(void *), NULL, 0);
+  FLAGCXCHECK(flagcxProxyCallBlocking(
+      reinterpret_cast<flagcxHeteroComm *>(comm), proxyConn,
+      flagcxProxyMsgDeregister, &handle, sizeof(void *), NULL, 0));
+  return flagcxSuccess;
 }

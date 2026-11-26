@@ -21,7 +21,6 @@
 #include "proxy.h"
 #include "sym_heap.h"
 
-#include <algorithm>
 #include <atomic>
 #include <climits>
 #include <cstddef>
@@ -437,7 +436,7 @@ flagcxResult_t observeDefaultDevCommDestroy(flagcxComm_t comm,
 }
 
 flagcxResult_t retainTestBuffer(flagcxComm_t comm, void *pointer,
-                                flagcxInternalBufferKind_t kind) {
+                                flagcxInternalBufferKind kind) {
   auto *record = static_cast<flagcxInternalBuffer *>(
       calloc(1, sizeof(flagcxInternalBuffer)));
   if (record == nullptr)
@@ -542,30 +541,8 @@ TEST_F(DefaultDevCommCleanupTest, EarlyCreateFailureDoesNotPublishHandle) {
   EXPECT_EQ(deviceMallocCallCount, 1);
   EXPECT_EQ(devComm, nullptr);
   EXPECT_EQ(heteroComm.devCommHandle, nullptr);
-  EXPECT_EQ(comm.nativeFinalizeScope, flagcxNativeFinalizeLocal);
   EXPECT_TRUE(allocatedPtrs.empty());
   EXPECT_TRUE(deviceFreedPtrs.empty());
-}
-
-TEST_F(DefaultDevCommCleanupTest,
-       RelayCreationDeclaresWorldCleanupBeforeAllocation) {
-  testDeviceAdaptor.deviceMalloc = injectDeviceMallocFailure;
-  failDeviceMallocCall = 1;
-  flagcxHeteroComm heteroComm = {};
-  heteroComm.nRanks = heteroComm.nNodes = 2;
-  heteroComm.relayInitialized = true;
-  heteroComm.nInterPeers = 1;
-  flagcxComm comm = {};
-  comm.nranks = 2;
-  comm.localRanks = 1;
-  comm.heteroComm = &heteroComm;
-  flagcxDevCommRequirements reqs = {};
-  flagcxDevCommInternal devComm = {};
-  EXPECT_EQ(devApiBackend->devCommCreate(&comm, &reqs, sizeof(reqs), &devComm),
-            flagcxSystemError);
-  EXPECT_EQ(comm.nativeFinalizeScope, flagcxNativeFinalizeComm);
-  EXPECT_EQ(deviceMallocCallCount, 1);
-  EXPECT_TRUE(allocatedPtrs.empty());
 }
 
 TEST_F(DefaultDevCommCleanupTest, PartialCreateFailureReleasesOwnedBuffers) {
@@ -718,12 +695,8 @@ TEST_F(DefaultDevCommCleanupTest, ShmBarrierAliasesAreNotFreedTwice) {
   ASSERT_EQ(devApiBackend->devCommDestroy(nullptr, &devComm), flagcxSuccess);
 
   ASSERT_EQ(unregisteredPtrs.size(), 2u);
-  EXPECT_EQ(std::count(unregisteredPtrs.begin(), unregisteredPtrs.end(),
-                       reinterpret_cast<void *>(0x1000)),
-            1);
-  EXPECT_EQ(std::count(unregisteredPtrs.begin(), unregisteredPtrs.end(),
-                       reinterpret_cast<void *>(0x2000)),
-            1);
+  EXPECT_EQ(unregisteredPtrs[0], reinterpret_cast<void *>(0x1000));
+  EXPECT_EQ(unregisteredPtrs[1], reinterpret_cast<void *>(0x2000));
   ASSERT_EQ(deviceFreedPtrs.size(), 1u);
   EXPECT_EQ(deviceFreedPtrs[0], reinterpret_cast<void *>(0x4000));
   EXPECT_EQ(devComm.localBarrierFlags, nullptr);
@@ -752,8 +725,7 @@ TEST_F(DefaultDevCommCleanupTest, IpcBarrierAllocationIsFreedOnce) {
   EXPECT_EQ(devComm.localBarrierFlags, nullptr);
   EXPECT_FALSE(devComm.localBarrierFlagsDeviceAllocated);
   EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxInvalidUsage);
-  comm.finalizeState.commonPhase =
-      flagcxFinalizeComplete; // Peer-import closure was acknowledged.
+  comm.destroyPhase = 7; // Peer-import closure was acknowledged.
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   ASSERT_EQ(deviceFreedPtrs.size(), 1u);
   EXPECT_EQ(deviceFreedPtrs[0], reinterpret_cast<void *>(0x5000));
@@ -779,7 +751,7 @@ TEST_F(DefaultDevCommCleanupTest, SignalBufferOwnershipSurvivesGdrFreeFailure) {
   EXPECT_EQ(devComm.signalBuffer, nullptr);
   EXPECT_EQ(devComm.completionSignalBuffer, nullptr);
   EXPECT_FALSE(devComm.signalBufferIsVmm);
-  comm.finalizeState.commonPhase = flagcxFinalizeComplete;
+  comm.destroyPhase = 7;
   EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxRemoteError);
   ASSERT_NE(comm.internalBuffers, nullptr);
   EXPECT_EQ(comm.internalBuffers->pointer, reinterpret_cast<void *>(0x5800));
@@ -834,7 +806,7 @@ TEST_F(DefaultDevCommCleanupTest,
   ASSERT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSuccess);
   ASSERT_EQ(cleanupEvents.size(), 2u);
   EXPECT_TRUE(deviceFreedPtrs.empty());
-  comm.finalizeState.commonPhase = flagcxFinalizeComplete;
+  comm.destroyPhase = 7;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
 
   EXPECT_EQ(heteroComm.signalHandle, nullptr);
@@ -896,7 +868,7 @@ TEST_F(DefaultDevCommCleanupTest,
       flagcxSuccess);
   ASSERT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSuccess);
   EXPECT_TRUE(cleanupEvents.empty());
-  comm.finalizeState.commonPhase = flagcxFinalizeComplete;
+  comm.destroyPhase = 7;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
 
   EXPECT_EQ(heteroComm.signalHandle, existingSignal);
@@ -965,7 +937,7 @@ TEST_F(DefaultDevCommCleanupTest,
   EXPECT_EQ(heteroComm.devCommHandle, nullptr);
   EXPECT_EQ(heteroComm.signalHandle, existingSignal);
   EXPECT_EQ(heteroComm.stagingHandle, existingStaging);
-  comm.finalizeState.commonPhase = flagcxFinalizeComplete;
+  comm.destroyPhase = 7;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   EXPECT_EQ(cleanupEvents.size(), allocatedPtrs.size());
   for (const CleanupEvent &event : cleanupEvents)
@@ -1052,8 +1024,6 @@ TEST(DevCommRequirementsTest, IdTracksActiveStack) {
   EXPECT_EQ(comm.devCommCount, 1);
   ASSERT_EQ(flagcxDevCommDestroy(&comm, first), flagcxSuccess);
   EXPECT_EQ(comm.devCommCount, 0);
-  EXPECT_EQ(flagcxWorkWait(&comm.submittedWork), flagcxSuccess);
-  EXPECT_EQ(flagcxWorkRelease(&comm.submittedWork), flagcxSuccess);
 }
 
 std::vector<int> customOpDestroyIds;
@@ -1578,35 +1548,6 @@ int hostSyncCalls = 0;
 flagcxResult_t failHostSynchronizeOnce() {
   return ++hostSyncCalls == 1 ? flagcxRemoteError : flagcxSuccess;
 }
-flagcxResult_t createHostCompletion(flagcxEvent_t *event, flagcxEventType_t) {
-  *event = (flagcxEvent_t)malloc(1);
-  return *event != nullptr ? flagcxSuccess : flagcxSystemError;
-}
-flagcxResult_t recordHostCompletion(flagcxEvent_t, flagcxStream_t) {
-  return flagcxSuccess;
-}
-flagcxResult_t queryHostCompletion(flagcxEvent_t) {
-  return failHostSynchronizeOnce();
-}
-flagcxResult_t waitHostCompletion(flagcxEvent_t) { return flagcxSuccess; }
-flagcxResult_t destroyHostCompletion(flagcxEvent_t event) {
-  free(event);
-  return flagcxSuccess;
-}
-flagcxResult_t prepareHostCompletion(flagcxComm_t comm) {
-  deviceAdaptor->eventCreate = createHostCompletion;
-  deviceAdaptor->eventRecord = recordHostCompletion;
-  deviceAdaptor->eventQuery = queryHostCompletion;
-  deviceAdaptor->eventSynchronize = waitHostCompletion;
-  deviceAdaptor->eventDestroy = destroyHostCompletion;
-  flagcxWorkRecord *record = nullptr;
-  flagcxResult_t result =
-      flagcxWorkPrepare(&comm->submittedWork, nullptr, &record);
-  return result != flagcxSuccess
-             ? result
-             : flagcxWorkFinish(record, nullptr, flagcxSuccess,
-                                flagcxWorkNativeGroup, 0, 1);
-}
 int synchronizedBackendDestroys = 0;
 flagcxResult_t countSynchronizedDevCommDestroy(flagcxComm_t, flagcxDevComm_t) {
   ++synchronizedBackendDestroys;
@@ -1618,7 +1559,7 @@ flagcxResult_t countSynchronizedDevMemDestroy(flagcxComm_t, flagcxDevMem_t) {
 }
 } // namespace
 
-TEST(DevCommRequirementsTest, CompletionFailureRetainsOwnerForRetry) {
+TEST(DevCommRequirementsTest, SynchronizeFailureRetainsOwnerForRetry) {
   flagcxDevApiBackend backend = {};
   backend.name = "sync-retry";
   backend.devCommCreate = captureDevCommCreate;
@@ -1629,7 +1570,7 @@ TEST(DevCommRequirementsTest, CompletionFailureRetainsOwnerForRetry) {
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   flagcxDevComm_t handle = nullptr;
   ASSERT_EQ(flagcxDevCommCreate(&comm, &reqs, &handle), flagcxSuccess);
-  ASSERT_EQ(prepareHostCompletion(&comm), flagcxSuccess);
+  deviceAdaptor->deviceSynchronize = failHostSynchronizeOnce;
   hostSyncCalls = synchronizedBackendDestroys = 0;
   EXPECT_EQ(flagcxDevCommDestroy(&comm, handle), flagcxRemoteError);
   EXPECT_EQ(synchronizedBackendDestroys, 0);
@@ -1639,11 +1580,9 @@ TEST(DevCommRequirementsTest, CompletionFailureRetainsOwnerForRetry) {
   EXPECT_EQ(synchronizedBackendDestroys, 1);
   EXPECT_EQ(comm.activeDevComms, nullptr);
   EXPECT_EQ(comm.devCommCount, 0);
-  EXPECT_EQ(flagcxWorkWait(&comm.submittedWork), flagcxSuccess);
-  EXPECT_EQ(flagcxWorkRelease(&comm.submittedWork), flagcxSuccess);
 }
 
-TEST(DevMemApiHostTest, CompletionFailureRetainsViewForRetry) {
+TEST(DevMemApiHostTest, SynchronizeFailureRetainsViewForRetry) {
   flagcxDevApiBackend backend = {};
   backend.name = "sync-retry";
   backend.devMemCreate = captureDevMemCreate;
@@ -1654,7 +1593,7 @@ TEST(DevMemApiHostTest, CompletionFailureRetainsViewForRetry) {
   flagcxDevMem_t handle = nullptr;
   ASSERT_EQ(flagcxDevMemCreate(&comm, buffer, sizeof(buffer), nullptr, &handle),
             flagcxSuccess);
-  ASSERT_EQ(prepareHostCompletion(&comm), flagcxSuccess);
+  deviceAdaptor->deviceSynchronize = failHostSynchronizeOnce;
   hostSyncCalls = synchronizedBackendDestroys = 0;
   EXPECT_EQ(flagcxDevMemDestroy(&comm, handle), flagcxRemoteError);
   EXPECT_EQ(synchronizedBackendDestroys, 0);
@@ -1663,6 +1602,4 @@ TEST(DevMemApiHostTest, CompletionFailureRetainsViewForRetry) {
   ASSERT_EQ(flagcxDevMemDestroy(&comm, handle), flagcxSuccess);
   EXPECT_EQ(synchronizedBackendDestroys, 1);
   EXPECT_EQ(comm.activeDevMems, nullptr);
-  EXPECT_EQ(flagcxWorkWait(&comm.submittedWork), flagcxSuccess);
-  EXPECT_EQ(flagcxWorkRelease(&comm.submittedWork), flagcxSuccess);
 }

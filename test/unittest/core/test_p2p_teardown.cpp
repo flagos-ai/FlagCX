@@ -140,23 +140,22 @@ TEST_F(P2pTeardownTest, StreamFailureKeepsImportOpen) {
             flagcxP2pFifoImportOpen);
 }
 
-TEST_F(P2pTeardownTest, ExportIsPreservedUntilBootstrapConfirmation) {
+TEST_F(P2pTeardownTest, ExportIsPreservedUntilCloseAckArrives) {
   flagcxP2pShm shm = {};
   flagcxP2pResources resources = {};
   resources.shm = &shm;
   resources.localRecvFifo = reinterpret_cast<void *>(0x6000);
 
-  EXPECT_EQ(flagcxP2pReleaseLocalFifo(&resources, 0), flagcxInvalidUsage);
+  EXPECT_EQ(flagcxP2pReleaseLocalFifo(&resources, 0), flagcxSystemError);
   EXPECT_EQ(freedExport, nullptr);
   EXPECT_EQ(resources.localRecvFifo, reinterpret_cast<void *>(0x6000));
 }
 
-TEST_F(P2pTeardownTest, ExportIsFreedAfterBootstrapConfirmation) {
+TEST_F(P2pTeardownTest, ExportIsFreedAfterCloseAck) {
   flagcxP2pShm shm = {};
   shm.fifoImportClosed = flagcxP2pFifoImportClosed;
   flagcxP2pResources resources = {};
   resources.shm = &shm;
-  resources.importsClosedConfirmed = 1;
   resources.localRecvFifo = reinterpret_cast<void *>(0x7000);
   resources.proxyInfo.recvFifo = reinterpret_cast<char *>(0x7000);
   resources.cudaDev = 5;
@@ -170,21 +169,29 @@ TEST_F(P2pTeardownTest, ExportIsFreedAfterBootstrapConfirmation) {
   EXPECT_EQ(resources.proxyInfo.recvFifo, nullptr);
 }
 
-TEST_F(P2pTeardownTest, ShmAckCannotGrantExportPermission) {
+TEST_F(P2pTeardownTest, ExportWaitsForDelayedCloseAck) {
   flagcxP2pShm shm = {};
-  shm.fifoImportClosed = flagcxP2pFifoImportClosed;
   flagcxP2pResources resources = {};
   resources.shm = &shm;
   resources.localRecvFifo = reinterpret_cast<void *>(0x8000);
-  EXPECT_EQ(flagcxP2pReleaseLocalFifo(&resources, 1000), flagcxInvalidUsage);
-  EXPECT_EQ(freedExport, nullptr);
+
+  std::thread importer([&shm] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    __atomic_store_n(&shm.fifoImportClosed, flagcxP2pFifoImportClosed,
+                     __ATOMIC_RELEASE);
+  });
+  flagcxResult_t result = flagcxP2pReleaseLocalFifo(&resources, 1000);
+  importer.join();
+
+  EXPECT_EQ(result, flagcxSuccess);
+  EXPECT_EQ(freedExport, reinterpret_cast<void *>(0x8000));
 }
 
 TEST_F(P2pTeardownTest, MissingAckChannelPreservesExport) {
   flagcxP2pResources resources = {};
   resources.localRecvFifo = reinterpret_cast<void *>(0x9000);
 
-  EXPECT_EQ(flagcxP2pReleaseLocalFifo(&resources, 1000), flagcxInvalidUsage);
+  EXPECT_EQ(flagcxP2pReleaseLocalFifo(&resources, 1000), flagcxInternalError);
   EXPECT_EQ(freedExport, nullptr);
   EXPECT_EQ(resources.localRecvFifo, reinterpret_cast<void *>(0x9000));
 }

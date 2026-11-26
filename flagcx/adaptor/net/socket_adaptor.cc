@@ -651,9 +651,8 @@ flagcxResult_t flagcxNetSocketCloseListen(void *opaqueComm) {
   if (comm) {
     int ready;
     FLAGCXCHECK(flagcxSocketReady(&comm->sock, &ready));
-    if (ready) {
+    if (ready)
       FLAGCXCHECK(flagcxSocketClose(&comm->sock));
-    }
     free(comm);
   }
   return flagcxSuccess;
@@ -669,23 +668,18 @@ flagcxResult_t flagcxNetSocketClose(void *opaqueComm) {
         res->stop = 1;
         pthread_cond_signal(&res->threadCond);
         pthread_mutex_unlock(&res->threadLock);
-        if (pthread_join(comm->helperThread[i], NULL) != 0)
-          return flagcxSystemError;
-        comm->helperThread[i] = 0;
+        pthread_join(comm->helperThread[i], NULL);
       }
       free(res->threadTaskQueue.tasks);
-      res->threadTaskQueue.tasks = NULL;
     }
     int ready;
     FLAGCXCHECK(flagcxSocketReady(&comm->ctrlSock, &ready));
-    if (ready) {
+    if (ready)
       FLAGCXCHECK(flagcxSocketClose(&comm->ctrlSock));
-    }
     for (int i = 0; i < comm->nSocks; i++) {
       FLAGCXCHECK(flagcxSocketReady(&comm->socks[i], &ready));
-      if (ready) {
+      if (ready)
         FLAGCXCHECK(flagcxSocketClose(&comm->socks[i]));
-      }
     }
     free(comm);
   }

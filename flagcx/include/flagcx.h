@@ -189,13 +189,9 @@ typedef struct flagcxDeviceHandle *flagcxDeviceHandle_t;
  * populated device handle. Call before flagcxCommInitRank if you need device
  * operations (setDevice, getDeviceCount, streamCreate, etc.) early.
  * If not called explicitly, flagcxCommInitRank will load plugins internally. */
-/* On failure, a non-NULL output owns unfinished cleanup and must be retained
- * for flagcxDeviceHandleFree retries. It cannot be used for device operations.
- */
 flagcxResult_t flagcxDeviceHandleInit(flagcxDeviceHandle_t *devHandle);
 
 /* Free device handle — finalizes device/CCL adaptor plugins. */
-/* Only success consumes the handle. Other results preserve it for retry. */
 flagcxResult_t flagcxDeviceHandleFree(flagcxDeviceHandle_t devHandle);
 
 /* Deprecated: use flagcxDeviceHandleInit/Free and manage comm/uniqueId
@@ -207,12 +203,10 @@ struct flagcxHandlerGroup {
 };
 typedef struct flagcxHandlerGroup *flagcxHandlerGroup_t;
 
-/* Deprecated: use flagcxDeviceHandleInit instead. A failed Init may retain a
- * non-NULL cleanup owner; release it with flagcxHandleFree. */
+/* Deprecated: use flagcxDeviceHandleInit instead */
 flagcxResult_t flagcxHandleInit(flagcxHandlerGroup_t *handler);
 
-/* Deprecated: use flagcxDeviceHandleFree instead. Only success consumes the
- * handler; other results preserve it for retry. */
+/* Deprecated: use flagcxDeviceHandleFree instead */
 flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler);
 
 /* Allocation and user-buffer registration. A backend may reserve more memory
@@ -326,33 +320,23 @@ flagcxResult_t flagcxGetUniqueId(flagcxUniqueId_t uniqueId);
 /* Creates a communicator for this process's rank.
  * rank must be between 0 and nranks-1 and unique within a communicator clique.
  * Each rank is associated to a device, which has to be set before calling
- * flagcxCommInitRank. The call may synchronize with other rank processes.
- * If initialization fails with a non-NULL output, retain it and call Destroy
- * to retry unfinished initialization rollback. It cannot accept new work. */
+ * flagcxCommInitRank. The call may synchronize with other rank processes. */
 flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
                                   flagcxUniqueId_t commId, int rank);
 
-/* Close admission, complete this communicator's accepted host submissions,
- * close internal IPC imports and agree their closure through bootstrap, then
- * complete the native CCL lifecycle phase. Corresponding ranks must participate
- * in Finalize; after success, repeated Finalize is a local no-op.
- * Application-launched Device API kernels and graph replays must be completed
- * by the caller first. They are not tracked and no device-wide drain is added.
- * A non-success retains the communicator and cleanup progress for retry. */
+/* Finalize a communicator. flagcxCommFinalize flushes all issued
+ * communications, and marks communicator state as flagcxInProgress. The state
+ * will change to flagcxSuccess when the communicator is globally quiescent and
+ * related resources are freed; then, calling flagcxCommDestroy can locally free
+ * the rest of the resources (e.g. communicator itself) without blocking. */
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm);
 
-/* Release the finalized communicator's local resources. Without a preceding
- * successful Finalize, this first executes Finalize and can wait for peers.
- * After successful Finalize, FlagCX starts no new cross-rank shutdown protocol.
- * Native SDK restrictions still apply (see docs/comm_lifecycle.md).
- * Only success consumes the handle; retain it for retry on any other result. */
+/* Frees local resources associated with communicator object.
+   The comm pointer is invalidated and must not be accessed after this call. */
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm);
 
-/* Aborts native work, then releases the communicator. Only success consumes
- * the handle; retain it on errors or InProgress. Internal IPC exports still
- * require collective Finalize before local release; Abort returns InProgress
- * rather than entering that peer agreement implicitly. Heterogeneous Abort
- * remains unsupported. */
+/* Frees resources associated with communicator object and aborts any operations
+ * that might still be running on the device. */
 flagcxResult_t flagcxCommAbort(flagcxComm_t comm);
 
 /* Resume a communicator. */

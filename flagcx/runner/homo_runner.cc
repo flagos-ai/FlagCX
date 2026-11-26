@@ -9,100 +9,80 @@ flagcxResult_t homoRunnerReduce(const void *sendbuff, void *recvbuff,
                                 size_t count, flagcxDataType_t datatype,
                                 flagcxRedOp_t op, int root, flagcxComm_t comm,
                                 flagcxStream_t stream) {
-  flagcxResult_t res = flagcxSuccess;
   if (comm->tuner == NULL) {
-    FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorDevice]->reduce(
-                        sendbuff, recvbuff, count, datatype, op, root,
-                        comm->homoComm, stream),
-                    res, exit);
+    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->reduce(
+        sendbuff, recvbuff, count, datatype, op, root, comm->homoComm, stream));
   } else {
     FLAGCXCALLWITHTUNER(cclAdaptors[flagcxCCLAdaptorDevice]->reduce(
                             sendbuff, recvbuff, count, datatype, op, root,
                             comm->tunerInnerComm, stream),
                         comm, flagcxCommOpReduce, count, datatype, stream);
   }
-exit:
-  return res;
+  return flagcxSuccess;
 }
 
 flagcxResult_t homoRunnerGather(const void *sendbuff, void *recvbuff,
                                 size_t count, flagcxDataType_t datatype,
                                 int root, flagcxComm_t comm,
                                 flagcxStream_t stream) {
-  flagcxResult_t res = flagcxSuccess;
   if (comm->tuner == NULL) {
-    FLAGCXCHECKGOTO(
-        cclAdaptors[flagcxCCLAdaptorDevice]->gather(
-            sendbuff, recvbuff, count, datatype, root, comm->homoComm, stream),
-        res, exit);
+    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->gather(
+        sendbuff, recvbuff, count, datatype, root, comm->homoComm, stream));
   } else {
     FLAGCXCALLWITHTUNER(cclAdaptors[flagcxCCLAdaptorDevice]->gather(
                             sendbuff, recvbuff, count, datatype, root,
                             comm->tunerInnerComm, stream),
                         comm, flagcxCommOpGather, count, datatype, stream);
   }
-exit:
-  return res;
+  return flagcxSuccess;
 }
 
 flagcxResult_t homoRunnerScatter(const void *sendbuff, void *recvbuff,
                                  size_t count, flagcxDataType_t datatype,
                                  int root, flagcxComm_t comm,
                                  flagcxStream_t stream) {
-  flagcxResult_t res = flagcxSuccess;
   if (comm->tuner == NULL) {
-    FLAGCXCHECKGOTO(
-        cclAdaptors[flagcxCCLAdaptorDevice]->scatter(
-            sendbuff, recvbuff, count, datatype, root, comm->homoComm, stream),
-        res, exit);
+    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->scatter(
+        sendbuff, recvbuff, count, datatype, root, comm->homoComm, stream));
   } else {
     FLAGCXCALLWITHTUNER(cclAdaptors[flagcxCCLAdaptorDevice]->scatter(
                             sendbuff, recvbuff, count, datatype, root,
                             comm->tunerInnerComm, stream),
                         comm, flagcxCommOpScatter, count, datatype, stream);
   }
-exit:
-  return res;
+  return flagcxSuccess;
 }
 
 flagcxResult_t homoRunnerBroadcast(const void *sendbuff, void *recvbuff,
                                    size_t count, flagcxDataType_t datatype,
                                    int root, flagcxComm_t comm,
                                    flagcxStream_t stream) {
-  flagcxResult_t res = flagcxSuccess;
   if (comm->tuner == NULL) {
-    FLAGCXCHECKGOTO(
-        cclAdaptors[flagcxCCLAdaptorDevice]->broadcast(
-            sendbuff, recvbuff, count, datatype, root, comm->homoComm, stream),
-        res, exit);
+    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->broadcast(
+        sendbuff, recvbuff, count, datatype, root, comm->homoComm, stream));
   } else {
     FLAGCXCALLWITHTUNER(cclAdaptors[flagcxCCLAdaptorDevice]->broadcast(
                             sendbuff, recvbuff, count, datatype, root,
                             comm->tunerInnerComm, stream),
                         comm, flagcxCommOpBroadcast, count, datatype, stream);
   }
-exit:
-  return res;
+  return flagcxSuccess;
 }
 
 flagcxResult_t homoRunnerAllReduce(const void *sendbuff, void *recvbuff,
                                    size_t count, flagcxDataType_t datatype,
                                    flagcxRedOp_t op, flagcxComm_t comm,
                                    flagcxStream_t stream) {
-  flagcxResult_t res = flagcxSuccess;
   if (comm->tuner == NULL) {
-    FLAGCXCHECKGOTO(
-        cclAdaptors[flagcxCCLAdaptorDevice]->allReduce(
-            sendbuff, recvbuff, count, datatype, op, comm->homoComm, stream),
-        res, exit);
+    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->allReduce(
+        sendbuff, recvbuff, count, datatype, op, comm->homoComm, stream));
   } else {
     FLAGCXCALLWITHTUNER(cclAdaptors[flagcxCCLAdaptorDevice]->allReduce(
                             sendbuff, recvbuff, count, datatype, op,
                             comm->tunerInnerComm, stream),
                         comm, flagcxCommOpAllReduce, count, datatype, stream);
   }
-exit:
-  return res;
+  return flagcxSuccess;
 }
 
 flagcxResult_t homoRunnerReduceScatter(const void *sendbuff, void *recvbuff,
@@ -110,12 +90,9 @@ flagcxResult_t homoRunnerReduceScatter(const void *sendbuff, void *recvbuff,
                                        flagcxDataType_t datatype,
                                        flagcxRedOp_t op, flagcxComm_t comm,
                                        flagcxStream_t stream) {
-  flagcxResult_t res = flagcxSuccess;
   if (comm->tuner == NULL) {
-    FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorDevice]->reduceScatter(
-                        sendbuff, recvbuff, recvcount, datatype, op,
-                        comm->homoComm, stream),
-                    res, exit);
+    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->reduceScatter(
+        sendbuff, recvbuff, recvcount, datatype, op, comm->homoComm, stream));
   } else {
     FLAGCXCALLWITHTUNER(cclAdaptors[flagcxCCLAdaptorDevice]->reduceScatter(
                             sendbuff, recvbuff, recvcount, datatype, op,
@@ -123,19 +100,15 @@ flagcxResult_t homoRunnerReduceScatter(const void *sendbuff, void *recvbuff,
                         comm, flagcxCommOpReduceScatter, recvcount, datatype,
                         stream);
   }
-exit:
-  return res;
+  return flagcxSuccess;
 }
 
 flagcxResult_t homoRunnerAllGather(const void *sendbuff, void *recvbuff,
                                    size_t sendcount, flagcxDataType_t datatype,
                                    flagcxComm_t comm, flagcxStream_t stream) {
-  flagcxResult_t res = flagcxSuccess;
   if (comm->tuner == NULL) {
-    FLAGCXCHECKGOTO(
-        cclAdaptors[flagcxCCLAdaptorDevice]->allGather(
-            sendbuff, recvbuff, sendcount, datatype, comm->homoComm, stream),
-        res, exit);
+    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->allGather(
+        sendbuff, recvbuff, sendcount, datatype, comm->homoComm, stream));
   } else {
     FLAGCXCALLWITHTUNER(cclAdaptors[flagcxCCLAdaptorDevice]->allGather(
                             sendbuff, recvbuff, sendcount, datatype,
@@ -143,27 +116,22 @@ flagcxResult_t homoRunnerAllGather(const void *sendbuff, void *recvbuff,
                         comm, flagcxCommOpAllGather, sendcount, datatype,
                         stream);
   }
-exit:
-  return res;
+  return flagcxSuccess;
 }
 
 flagcxResult_t homoRunnerAlltoAll(const void *sendbuff, void *recvbuff,
                                   size_t count, flagcxDataType_t datatype,
                                   flagcxComm_t comm, flagcxStream_t stream) {
-  flagcxResult_t res = flagcxSuccess;
   if (comm->tuner == NULL) {
-    FLAGCXCHECKGOTO(
-        cclAdaptors[flagcxCCLAdaptorDevice]->alltoAll(
-            sendbuff, recvbuff, count, datatype, comm->homoComm, stream),
-        res, exit);
+    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->alltoAll(
+        sendbuff, recvbuff, count, datatype, comm->homoComm, stream));
   } else {
     FLAGCXCALLWITHTUNER(
         cclAdaptors[flagcxCCLAdaptorDevice]->alltoAll(
             sendbuff, recvbuff, count, datatype, comm->tunerInnerComm, stream),
         comm, flagcxCommOpAlltoAll, count, datatype, stream);
   }
-exit:
-  return res;
+  return flagcxSuccess;
 }
 
 flagcxResult_t homoRunnerAlltoAllv(const void *sendbuff, size_t *sendcounts,
@@ -171,51 +139,36 @@ flagcxResult_t homoRunnerAlltoAllv(const void *sendbuff, size_t *sendcounts,
                                    size_t *recvcounts, size_t *rdispls,
                                    flagcxDataType_t datatype, flagcxComm_t comm,
                                    flagcxStream_t stream) {
-  flagcxResult_t res = flagcxSuccess;
-  FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorDevice]->alltoAllv(
-                      sendbuff, sendcounts, sdispls, recvbuff, recvcounts,
-                      rdispls, datatype, comm->homoComm, stream),
-                  res, exit);
-exit:
-  return res;
+  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->alltoAllv(
+      sendbuff, sendcounts, sdispls, recvbuff, recvcounts, rdispls, datatype,
+      comm->homoComm, stream));
+  return flagcxSuccess;
 }
 
 flagcxResult_t homoRunnerSend(const void *sendbuff, size_t count,
                               flagcxDataType_t datatype, int peer,
                               flagcxComm_t comm, flagcxStream_t stream) {
-  flagcxResult_t res = flagcxSuccess;
-  FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorDevice]->send(
-                      sendbuff, count, datatype, peer, comm->homoComm, stream),
-                  res, exit);
-exit:
-  return res;
+  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->send(
+      sendbuff, count, datatype, peer, comm->homoComm, stream));
+  return flagcxSuccess;
 }
 
 flagcxResult_t homoRunnerRecv(void *recvbuff, size_t count,
                               flagcxDataType_t datatype, int peer,
                               flagcxComm_t comm, flagcxStream_t stream) {
-  flagcxResult_t res = flagcxSuccess;
-  FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorDevice]->recv(
-                      recvbuff, count, datatype, peer, comm->homoComm, stream),
-                  res, exit);
-exit:
-  return res;
+  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->recv(
+      recvbuff, count, datatype, peer, comm->homoComm, stream));
+  return flagcxSuccess;
 }
 
 flagcxResult_t homoRunnerGroupStart() {
-  flagcxResult_t res = flagcxSuccess;
-  FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorDevice]->groupStart(), res, exit);
-exit:
-  return res;
+  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->groupStart());
+  return flagcxSuccess;
 }
 
 flagcxResult_t homoRunnerGroupEnd() {
-  flagcxResult_t res = flagcxSuccess;
-  FLAGCXCHECKGOTO(flagcxWorkNativeGroupResult(
-                      cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd()),
-                  res, exit);
-exit:
-  return res;
+  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
+  return flagcxSuccess;
 }
 
 struct flagcxRunner homoRunner = {
