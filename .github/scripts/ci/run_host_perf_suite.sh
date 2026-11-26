@@ -93,9 +93,16 @@ for operation in "${operations[@]}"; do
     continue
   fi
 
-  if ! flagcx_ci_limit_timeout "$FLAGCX_CI_PERF_TIMEOUT" >/dev/null; then
-    echo "$platform $mode cumulative budget exhausted; not run: $operation and remaining operations" >&2
-    exit 124
+  if budget_info=$(flagcx_ci_limit_timeout "$FLAGCX_CI_PERF_TIMEOUT" details); then
+    :
+  else
+    budget_status=$?
+    if [[ "$budget_status" == 124 ]]; then
+      echo "$platform $mode: $budget_info cumulative budget exhausted; not run: $operation and remaining operations" >&2
+    else
+      echo "$platform $mode: invalid timeout or deadline; not run: $operation and remaining operations" >&2
+    fi
+    exit "$budget_status"
   fi
   max_bytes=1G
   if [[ "$mode" == heterogeneous && "$operation" == sendrecv ]]; then

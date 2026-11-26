@@ -265,7 +265,7 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
             )
             # Running out of budget is a failure, never a quiet pass.
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("exhausted its 1s stage budget", result.stderr)
+            self.assertIn("mode cumulative budget exhausted", result.stderr)
             self.assertIn("did not run: RunnerResult.NeverReached", result.stderr)
             calls = (root / "calls").read_text().splitlines()
             self.assertTrue(any("Slow" in line for line in calls))

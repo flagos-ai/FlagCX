@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+umask 022
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -62,6 +63,7 @@ echo "=== Running bootstrap IPC lifetime fault tests (four independent processes
 lifecycle_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}/symmem-lifecycle"
 mkdir -p "$lifecycle_root"
 lifecycle_xml=$(mktemp -d "$lifecycle_root/results.XXXXXX")
+chmod 755 "$lifecycle_xml"
 FLAGCX_CI_MPI_LABEL="symmem bootstrap lifetime" \
   "$MPI_RUNNER" -np 4 --allow-run-as-root \
     bash "$PROJECT_ROOT/.github/scripts/ci/run_gtest_rank_xml.sh" "$lifecycle_xml" \

@@ -513,7 +513,8 @@ class CiRetryTest(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("passed on retry 1", result.stdout)
-        self.assertIn("exceeded its 1s timeout on attempt 1", result.stderr)
+        self.assertIn("watchdog expired on attempt 1", result.stderr)
+        self.assertIn("limit-source=invocation", result.stderr)
 
     def test_default_policy_does_not_retry(self):
         result = self.run_wrapper("exit 8")

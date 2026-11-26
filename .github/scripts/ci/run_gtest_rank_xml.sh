@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+# Root-run tests publish XML to a volume read by the host artifact uploader.
+umask 022
 
 if [[ $# -lt 2 ]]; then
   echo "Usage: $0 <result-dir> <test-binary> [args...]" >&2

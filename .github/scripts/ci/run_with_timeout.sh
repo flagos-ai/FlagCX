@@ -102,19 +102,28 @@ trap 'cancel_workload 143' TERM
 
 attempt=1
 while ((attempt <= max_attempts)); do
-  effective_timeout=$(flagcx_ci_limit_timeout "$test_timeout") || {
+  timeout_info=$(flagcx_ci_limit_timeout "$test_timeout" details) || {
     status=$?
-    echo "$test_label: cumulative budget exhausted or invalid timeout; invocation not run" >&2
+    if [[ "$status" == 124 ]]; then
+      echo "$test_label: $timeout_info cumulative budget exhausted; invocation not run" >&2
+    else
+      echo "$test_label: invalid timeout or deadline; invocation not run" >&2
+    fi
     exit "$status"
   }
+  read -r effective_timeout timeout_source <<< "$timeout_info"
   attempt_log="$log_dir/attempt-$attempt.log"
-  echo "Starting $test_label (attempt $attempt/$max_attempts, timeout=$test_timeout, kill-after=$test_kill_after, effective-timeout=$effective_timeout)"
+  watchdog_log="$log_dir/watchdog-attempt-$attempt.log"
+  echo "Starting $test_label (attempt $attempt/$max_attempts, timeout=$test_timeout, kill-after=$test_kill_after, effective-timeout=$effective_timeout, limit-source=$timeout_source)"
   exec {log_fd}> >(tee "$attempt_log")
   log_pid=$!
   # Preserve heredoc input for Python preflights launched in the background.
   exec {input_fd}<&0
-  timeout --signal=TERM --kill-after="$test_kill_after" \
-    "$effective_timeout" "$@" <&"$input_fd" >&"$log_fd" 2>&1 &
+  # Only timeout writes to watchdog_log. The child keeps both output streams
+  # in attempt_log, so a nested timeout cannot claim this watchdog expired.
+  timeout --verbose --signal=TERM --kill-after="$test_kill_after" \
+    "$effective_timeout" bash -c 'exec "$@" 2>&1' bash "$@" \
+    <&"$input_fd" >&"$log_fd" 2>"$watchdog_log" &
   active_pid=$!
   exec {input_fd}<&-
   if [[ -n "$diagnostics_after" ]]; then
@@ -128,6 +137,7 @@ while ((attempt <= max_attempts)); do
   status=0
   wait "$active_pid" || status=$?
   cleanup_workload
+  cat "$watchdog_log" >&"$log_fd"
   exec {log_fd}>&-
   wait "$log_pid"
   if [[ "$status" == 0 && "${FLAGCX_CI_REQUIRE_GTEST_PASS:-0}" == 1 ]] &&
@@ -150,8 +160,10 @@ while ((attempt <= max_attempts)); do
     fi
     exit 0
   fi
-  if [[ "$status" == 124 || "$status" == 137 ]]; then
-    echo "$test_label exceeded its $test_timeout timeout on attempt $attempt" >&2
+  if [[ ( "$status" == 124 || "$status" == 137 ) && -s "$watchdog_log" ]]; then
+    echo "$test_label watchdog expired on attempt $attempt (effective-timeout=$effective_timeout, limit-source=$timeout_source, configured-timeout=$test_timeout)" >&2
+  elif [[ "$status" == 124 || "$status" == 137 ]]; then
+    echo "$test_label command exited with status=$status; this invocation's watchdog did not expire" >&2
   fi
   echo "$test_label attempt $attempt failed with exit=$status; log saved to $attempt_log" >&2
   if [[ -n "${FLAGCX_CI_ATTEMPT_FAILURE_HOOK:-}" ]]; then

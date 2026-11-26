@@ -58,18 +58,31 @@ flagcx_ci_start_budget() {
 flagcx_ci_limit_timeout() {
   local seconds
   seconds=$(flagcx_ci_seconds "$1") || return 2
-  awk -v seconds="$seconds" -v now="$(flagcx_ci_now)" \
-    -v deadlines="${FLAGCX_CI_WORKLOAD_DEADLINE:-} ${FLAGCX_CI_TEST_DEADLINE:-} ${FLAGCX_CI_MODE_DEADLINE:-}" \
+  awk -v seconds="$seconds" -v now="$(flagcx_ci_now)" -v details="${2:-}" \
+    -v workload="${FLAGCX_CI_WORKLOAD_DEADLINE:-}" \
+    -v suite="${FLAGCX_CI_TEST_DEADLINE:-}" \
+    -v mode="${FLAGCX_CI_MODE_DEADLINE:-}" \
     'BEGIN {
-      count = split(deadlines, limits, " ");
-      for (i = 1; i <= count; i++) {
+      source = "invocation";
+      split("workload suite mode", names, " ");
+      limits[1] = workload;
+      limits[2] = suite;
+      limits[3] = mode;
+      for (i = 1; i <= 3; i++) {
         if (limits[i] == "") continue;
         if (limits[i] !~ /^[0-9]+([.][0-9]+)?$/) exit 2;
         remaining = limits[i] - now;
-        if (remaining < seconds) seconds = remaining;
+        if (remaining < seconds) {
+          seconds = remaining;
+          source = names[i];
+        }
       }
-      if (seconds <= 0) exit 124;
+      if (seconds <= 0) {
+        if (details == "details") print source;
+        exit 124;
+      }
       printf "%.6fs", seconds;
+      if (details == "details") printf " %s", source;
     }'
 }
 

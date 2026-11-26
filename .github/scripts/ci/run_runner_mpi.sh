@@ -39,7 +39,17 @@ diagnostics_after=${FLAGCX_CI_RUNNER_DIAGNOSTICS_AFTER:-$(
 
 # GTest applies the original positive and negative filters before listing.
 # Listing does not initialize MPI or run any hardware fixture.
-listing=$(timeout --kill-after=5s "$(flagcx_ci_limit_timeout 30s)" "$binary" \
+listing_info=$(flagcx_ci_limit_timeout 30s details) || {
+  listing_status=$?
+  if [[ "$listing_status" == 124 ]]; then
+    echo "Runner discovery: $listing_info cumulative budget exhausted; invocation not run" >&2
+  else
+    echo 'Runner discovery: invalid timeout or deadline; invocation not run' >&2
+  fi
+  exit "$listing_status"
+}
+read -r listing_timeout listing_source <<< "$listing_info"
+listing=$(timeout --kill-after=5s "$listing_timeout" "$binary" \
   --gtest_list_tests --gtest_filter="$filter")
 # Accept every suite the binary reports. Hard-coding one suite name would
 # silently drop any case added to this binary later.
@@ -90,11 +100,17 @@ label=${FLAGCX_CI_MPI_LABEL:-runner}
 executed=0
 for index in "${!tests[@]}"; do
   test=${tests[index]}
-  if ! flagcx_ci_limit_timeout "$per_test_timeout" >/dev/null; then
-    echo "$label exhausted its ${stage_budget}s stage budget; these cases did" \
-      "not run: ${tests[*]:index}" >&2
+  if budget_info=$(flagcx_ci_limit_timeout "$per_test_timeout" details); then
+    :
+  else
+    budget_status=$?
+    if [[ "$budget_status" == 124 ]]; then
+      echo "$label: $budget_info cumulative budget exhausted; these cases did not run: ${tests[*]:index}" >&2
+    else
+      echo "$label: invalid timeout or deadline; these cases did not run: ${tests[*]:index}" >&2
+    fi
     if ((status == 0)); then
-      status=124
+      status=$budget_status
     fi
     break
   fi

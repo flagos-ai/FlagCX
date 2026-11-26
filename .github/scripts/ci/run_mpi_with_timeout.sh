@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+umask 022
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 source "$script_dir/timeouts.sh"
@@ -56,6 +57,7 @@ if ((require_lifecycle)); then
   result_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}/runner-lifecycle"
   mkdir -p "$result_root"
   result_dir=$(mktemp -d "$result_root/results.XXXXXX")
+  chmod 755 "$result_dir"
   args=("${args[@]:0:runner_index}" bash "$script_dir/run_gtest_rank_xml.sh"
         "$result_dir" "${args[@]:runner_index}")
   status=0
