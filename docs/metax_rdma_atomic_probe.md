@@ -1,9 +1,9 @@
 # MetaX GPU RDMA allocation probe
 
-The RDMA atomic probe is disabled in automatic MetaX CI. Regular MetaX unit
-suites are enabled in `.github/configs/metax.yml`; performance and Torch API
-hardware jobs follow the normal CI level and platform selection. Existing
-platform exclusions remain in effect. Probe code remains available for
+Automatic MetaX CI temporarily runs only `symmem`, as configured in
+`.github/configs/metax.yml`. Other MetaX unit suites, performance and Torch API
+hardware jobs are disabled. Existing platform exclusions remain in effect.
+Probe code remains available for
 manual diagnosis; add `rdma_atomic_probe` to the configured
 suite list to enable it in automatic CI again.
 
@@ -12,7 +12,9 @@ the test container before runtime initialization. Probe MPI workers explicitly
 inherit this selection. Rank device indices remain logical indices 0–3 in
 that visible set; the logged PCI bus IDs identify the GPUs actually used.
 The GPU4/NIC2 and GPU6/NIC3 affinities are hypotheses awaiting topology
-confirmation. This selection also applies to the other MetaX workloads.
+confirmation. The `symmem` suite independently selects physical GPUs
+`0,1,2,3` to reproduce its previously passing configuration; its HCA selection
+remains unchanged.
 The runner PXN case independently selects
 `FLAGCX_CI_PXN_VISIBLE_DEVICES=0,1,4,5` and
 `FLAGCX_CI_PXN_HCAS=bnxt_roce0,bnxt_roce2`. Its two logical nodes contain

@@ -59,6 +59,10 @@ flagcx_ci_configure_suite() {
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
       ;;
+    symmem)
+      # Restore the GPU set used by the previously passing IPC + NET tests.
+      export MACA_VISIBLE_DEVICES=0,1,2,3
+      ;;
     rma)
       export RMA_PLATFORM_ENV="-x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1"
       FLAGCX_CI_TEST_MAKE_ARGS+=(
