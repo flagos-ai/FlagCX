@@ -20,8 +20,8 @@ flagcx_ci_configure_suite "$workload"
 flagcx_ci_prepare "$workload"
 flagcx_ci_validate_rdma "$workload"
 export LD_LIBRARY_PATH="$project_root/build/lib:$LD_LIBRARY_PATH"
-export FLAGCX_DEBUG=${FLAGCX_DEBUG:-INFO}
-export FLAGCX_DEBUG_SUBSYS=${FLAGCX_DEBUG_SUBSYS:-INIT,NET,P2P,PROXY,UNIRUNNER}
+export FLAGCX_DEBUG=${FLAGCX_DEBUG:-TRACE}
+export FLAGCX_DEBUG_SUBSYS=${FLAGCX_DEBUG_SUBSYS:-ALL}
 
 case "$workload" in
   perf-test-experimental)
