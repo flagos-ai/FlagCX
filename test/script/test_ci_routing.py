@@ -734,12 +734,12 @@ class CiWorkflowWiringTest(unittest.TestCase):
         ):
             self.assertIn(reusable, workflow)
 
-    def test_daytime_runs_cannot_start_long_running_end_to_end_jobs(self):
+    def test_l3_daytime_skips_end_to_end_jobs_but_l2_runs_them(self):
         workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/unit-test.yml").read_text())
         for job_name in ("performance_tests", "torch_api_tests"):
             condition = workflow["jobs"][job_name]["if"]
             self.assertIn("needs.prepare.outputs.execution_window == 'night'", condition)
-            self.assertIn("needs.prepare.outputs.event == 'push'", condition)
+            self.assertIn("needs.prepare.outputs.level == 'L2'", condition)
 
     def test_platform_specific_jobs_are_conditioned_on_matrix_selection(self):
         for path in (
@@ -944,15 +944,15 @@ class CiCompletionGateTest(unittest.TestCase):
         )
         self.assertNotEqual(failed.returncode, 0)
 
-    def test_daytime_l2_l3_may_skip_night_only_jobs_without_failure(self):
+    def test_daytime_l3_may_skip_l2_only_jobs_without_failure(self):
         passed = self.check(
             "true", "true", "success", "success", "skipped", "skipped", "success",
-            level="L2", execution_window="day",
+            level="L3", execution_window="day",
         )
         self.assertEqual(passed.returncode, 0, passed.stderr)
         failed = self.check(
             "true", "true", "success", "success", "skipped", "failure", "success",
-            level="L2", execution_window="day",
+            level="L3", execution_window="day",
         )
         self.assertNotEqual(failed.returncode, 0)
         night_failed = self.check(

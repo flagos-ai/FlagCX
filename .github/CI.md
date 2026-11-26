@@ -59,6 +59,8 @@ stay short. Add a
 when several level labels are present, the highest level wins. Manual dispatch
 accepts the same level input. The nightly schedule runs L3 on all enabled
 platforms. Manual dispatch without a level uses L1.
+Performance and Torch API tests run at L2 in any window and at L3 only in the
+night window, so a daytime L3 PR request plans them but skips execution.
 
 | Level | Workloads | Typical use |
 | --- | --- | --- |
@@ -88,9 +90,10 @@ available.
 
 The first enforceable stage is active: PRs and pushes default to L1, which runs
 unit suites only, while the scheduled nightly run selects L3 across all enabled
-platforms. Performance and Torch API jobs start only in the night window; a
-daytime L2 or L3 request plans them but the workflow skips those jobs, so the
-gate treats them as intentional skips at reduced levels and not as failures.
+platforms. Performance and Torch API jobs start at L2 in any window or at L3
+only in the night window; a daytime L3 request plans them but the workflow
+skips those jobs, so the gate treats the daytime L3 skips as intentional and
+not failures.
 The rollout should proceed in these stages:
 
 1. Inventory tests across repositories and record repository, suite, required

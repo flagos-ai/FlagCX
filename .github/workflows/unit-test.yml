@@ -202,7 +202,7 @@ jobs:
       needs.prepare.outputs.active == 'true' &&
       needs.prepare.outputs.suite_filter_active != 'true' &&
       (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3') &&
-      (needs.prepare.outputs.execution_window == 'night' || needs.prepare.outputs.event == 'push')
+      (needs.prepare.outputs.execution_window == 'night' || needs.prepare.outputs.level == 'L2')
     uses: ./.github/workflows/test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -216,7 +216,7 @@ jobs:
       needs.prepare.outputs.active == 'true' &&
       needs.prepare.outputs.suite_filter_active != 'true' &&
       (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3') &&
-      (needs.prepare.outputs.execution_window == 'night' || needs.prepare.outputs.event == 'push')
+      (needs.prepare.outputs.execution_window == 'night' || needs.prepare.outputs.level == 'L2')
     uses: ./.github/workflows/torch-api-test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}

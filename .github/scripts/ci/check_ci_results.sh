@@ -58,7 +58,7 @@ if [[ "$has_platforms" == true ]]; then
         done
       else
         for result in "$perf_result" "$torch_result"; do
-          if [[ "$execution_window" != night && "$result" == skipped ]]; then
+          if [[ "$level" != L2 && "$execution_window" != night && "$result" == skipped ]]; then
             continue
           fi
           [[ "$result" == success ]] || {
