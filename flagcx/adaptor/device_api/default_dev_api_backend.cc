@@ -58,9 +58,9 @@ static flagcxResult_t shmHostRegister(void *ptr, size_t bytes) {
   return deviceAdaptor->hostRegister(ptr, bytes);
 }
 
-static void shmHostUnregister(void *ptr) {
-  if (deviceAdaptor->hostUnregister)
-    deviceAdaptor->hostUnregister(ptr);
+static flagcxResult_t shmHostUnregister(void *ptr) {
+  return deviceAdaptor->hostUnregister ? deviceAdaptor->hostUnregister(ptr)
+                                       : flagcxNotSupported;
 }
 
 static bool
@@ -967,81 +967,97 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
 
   // ── IPC slot: immediate full cleanup ──────────────────────────────────
   if (comm != nullptr && devComm->barrierIpcIndex >= 0)
-    FLAGCXCHECK(releaseIpcTableSlot(comm, devComm->barrierIpcIndex));
+    do {
+      flagcxResult_t result =
+          releaseIpcTableSlot(comm, devComm->barrierIpcIndex);
+      if (result != flagcxSuccess)
+        return result;
+    } while (0);
   devComm->barrierIpcIndex = -1;
 
   // ── P2P signal/counter IPC slot cleanup ─────────────────────────────────
   if (comm != nullptr && devComm->signalIpcSlot >= 0)
-    FLAGCXCHECK(releaseIpcTableSlot(comm, devComm->signalIpcSlot));
+    do {
+      flagcxResult_t result = releaseIpcTableSlot(comm, devComm->signalIpcSlot);
+      if (result != flagcxSuccess)
+        return result;
+    } while (0);
   devComm->signalIpcSlot = -1;
   devComm->completionSignalPeerPtrs = nullptr;
   devComm->signalPeerPtrs = nullptr;
 
-  // ── Shm barrier path cleanup ──────────────────────────────────────────
-  if (devComm->peerBarrierShmPtrs) {
-    for (int lr = 0; lr < devComm->registeredBarrierShmCount; lr++) {
-      if (devComm->peerBarrierShmPtrs[lr])
-        shmHostUnregister(devComm->peerBarrierShmPtrs[lr]);
-    }
-    free(devComm->peerBarrierShmPtrs);
-    devComm->peerBarrierShmPtrs = nullptr;
+  // Unregister CPU mappings before unmapping; successful prefixes are kept.
+  while (devComm->registeredBarrierShmCount > 0) {
+    int lr = devComm->registeredBarrierShmCount - 1;
+    flagcxResult_t result = shmHostUnregister(devComm->peerBarrierShmPtrs[lr]);
+    if (result != flagcxSuccess)
+      return result;
+    --devComm->registeredBarrierShmCount;
   }
-  devComm->registeredBarrierShmCount = 0;
-  // Close peer shm handles (skip own slot which aliases myShmHandle).
-  if (devComm->peerShmHandles) {
-    for (int lr = 0; lr < devComm->nLocalRanks; lr++) {
-      if (devComm->peerShmHandles[lr] &&
-          devComm->peerShmHandles[lr] != devComm->myShmHandle) {
-        flagcxShmClose(devComm->peerShmHandles[lr]);
-      }
+  free(devComm->peerBarrierShmPtrs);
+  devComm->peerBarrierShmPtrs = NULL;
+  if (devComm->peerShmHandles != NULL) {
+    for (int lr = 0; lr < devComm->nLocalRanks; ++lr) {
+      if (devComm->peerShmHandles[lr] == devComm->myShmHandle)
+        devComm->peerShmHandles[lr] = NULL;
+      if (devComm->peerShmHandles[lr] == NULL)
+        continue;
+      FLAGCXCHECKSTRICT(flagcxShmClose(devComm->peerShmHandles[lr]));
+      devComm->peerShmHandles[lr] = NULL;
     }
     free(devComm->peerShmHandles);
-    devComm->peerShmHandles = nullptr;
+    devComm->peerShmHandles = NULL;
   }
-  if (devComm->myShmHandle) {
-    flagcxShmClose(devComm->myShmHandle);
-    devComm->myShmHandle = nullptr;
+  if (devComm->myShmHandle != NULL) {
+    FLAGCXCHECKSTRICT(flagcxCommReleaseBuffer(comm, devComm->myShmHandle,
+                                              flagcxInternalBufferShm));
+    devComm->myShmHandle = NULL;
   }
-  devComm->localBarrierShmPtr = nullptr;
+  devComm->localBarrierShmPtr = NULL;
   devComm->barrierShmSize = 0;
-  if (devComm->barrierDevPeerPtrsRaw) {
-    deviceAdaptor->deviceFree(devComm->barrierDevPeerPtrsRaw, flagcxMemDevice,
-                              NULL);
-    devComm->barrierDevPeerPtrsRaw = nullptr;
+  if (devComm->barrierDevPeerPtrsRaw != NULL) {
+    flagcxResult_t result = flagcxCommReleaseBuffer(
+        comm, devComm->barrierDevPeerPtrsRaw, flagcxInternalBufferDevice);
+    if (result != flagcxSuccess)
+      return result;
+    devComm->barrierDevPeerPtrsRaw = NULL;
   }
-  devComm->barrierPeers = nullptr;
-
-  // Host signal SHM owns CPU mappings and registrations. The GPU pointers in
-  // signalBuffer and signalPeerPtrs are aliases, never allocations to free.
-  if (devComm->peerSignalShmPtrs) {
-    for (int lr = 0; lr < devComm->registeredSignalShmCount; lr++) {
-      if (devComm->peerSignalShmPtrs[lr])
-        shmHostUnregister(devComm->peerSignalShmPtrs[lr]);
-    }
-    free(devComm->peerSignalShmPtrs);
-    devComm->peerSignalShmPtrs = nullptr;
+  devComm->barrierPeers = NULL;
+  while (devComm->registeredSignalShmCount > 0) {
+    int lr = devComm->registeredSignalShmCount - 1;
+    flagcxResult_t result = shmHostUnregister(devComm->peerSignalShmPtrs[lr]);
+    if (result != flagcxSuccess)
+      return result;
+    --devComm->registeredSignalShmCount;
   }
-  devComm->registeredSignalShmCount = 0;
-  if (devComm->peerSignalShmHandles) {
-    for (int lr = 0; lr < devComm->nLocalRanks; lr++) {
-      if (devComm->peerSignalShmHandles[lr] &&
-          devComm->peerSignalShmHandles[lr] != devComm->mySignalShmHandle)
-        flagcxShmClose(devComm->peerSignalShmHandles[lr]);
+  free(devComm->peerSignalShmPtrs);
+  devComm->peerSignalShmPtrs = NULL;
+  if (devComm->peerSignalShmHandles != NULL) {
+    for (int lr = 0; lr < devComm->nLocalRanks; ++lr) {
+      if (devComm->peerSignalShmHandles[lr] == devComm->mySignalShmHandle)
+        devComm->peerSignalShmHandles[lr] = NULL;
+      if (devComm->peerSignalShmHandles[lr] == NULL)
+        continue;
+      FLAGCXCHECKSTRICT(flagcxShmClose(devComm->peerSignalShmHandles[lr]));
+      devComm->peerSignalShmHandles[lr] = NULL;
     }
     free(devComm->peerSignalShmHandles);
-    devComm->peerSignalShmHandles = nullptr;
+    devComm->peerSignalShmHandles = NULL;
   }
-  if (devComm->mySignalShmHandle) {
-    flagcxShmClose(devComm->mySignalShmHandle);
-    devComm->mySignalShmHandle = nullptr;
+  if (devComm->mySignalShmHandle != NULL) {
+    FLAGCXCHECKSTRICT(flagcxCommReleaseBuffer(comm, devComm->mySignalShmHandle,
+                                              flagcxInternalBufferShm));
+    devComm->mySignalShmHandle = NULL;
   }
-  devComm->signalHostBuffer = nullptr;
-  devComm->signalMrHostPtr = nullptr;
-  devComm->localSignalBuffer = nullptr;
-  if (devComm->signalDevPeerPtrsRaw) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->signalDevPeerPtrsRaw,
-                                          flagcxMemDevice, NULL));
-    devComm->signalDevPeerPtrsRaw = nullptr;
+  devComm->signalHostBuffer = NULL;
+  devComm->signalMrHostPtr = NULL;
+  devComm->localSignalBuffer = NULL;
+  if (devComm->signalDevPeerPtrsRaw != NULL) {
+    flagcxResult_t result = flagcxCommReleaseBuffer(
+        comm, devComm->signalDevPeerPtrsRaw, flagcxInternalBufferDevice);
+    if (result != flagcxSuccess)
+      return result;
+    devComm->signalDevPeerPtrsRaw = NULL;
   }
 
   // Exported storage belongs to Comm, including partial-create allocations.
@@ -1049,8 +1065,10 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   devComm->localBarrierFlags = nullptr;
   devComm->localBarrierFlagsDeviceAllocated = false;
   if (devComm->epochBuffer) {
-    FLAGCXCHECK(
-        deviceAdaptor->deviceFree(devComm->epochBuffer, flagcxMemDevice, NULL));
+    flagcxResult_t result = flagcxCommReleaseBuffer(comm, devComm->epochBuffer,
+                                                    flagcxInternalBufferDevice);
+    if (result != flagcxSuccess)
+      return result;
     devComm->epochBuffer = nullptr;
   }
   devComm->signalBuffer = nullptr;
@@ -1058,19 +1076,25 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   // In the 64-bit path this aliases signalBuffer; Comm records it only once.
   devComm->completionSignalBuffer = nullptr;
   if (devComm->shadowBuffer) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->shadowBuffer,
-                                          flagcxMemDevice, NULL));
+    flagcxResult_t result = flagcxCommReleaseBuffer(comm, devComm->shadowBuffer,
+                                                    flagcxInternalBufferDevice);
+    if (result != flagcxSuccess)
+      return result;
     devComm->shadowBuffer = nullptr;
   }
   if (devComm->counterBuffer) {
-    FLAGCXCHECK(
-        deviceAdaptor->deviceFree(devComm->counterBuffer, flagcxMemHost, NULL));
+    flagcxResult_t result = flagcxCommReleaseBuffer(
+        comm, devComm->counterBuffer, flagcxInternalBufferHost);
+    if (result != flagcxSuccess)
+      return result;
     devComm->counterBuffer = nullptr;
   }
   if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
     if (devComm->completionCounterBuffer) {
-      FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->completionCounterBuffer,
-                                            flagcxMemDevice, NULL));
+      flagcxResult_t result = flagcxCommReleaseBuffer(
+          comm, devComm->completionCounterBuffer, flagcxInternalBufferDevice);
+      if (result != flagcxSuccess)
+        return result;
       devComm->completionCounterBuffer = nullptr;
     }
   } else {

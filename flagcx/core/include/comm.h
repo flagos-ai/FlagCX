@@ -173,6 +173,8 @@ struct flagcxSymLsaArena;
 class flagcxWorkerPool;
 
 struct flagcxHeteroComm {
+  struct flagcxComm *ownerComm;
+  bool importsClosedConfirmed;
   uint64_t startMagic;
   bool destroyProxyComplete;
   flagcxResult_t destroyProxyResult;

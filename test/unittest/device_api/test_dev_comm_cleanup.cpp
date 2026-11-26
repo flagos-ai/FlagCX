@@ -695,8 +695,8 @@ TEST_F(DefaultDevCommCleanupTest, ShmBarrierAliasesAreNotFreedTwice) {
   ASSERT_EQ(devApiBackend->devCommDestroy(nullptr, &devComm), flagcxSuccess);
 
   ASSERT_EQ(unregisteredPtrs.size(), 2u);
-  EXPECT_EQ(unregisteredPtrs[0], reinterpret_cast<void *>(0x1000));
-  EXPECT_EQ(unregisteredPtrs[1], reinterpret_cast<void *>(0x2000));
+  EXPECT_EQ(unregisteredPtrs[0], reinterpret_cast<void *>(0x2000));
+  EXPECT_EQ(unregisteredPtrs[1], reinterpret_cast<void *>(0x1000));
   ASSERT_EQ(deviceFreedPtrs.size(), 1u);
   EXPECT_EQ(deviceFreedPtrs[0], reinterpret_cast<void *>(0x4000));
   EXPECT_EQ(devComm.localBarrierFlags, nullptr);
@@ -725,7 +725,7 @@ TEST_F(DefaultDevCommCleanupTest, IpcBarrierAllocationIsFreedOnce) {
   EXPECT_EQ(devComm.localBarrierFlags, nullptr);
   EXPECT_FALSE(devComm.localBarrierFlagsDeviceAllocated);
   EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxInvalidUsage);
-  comm.destroyPhase = 7; // Peer-import closure was acknowledged.
+  comm.internalImportsConfirmed = true; // Peer-import closure was acknowledged.
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   ASSERT_EQ(deviceFreedPtrs.size(), 1u);
   EXPECT_EQ(deviceFreedPtrs[0], reinterpret_cast<void *>(0x5000));
@@ -751,7 +751,7 @@ TEST_F(DefaultDevCommCleanupTest, SignalBufferOwnershipSurvivesGdrFreeFailure) {
   EXPECT_EQ(devComm.signalBuffer, nullptr);
   EXPECT_EQ(devComm.completionSignalBuffer, nullptr);
   EXPECT_FALSE(devComm.signalBufferIsVmm);
-  comm.destroyPhase = 7;
+  comm.internalImportsConfirmed = true;
   EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxRemoteError);
   ASSERT_NE(comm.internalBuffers, nullptr);
   EXPECT_EQ(comm.internalBuffers->pointer, reinterpret_cast<void *>(0x5800));
@@ -806,7 +806,7 @@ TEST_F(DefaultDevCommCleanupTest,
   ASSERT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSuccess);
   ASSERT_EQ(cleanupEvents.size(), 2u);
   EXPECT_TRUE(deviceFreedPtrs.empty());
-  comm.destroyPhase = 7;
+  comm.internalImportsConfirmed = true;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
 
   EXPECT_EQ(heteroComm.signalHandle, nullptr);
@@ -868,7 +868,7 @@ TEST_F(DefaultDevCommCleanupTest,
       flagcxSuccess);
   ASSERT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSuccess);
   EXPECT_TRUE(cleanupEvents.empty());
-  comm.destroyPhase = 7;
+  comm.internalImportsConfirmed = true;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
 
   EXPECT_EQ(heteroComm.signalHandle, existingSignal);
@@ -937,7 +937,7 @@ TEST_F(DefaultDevCommCleanupTest,
   EXPECT_EQ(heteroComm.devCommHandle, nullptr);
   EXPECT_EQ(heteroComm.signalHandle, existingSignal);
   EXPECT_EQ(heteroComm.stagingHandle, existingStaging);
-  comm.destroyPhase = 7;
+  comm.internalImportsConfirmed = true;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   EXPECT_EQ(cleanupEvents.size(), allocatedPtrs.size());
   for (const CleanupEvent &event : cleanupEvents)
@@ -1559,7 +1559,7 @@ flagcxResult_t countSynchronizedDevMemDestroy(flagcxComm_t, flagcxDevMem_t) {
 }
 } // namespace
 
-TEST(DevCommRequirementsTest, SynchronizeFailureRetainsOwnerForRetry) {
+TEST(DevCommRequirementsTest, DestroyDoesNotSynchronizeUnrelatedDeviceWork) {
   flagcxDevApiBackend backend = {};
   backend.name = "sync-retry";
   backend.devCommCreate = captureDevCommCreate;
@@ -1572,17 +1572,14 @@ TEST(DevCommRequirementsTest, SynchronizeFailureRetainsOwnerForRetry) {
   ASSERT_EQ(flagcxDevCommCreate(&comm, &reqs, &handle), flagcxSuccess);
   deviceAdaptor->deviceSynchronize = failHostSynchronizeOnce;
   hostSyncCalls = synchronizedBackendDestroys = 0;
-  EXPECT_EQ(flagcxDevCommDestroy(&comm, handle), flagcxRemoteError);
-  EXPECT_EQ(synchronizedBackendDestroys, 0);
-  EXPECT_EQ(comm.activeDevComms, handle);
-  EXPECT_EQ(comm.devCommCount, 1);
   ASSERT_EQ(flagcxDevCommDestroy(&comm, handle), flagcxSuccess);
+  EXPECT_EQ(hostSyncCalls, 0);
   EXPECT_EQ(synchronizedBackendDestroys, 1);
   EXPECT_EQ(comm.activeDevComms, nullptr);
   EXPECT_EQ(comm.devCommCount, 0);
 }
 
-TEST(DevMemApiHostTest, SynchronizeFailureRetainsViewForRetry) {
+TEST(DevMemApiHostTest, DestroyViewDoesNotSynchronizeUnrelatedDeviceWork) {
   flagcxDevApiBackend backend = {};
   backend.name = "sync-retry";
   backend.devMemCreate = captureDevMemCreate;
@@ -1595,11 +1592,8 @@ TEST(DevMemApiHostTest, SynchronizeFailureRetainsViewForRetry) {
             flagcxSuccess);
   deviceAdaptor->deviceSynchronize = failHostSynchronizeOnce;
   hostSyncCalls = synchronizedBackendDestroys = 0;
-  EXPECT_EQ(flagcxDevMemDestroy(&comm, handle), flagcxRemoteError);
-  EXPECT_EQ(synchronizedBackendDestroys, 0);
-  EXPECT_EQ(comm.activeDevMems, handle);
-  EXPECT_FALSE(handle->backendDestroyed);
   ASSERT_EQ(flagcxDevMemDestroy(&comm, handle), flagcxSuccess);
+  EXPECT_EQ(hostSyncCalls, 0);
   EXPECT_EQ(synchronizedBackendDestroys, 1);
   EXPECT_EQ(comm.activeDevMems, nullptr);
 }

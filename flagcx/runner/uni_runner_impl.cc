@@ -175,7 +175,7 @@ static flagcxResult_t releaseOrphanUniRunnerIpcWindow(flagcxComm_t comm,
     if (entry.basePtr == buffer && !entry.ownerHeld) {
       if (entry.refCount != 0)
         return flagcxInvalidUsage;
-      FLAGCXCHECK(releaseIpcTableSlot(comm, slot));
+      FLAGCXCHECKSTRICT(flagcxCommRetireIpcSlot(comm, slot));
     }
   }
   return flagcxSuccess;
@@ -7331,6 +7331,14 @@ flagcxResult_t runUniRunner(flagcxComm_t comm, bool convergeHostPreparation) {
     return localPreparationResult;
   }
   return runStaticHostRed(hcomm, convergeHostPreparation ? comm : nullptr);
+}
+
+flagcxResult_t cleanupUniRunnerIpcImports(flagcxUniRunnerState *state) {
+  if (!state)
+    return flagcxSuccess;
+  FLAGCXCHECKSTRICT(destroyUniRunnerIpcDataViews(state));
+  FLAGCXCHECKSTRICT(closeUniRunnerIpcReadyStorage(state, state->ipcOwner));
+  return closeUniRunnerIpcRingResources(state, state->ipcOwner);
 }
 
 flagcxResult_t

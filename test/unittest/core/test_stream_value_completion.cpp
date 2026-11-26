@@ -157,7 +157,7 @@ TEST_F(StreamValueCompletionTest, EachPollUsesOneQueryWithoutReleasingOnError) {
   }
 }
 
-TEST_F(StreamValueCompletionTest, PersistentStateKeepsOwnerAfterSetDeviceError) {
+TEST_F(StreamValueCompletionTest, PrepareKeepsPersistentBackingUntilLocalRelease) {
   flagcxHeteroComm comm = {};
   flagcxProxyState proxy = {};
   comm.proxyState = &proxy;
@@ -166,9 +166,12 @@ TEST_F(StreamValueCompletionTest, PersistentStateKeepsOwnerAfterSetDeviceError) 
   failSetDevice = true;
 
   EXPECT_EQ(flagcxHeteroCommPrepareDestroy(&comm), flagcxUnhandledDeviceError);
-  EXPECT_TRUE(comm.destroyProxyComplete);
+  EXPECT_FALSE(comm.destroyProxyComplete);
   EXPECT_NE(proxy.uniRunnerState.groupedArScratch, nullptr);
   EXPECT_EQ(flagcxHeteroCommPrepareDestroy(&comm), flagcxSuccess);
+  EXPECT_NE(proxy.uniRunnerState.groupedArScratch, nullptr);
+  EXPECT_EQ(cleanupUniRunnerPersistentState(&proxy.uniRunnerState),
+            flagcxSuccess);
   EXPECT_EQ(proxy.uniRunnerState.groupedArScratch, nullptr);
 }
 

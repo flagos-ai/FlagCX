@@ -61,13 +61,58 @@ flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
   return result;
 }
 
+flagcxResult_t flagcxCommReleaseBuffer(flagcxComm_t comm, void *pointer,
+                                       flagcxInternalBufferKind kind) {
+  if (pointer == nullptr)
+    return flagcxSuccess;
+  if (comm != nullptr && comm->ipcClosingImports) {
+    for (auto *node = comm->internalBuffers; node; node = node->next)
+      if (node->pointer == pointer)
+        return node->kind == kind ? flagcxSuccess : flagcxInvalidUsage;
+    auto *node = (flagcxInternalBuffer *)malloc(sizeof(flagcxInternalBuffer));
+    if (!node)
+      return flagcxSystemError;
+    *node = {pointer, kind, comm->internalBuffers};
+    comm->internalBuffers = node;
+    return flagcxSuccess;
+  }
+  if (kind == flagcxInternalBufferShm)
+    return flagcxShmClose((flagcxShmHandle_t)pointer);
+  if (kind == flagcxInternalBufferCcl)
+    return cclAdaptors[flagcxCCLAdaptorDevice]->memFree(pointer);
+  if (kind == flagcxInternalBufferGdr)
+    return deviceAdaptor->gdrMemFree(pointer, nullptr);
+  return deviceAdaptor->deviceFree(
+      pointer,
+      kind == flagcxInternalBufferHost ? flagcxMemHost : flagcxMemDevice,
+      nullptr);
+}
+
+// Dropping a view transfers internal imports to Comm. External Windows close
+// immediately through releaseIpcTableSlot, independently of allocation free.
+flagcxResult_t flagcxCommRetireIpcSlot(flagcxComm_t comm, int slot) {
+  if (!comm || slot < 0 || slot >= comm->ipcTableCapacity)
+    return flagcxInvalidArgument;
+  auto &entry = comm->ipcTable[slot];
+  if (entry.ownership == flagcxBufferInternal && !comm->ipcClosingImports) {
+    if (entry.refCount != 0)
+      return flagcxInvalidUsage;
+    entry.ownerHeld = true;
+    entry.inUse = false;
+    return flagcxSuccess;
+  }
+  return releaseIpcTableSlot(comm, slot);
+}
+
 flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm) {
-  if (comm == nullptr || comm->destroyPhase < 7)
+  if (comm == nullptr || !comm->internalImportsConfirmed)
     return flagcxInvalidUsage;
   while (comm->internalBuffers != nullptr) {
     auto *record = comm->internalBuffers;
     flagcxResult_t result;
-    if (record->kind == flagcxInternalBufferCcl)
+    if (record->kind == flagcxInternalBufferShm)
+      result = flagcxShmClose((flagcxShmHandle_t)record->pointer);
+    else if (record->kind == flagcxInternalBufferCcl)
       result = cclAdaptors[flagcxCCLAdaptorDevice]->memFree(record->pointer);
     else if (record->kind == flagcxInternalBufferGdr)
       result = deviceAdaptor->gdrMemFree(record->pointer, nullptr);
@@ -224,12 +269,43 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
       (devComm->cachedNetContextsPtr || devComm->cachedDevicePtr ||
        devComm->cachedGridBarrierPtr))
     return flagcxInvalidArgument;
-  if (devComm->devCommId != 0 &&
+  if (!devComm->retired && devComm->devCommId != 0 &&
       (comm == nullptr || devComm->devCommId != comm->devCommCount ||
        comm->activeDevComms != devComm))
     return flagcxInvalidUsage;
-  if (deviceAdaptor != nullptr && deviceAdaptor->deviceSynchronize != nullptr)
-    FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
+  devComm->cleanupStarted = true;
+  const bool internalOwner =
+      comm != nullptr &&
+      (comm->internalBuffers != nullptr || devComm->myShmHandle != nullptr ||
+       devComm->mySignalShmHandle != nullptr);
+  if (devApiBackend->kind == flagcxDevApiDefault && internalOwner &&
+      !comm->ipcClosingImports) {
+    if (devComm->retired)
+      return flagcxInvalidUsage;
+    // Release active registrations so a later DevComm can create a new epoch.
+    // Its internal IPC slots remain Comm-owned until Finalize.
+    if (comm->heteroComm != nullptr) {
+      if (devComm->ownedStagingRegistration != nullptr &&
+          comm->heteroComm->stagingHandle == devComm->ownedStagingRegistration)
+        FLAGCXCHECKSTRICT(flagcxOneSideStagingDeregister(comm));
+      devComm->ownedStagingRegistration = nullptr;
+      if (devComm->ownedSignalBuffer != nullptr &&
+          comm->heteroComm->rmaSignalBase == devComm->ownedSignalBuffer)
+        FLAGCXCHECKSTRICT(flagcxOneSideSignalDeregister(comm));
+      devComm->ownedSignalBuffer = nullptr;
+      devComm->ownedSignalRegistration = nullptr;
+      if (comm->heteroComm->devCommHandle == devComm)
+        comm->heteroComm->devCommHandle = devComm->previousActive;
+    }
+    if (devComm->devCommId != 0)
+      --comm->devCommCount;
+    if (comm->activeDevComms == devComm)
+      comm->activeDevComms = devComm->previousActive;
+    devComm->retired = true;
+    devComm->retiredNext = comm->retiredDevComms;
+    comm->retiredDevComms = devComm;
+    return flagcxSuccess;
+  }
 
   // Stop the proxy from acquiring a new reference while the backend tears
   // down fields reachable through DevComm. Restore publication on failure so
@@ -250,26 +326,36 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   }
 
   if (devComm->cachedNetContextsPtr != nullptr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->cachedNetContextsPtr,
-                                          flagcxMemDevice, nullptr));
+    FLAGCXCHECKSTRICT(flagcxCommReleaseBuffer(
+        comm, devComm->cachedNetContextsPtr, flagcxInternalBufferDevice));
     devComm->cachedNetContextsPtr = nullptr;
   }
   if (devComm->cachedDevicePtr != nullptr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->cachedDevicePtr,
-                                          flagcxMemDevice, nullptr));
+    FLAGCXCHECKSTRICT(flagcxCommReleaseBuffer(comm, devComm->cachedDevicePtr,
+                                              flagcxInternalBufferDevice));
     devComm->cachedDevicePtr = nullptr;
   }
   if (devComm->cachedGridBarrierPtr != nullptr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->cachedGridBarrierPtr,
-                                          flagcxMemDevice, nullptr));
+    FLAGCXCHECKSTRICT(flagcxCommReleaseBuffer(
+        comm, devComm->cachedGridBarrierPtr, flagcxInternalBufferDevice));
     devComm->cachedGridBarrierPtr = nullptr;
   }
   pthread_mutex_destroy(&devComm->cachedPtrMutex);
-  if (devComm->devCommId != 0)
+  if (!devComm->retired && devComm->devCommId != 0)
     --comm->devCommCount;
   if (comm != nullptr && comm->activeDevComms == devComm)
     comm->activeDevComms = devComm->previousActive;
+  if (devComm->retired)
+    comm->retiredDevComms = devComm->retiredNext;
   free(devComm);
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxCommCloseRetiredDevComms(flagcxComm_t comm) {
+  if (!comm || !comm->ipcClosingImports)
+    return flagcxInvalidUsage;
+  while (comm->retiredDevComms)
+    FLAGCXCHECKSTRICT(flagcxDevCommDestroy(comm, comm->retiredDevComms));
   return flagcxSuccess;
 }
 
@@ -443,10 +529,9 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
   if (comm == nullptr)
     return flagcxInvalidArgument;
 
-  if (deviceAdaptor != nullptr && deviceAdaptor->deviceSynchronize != nullptr)
-    FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
+  devMem->cleanupStarted = true;
   if (!devMem->backendDestroyed) {
-    FLAGCXCHECK(devApiBackend->devMemDestroy(comm, devMem));
+    FLAGCXCHECKSTRICT(devApiBackend->devMemDestroy(comm, devMem));
     devMem->backendDestroyed = true;
   }
 
@@ -458,7 +543,7 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
       return flagcxInvalidUsage;
     if (ipcEntry->refCount == 1 && !ipcEntry->ownerHeld) {
       ipcEntry->refCount = 0;
-      flagcxResult_t release = releaseIpcTableSlot(comm, devMem->ipcIndex);
+      flagcxResult_t release = flagcxCommRetireIpcSlot(comm, devMem->ipcIndex);
       if (release != flagcxSuccess) {
         ipcEntry->refCount = 1;
         return release;
@@ -469,13 +554,13 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
   }
   devMem->ipcIndex = -1;
   if (devMem->cachedDevicePtr != nullptr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devMem->cachedDevicePtr,
-                                          flagcxMemDevice, nullptr));
+    FLAGCXCHECKSTRICT(flagcxCommReleaseBuffer(comm, devMem->cachedDevicePtr,
+                                              flagcxInternalBufferDevice));
     devMem->cachedDevicePtr = nullptr;
   }
   if (devMem->segmentedPeerLayouts != nullptr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devMem->segmentedPeerLayouts,
-                                          flagcxMemDevice, nullptr));
+    FLAGCXCHECKSTRICT(flagcxCommReleaseBuffer(
+        comm, devMem->segmentedPeerLayouts, flagcxInternalBufferDevice));
     devMem->segmentedPeerLayouts = nullptr;
   }
   if (devMem->boundWindow != nullptr) {
@@ -498,6 +583,8 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
 
 extern "C" flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
                                                     void **devPtr) {
+  if (devComm == nullptr || devComm->cleanupStarted)
+    return flagcxInvalidUsage;
   return devApiBackend->devCommGetDevicePtr(devComm, devPtr);
 }
 
@@ -507,6 +594,8 @@ extern "C" flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm) {
 
 extern "C" flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem,
                                                    void **devPtr) {
+  if (devMem == nullptr || devMem->cleanupStarted)
+    return flagcxInvalidUsage;
   return devApiBackend->devMemGetDevicePtr(devMem, devPtr);
 }
 
@@ -528,9 +617,9 @@ flagcxResult_t flagcxCommQuiesce(flagcxComm_t comm) {
   // Backend producers (notably device FIFOs) feed the common RMA proxy. Drain
   // them first so already-accepted device work can still be enqueued.
   if (devApiBackend->commQuiesce != nullptr)
-    FLAGCXCHECK(devApiBackend->commQuiesce(comm));
+    FLAGCXCHECKSTRICT(devApiBackend->commQuiesce(comm));
   if (comm->heteroComm != nullptr) {
-    FLAGCXCHECK(flagcxHeteroRmaProxyQuiesce(comm->heteroComm));
+    FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyQuiesce(comm->heteroComm));
     comm->heteroComm->oneSideQuiesced = true;
   }
   return flagcxSuccess;
@@ -548,7 +637,7 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
     struct flagcxIpcTableEntry *e = &comm->ipcTable[k];
     if (e->refCount != 0)
       return flagcxInvalidUsage;
-    FLAGCXCHECK(releaseIpcTableSlot(comm, k));
+    FLAGCXCHECKSTRICT(releaseIpcTableSlot(comm, k));
   }
   return flagcxSuccess;
 }
@@ -556,10 +645,11 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
 flagcxResult_t releaseIpcTableSlot(flagcxComm_t comm, int slot) {
   if (comm == nullptr || slot < 0 || slot >= comm->ipcTableCapacity)
     return flagcxInvalidArgument;
-  return releaseIpcTableEntry(&comm->ipcTable[slot]);
+  return releaseIpcTableEntry(&comm->ipcTable[slot], comm);
 }
 
-flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e) {
+flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e,
+                                    flagcxComm_t comm) {
   if (e == nullptr)
     return flagcxInvalidArgument;
   if (e->refCount != 0)
@@ -582,7 +672,11 @@ flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e) {
   }
   if (e->devPeerPtrs != nullptr) {
     flagcxResult_t result =
-        deviceAdaptor->deviceFree(e->devPeerPtrs, flagcxMemDevice, nullptr);
+        e->ownership == flagcxBufferInternal
+            ? flagcxCommReleaseBuffer(comm, e->devPeerPtrs,
+                                      flagcxInternalBufferDevice)
+            : deviceAdaptor->deviceFree(e->devPeerPtrs, flagcxMemDevice,
+                                        nullptr);
     if (result != flagcxSuccess)
       return result;
     e->devPeerPtrs = nullptr;
@@ -996,6 +1090,12 @@ flagcxIpcBuildResult flagcxCommWindowRegisterIpcInternal(flagcxComm_t comm,
             agreement != flagcxSuccess ? agreement : flagcxSuccess, -1};
 
   auto result = buildIpcPeerPointers(comm, buff, size);
+  if (result.slot >= 0)
+    for (auto *node = comm->internalBuffers; node; node = node->next)
+      if (node->pointer == buff) {
+        comm->ipcTable[result.slot].ownership = flagcxBufferInternal;
+        break;
+      }
   agreement = flagcxConvergeBootstrapStatus(comm, result.buildStatus, &common);
   if (agreement != flagcxSuccess || common != flagcxSuccess) {
     // Successful ranks roll back too. A builder that already failed cleanup

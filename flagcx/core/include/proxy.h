@@ -388,6 +388,8 @@ struct flagcxProxyState {
   // accepting work. Kept separate from asyncResult so cleanup failures do not
   // masquerade as data-plane completion failures.
   flagcxResult_t cleanupResult;
+  struct flagcxProxyConnectionPool *connectionPool;
+  bool serviceJoined;
   int nRanks;
 
   // Used by main thread
@@ -469,6 +471,7 @@ struct flagcxProxyConnection {
   size_t relayBufferCapacity;
   struct flagcxNetRelayImport *relayImport;
   uint32_t relayActiveOps;
+  int relayReleaseAcked;
   struct flagcxCollNetSharedRes *collNet;
   int needsProxyProgress;
 };
@@ -556,5 +559,7 @@ flagcxResult_t flagcxProxyClientGetFdBlocking(struct flagcxHeteroComm *comm,
 flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm);
 flagcxResult_t flagcxProxyShmUnlink(struct flagcxHeteroComm *comm);
 flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm);
+flagcxResult_t flagcxProxyFinalize(struct flagcxHeteroComm *comm);
+flagcxResult_t flagcxProxyCloseRelayImports(struct flagcxHeteroComm *comm);
 
 #endif

@@ -102,6 +102,9 @@ struct flagcxRmaIpcState {
 // pending queues: producer = caller (proxy kernel thread), consumer = RMA
 // worker. inProgress queues: RMA worker only (no locking needed).
 struct flagcxRmaProxyState {
+  bool stopComplete, doneSeqsMapped, readySeqsMapped;
+  int destroyedPeerMutexes;
+  bool doneCondDestroyed, doneMutexDestroyed;
   uint32_t queueSize;                     // power of two
   uint32_t queueMask;                     // queueSize - 1
   struct flagcxRmaDesc **circularBuffers; // [nRanks * queueSize]
@@ -306,6 +309,7 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
 // Async RMA proxy lifecycle.
 flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm);
+flagcxResult_t flagcxHeteroRmaProxyRelease(flagcxHeteroComm_t comm);
 
 // Internal deterministic progress hook used by host-only RMA tests. Production
 // progress uses the same pass from the proxy thread.

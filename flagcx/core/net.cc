@@ -639,6 +639,8 @@ flagcxNetCleanupProxyConnection(struct flagcxProxyConnection *connection,
                 (struct sendNetResources *)connection->transportResources)
           : flagcxRecvProxyFree(
                 (struct recvNetResources *)connection->transportResources);
+  if (result != flagcxSuccess)
+    return result;
   free(connection->transportResources);
   connection->transportResources = NULL;
   return result;
@@ -1530,135 +1532,134 @@ static void flagcxProxyCleanupResult(flagcxResult_t cleanupResult,
 flagcxResult_t flagcxSendProxyFree(sendNetResources *resources) {
   if (resources == NULL)
     return flagcxSuccess;
-
-  flagcxResult_t result = flagcxSuccess;
-  bool relayNetReleased = true;
-  for (int s = 0; s < flagcxNetChunks; s++) {
-    if (resources->cpEvents[s] != NULL) {
-      flagcxProxyCleanupResult(
-          deviceAdaptor->eventDestroy(resources->cpEvents[s]), &result);
-      resources->cpEvents[s] = NULL;
-    }
+  // The existing release ACK and outstanding-slot checks remain the authority
+  // for releasing the relay allocation. Keep the descriptor while pending.
+  if (resources->relayPool != NULL) {
+    if (!resources->relaySourceReleased)
+      return flagcxInProgress;
+    for (uint32_t i = 0; i < resources->relayPool->slotCount; ++i)
+      if (resources->relayPool->slots[i].requestId != 0)
+        return flagcxInProgress;
+  }
+  flagcxResult_t result;
+  for (int s = 0; s < FLAGCX_NET_MAX_STEPS; ++s) {
+    if (resources->cpEvents[s] == NULL)
+      continue;
+    result = deviceAdaptor->eventDestroy(resources->cpEvents[s]);
+    if (result != flagcxSuccess)
+      return result;
+    resources->cpEvents[s] = NULL;
   }
   if (resources->cpStream != NULL) {
-    flagcxProxyCleanupResult(deviceAdaptor->streamDestroy(resources->cpStream),
-                             &result);
+    result = deviceAdaptor->streamDestroy(resources->cpStream);
+    if (result != flagcxSuccess)
+      return result;
     resources->cpStream = NULL;
   }
-  if (resources->netSendComm != NULL && resources->mhandles[0] != NULL) {
-    flagcxResult_t deregResult = resources->netAdaptor->deregMr(
-        resources->netSendComm, resources->mhandles[0]);
-    if (deregResult != flagcxSuccess)
-      relayNetReleased = false;
-    flagcxProxyCleanupResult(deregResult, &result);
+  if (resources->mhandles[0] != NULL) {
+    if (resources->netSendComm == NULL)
+      return flagcxInternalError;
+    result = resources->netAdaptor->deregMr(resources->netSendComm,
+                                            resources->mhandles[0]);
+    if (result != flagcxSuccess)
+      return result;
     resources->mhandles[0] = NULL;
   }
   if (resources->netSendComm != NULL) {
-    flagcxResult_t closeResult =
-        resources->netAdaptor->closeSend(resources->netSendComm);
-    if (closeResult != flagcxSuccess)
-      relayNetReleased = false;
-    flagcxProxyCleanupResult(closeResult, &result);
+    result = resources->netAdaptor->closeSend(resources->netSendComm);
+    if (result != flagcxSuccess)
+      return result;
     resources->netSendComm = NULL;
   }
   if (resources->relayPool != NULL) {
     flagcxNetRelayPool *pool = resources->relayPool;
-    if (!relayNetReleased || !resources->relaySourceReleased)
-      pool->unsafe = true;
-    for (uint32_t i = 0; i < pool->slotCount; ++i) {
-      if (pool->slots[i].requestId != 0)
-        pool->unsafe = true;
-    }
-    if (--pool->refs == 0) {
+    if (pool->refs == 0)
+      return flagcxInternalError;
+    if (pool->refs == 1) {
+      result = deviceAdaptor->gdrMemFree(pool->base, NULL);
+      if (result != flagcxSuccess)
+        return result;
+      pool->base = NULL;
       flagcxNetRelayPool **link = &pool->owner->relayPools;
       while (*link != NULL && *link != pool)
         link = &(*link)->next;
       if (*link == pool)
         *link = pool->next;
-      if (pool->unsafe) {
-        WARN("PXN shared relay pool %llu may still be in use; retaining %zu "
-             "bytes until process exit",
-             static_cast<unsigned long long>(pool->id), pool->capacity);
-      } else {
-        flagcxProxyCleanupResult(deviceAdaptor->gdrMemFree(pool->base, NULL),
-                                 &result);
-      }
       free(pool->slots);
       free(pool);
+    } else {
+      --pool->refs;
     }
     resources->relayPool = NULL;
     resources->relayExportBuffer = NULL;
     resources->buffers[0] = NULL;
   } else if (resources->buffers[0] != NULL) {
-    if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
+    if (resources->netAdaptor == getNetAdaptor(SOCKET) ||
+        (resources->netAdaptor != getNetAdaptor(RDMA) &&
+         !(resources->ptrSupport & FLAGCX_PTR_CUDA))) {
       free(resources->buffers[0]);
-    } else if (resources->netAdaptor == getNetAdaptor(RDMA)) {
-      flagcxProxyCleanupResult(
-          deviceAdaptor->gdrMemFree(resources->buffers[0], NULL), &result);
     } else {
-      if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
-        flagcxProxyCleanupResult(
-            deviceAdaptor->gdrMemFree(resources->buffers[0], NULL), &result);
-      } else {
-        free(resources->buffers[0]);
-      }
+      result = deviceAdaptor->gdrMemFree(resources->buffers[0], NULL);
+      if (result != flagcxSuccess)
+        return result;
     }
     resources->buffers[0] = NULL;
   }
-  return result;
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxRecvProxyFree(recvNetResources *resources) {
   if (resources == NULL)
     return flagcxSuccess;
-
-  flagcxResult_t result = flagcxSuccess;
-  for (int s = 0; s < flagcxNetChunks; s++) {
-    if (resources->cpEvents[s] != NULL) {
-      flagcxProxyCleanupResult(
-          deviceAdaptor->eventDestroy(resources->cpEvents[s]), &result);
-      resources->cpEvents[s] = NULL;
-    }
+  flagcxResult_t result;
+  for (int s = 0; s < FLAGCX_NET_MAX_STEPS; ++s) {
+    if (resources->cpEvents[s] == NULL)
+      continue;
+    result = deviceAdaptor->eventDestroy(resources->cpEvents[s]);
+    if (result != flagcxSuccess)
+      return result;
+    resources->cpEvents[s] = NULL;
   }
   if (resources->cpStream != NULL) {
-    flagcxProxyCleanupResult(deviceAdaptor->streamDestroy(resources->cpStream),
-                             &result);
+    result = deviceAdaptor->streamDestroy(resources->cpStream);
+    if (result != flagcxSuccess)
+      return result;
     resources->cpStream = NULL;
   }
-  if (resources->netRecvComm != NULL && resources->mhandles[0] != NULL) {
-    flagcxProxyCleanupResult(
-        resources->netAdaptor->deregMr(resources->netRecvComm,
-                                       resources->mhandles[0]),
-        &result);
+  if (resources->mhandles[0] != NULL) {
+    if (resources->netRecvComm == NULL)
+      return flagcxInternalError;
+    result = resources->netAdaptor->deregMr(resources->netRecvComm,
+                                            resources->mhandles[0]);
+    if (result != flagcxSuccess)
+      return result;
     resources->mhandles[0] = NULL;
   }
   if (resources->netRecvComm != NULL) {
-    flagcxProxyCleanupResult(
-        resources->netAdaptor->closeRecv(resources->netRecvComm), &result);
+    result = resources->netAdaptor->closeRecv(resources->netRecvComm);
+    if (result != flagcxSuccess)
+      return result;
     resources->netRecvComm = NULL;
   }
   if (resources->netListenComm != NULL) {
-    flagcxProxyCleanupResult(
-        resources->netAdaptor->closeListen(resources->netListenComm), &result);
+    result = resources->netAdaptor->closeListen(resources->netListenComm);
+    if (result != flagcxSuccess)
+      return result;
     resources->netListenComm = NULL;
   }
   if (resources->buffers[0] != NULL) {
-    if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
+    if (resources->netAdaptor == getNetAdaptor(SOCKET) ||
+        (resources->netAdaptor != getNetAdaptor(RDMA) &&
+         !(resources->ptrSupport & FLAGCX_PTR_CUDA))) {
       free(resources->buffers[0]);
-    } else if (resources->netAdaptor == getNetAdaptor(RDMA)) {
-      flagcxProxyCleanupResult(
-          deviceAdaptor->gdrMemFree(resources->buffers[0], NULL), &result);
     } else {
-      if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
-        flagcxProxyCleanupResult(
-            deviceAdaptor->gdrMemFree(resources->buffers[0], NULL), &result);
-      } else {
-        free(resources->buffers[0]);
-      }
+      result = deviceAdaptor->gdrMemFree(resources->buffers[0], NULL);
+      if (result != flagcxSuccess)
+        return result;
     }
     resources->buffers[0] = NULL;
   }
-  return result;
+  return flagcxSuccess;
 }
 
 static flagcxResult_t netRegisterBuffer(flagcxHeteroComm *comm,

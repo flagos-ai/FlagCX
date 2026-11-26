@@ -50,7 +50,8 @@
     {
       "step": 4,
       "description": "Separate internal import owners from backing allocations",
-      "status": "pending"
+      "status": "complete",
+      "validation": "Linux host/mock: core 239 pass/5 hardware skips, runner 102, RMA 54, service 57, adaptor 66 pass/2 skips, Device API host 45. All rebuilt for changed internal layouts. Retired-generation, RMA counter lifetime, P2P close-only and strict retry cases passed."
     },
     {
       "step": 5,

@@ -160,7 +160,7 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
   EXPECT_EQ(devComm.ownedSignalBuffer, nullptr);
   EXPECT_EQ(freedSignalBuffer, nullptr);
   EXPECT_EQ(signalBufferFreeCount, 0);
-  comm.destroyPhase = 7;
+  comm.internalImportsConfirmed = true;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   EXPECT_EQ(signalBufferFreeCount, 1);
   EXPECT_EQ(freedSignalBuffer, signalBuffer);
@@ -219,7 +219,7 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
   EXPECT_EQ(devComm.ownedSignalBuffer, nullptr);
   EXPECT_EQ(devComm.ownedSignalRegistration, nullptr);
   EXPECT_EQ(signalBufferFreeCount, 0);
-  comm.destroyPhase = 7;
+  comm.internalImportsConfirmed = true;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   EXPECT_EQ(signalBufferFreeCount, 1);
   EXPECT_EQ(freedSignalBuffer, signalBuffer);
@@ -272,7 +272,7 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
   EXPECT_EQ(heteroComm.devCommHandle, nullptr);
   EXPECT_EQ(heteroComm.signalHandle, nullptr);
   EXPECT_EQ(signalBufferFreeCount, 0);
-  comm.destroyPhase = 7;
+  comm.internalImportsConfirmed = true;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   EXPECT_EQ(signalBufferFreeCount, 1);
 }

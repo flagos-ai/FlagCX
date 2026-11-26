@@ -154,6 +154,8 @@ struct flagcxDevCommInternal {
   void *cachedGridBarrierPtr; // Device memory for grid sync state (2 x uint32)
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr and
                                   // cachedNetContextsPtr
+  bool cleanupStarted, retired;
+  struct flagcxDevCommInternal *retiredNext;
   bool backendDestroyed; // Retry cached frees without calling backend twice
 };
 
@@ -260,6 +262,7 @@ struct flagcxDevMemInternal {
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr; // Lazily allocated by flagcxDevMemGetDevicePtr
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr
+  bool cleanupStarted;
   bool backendDestroyed; // Retry cached frees without calling backend twice
   struct flagcxDevMemInternal *activeNext;
 };

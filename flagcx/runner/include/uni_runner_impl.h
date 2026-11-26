@@ -502,6 +502,7 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
 flagcxResult_t ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
                                               flagcxComm_t comm, size_t slots);
 flagcxResult_t cleanupUniRunner(flagcxComm_t comm);
+flagcxResult_t cleanupUniRunnerIpcImports(flagcxUniRunnerState *state);
 flagcxResult_t
 cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState);
 flagcxResult_t runUniRunner(flagcxComm_t comm,

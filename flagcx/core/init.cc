@@ -524,8 +524,8 @@ flagcxResult_t flagcxHeteroCommInitRank(flagcxHeteroComm_t *newcomm, int nranks,
     flagcxResult_t cleanupRes = flagcxHeteroCommPrepareDestroy(*newcomm);
     if (cleanupRes != flagcxSuccess)
       return cleanupRes;
-    (void)flagcxHeteroCommDestroy(*newcomm);
-    *newcomm = NULL;
+    // Preserve the owner. Import closure on this rank alone cannot authorize
+    // freeing an exporter; normal Finalize must still confirm peer closure.
     return proxyRes;
   }
   return flagcxSuccess;
@@ -544,50 +544,37 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
 }
 
 flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm) {
+  if (!comm || !comm->proxyState)
+    return flagcxInvalidArgument;
+  FLAGCXCHECKSTRICT(deviceAdaptor->setDevice(comm->cudaDev));
   if (!comm->destroyProxyComplete) {
-    FLAGCXCHECK(flagcxHeteroRmaProxyStop(comm));
-    // Clean up P2P/Net handles while proxy is still alive and peerSocks valid.
-    FLAGCXCHECK(globalRegPool.removeAllP2pHandles(comm));
-    FLAGCXCHECK(globalRegPool.removeAllNetHandles(comm));
-    flagcxResult_t proxyStopResult = flagcxProxyStop(comm);
-    flagcxResult_t proxyDestroyResult = flagcxProxyDestroy(comm);
-    comm->destroyProxyResult =
-        proxyStopResult != flagcxSuccess ? proxyStopResult : proxyDestroyResult;
+    FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyStop(comm));
+    // Registrations need live peer RPC services until imports have closed.
+    FLAGCXCHECKSTRICT(globalRegPool.removeAllP2pHandles(comm));
+    FLAGCXCHECKSTRICT(globalRegPool.removeAllNetHandles(comm));
+    FLAGCXCHECKSTRICT(flagcxProxyCloseRelayImports(comm));
+    FLAGCXCHECKSTRICT(flagcxProxyStop(comm));
+    FLAGCXCHECKSTRICT(flagcxProxyFinalize(comm));
     comm->destroyProxyComplete = true;
   }
-  if (comm->proxyState->uniRunnerState.streamFlagsPool != NULL ||
-      comm->proxyState->uniRunnerState.streamFlags != NULL ||
-      comm->proxyState->uniRunnerState.streamFlagsCapacity != 0 ||
-      comm->proxyState->uniRunnerState.redCompletionCountersPool != NULL ||
-      comm->proxyState->uniRunnerState.groupedArScratch != NULL ||
-      comm->proxyState->uniRunnerState.ipcOwner != NULL ||
-      comm->proxyState->uniRunnerState.ipcInputMem != NULL ||
-      comm->proxyState->uniRunnerState.ipcOutputMem != NULL ||
-      comm->proxyState->uniRunnerState.ipcReadyMem != NULL ||
-      comm->proxyState->uniRunnerState.ipcReadyBuffer != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingScratchMem != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingProgressMem != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingScratchBuffer != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingProgressBuffer != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingTriggersDevice != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingLanesDevice != NULL ||
-      comm->proxyState->uniRunnerState.ipcRingControlHost != NULL ||
-      comm->proxyState->uniRunnerState.ipcParentFlagsDevice != NULL) {
-    FLAGCXCHECK(deviceAdaptor->setDevice(comm->cudaDev));
-    FLAGCXCHECK(
-        cleanupUniRunnerPersistentState(&comm->proxyState->uniRunnerState));
-  }
-  return flagcxSuccess;
+  return cleanupUniRunnerIpcImports(&comm->proxyState->uniRunnerState);
 }
 
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
-  FLAGCXCHECK(flagcxHeteroCommPrepareDestroy(comm));
+  FLAGCXCHECKSTRICT(flagcxHeteroCommPrepareDestroy(comm));
+  if (!comm->importsClosedConfirmed)
+    return flagcxInvalidUsage;
+  FLAGCXCHECKSTRICT(flagcxProxyDestroy(comm));
+  FLAGCXCHECKSTRICT(
+      cleanupUniRunnerPersistentState(&comm->proxyState->uniRunnerState));
+  FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyRelease(comm));
   flagcxResult_t proxyResult = comm->destroyProxyResult;
   delete comm->workerPool;
   comm->workerPool = NULL;
   for (int i = 0; i < MAXCHANNELS; i++) {
     free(comm->channels[i].ring.userRanks);
-    for (int r = 0; r < comm->nRanks; r++) {
+    for (int r = 0; comm->channels[i].peers != nullptr && r < comm->nRanks;
+         r++) {
       free(comm->channels[i].peers[r]);
     }
     free(comm->channels[i].peers);

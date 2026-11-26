@@ -2169,7 +2169,8 @@ flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
 
   // Release IPC and network state independently.
   if (heteroComm->rmaSignalIpcSlot >= 0)
-    FLAGCXCHECK(releaseIpcTableSlot(comm, heteroComm->rmaSignalIpcSlot));
+    FLAGCXCHECKSTRICT(
+        flagcxCommRetireIpcSlot(comm, heteroComm->rmaSignalIpcSlot));
   heteroComm->rmaSignalIpcSlot = -1;
   heteroComm->rmaSignalBase = NULL;
   heteroComm->rmaSignalSize = 0;
@@ -2942,7 +2943,7 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   if (allocator == flagcxMemSHMEM) {
     return flagcxSuccess;
   }
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  FLAGCXCHECKSTRICT(flagcxEnsureCommReady(comm));
   if (win->devMemRefs != 0)
     return flagcxInvalidUsage;
   win->cleanupStarted = true;
@@ -2988,7 +2989,8 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   // Failed collective registration must keep every rank in the same rollback
   // sequence, including ranks with no synchronization callback to execute.
   if (cleanupMode == flagcxSymCleanupCollective)
-    FLAGCXCHECK(flagcxSymConvergeStatus(hetero, syncResult, &commonSyncResult));
+    FLAGCXCHECKSTRICT(
+        flagcxSymConvergeStatus(hetero, syncResult, &commonSyncResult));
   if (commonSyncResult != flagcxSuccess)
     return commonSyncResult;
 
@@ -3000,7 +3002,7 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
     drain = flagcxHeteroDrainAllRmaForCleanup(hetero);
   flagcxResult_t commonDrain = drain;
   if (cleanupMode == flagcxSymCleanupCollective)
-    FLAGCXCHECK(flagcxSymConvergeStatus(hetero, drain, &commonDrain));
+    FLAGCXCHECKSTRICT(flagcxSymConvergeStatus(hetero, drain, &commonDrain));
   if (commonDrain != flagcxSuccess) {
     WARN("flagcxCommWindowDeregister: RMA drain failed rank=%d "
          "resourcePath=%d local=%d common=%d",
@@ -3018,7 +3020,7 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
     flagcxResult_t pendingResult = flagcxOneSideRetryPendingCleanup(hetero);
     flagcxResult_t commonPendingResult = pendingResult;
     if (cleanupMode == flagcxSymCleanupCollective) {
-      FLAGCXCHECK(
+      FLAGCXCHECKSTRICT(
           flagcxSymConvergeStatus(hetero, pendingResult, &commonPendingResult));
     }
     if (commonPendingResult != flagcxSuccess)
@@ -3043,7 +3045,8 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   }
   flagcxResult_t commonMrResult = flagcxSuccess;
   if (cleanupMode == flagcxSymCleanupCollective) {
-    FLAGCXCHECK(flagcxSymConvergeStatus(hetero, mrResult, &commonMrResult));
+    FLAGCXCHECKSTRICT(
+        flagcxSymConvergeStatus(hetero, mrResult, &commonMrResult));
   } else {
     commonMrResult = mrResult;
   }
@@ -3058,7 +3061,8 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   }
   flagcxResult_t commonIpcResult = ipcResult;
   if (cleanupMode == flagcxSymCleanupCollective)
-    FLAGCXCHECK(flagcxSymConvergeStatus(hetero, ipcResult, &commonIpcResult));
+    FLAGCXCHECKSTRICT(
+        flagcxSymConvergeStatus(hetero, ipcResult, &commonIpcResult));
   if (commonIpcResult != flagcxSuccess)
     return commonIpcResult;
 
@@ -3978,6 +3982,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
                                          heteroCommId, rank));
 
     // Share ipcTable with heteroComm for intra-node D2D bypass
+    (*comm)->heteroComm->ownerComm = *comm;
     (*comm)->heteroComm->ipcTable = (*comm)->ipcTable;
     (*comm)->heteroComm->ipcTableSize = (*comm)->ipcTableCapacity;
 
@@ -4121,6 +4126,8 @@ static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
       FLAGCXCHECK(flagcxCommCleanup(comm));
   }
   if (stage == 2) {
+    comm->ipcClosingImports = true;
+    FLAGCXCHECKSTRICT(flagcxCommCloseRetiredDevComms(comm));
     // A failed create rollback can exist for any Device API backend. Retry it
     // while the outer communicator and its vendor communicator are still live.
     flagcxResult_t cleanupResult = flagcxDevCommRetryPendingCleanup(comm);
@@ -4289,6 +4296,9 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     // Every participating rank has now closed all imports successfully.
     // A later allocation-free failure needs only a local destroy retry.
     comm->destroyPhase = 7;
+    comm->internalImportsConfirmed = true;
+    if (comm->heteroComm)
+      comm->heteroComm->importsClosedConfirmed = true;
   }
   FLAGCXCHECK(flagcxCommFreeInternalBuffers(comm));
 
