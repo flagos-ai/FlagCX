@@ -34,6 +34,10 @@ fi
 export PATH="$DEVICE_HOME/bin:$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$CCL_HOME/lib:$DEVICE_HOME/lib:$DEVICE_HOME/lib64:$MPI_HOME/lib:/usr/local/lib:${LD_LIBRARY_PATH:-}"
 export FLAGCX_SOCKET_IFNAME="${FLAGCX_SOCKET_IFNAME:-^lo,docker,br-,veth}"
+# Capture native MCCL initialization/transport failures in every MUSA suite.
+# FLAGCX_DEBUG configures FlagCX only, not the underlying native collective.
+export MCCL_DEBUG="${MCCL_DEBUG:-TRACE}"
+export MCCL_DEBUG_SUBSYS="${MCCL_DEBUG_SUBSYS:-ALL}"
 
 FLAGCX_CI_MUSA_DEVICES=${FLAGCX_CI_MUSA_DEVICES:-0,1,2,3}
 IFS=, read -r -a FLAGCX_CI_MUSA_DEVICE_IDS <<< "$FLAGCX_CI_MUSA_DEVICES"

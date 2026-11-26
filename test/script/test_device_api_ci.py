@@ -4,6 +4,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,6 +19,13 @@ CHECK = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CHECK)
 
 
+def result_record(binary, rank, case, size, status="PASS"):
+    return "FLAGCX_DEVICE_API_RESULT " + json.dumps({
+        "version": 1, "binary": binary, "rank": rank, "case": case,
+        "size_bytes": size, "status": status,
+    })
+
+
 def result_log(binary, ranks, sizes):
     lines = []
     for size in sizes:
@@ -24,6 +33,7 @@ def result_log(binary, ranks, sizes):
         for rank in range(ranks):
             for case in CHECK.REQUIRED[binary]:
                 lines.append(f"[rank {rank}] {case} operation: PASS")
+                lines.append(result_record(binary, rank, case, size))
     if "unified" in binary:
         lines.append("=== Final Result: ALL PASS ===")
     else:
@@ -144,7 +154,7 @@ flagcx_ci_prepare device_api
                 good = result_log(binary, 4, [1024, 2048])
                 self.assertEqual(CHECK.check_results(good, binary, 4, [1024, 2048]), [])
                 case = CHECK.REQUIRED[binary][0]
-                required = f"[rank 3] {case} operation: PASS"
+                required = result_record(binary, 3, case, 1024)
                 for bad in ("", good.replace(required, "", 1),
                             good.replace(required, required.replace("PASS", "SKIP"), 1),
                             good.replace(required, required.replace("PASS", "FAIL"), 1),
@@ -155,6 +165,80 @@ flagcx_ci_prepare device_api
                     if bad == good:
                         continue
                     self.assertTrue(CHECK.check_results(bad, binary, 4, [1024, 2048]))
+
+    def test_missing_size_cannot_be_masked_by_another_size(self):
+        for binary, cases in CHECK.REQUIRED.items():
+            with self.subTest(binary=binary):
+                good = result_log(binary, 4, [1024, 2048])
+                # Keep all size banners, human results and final summaries.
+                bad = good.replace(result_record(binary, 3, cases[0], 1024),
+                                   result_record(binary, 3, cases[0], 2048), 1)
+                self.assertTrue(CHECK.check_results(bad, binary, 4, [1024, 2048]))
+
+    def test_records_are_independent_of_stdout_order(self):
+        for binary in CHECK.REQUIRED:
+            with self.subTest(binary=binary):
+                lines = result_log(binary, 4, [1024, 2048]).splitlines()
+                random.Random(42).shuffle(lines)
+                self.assertEqual(CHECK.check_results("\n".join(lines), binary, 4, [1024, 2048]), [])
+
+    def test_structured_records_fail_closed(self):
+        for binary, cases in CHECK.REQUIRED.items():
+            good = result_log(binary, 4, [1024, 2048])
+            required = result_record(binary, 3, cases[0], 1024)
+            record = json.loads(required.split(" ", 1)[1])
+            mutations = {"version": (2, True), "binary": ("other_binary",),
+                         "rank": (-1, 4, "3", True), "case": ("S999",),
+                         "size_bytes": (4096, "1024", True),
+                         "status": ("FAIL", "SKIP", "UNKNOWN")}
+            bad_records = ["FLAGCX_DEVICE_API_RESULT {broken", "FLAGCX_DEVICE_API_RESULT []",
+                           "FLAGCX_DEVICE_API_RESULT", "FLAGCX_DEVICE_API_RESULT {}"]
+            for field, values in mutations.items():
+                for value in values:
+                    bad_records.append("FLAGCX_DEVICE_API_RESULT " + json.dumps({**record, field: value}))
+            for bad_record in bad_records:
+                with self.subTest(binary=binary, bad_record=bad_record):
+                    self.assertTrue(CHECK.check_results(good.replace(required, bad_record, 1),
+                                                       binary, 4, [1024, 2048]))
+            with self.subTest(binary=binary, mode="old binary without records"):
+                human_only = "\n".join(line for line in good.splitlines()
+                                       if not line.startswith("FLAGCX_DEVICE_API_RESULT"))
+                self.assertTrue(CHECK.check_results(human_only, binary, 4, [1024, 2048]))
+
+    def test_compiled_reporter_matches_checker_for_all_programs(self):
+        compiler = shutil.which(os.environ.get("CXX", "c++"))
+        if compiler is None:
+            self.skipTest("A host C++ compiler is required")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "report.cpp"
+            source.write_text(r'''#include "device_api_report.h"
+#include <initializer_list>
+int main(int argc, char **argv) {
+  for (size_t size : {size_t(1024), size_t(2048)}) {
+    std::printf("# Size = %zu bytes\n", size);
+    for (int rank = 0; rank < 4; ++rank) {
+      const DeviceApiReporter reporter(argv[1], rank);
+      // Repetitions belong inside each case; report only its final grade.
+      for (int caseIndex = 3; caseIndex < argc; ++caseIndex)
+        reporter.report(argv[caseIndex], size, argv[2]);
+    }
+  }
+}
+''')
+            executable = root / "report"
+            build = subprocess.run([compiler, "-std=c++11", "-Wall", "-Wextra", "-Werror",
+                                    "-I", str(ROOT / "test/unittest/device_api"),
+                                    str(source), "-o", str(executable)], capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            for binary, cases in CHECK.REQUIRED.items():
+                summaries = "\n".join(line for line in result_log(binary, 4, []).splitlines())
+                for status in ("PASS", "FAIL", "SKIP"):
+                    with self.subTest(binary=binary, status=status):
+                        run = subprocess.run([str(executable), binary, status, *cases],
+                                             capture_output=True, text=True, check=True)
+                        errors = CHECK.check_results(run.stdout + summaries, binary, 4, [1024, 2048])
+                        self.assertEqual(bool(errors), status != "PASS", errors)
 
     def test_mpi_app_contexts_must_match(self):
         first = ["-np", "2", "build/bin/test_device_api_inter", "-b", "1K", "-e", "16M", "-f", "2", "-R", "2"]

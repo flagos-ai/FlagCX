@@ -18,6 +18,23 @@ CI = ROOT / ".github/scripts/ci"
 
 
 class MusaCiTest(unittest.TestCase):
+    def test_native_mccl_logging_is_exported_and_can_be_overridden(self):
+        environment = ROOT / ".github/scripts/set_env/mthreads.sh"
+        for overrides, expected in (({}, ["TRACE", "ALL"]),
+                                    ({"MCCL_DEBUG": "INFO", "MCCL_DEBUG_SUBSYS": "INIT"},
+                                     ["INFO", "INIT"])):
+            with self.subTest(overrides=overrides):
+                env = {k: v for k, v in os.environ.items()
+                       if k not in ("MCCL_DEBUG", "MCCL_DEBUG_SUBSYS")}
+                env.update(overrides)
+                env.update(ENV_SCRIPT=str(environment), TEST_PYTHON=sys.executable)
+                # A child process must receive the variables, as MPI workers do.
+                result = subprocess.run(["bash", "-eu", "-c", '''source "$ENV_SCRIPT"
+"$TEST_PYTHON" -c 'import json, os; print(json.dumps([os.environ["MCCL_DEBUG"], os.environ["MCCL_DEBUG_SUBSYS"]]))'
+'''], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), expected)
+
     def test_shared_handler_runs_both_perf_modes_and_preserves_failures(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -31,6 +31,7 @@
 
 #include "check.h"
 #include "device_api.h"
+#include "device_api_report.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "tools.h"
@@ -145,6 +146,8 @@ int main(int argc, char *argv[]) {
   // =========================================================================
   // Main test loop
   // =========================================================================
+  const DeviceApiReporter reporter("test_device_api_intra", proc);
+
   for (size_t size = minBytes; size <= maxBytes; size *= (size_t)stepFactor) {
     size_t count = size / sizeof(float);
     if (count == 0)
@@ -414,8 +417,10 @@ int main(int argc, char *argv[]) {
       }
     }
     printResult("K10 IntraAllReduce(composite)", k10Ok, proc);
+    reporter.report("K10", size, k10Ok ? "PASS" : "FAIL");
     allPass &= k10Ok;
 #else
+    reporter.report("K10", size, "SKIP");
     // All three wait on ranks before reading what they wrote: K8/K9 go
     // through flagcxDevBarrier<Intra>, and K10 is the same composite the
     // barrier feeds.  The IPC pass has neither the peer mapping nor a

@@ -287,7 +287,7 @@ $(UNIT_TARGET): $(UNIT_OBJ)
 # HIPCC treats object files as HIP source when a .cpp input is present in the
 # same link invocation. Compile each test entry point first so links receive
 # object files only. This also keeps the host sources out of device linking.
-$(OBJDIR)/test_device_%.o: test_device_%.cpp | require-compile-kernel
+$(OBJDIR)/test_device_%.o: test_device_%.cpp device_api_report.h | require-compile-kernel
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
 	@$(CXX) $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) -c -o $@ $< $(ALL_INCLUDES)

@@ -76,12 +76,38 @@ def check_results(text, binary, ranks, sizes):
     for rank, case, result in records:
         if result == "FAIL" or (case in REQUIRED[binary] and result == "SKIP"):
             errors.append(f"rank {rank}: {case} {result}")
-    expected = Counter({rank: len(sizes) for rank in range(ranks)})
-    for case in REQUIRED[binary]:
-        passed = Counter(int(rank) for rank, name, result in records
-                         if name == case and result == "PASS")
-        if passed != expected:
-            errors.append(f"{case}: PASS counts {dict(passed)}, expected {dict(expected)}")
+    # MPI stdout may interleave ranks and sizes. Each final case result must
+    # carry its own size; rank-0 banners cannot identify another rank's case.
+    prefix = "FLAGCX_DEVICE_API_RESULT"
+    observed = Counter()
+    for line in text.splitlines():
+        if prefix not in line:
+            continue
+        try:
+            if not line.startswith(prefix + " "):
+                raise ValueError("invalid record prefix")
+            record = json.loads(line[len(prefix) + 1:])
+            if not isinstance(record, dict):
+                raise ValueError("expected a result object")
+            if (type(record.get("version")) is not int or record["version"] != 1
+                    or record.get("binary") != binary
+                    or type(record.get("rank")) is not int
+                    or type(record.get("size_bytes")) is not int
+                    or record.get("case") not in REQUIRED[binary]
+                    or record.get("status") not in ("PASS", "FAIL", "SKIP")):
+                raise ValueError("invalid result fields")
+        except (ValueError, TypeError) as error:
+            errors.append(f"Malformed Device API result: {error}: {line}")
+            continue
+        key = (record["rank"], record["case"], record["size_bytes"])
+        observed[key] += 1
+        if record["status"] != "PASS":
+            errors.append(f"Result {key}: {record['status']}")
+    expected = Counter((rank, case, size) for rank in range(ranks)
+                       for case in REQUIRED[binary] for size in sizes)
+    for key in sorted(expected.keys() | observed.keys()):
+        if observed[key] != expected[key]:
+            errors.append(f"Result {key}: count {observed[key]}, expected {expected[key]}")
     observed_sizes = Counter(map(int, re.findall(r"# Size = (\d+) bytes", text)))
     if observed_sizes != Counter(sizes):
         errors.append(f"Size sweep {dict(observed_sizes)}, expected {sizes}")
