@@ -17,8 +17,13 @@ on:
         required: true
         type: string
         default: all
+      suite:
+        description: "Unit-test suite name, all, or comma-separated names"
+        required: false
+        type: string
+        default: all
       level:
-        description: "CI test level: L0, L1, L2, or L3"
+        description: "CI test level: L0, L0.5 (runner smoke), L1, L2, or L3"
         required: true
         type: string
         default: L2
@@ -42,11 +47,17 @@ jobs:
     outputs:
       active: ${{ steps.resolve.outputs.active }}
       matrix: ${{ steps.resolve.outputs.matrix }}
+      suites: ${{ steps.resolve.outputs.suites }}
+      suite_filter_active: ${{ steps.resolve.outputs.suite_filter_active }}
       platforms: ${{ steps.resolve.outputs.platforms }}
       has_platforms: ${{ steps.resolve.outputs.has_platforms }}
       repository: ${{ steps.resolve.outputs.repository }}
       ref: ${{ steps.resolve.outputs.ref }}
       level: ${{ steps.resolve.outputs.level }}
+      event: ${{ steps.resolve.outputs.event }}
+      execution_window: ${{ steps.resolve.outputs.execution_window }}
+      scheduling: ${{ steps.resolve.outputs.scheduling }}
+      runner_matrix: ${{ steps.resolve.outputs.runner_matrix }}
       plan_status: ${{ steps.resolve.outputs.plan_status }}
     steps:
       - uses: ruby/setup-ruby@v1
@@ -56,6 +67,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Resolve changed paths, labels, and authorization
@@ -67,7 +79,8 @@ jobs:
           EVENT_SHA: ${{ github.sha }}
           EVENT_REPOSITORY: ${{ github.repository }}
           EVENT_SELECTION: ${{ inputs.platform || 'all' }}
-          EVENT_LEVEL: ${{ inputs.level || 'L2' }}
+          EVENT_SUITES: ${{ inputs.suite || 'all' }}
+          EVENT_LEVEL: ${{ inputs.level || (github.event_name == 'push' && 'L2' || 'L1') }}
           ACTOR: ${{ github.actor }}
           FLAGCX_CI_PLAN_PATH: ${{ runner.temp }}/flagcx-ci-plan.json
         shell: bash
@@ -83,6 +96,7 @@ jobs:
           repository="$EVENT_REPOSITORY"
           ref="$EVENT_SHA"
           selection="$EVENT_SELECTION"
+          suites="$EVENT_SUITES"
 
           case "$EVENT_NAME" in
             pull_request)
@@ -111,6 +125,12 @@ jobs:
               fi
               ;;
             push)
+              before=$(jq -r '.before // empty' "$EVENT_PATH")
+              if [[ -n "$before" && "$before" != "0000000000000000000000000000000000000000" ]]; then
+                git diff --no-renames --name-only "$before" "$EVENT_SHA" > "$files_file"
+              else
+                git ls-tree -r --name-only "$EVENT_SHA" > "$files_file"
+              fi
               ;;
             schedule)
               ;;
@@ -127,11 +147,13 @@ jobs:
             --arg comment "$comment" \
             --argjson is_pull_request "$is_pull_request" \
             --arg selection "$selection" \
+            --arg suites "$suites" \
             --arg level "$EVENT_LEVEL" \
             --arg repository "$repository" \
             --arg ref "$ref" \
             '{event_name:$event_name, labels:$labels, files:$files, permission:$permission,
               comment:$comment, is_pull_request:$is_pull_request, selection:$selection,
+              suites:($suites | split(",") | map(select(length > 0 and . != "all"))),
               repository:$repository, ref:$ref, level:$level}' > "$context_file"
 
           ruby .github/scripts/ci/resolve_ci_matrix.rb \
@@ -149,11 +171,25 @@ jobs:
   unit_tests:
     name: Platform unit tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true' && needs.prepare.outputs.level != 'L0'
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true' && needs.prepare.outputs.level != 'L0' && needs.prepare.outputs.level != 'L0.5'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     uses: ./.github/workflows/unit_tests_common.yml
+    with:
+      platform: ${{ matrix.platform }}
+      suites: ${{ toJSON(matrix.suites) }}
+      repository: ${{ needs.prepare.outputs.repository }}
+      ref: ${{ needs.prepare.outputs.ref }}
+
+  runner_smoke:
+    name: Platform runner smoke
+    needs: prepare
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true' && needs.prepare.outputs.level == 'L0.5'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.runner_matrix) }}
+    uses: ./.github/workflows/runner_smoke_common.yml
     with:
       platform: ${{ matrix.platform }}
       repository: ${{ needs.prepare.outputs.repository }}
@@ -162,7 +198,11 @@ jobs:
   performance_tests:
     name: Platform performance tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true' && (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3')
+    if: >
+      needs.prepare.outputs.active == 'true' &&
+      needs.prepare.outputs.suite_filter_active != 'true' &&
+      (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3') &&
+      (needs.prepare.outputs.execution_window == 'night' || needs.prepare.outputs.level == 'L2')
     uses: ./.github/workflows/test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -172,7 +212,11 @@ jobs:
   torch_api_tests:
     name: Platform Torch API tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true' && (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3')
+    if: >
+      needs.prepare.outputs.active == 'true' &&
+      needs.prepare.outputs.suite_filter_active != 'true' &&
+      (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3') &&
+      (needs.prepare.outputs.execution_window == 'night' || needs.prepare.outputs.level == 'L2')
     uses: ./.github/workflows/torch-api-test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -193,7 +237,7 @@ jobs:
   ci_complete:
     name: ci-complete
     if: always() && (github.event_name != 'issue_comment' || needs.prepare.outputs.active == 'true')
-    needs: [prepare, unit_tests, performance_tests, torch_api_tests, format-check]
+    needs: [prepare, unit_tests, runner_smoke, performance_tests, torch_api_tests, format-check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -205,12 +249,16 @@ jobs:
           HAS_PLATFORMS: ${{ needs.prepare.outputs.has_platforms }}
           PREPARE_RESULT: ${{ needs.prepare.result }}
           UNIT_RESULT: ${{ needs.unit_tests.result }}
+          RUNNER_RESULT: ${{ needs.runner_smoke.result }}
           PERF_RESULT: ${{ needs.performance_tests.result }}
           TORCH_RESULT: ${{ needs.torch_api_tests.result }}
+          EXECUTION_WINDOW: ${{ needs.prepare.outputs.execution_window }}
           FORMAT_RESULT: ${{ needs.format-check.result }}
           LEVEL: ${{ needs.prepare.outputs.level }}
+          SUITE_FILTER_ACTIVE: ${{ needs.prepare.outputs.suite_filter_active }}
         shell: bash
         run: |
           bash .github/scripts/ci/check_ci_results.sh \
             "$ACTIVE" "$HAS_PLATFORMS" "$PREPARE_RESULT" "$UNIT_RESULT" \
-            "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT" "$LEVEL"
+            "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT" "$LEVEL" \
+            "$SUITE_FILTER_ACTIVE" "$RUNNER_RESULT" "${EXECUTION_WINDOW:-day}"

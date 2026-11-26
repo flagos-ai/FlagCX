@@ -60,6 +60,7 @@ trap 'cancel_workload 143' TERM
 attempt=1
 while ((attempt <= max_attempts)); do
   attempt_log="$log_dir/attempt-$attempt.log"
+  started_at=$(date +%s)
   echo "Starting $test_label (attempt $attempt/$max_attempts, timeout=$test_timeout, kill-after=$test_kill_after)"
   exec {log_fd}> >(tee "$attempt_log")
   log_pid=$!
@@ -74,9 +75,14 @@ while ((attempt <= max_attempts)); do
   fi
   status=0
   wait "$active_pid" || status=$?
+  finished_at=$(date +%s)
+  elapsed_seconds=$((finished_at - started_at))
   cleanup_workload
   exec {log_fd}>&-
   wait "$log_pid"
+  printf 'FLAGCX_CI_RESULT\t%s\t%s\t%s\t%s\n' \
+    "$test_label" "$attempt" "$status" "$elapsed_seconds" >> "$attempt_log"
+  echo "$test_label attempt $attempt completed with exit=$status elapsed=${elapsed_seconds}s"
   if [[ "$status" == 0 && "${FLAGCX_CI_REQUIRE_GTEST_PASS:-0}" == 1 ]] &&
      ! grep -Eq '\[ *PASSED *\] +[1-9][0-9]* tests?\.' "$attempt_log"; then
     echo "$test_label exited successfully without a passing GTest case" >&2

@@ -41,21 +41,71 @@ platforms = settings.map do |name, value|
 end.compact
 platform_names = platforms.map { |entry| entry.fetch("platform") }
 abort "No enabled platform configs found in #{config_dir}" if platforms.empty?
+suites_config_path = File.join(config_dir, "suites.yml")
+suites_config = File.file?(suites_config_path) ? load_yaml.call(suites_config_path) : {}
+scheduling = suites_config.fetch("scheduling", {})
+if scheduling.empty?
+  scheduling = {
+    "unit" => {"kind" => "unit", "resource_class" => "single-gpu", "gpu_count" => 1,
+               "allowed_windows" => %w[day night], "long_running_after_minutes" => 20,
+               "timeout_policy" => "historical_p95_plus_grace", "grace_minutes" => 10,
+               "hard_timeout_minutes" => 120},
+    "performance" => {"kind" => "end-to-end", "resource_class" => "multi-gpu", "gpu_count" => 2,
+                       "allowed_windows" => ["night"], "long_running_after_minutes" => 60,
+                       "timeout_policy" => "historical_p95_plus_grace", "grace_minutes" => 15,
+                       "hard_timeout_minutes" => 240},
+    "torch_api" => {"kind" => "end-to-end", "resource_class" => "multi-gpu", "gpu_count" => 2,
+                    "allowed_windows" => ["night"], "long_running_after_minutes" => 60,
+                    "timeout_policy" => "historical_p95_plus_grace", "grace_minutes" => 15,
+                    "hard_timeout_minutes" => 180}
+  }
+end
+abort "#{suites_config_path}: scheduling must be a map" unless scheduling.is_a?(Hash)
+required_workloads = %w[unit performance torch_api]
+required_workloads.each do |workload|
+  policy = scheduling.fetch(workload) { abort "#{suites_config_path}: missing scheduling.#{workload}" }
+  abort "#{suites_config_path}: scheduling.#{workload} must be a map" unless policy.is_a?(Hash)
+  %w[kind resource_class gpu_count allowed_windows long_running_after_minutes timeout_policy grace_minutes hard_timeout_minutes].each do |key|
+    abort "#{suites_config_path}: scheduling.#{workload}.#{key} is required" unless policy.key?(key)
+  end
+  %w[grace_minutes hard_timeout_minutes long_running_after_minutes].each do |key|
+    unless policy.fetch(key).is_a?(Integer) && policy.fetch(key) > 0
+      abort "#{suites_config_path}: scheduling.#{workload}.#{key} must be positive"
+    end
+  end
+  unless policy.fetch("gpu_count").is_a?(Integer) && policy.fetch("gpu_count") > 0
+    abort "#{suites_config_path}: scheduling.#{workload}.gpu_count must be positive"
+  end
+  unless policy.fetch("allowed_windows").is_a?(Array) && policy.fetch("allowed_windows").all? { |window| %w[day night].include?(window) }
+    abort "#{suites_config_path}: scheduling.#{workload}.allowed_windows must contain day/night"
+  end
+end
 
 canonical_platform = ->(name) { name == "musa" ? "mthreads" : name }
-valid_levels = %w[L0 L1 L2 L3]
+valid_levels = %w[L0 L0.5 L1 L2 L3]
 normalise_level = lambda do |value|
   level = value.to_s.upcase
   abort "Unknown CI test level: #{value}" unless valid_levels.include?(level)
   level
 end
-level_number = ->(value) { value.delete_prefix("L").to_i }
+level_number = ->(value) { value.delete_prefix("L").to_f }
 
 labels = Array(context["labels"]).map(&:to_s).map do |label|
-  label.start_with?("platform:") ? "platform:#{canonical_platform.call(label.delete_prefix("platform:"))}" : label
+  if label.start_with?("platform:")
+    names = label.delete_prefix("platform:").split(",").map { |name| canonical_platform.call(name.strip) }
+    "platform:#{names.join(',')}"
+  else
+    label
+  end
 end
 files = Array(context["files"]).map(&:to_s)
+requested_suites = Array(context["suites"]).map(&:to_s)
+labels.each do |label|
+  requested_suites.concat(label.delete_prefix("suite:").split(",")) if label.start_with?("suite:")
+end
+requested_suites = requested_suites.map(&:strip).reject { |suite| suite.empty? || suite == "all" }.uniq
 event_name = context.fetch("event_name")
+execution_window = event_name == "schedule" ? "night" : "day"
 selection = nil
 active = true
 routing_reason = []
@@ -99,21 +149,22 @@ parse_selection = lambda do |value|
   requested.include?("all") ? platform_names : requested.uniq
 end
 
-level = normalise_level.call(context.fetch("level", "L2"))
+level = normalise_level.call(context.fetch("level", event_name == "push" ? "L2" : "L1"))
 level_labels = labels.filter_map { |label| label.delete_prefix("level:") if label.start_with?("level:") }
 level = normalise_level.call(level_labels.max_by { |value| level_number.call(value) }) unless level_labels.empty?
 
 case event_name
 when "pull_request"
   route_labels = labels.select { |label| label.start_with?("platform:") }
-  invalid_labels = route_labels.map { |label| label.delete_prefix("platform:") }
+  requested_platforms = route_labels.flat_map { |label| label.delete_prefix("platform:").split(",") }
+  invalid_labels = requested_platforms
                                 .reject { |name| name == "all" || platform_names.include?(name) }
   abort "Unknown platform label(s): #{invalid_labels.join(", ")}" unless invalid_labels.empty?
-  if route_labels.include?("platform:all")
+  if requested_platforms.include?("all")
     selection = platform_names
-    routing_reason << "platform:all label selected the full platform matrix"
+    routing_reason << "Platform label included all and selected the full platform matrix"
   elsif !route_labels.empty?
-    selection = route_labels.map { |label| label.delete_prefix("platform:") }.uniq
+    selection = requested_platforms.uniq
     routing_reason << "Platform labels selected #{selection.join(", ")}"
   else
     selection = select_paths.call
@@ -128,7 +179,7 @@ when "issue_comment"
     routing_reason << "No authorized /test request; hardware execution is inactive"
   elsif command[1].nil?
     route_labels = labels.select { |label| label.start_with?("platform:") }
-    selection = route_labels.empty? ? select_paths.call : parse_selection.call(route_labels.map { |label| label.delete_prefix("platform:") }.join(","))
+    selection = route_labels.empty? ? select_paths.call : parse_selection.call(route_labels.flat_map { |label| label.delete_prefix("platform:").split(",") }.join(","))
     routing_reason << "Authorized /test request used PR routing"
   else
     selection = parse_selection.call(command[1])
@@ -138,9 +189,7 @@ when "workflow_dispatch"
   selection = parse_selection.call(context.fetch("selection", "all"))
   routing_reason << "Manual dispatch selected #{selection.join(", ")}"
 when "push"
-  selection = platform_names
-  level = "L3"
-  routing_reason << "Push runs the complete configured matrix at L3"
+  selection = select_paths.call
 when "schedule"
   selection = platform_names
   level = "L3"
@@ -149,7 +198,10 @@ else
   abort "Unsupported event: #{event_name}"
 end
 
-if active && level == "L3" && selection != platform_names
+explicit_platform_selection = labels.any? { |label| label.start_with?("platform:") } ||
+                              (event_name == "workflow_dispatch" && context.fetch("selection", "all") != "all") ||
+                              (event_name == "issue_comment" && context.fetch("comment", "").match?(/\A\/test\s+(?!all\z)[a-z0-9_-]+\z/))
+if active && level == "L3" && !explicit_platform_selection && selection != platform_names
   selection = platform_names
   routing_reason << "level:L3 selected the full platform matrix"
 end
@@ -172,19 +224,49 @@ unit_suites = selected.to_h do |entry|
   config = load_yaml.call(File.join(config_dir, "#{entry.fetch("platform")}.yml"))
   [entry.fetch("platform"), config.fetch("unit_test_suites", [])]
 end
+unsupported_suites = requested_suites - unit_suites.values.flatten.uniq
+abort "Selected platforms do not provide requested suite(s): #{unsupported_suites.join(", ")}" unless unsupported_suites.empty?
+suite_shared_paths = suites_config.fetch("shared_paths_watch", [])
+suite_path_map = suites_config.fetch("suites", {})
+matrix_entries = selected.map do |entry|
+  platform = entry.fetch("platform")
+  available = unit_suites.fetch(platform)
+  if requested_suites.any?
+    suites = requested_suites & available
+  elsif event_name == "schedule" || match_paths.call(suite_shared_paths, files) || files.empty?
+    suites = available
+  else
+    matched = available.select { |suite| match_paths.call(Array(suite_path_map[suite]), files) }
+    unmapped = files.any? do |path|
+      !suite_shared_paths.any? { |pattern| File.fnmatch?(pattern, path, File::FNM_PATHNAME | File::FNM_EXTGLOB) } &&
+        !suite_path_map.values.flatten.any? { |pattern| File.fnmatch?(pattern, path, File::FNM_PATHNAME | File::FNM_EXTGLOB) }
+    end
+    suites = unmapped || matched.empty? ? available : matched
+  end
+  next if suites.empty?
+  { "platform" => platform, "display_name" => entry.fetch("display_name"), "suites" => suites }
+end.compact
+matrix = { "include" => matrix_entries }
+suite_filter_active = matrix_entries.any? do |entry|
+  entry.fetch("suites").length < unit_suites.fetch(entry.fetch("platform")).length
+end
+suite_filter_active ||= requested_suites.any?
 planned_groups = []
-planned_groups << "unit suites" unless level == "L0"
+planned_groups << "runner smoke (no tests)" if level == "L0.5"
+planned_groups << "unit suites" unless %w[L0 L0.5].include?(level)
 planned_groups.concat(["performance", "Torch API"]) if %w[L2 L3].include?(level)
 plan = {
   "schema_version" => 1,
   "source_sha" => context.fetch("ref", ""),
   "event" => event_name,
+  "execution_window" => execution_window,
   "level" => level,
   "status" => plan_status,
   "blocked" => [],
   "platforms" => selected.map { |entry| entry.fetch("platform") },
   "unit_suites" => unit_suites,
   "planned_groups" => planned_groups,
+  "scheduling" => scheduling,
   "routing_reason" => routing_reason,
   "changed_files" => files,
   "ignore_test" => ignore_entries,
@@ -211,12 +293,17 @@ if summary_path && !summary_path.empty?
     summary.puts "### Test plan"
     summary.puts
     summary.puts "- Stage: **#{event_name}**"
+    summary.puts "- Execution window: **#{execution_window}**"
     summary.puts "- Level: **#{level}**"
     summary.puts "- Plan status: **#{plan_status}**"
     summary.puts "- Gate policy: configured exclusions stay visible; blocked work does not cancel executable jobs"
     summary.puts "- Changed files: **#{files.length}**"
     summary.puts "- Planned groups: **#{planned_groups.empty? ? "common checks only" : planned_groups.join(", ")}**"
+    scheduling.each do |workload, policy|
+      summary.puts "- #{workload}: **#{policy.fetch("resource_class")} / #{policy.fetch("gpu_count")} GPU / #{policy.fetch("allowed_windows").join(", ")} / >#{policy.fetch("long_running_after_minutes")} min / hard #{policy.fetch("hard_timeout_minutes")} min**"
+    end
     summary.puts "- Unit suites: **#{unit_suites.values.flatten.uniq.length} configured**"
+    matrix_entries.each { |entry| summary.puts "- #{entry.fetch("platform")} selected suites: #{entry.fetch("suites").join(", ")}" }
     unit_suites.each { |platform, suites| summary.puts "- #{platform} suites: #{suites.join(", ")}" }
     summary.puts
     summary.puts "### ignore_test"
@@ -240,13 +327,21 @@ output_path = ENV["GITHUB_OUTPUT"]
 abort "GITHUB_OUTPUT is required" if output_path.nil? || output_path.empty?
 outputs = {
   "active" => active.to_s,
-  "matrix" => JSON.generate({"include" => selected.map { |entry| entry.slice("platform", "display_name")}}),
+  "matrix" => JSON.generate(matrix),
+  "runner_matrix" => JSON.generate({"include" => selected.map do |entry|
+    {"platform" => entry.fetch("platform"), "display_name" => entry.fetch("display_name")}
+  end}),
   "platforms" => JSON.generate(selected.map { |entry| entry.fetch("platform") }),
   "platform_csv" => selected.map { |entry| entry.fetch("platform") }.join(","),
+  "suites" => JSON.generate(matrix_entries.to_h { |entry| [entry.fetch("platform"), entry.fetch("suites")] }),
+  "suite_filter_active" => suite_filter_active.to_s,
   "has_platforms" => (!selected.empty?).to_s,
   "repository" => context.fetch("repository", ""),
   "ref" => context.fetch("ref", ""),
   "level" => level,
+  "event" => event_name,
+  "execution_window" => execution_window,
+  "scheduling" => JSON.generate(scheduling),
   "plan_status" => plan_status,
   "plan_path" => plan_path.to_s
 }

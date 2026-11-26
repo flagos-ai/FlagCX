@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if [[ $# -ne 7 && $# -ne 8 ]]; then
-  echo "Usage: $0 <active> <has-platforms> <prepare> <unit> <perf> <torch-api> <format> [level]" >&2
+if [[ $# -lt 7 || $# -gt 11 ]]; then
+  echo "Usage: $0 <active> <has-platforms> <prepare> <unit> <perf> <torch-api> <format> [level] [suite-filter-active] [runner-smoke] [execution-window]" >&2
   exit 2
 fi
 
@@ -15,9 +15,12 @@ perf_result=$5
 torch_result=$6
 format_result=$7
 level=${8:-L2}
+suite_filter_active=${9:-false}
+runner_smoke_result=${10:-skipped}
+execution_window=${11:-day}
 
 case "$level" in
-  L0|L1|L2|L3) ;;
+  L0|L0.5|L1|L2|L3) ;;
   *) echo "Unknown CI level: $level" >&2; exit 2 ;;
 esac
 
@@ -30,26 +33,43 @@ if [[ "$prepare_result" != success ]]; then
   exit 1
 fi
 
-if [[ "$has_platforms" == true && "$level" != L0 && "$unit_result" != success ]]; then
+if [[ "$level" == L0.5 && "$has_platforms" == true && "$runner_smoke_result" != success ]]; then
+  echo "Hardware runner smoke ended with result: $runner_smoke_result" >&2
+  exit 1
+fi
+
+if [[ "$has_platforms" == true && ! "$level" =~ ^L0(\.5)?$ && "$unit_result" != success ]]; then
   echo "Selected platform unit tests ended with result: $unit_result" >&2
   exit 1
 fi
-if [[ ( "$has_platforms" != true || "$level" == L0 ) && "$unit_result" != success && "$unit_result" != skipped ]]; then
+if [[ ( "$has_platforms" != true || "$level" == L0 || "$level" == L0.5 ) && "$unit_result" != success && "$unit_result" != skipped ]]; then
   echo "Unit-test job ended with result: $unit_result" >&2
   exit 1
 fi
 if [[ "$has_platforms" == true ]]; then
   case "$level" in
     L2|L3)
-      for result in "$perf_result" "$torch_result"; do
-        [[ "$result" == success ]] || {
-          echo "Selected platform workflow ended with result: $result" >&2
-          exit 1
-        }
-      done
+      if [[ "$suite_filter_active" == true ]]; then
+        for result in "$perf_result" "$torch_result"; do
+          case "$result" in
+            success|skipped) ;;
+            *) echo "Platform workflow failed during focused suite run: $result" >&2; exit 1 ;;
+          esac
+        done
+      else
+        for result in "$perf_result" "$torch_result"; do
+          if [[ "$level" != L2 && "$execution_window" != night && "$result" == skipped ]]; then
+            continue
+          fi
+          [[ "$result" == success ]] || {
+            echo "Selected platform workflow ended with result: $result" >&2
+            exit 1
+          }
+        done
+      fi
       ;;
     *)
-      # At L0/L1 perf/torch are intentionally skipped. Unexpected cancellation
+      # At L0/L0.5/L1 perf/torch are intentionally skipped. Unexpected cancellation
       # or failure still needs attention.
       for result in "$perf_result" "$torch_result"; do
         case "$result" in

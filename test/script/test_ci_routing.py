@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -60,10 +61,12 @@ class CiMatrixRoutingTest(unittest.TestCase):
             )
             outputs = dict(line.split("=", 1) for line in output_path.read_text().splitlines())
             outputs["matrix"] = json.loads(outputs["matrix"])
+            outputs["runner_matrix"] = json.loads(outputs["runner_matrix"])
             outputs["platforms"] = json.loads(outputs["platforms"])
+            outputs["scheduling"] = json.loads(outputs["scheduling"])
             return outputs, result.stdout
 
-    def test_push_and_schedule_always_run_all_enabled_platforms(self):
+    def test_push_routes_by_changed_paths_and_schedule_runs_full_matrix(self):
         self.assertEqual(
             ALL_ENABLED_PLATFORMS,
             [
@@ -78,10 +81,106 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 "enflame",
             ],
         )
-        for event_name in ("push", "schedule"):
-            with self.subTest(event=event_name):
-                outputs, _ = self.resolve({"event_name": event_name})
-                self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+        outputs, _ = self.resolve({
+            "event_name": "push", "files": [".github/scripts/set_env/metax.sh"]
+        })
+        self.assertEqual(outputs["platforms"], ["metax"])
+
+        outputs, _ = self.resolve({
+            "event_name": "push", "files": ["flagcx/core/group.cc"]
+        })
+        self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+
+    def test_suite_selection_labels_and_path_fallback(self):
+        outputs, _ = self.resolve({
+            "event_name": "pull_request",
+            "labels": ["platform:metax", "suite:p2p"],
+            "files": ["test/unittest/p2p/test_p2p.cc"],
+        })
+        self.assertEqual(outputs["matrix"]["include"], [
+            {"platform": "metax", "display_name": "MetaX Tests", "suites": ["p2p"]}
+        ])
+
+        outputs, _ = self.resolve({
+            "event_name": "workflow_dispatch", "selection": "metax,cuda",
+            "suites": ["p2p", "rma"],
+        })
+        self.assertEqual(outputs["matrix"]["include"][0]["suites"], ["p2p", "rma"])
+        self.assertEqual(outputs["matrix"]["include"][1]["suites"], ["p2p", "rma"])
+
+        outputs, _ = self.resolve({
+            "event_name": "pull_request", "labels": ["platform:metax"],
+            "files": ["test/unittest/p2p/test_p2p.cc"],
+        })
+        self.assertEqual(outputs["matrix"]["include"][0]["suites"], ["p2p"])
+
+        outputs, _ = self.resolve({
+            "event_name": "pull_request", "labels": ["platform:metax"],
+            "files": ["new/unmapped/change.cc"],
+        })
+        self.assertEqual(outputs["matrix"]["include"][0]["suites"], [
+            "adaptor", "core", "p2p", "rma", "runner", "service", "symmem"
+        ])
+
+    def test_suite_dispatch_input_and_nightly_select_all_suites(self):
+        outputs, _ = self.resolve({
+            "event_name": "workflow_dispatch", "selection": "metax", "suites": ["p2p"]
+        })
+        self.assertEqual(outputs["matrix"]["include"][0]["suites"], ["p2p"])
+        outputs, _ = self.resolve({"event_name": "schedule"})
+        self.assertEqual(len(outputs["matrix"]["include"]), len(ALL_ENABLED_PLATFORMS))
+        for entry in outputs["matrix"]["include"]:
+            expected = yaml.safe_load(
+                (CONFIG_DIR / f"{entry['platform']}.yml").read_text()
+            )["unit_test_suites"]
+            self.assertEqual(entry["suites"], expected)
+
+    def test_pr_and_dispatch_default_to_unit_only_and_push_to_l2(self):
+        for event_name, context, expected_level in (
+            ("pull_request", {"files": ["test/unittest/p2p/test_p2p.cc"]}, "L1"),
+            ("push", {"files": ["test/unittest/p2p/test_p2p.cc"]}, "L2"),
+            ("workflow_dispatch", {"selection": "metax"}, "L1"),
+        ):
+            with self.subTest(event_name=event_name):
+                outputs, _ = self.resolve({"event_name": event_name, **context})
+                self.assertEqual(outputs["level"], expected_level)
+                self.assertEqual(outputs["execution_window"], "day")
+                self.assertEqual(outputs["scheduling"]["unit"]["resource_class"], "single-gpu")
+
+        scheduled, _ = self.resolve({"event_name": "schedule"})
+        self.assertEqual(scheduled["level"], "L3")
+        self.assertEqual(scheduled["execution_window"], "night")
+        self.assertEqual(scheduled["scheduling"]["performance"]["gpu_count"], 2)
+
+    def test_requested_suite_unavailable_on_selected_platform_fails_clearly(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context_path = Path(temp_dir) / "context.json"
+            output_path = Path(temp_dir) / "github-output"
+            context_path.write_text(json.dumps({
+                "event_name": "workflow_dispatch",
+                "selection": "metax",
+                "suites": ["device_api"],
+            }))
+            env = dict(os.environ, GITHUB_OUTPUT=str(output_path))
+            result = subprocess.run(
+                ["ruby", str(MATRIX_SCRIPT), str(CONFIG_DIR), str(context_path)],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("do not provide requested suite", result.stderr)
+
+    def test_l3_keeps_explicit_platform_selection(self):
+        outputs, _ = self.resolve({
+            "event_name": "pull_request",
+            "labels": ["level:L3", "platform:metax"],
+            "files": ["flagcx/core/group.cc"],
+        })
+        self.assertEqual(outputs["platforms"], ["metax"])
+
+        outputs, _ = self.resolve({"event_name": "schedule"})
+        self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
     def test_common_changes_select_all_platforms(self):
         outputs, _ = self.resolve(
@@ -186,10 +285,37 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 self.assertEqual(outputs["platforms"], [platform])
 
     def test_all_label_forces_full_matrix(self):
-        outputs, _ = self.resolve(
-            {"event_name": "pull_request", "labels": ["platform:all"]}
-        )
+        for label in ("platform:all", "platform:all,cuda", "platform:cuda,all"):
+            with self.subTest(label=label):
+                outputs, _ = self.resolve(
+                    {"event_name": "pull_request", "labels": [label]}
+                )
+                self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+
+    def test_shared_device_api_entry_point_selects_all_suites(self):
+        outputs, _ = self.resolve({
+            "event_name": "pull_request",
+            "files": ["flagcx/adaptor/flagcx_device.cc"],
+        })
         self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+        for entry in outputs["matrix"]["include"]:
+            config = yaml.safe_load(
+                (CONFIG_DIR / f"{entry['platform']}.yml").read_text()
+            )
+            self.assertEqual(entry["suites"], config["unit_test_suites"])
+
+    def test_push_routes_both_sides_of_renames(self):
+        outputs, _ = self.resolve({
+            "event_name": "push",
+            "files": [
+                "test/kernel/nvidia/common.cuh",
+                "test/kernel/maca/common.cuh",
+            ],
+        })
+        self.assertEqual(
+            outputs["platforms"],
+            [platform for platform in ("cuda", "metax") if platform in ALL_ENABLED_PLATFORMS],
+        )
 
     def test_empty_pr_changes_skip_hardware_matrix(self):
         outputs, _ = self.resolve(
@@ -239,12 +365,23 @@ class CiMatrixRoutingTest(unittest.TestCase):
             self.assertIn("full platform matrix", summary)
 
     def test_levels_select_the_expected_workloads(self):
-        for level in ("L0", "L1", "L2", "L3"):
+        for level in ("L0", "L0.5", "L1", "L2", "L3"):
             with self.subTest(level=level):
                 outputs, _ = self.resolve({
                     "event_name": "workflow_dispatch", "selection": "cuda", "level": level
                 })
                 self.assertEqual(outputs["level"], level)
+
+    def test_l05_selects_runner_smoke_without_test_workloads(self):
+        outputs, _ = self.resolve({
+            "event_name": "pull_request",
+            "labels": ["platform:metax", "level:L0.5"],
+            "files": ["test/unittest/p2p/test_p2p.cc"],
+        })
+        self.assertEqual(outputs["platforms"], ["metax"])
+        self.assertEqual(outputs["runner_matrix"]["include"], [
+            {"platform": "metax", "display_name": "MetaX Tests"}
+        ])
 
     def test_level_labels_escalate_without_downgrading(self):
         outputs, _ = self.resolve({
@@ -260,7 +397,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
         })
         self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
-    def test_l3_selects_full_matrix_after_platform_routing(self):
+    def test_l3_keeps_explicit_platform_routing(self):
         cases = (
             {"event_name": "pull_request", "labels": ["level:L3", "platform:cuda"]},
             {"event_name": "workflow_dispatch", "selection": "cuda", "level": "L3"},
@@ -270,7 +407,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
         for context in cases:
             with self.subTest(context=context):
                 outputs, _ = self.resolve(context)
-                self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+                self.assertEqual(outputs["platforms"], ["cuda"])
 
     def test_l3_ignore_test_projection_preserves_selectors(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -452,6 +589,21 @@ class CiRetryTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("passed on retry 1", result.stdout)
             self.assertIn("::warning title=Flaky CI test::", result.stdout)
+            attempt_logs = sorted((Path(temp_dir) / "attempt-logs").glob("retry-test.*/attempt-*.log"))
+            self.assertEqual(len(attempt_logs), 2)
+            result_lines = [
+                line.split("\t")
+                for log in attempt_logs
+                for line in log.read_text().splitlines()
+                if line.startswith("FLAGCX_CI_RESULT\t")
+            ]
+            self.assertEqual(
+                result_lines,
+                [
+                    ["FLAGCX_CI_RESULT", "retry-test", "1", "7", "0"],
+                    ["FLAGCX_CI_RESULT", "retry-test", "2", "0", "0"],
+                ],
+            )
             self.assertIn("First attempt log", summary.read_text())
             attempt_dirs = list((Path(temp_dir) / "attempt-logs").glob("retry-test.*"))
             self.assertEqual(len(attempt_dirs), 1)
@@ -523,7 +675,7 @@ class CiRetryTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
             logs = list(Path(temporary).glob("same-label.*/attempt-1.log"))
             self.assertEqual(len(logs), 2)
-            self.assertEqual({log.read_text().strip() for log in logs},
+            self.assertEqual({re.sub(r"FLAGCX_CI_RESULT\tsame-label\t1\t0\t\d+", "", log.read_text()).strip() for log in logs},
                              {"first invocation", "second invocation"})
 
     def test_cancellation_stops_workload_without_retrying(self):
@@ -554,12 +706,24 @@ class CiRetryTest(unittest.TestCase):
 
 
 class CiWorkflowWiringTest(unittest.TestCase):
+    def test_push_resolver_fetches_before_commit_and_gate_receives_suite_filter(self):
+        workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/unit-test.yml").read_text())
+        prepare_steps = workflow["jobs"]["prepare"]["steps"]
+        checkout = next(step for step in prepare_steps if step.get("name") == "Checkout CI configuration")
+        self.assertEqual(checkout["with"]["fetch-depth"], 0)
+        gate = workflow["jobs"]["ci_complete"]["steps"][-1]
+        self.assertEqual(
+            gate["env"]["SUITE_FILTER_ACTIVE"],
+            "${{ needs.prepare.outputs.suite_filter_active }}",
+        )
+        self.assertIn("$SUITE_FILTER_ACTIVE", gate["run"])
+
     def test_single_gate_calls_all_platform_workflows(self):
         workflow = (REPO_ROOT / ".github/workflows/unit-test.yml").read_text()
         self.assertIn("name: FlagCX CI", workflow)
         self.assertIn("  ci_complete:\n    name: ci-complete", workflow)
         self.assertIn(
-            "needs: [prepare, unit_tests, performance_tests, torch_api_tests, format-check]",
+            "needs: [prepare, unit_tests, runner_smoke, performance_tests, torch_api_tests, format-check]",
             workflow,
         )
         for reusable in (
@@ -569,6 +733,13 @@ class CiWorkflowWiringTest(unittest.TestCase):
             "format-check.yml",
         ):
             self.assertIn(reusable, workflow)
+
+    def test_l3_daytime_skips_end_to_end_jobs_but_l2_runs_them(self):
+        workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/unit-test.yml").read_text())
+        for job_name in ("performance_tests", "torch_api_tests"):
+            condition = workflow["jobs"][job_name]["if"]
+            self.assertIn("needs.prepare.outputs.execution_window == 'night'", condition)
+            self.assertIn("needs.prepare.outputs.level == 'L2'", condition)
 
     def test_platform_specific_jobs_are_conditioned_on_matrix_selection(self):
         for path in (
@@ -682,7 +853,27 @@ class CiWorkflowWiringTest(unittest.TestCase):
 
 
 class CiCompletionGateTest(unittest.TestCase):
-    def check(self, *results):
+    def check(self, *results, level=None, suite_filter_active=None, runner_smoke=None, execution_window=None):
+        if level is not None:
+            results += (level,)
+        if suite_filter_active is not None:
+            if level is None:
+                results += ("L2",)
+            results += (suite_filter_active,)
+        if runner_smoke is not None:
+            if level is None:
+                results += ("L2",)
+            if suite_filter_active is None:
+                results += ("false",)
+            results += (runner_smoke,)
+        if execution_window is not None:
+            if level is None:
+                results += ("L2",)
+            if suite_filter_active is None:
+                results += ("false",)
+            if runner_smoke is None:
+                results += ("skipped",)
+            results += (execution_window,)
         return subprocess.run(
             ["bash", str(GATE_SCRIPT), *results],
             capture_output=True,
@@ -728,6 +919,47 @@ class CiCompletionGateTest(unittest.TestCase):
             "true", "true", "success", "success", "cancelled", "skipped", "success", "L1"
         )
         self.assertNotEqual(cancelled.returncode, 0)
+
+    def test_l05_requires_runner_smoke_but_allows_test_jobs_to_skip(self):
+        passed = self.check(
+            "true", "true", "success", "skipped", "skipped", "skipped", "success",
+            level="L0.5", suite_filter_active="false", runner_smoke="success",
+        )
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        failed = self.check(
+            "true", "true", "success", "skipped", "skipped", "skipped", "success",
+            level="L0.5", suite_filter_active="false", runner_smoke="failure",
+        )
+        self.assertNotEqual(failed.returncode, 0)
+
+    def test_focused_suite_run_allows_perf_and_torch_skips_only(self):
+        passed = self.check(
+            "true", "true", "success", "success", "skipped", "skipped", "success",
+            level="L2", suite_filter_active="true",
+        )
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        failed = self.check(
+            "true", "true", "success", "success", "failure", "skipped", "success",
+            level="L2", suite_filter_active="true",
+        )
+        self.assertNotEqual(failed.returncode, 0)
+
+    def test_daytime_l3_may_skip_l2_only_jobs_without_failure(self):
+        passed = self.check(
+            "true", "true", "success", "success", "skipped", "skipped", "success",
+            level="L3", execution_window="day",
+        )
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        failed = self.check(
+            "true", "true", "success", "success", "skipped", "failure", "success",
+            level="L3", execution_window="day",
+        )
+        self.assertNotEqual(failed.returncode, 0)
+        night_failed = self.check(
+            "true", "true", "success", "success", "skipped", "skipped", "success",
+            level="L2", execution_window="night",
+        )
+        self.assertNotEqual(night_failed.returncode, 0)
 
 
 class PlatformWorkflowCompletionTest(unittest.TestCase):

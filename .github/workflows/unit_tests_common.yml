@@ -7,6 +7,11 @@ on:
         description: Platform configuration name
         required: true
         type: string
+      suites:
+        description: JSON array of unit-test suites selected by the controller
+        required: false
+        type: string
+        default: '[]'
       repository:
         description: Repository containing the source under test
         required: false
@@ -36,7 +41,7 @@ jobs:
       container_options: ${{ steps.config.outputs.container_options }}
       container_volumes: ${{ steps.config.outputs.container_volumes }}
       set_env: ${{ steps.config.outputs.set_env }}
-      unit_test_suites: ${{ steps.config.outputs.unit_test_suites }}
+      unit_test_suites: ${{ inputs.suites != '[]' && inputs.suites || steps.config.outputs.unit_test_suites }}
       ignore_test: ${{ steps.config.outputs.ignore_test }}
     steps:
       - name: Checkout code
@@ -102,18 +107,17 @@ jobs:
         with:
           repository: ${{ inputs.repository || github.repository }}
           ref: ${{ inputs.ref || github.ref }}
-          submodules: ${{ inputs.platform != 'cuda' && 'recursive' || 'false' }}
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
+
+      - name: Checkout submodules with retries
+        shell: bash
+        run: bash .github/scripts/ci/checkout_submodules.sh
 
       - name: Check Docker
         shell: bash
         run: docker version
-
-      - name: Checkout CUDA submodules with retries
-        if: inputs.platform == 'cuda'
-        shell: bash
-        run: bash .github/scripts/ci/checkout_submodules.sh
 
       - name: Run unit-test suite in host-managed container
         env:
@@ -258,9 +262,13 @@ jobs:
         with:
           repository: ${{ inputs.repository || github.repository }}
           ref: ${{ inputs.ref || github.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
+
+      - name: Checkout submodules with retries in job container
+        shell: bash
+        run: bash .github/scripts/ci/checkout_submodules.sh
 
       - name: Clean build artifacts in job container
         run: |

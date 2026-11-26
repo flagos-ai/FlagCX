@@ -105,7 +105,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
                     )
                 self.assertTrue(steps[checkout_index]["with"]["set-safe-directory"])
 
-    def test_cuda_submodule_checkouts_use_retry_script(self):
+    def test_submodule_checkouts_use_retry_script(self):
         cases = (
             ("unit_tests_common.yml", "unit_test", "Checkout code"),
             ("test.yml", "perf-test-experimental-cuda", "Checkout Code"),
@@ -121,17 +121,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 checkout = next(i for i, step in enumerate(steps)
                                 if step.get("name") == checkout_name)
                 retry = next(i for i, step in enumerate(steps)
-                             if step.get("name") == "Checkout CUDA submodules with retries")
+                             if step.get("run") == "bash .github/scripts/ci/checkout_submodules.sh")
                 self.assertLess(checkout, retry)
                 self.assertEqual(
                     steps[retry]["run"],
                     "bash .github/scripts/ci/checkout_submodules.sh",
                 )
-                if job_name == "unit_test":
-                    self.assertIn("inputs.platform != 'cuda'", steps[checkout]["with"]["submodules"])
-                    self.assertEqual(steps[retry]["if"], "inputs.platform == 'cuda'")
-                else:
-                    self.assertFalse(steps[checkout]["with"]["submodules"])
+                self.assertFalse(steps[checkout]["with"]["submodules"])
 
     def test_all_hardware_platforms_are_enabled(self):
         self.assertEqual(
@@ -766,7 +762,9 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             )
             self.assertEqual(
                 self._run_platform_matrix(
-                    "push", configs_dir=configs_dir
+                    "push",
+                    "flagcx/adaptor/device/cuda_adaptor.cc",
+                    configs_dir,
                 ),
                 ["cuda"],
             )
@@ -799,13 +797,12 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             "  unit_test_enflame:\n", 1
         )[0]
         checkout = unit_job[unit_job.index("      - name: Checkout code") :]
-        self.assertIn("inputs.platform != 'cuda'", checkout)
+        self.assertIn("submodules: false", checkout)
         self.assertIn("  unit_test_enflame:\n", workflow)
         self.assertIn("    container:\n      image:", workflow)
-        submodules = checkout.index("      - name: Checkout CUDA submodules with retries")
+        submodules = checkout.index("      - name: Checkout submodules with retries")
         workload = checkout.index("      - name: Run unit-test suite in host-managed container")
         self.assertLess(submodules, workload)
-        self.assertIn("if: inputs.platform == 'cuda'", checkout)
         self.assertIn("bash .github/scripts/ci/checkout_submodules.sh", checkout)
         self.assertIn("FLAGCX_CI_DOCKER_ARGS:", workflow)
         self.assertIn("outputs.docker_args", workflow)
