@@ -61,12 +61,12 @@ class CiMatrixRoutingTest(unittest.TestCase):
             outputs = dict(line.split("=", 1) for line in output_path.read_text().splitlines())
             outputs["matrix"] = json.loads(outputs["matrix"])
             outputs["platforms"] = json.loads(outputs["platforms"])
-            outputs["workload_platforms"] = json.loads(outputs["workload_platforms"])
             return outputs, result.stdout
 
-    def test_metax_symmem_only_disables_other_workloads(self):
+    def test_metax_full_coverage_includes_other_workloads(self):
         config = yaml.safe_load((CONFIG_DIR / "metax.yml").read_text())
-        self.assertEqual(config["unit_test_suites"], ["symmem"])
+        self.assertIn("symmem", config["unit_test_suites"])
+        self.assertIn("core", config["unit_test_suites"])
         for context in (
             {"event_name": "pull_request", "labels": ["platform:metax"]},
             {"event_name": "workflow_dispatch", "selection": "metax", "level": "L2"},
@@ -77,13 +77,11 @@ class CiMatrixRoutingTest(unittest.TestCase):
             with self.subTest(context=context):
                 outputs, _ = self.resolve(context)
                 self.assertIn("metax", outputs["platforms"])
-                self.assertEqual(outputs["workload_platforms"],
-                                 [p for p in outputs["platforms"] if p != "metax"])
                 self.assertIn("metax", [p["platform"] for p in outputs["matrix"]["include"]])
         workflow = yaml.safe_load((REPO_ROOT / '.github/workflows/unit-test.yml').read_text())
         for job in ('performance_tests', 'torch_api_tests'):
             self.assertEqual(workflow['jobs'][job]['with']['platforms'],
-                             '${{ needs.prepare.outputs.workload_platforms }}')
+                             '${{ needs.prepare.outputs.platforms }}')
 
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
         self.assertEqual(

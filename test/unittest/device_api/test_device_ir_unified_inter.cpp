@@ -33,7 +33,6 @@
 
 #include <cassert>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 #include <iostream>
 
@@ -242,14 +241,6 @@ int main(int argc, char *argv[]) {
       allPass &= s16Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
-
-    // The MetaX diagnostic isolates the failing barrier without executing
-    // unrelated one-sided operations or changing normal suite coverage.
-#ifdef USE_METAX_ADAPTOR
-    const char *barrierOnly = std::getenv("FLAGCX_CI_RDMA_PROBE_BARRIER_ONLY");
-    if (barrierOnly != nullptr && std::strcmp(barrierOnly, "1") == 0)
-      break;
-#endif
 
     // =======================================================================
     // S17: DevTeamResolution — 3 coop × INTER/WORLD/INTRA = 9 cases

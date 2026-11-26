@@ -109,11 +109,6 @@ outside CI. Its strong remote-write wait returns `flagcxNotSupported` because
 an acquire/flush mapping has not been validated; this does not mean the NIC
 cannot transfer GPU data.
 
-MetaX also has an independent [`rdma_atomic_probe`](metax_rdma_atomic_probe.md)
-CI suite. It compares all eight MACA allocation flags, ordinary `mcMalloc`,
-and the actual non-VMM GDR interface through native verbs and the net adaptor,
-then isolates the existing inter barrier with GPU signals.
-
 The existing `device_api`, `device_api_host`, and `device_api_unified_ir`
 MetaX CI suites build the Default backend with `COMPILE_KERNEL=1` and exercise
 native API, Scalar IR and Unified IR tests. Inter tests use two logical nodes

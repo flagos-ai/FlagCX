@@ -512,12 +512,15 @@ if [[ "$FLAGCX_CI_TEST_LABEL" == "${METAX_TEST_FAIL_LABEL:-}" ]]; then exit 7; f
             lifecycle_binary.unlink()
             log.write_text("")
             environment["METAX_TEST_FAIL_LABEL"] = ""
+            environment["LC_ALL"] = "C"
             result = subprocess.run(
                 ["bash", str(scripts / "run_unit_test.sh"), str(env_script), "device_api_host"],
                 env=environment, text=True, capture_output=True,
             )
-            self.assertEqual(result.returncode, 127, result.stdout + result.stderr)
+            # Bash reports a missing executable as 126 or 127 across platforms.
+            self.assertIn(result.returncode, (126, 127), result.stdout + result.stderr)
             self.assertIn(str(lifecycle_binary), result.stderr)
+            self.assertIn("No such file or directory", result.stderr)
 
 
 if __name__ == "__main__":

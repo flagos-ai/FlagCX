@@ -8,7 +8,7 @@ source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
 
 export FLAGCX_ADAPTOR=metax
 # Select one GPU per presumed GPU/NIC branch; confirm the physical mapping
-# from the runtime PCI bus IDs recorded by the probe.
+# from the runtime PCI bus IDs recorded by each suite.
 export MACA_VISIBLE_DEVICES=0,2,4,6
 
 FLAGCX_CI_MPI_BASE_HOME=${MPI_HOME:-/usr/local/mpi}
@@ -55,7 +55,7 @@ flagcx_ci_configure_suite() {
   local suite=$1
 
   case "$suite" in
-    device_api|device_api_host|device_api_unified_ir|rdma_atomic_probe)
+    device_api|device_api_host|device_api_unified_ir)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
       ;;
@@ -86,7 +86,7 @@ flagcx_ci_prepare() {
         "$suite" == "rma" || "$suite" == "runner" ||
         "$suite" == "symmem" || "$suite" == "perf" ||
         "$suite" == "device_api" || "$suite" == "device_api_unified_ir" ||
-        "$suite" == "torch-api" || "$suite" == "rdma_atomic_probe" ]]; then
+        "$suite" == "torch-api" ]]; then
     if [[ -d /sys/class/net/bond0 ]]; then
       export FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-bond0}
     fi

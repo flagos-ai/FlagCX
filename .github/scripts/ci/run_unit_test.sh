@@ -293,11 +293,6 @@ build_project() {
 
 build_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
-  if [[ "$SUITE" == rdma_atomic_probe ]]; then
-    # The supervisor builds each worker independently and saves build failures
-    # before running the remaining allocation/transport controls.
-    return
-  fi
   if [[ "$SUITE" == device_traits ]]; then
     return 0
   fi
@@ -597,21 +592,6 @@ run_suite() {
   fi
 
   case "$SUITE" in
-    rdma_atomic_probe)
-      local probe_log_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}"
-      local -a probe_build_args=()
-      local probe_arg
-      for probe_arg in "${FLAGCX_CI_TEST_MAKE_ARGS[@]}"; do
-        probe_build_args+=("--make-arg=$probe_arg")
-      done
-      python3 "$PROJECT_ROOT/.github/scripts/ci/run_rdma_atomic_probe.py" \
-        --sdk-inventory "$PROJECT_ROOT/test/unittest/rdma_atomic_probe/build/bin/rdma_atomic_sdk_inventory" \
-        --native-binary "$PROJECT_ROOT/test/unittest/rdma_atomic_probe/build/bin/rdma_atomic_native_probe" \
-        --adaptor-binary "$PROJECT_ROOT/test/unittest/rdma_atomic_probe/build/bin/rdma_atomic_adaptor_probe" \
-        --barrier "$PROJECT_ROOT/test/unittest/device_api/build/bin/test_device_ir_unified_inter" \
-        --build-root "$PROJECT_ROOT" --jobs "$(nproc)" "${probe_build_args[@]}" \
-        --output "$probe_log_root/rdma_atomic_probe"
-      ;;
     adaptor)
       local unit_status=0
       local ibuc_status=0
@@ -1590,7 +1570,7 @@ case "$SUITE" in
   adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
-  device_traits|rdma_atomic_probe)
+  device_traits)
     ;;
   *)
     echo "Unsupported unit test suite: $SUITE" >&2
