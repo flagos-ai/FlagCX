@@ -8,6 +8,7 @@
 #include "param.h"
 #include "topo.h"
 #include "utils.h"
+#include <array>
 #include <dlfcn.h>
 #include <getopt.h>
 #include <iomanip>
@@ -306,6 +307,12 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
   std::map<int, int> stepInfo;
   std::vector<std::pair<int, int>> steps;
   std::vector<flagcxEvent_t> events;
+  // A group can be polled by several proxy threads. Contention only drops a
+  // diagnostic snapshot; it must never delay progress or semaphore retirement.
+  std::mutex traceMutex;
+  bool traceSeen = false;
+  std::array<uint64_t, 6> traceSnapshot{};
+  std::chrono::steady_clock::time_point traceTime{};
 
   flagcxStreamValueSemaphore()
       : counter(0), signals(nullptr), dSignals(nullptr),
@@ -343,6 +350,8 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
   }
 
   flagcxResult_t enqueueCompletion(flagcxStream_t launchStream);
+  void traceCompletion(const char *reason, int remaining, int state,
+                       bool queried, flagcxResult_t queryResult);
   void markCompletionDrained() {
     completionUnsafe = false;
     __atomic_store_n(&completionState, 2, __ATOMIC_RELEASE);
@@ -357,18 +366,7 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
   }
   void signalStart() override {}
   void *getSignals() override { return dSignals; }
-  void subCounter(int opId = 0) override {
-    auto it = stepInfo.find(opId);
-    assert(it != stepInfo.end());
-    const int idx = it->second;
-    const int previous =
-        __atomic_fetch_add(&steps[idx].first, 1, __ATOMIC_ACQ_REL);
-    if (previous + 1 == __atomic_load_n(&steps[idx].second, __ATOMIC_ACQUIRE)) {
-      if (__atomic_sub_fetch(&counter, 1, __ATOMIC_ACQ_REL) == 0) {
-        __atomic_store_n(signals + 1, uint64_t(1), __ATOMIC_RELEASE);
-      }
-    }
-  }
+  void subCounter(int opId = 0) override;
   void addCounter(int opId = 0) override {
     auto it = stepInfo.find(opId);
     if (it != stepInfo.end()) {

@@ -12,6 +12,7 @@ namespace {
 
 flagcxStreamValueSemaphore *recordingSemaphore = nullptr;
 int eventQueries = 0;
+flagcxResult_t eventQueryResult = flagcxSuccess;
 bool failRecord = false;
 bool failSetDevice = false;
 char eventStorage;
@@ -53,7 +54,7 @@ flagcxResult_t writeOrWait(flagcxStream_t, void *, uint64_t, int) {
 
 flagcxResult_t queryEvent(flagcxEvent_t) {
   ++eventQueries;
-  return flagcxSuccess;
+  return eventQueryResult;
 }
 
 flagcxResult_t recordEvent(flagcxEvent_t, flagcxStream_t) {
@@ -83,6 +84,7 @@ protected:
     fakeAdaptor.streamWaitValue64 = writeOrWait;
     deviceAdaptor = &fakeAdaptor;
     eventQueries = 0;
+    eventQueryResult = flagcxSuccess;
     failRecord = false;
     failSetDevice = false;
   }
@@ -114,6 +116,45 @@ TEST_F(StreamValueCompletionTest, FailedRecordCannotCompleteUntilDrained) {
   semaphore.markCompletionDrained();
   EXPECT_EQ(semaphore.pollEnd(), 1);
   EXPECT_EQ(eventQueries, 0);
+}
+
+TEST_F(StreamValueCompletionTest, PendingStepsDoNotQueryOrPublishCompletion) {
+  flagcxStreamValueSemaphore semaphore;
+  ASSERT_EQ(semaphore.initResult, flagcxSuccess);
+  recordingSemaphore = &semaphore;
+  semaphore.addCounter(-1);
+  semaphore.addCounter(-1);
+  semaphore.addCounter(1);
+  ASSERT_EQ(semaphore.enqueueCompletion(nullptr), flagcxSuccess);
+
+  semaphore.subCounter(-1);
+  EXPECT_EQ(semaphore.getCounter(), 2);
+  semaphore.subCounter(1);
+  EXPECT_EQ(semaphore.getCounter(), 1);
+  EXPECT_EQ(semaphore.pollEnd(), 0);
+  EXPECT_EQ(eventQueries, 0);
+  EXPECT_EQ(semaphore.signals[1], 0u);
+
+  semaphore.subCounter(-1);
+  EXPECT_EQ(semaphore.getCounter(), 0);
+  EXPECT_EQ(semaphore.signals[1], 1u);
+  EXPECT_EQ(semaphore.pollEnd(), 1);
+  EXPECT_EQ(eventQueries, 1);
+}
+
+TEST_F(StreamValueCompletionTest, EachPollUsesOneQueryWithoutReleasingOnError) {
+  flagcxStreamValueSemaphore semaphore;
+  ASSERT_EQ(semaphore.initResult, flagcxSuccess);
+  recordingSemaphore = &semaphore;
+  ASSERT_EQ(semaphore.enqueueCompletion(nullptr), flagcxSuccess);
+  for (flagcxResult_t result :
+       {flagcxInProgress, flagcxUnhandledDeviceError, flagcxSuccess}) {
+    eventQueryResult = result;
+    const int before = eventQueries;
+    EXPECT_EQ(semaphore.pollEnd(), result == flagcxSuccess);
+    EXPECT_EQ(eventQueries, before + 1);
+    EXPECT_NE(semaphore.signals, nullptr);
+  }
 }
 
 TEST_F(StreamValueCompletionTest, FinalizeKeepsPrivateScratchForLocalCleanup) {

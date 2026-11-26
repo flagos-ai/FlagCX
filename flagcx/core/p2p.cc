@@ -223,7 +223,7 @@ flagcxP2pProgressProxyOp(struct flagcxProxyConnection *connection,
     if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
       const uint64_t nowNs = uint64_t(now.tv_sec) * 1000000000ULL + now.tv_nsec;
       if (op->args.p2pTraceTimeNs == 0 ||
-          nowNs - op->args.p2pTraceTimeNs >= 1000000000ULL ||
+          nowNs - op->args.p2pTraceTimeNs >= 5000000000ULL ||
           oldPlan != op->args.p2pPlan || oldCopied != op->args.copied ||
           oldTransmitted != op->args.transmitted || oldDone != op->args.done ||
           (result != flagcxSuccess && result != flagcxInProgress)) {
@@ -239,6 +239,7 @@ flagcxP2pProgressProxyOp(struct flagcxProxyConnection *connection,
             FLAGCX_P2P,
             "P2P proxy rank=%d peer=%d direction=%s op_id=%d step=%d "
             "result=%d plan=%d copied=%d transmitted=%d chunks=%d done=%d "
+            "sem=%p "
             "own_hash=%llu expected_hash=%llu peer_hash=%llu "
             "expected_peer_hash=%llu own_done=%d own_peer_done=%d "
             "peer_done=%d peer_peer_done=%d offer=%d peer_offer=%d "
@@ -248,7 +249,7 @@ flagcxP2pProgressProxyOp(struct flagcxProxyConnection *connection,
             op->rank, op->root, connection->send ? "send" : "recv",
             op->args.opId, op->args.step, result, op->args.p2pPlan,
             op->args.copied, op->args.transmitted, op->args.chunkSteps,
-            op->args.done,
+            op->args.done, static_cast<void *>(op->args.semaphore.get()),
             (unsigned long long)__atomic_load_n(&own->opHash, __ATOMIC_ACQUIRE),
             (unsigned long long)op->args.p2pOpHash,
             (unsigned long long)__atomic_load_n(&peer->opHash,

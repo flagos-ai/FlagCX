@@ -16,6 +16,40 @@ std::map<flagcxMemcpyType_t, musaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyDeviceToDevice, musaMemcpyDeviceToDevice},
 };
 
+// Query errors can otherwise become an unbounded boolean completion poll.
+// Keep a bounded, thread-local cache so logging needs no allocation or lock.
+static void traceMusaQueryError(const char *api, const void *wrapper,
+                                const void *native, musaError_t error) {
+  if (__atomic_load_n(&flagcxDebugLevel, __ATOMIC_ACQUIRE) < FLAGCX_LOG_TRACE ||
+      flagcxDebugMask == 0)
+    return;
+  struct Entry {
+    const char *api = nullptr;
+    const void *wrapper = nullptr;
+    musaError_t error = musaSuccess;
+    std::chrono::steady_clock::time_point time{};
+  };
+  static thread_local Entry entries[16];
+  const auto now = std::chrono::steady_clock::now();
+  Entry *slot = nullptr;
+  for (auto &entry : entries) {
+    if (entry.api == api && entry.wrapper == wrapper) {
+      slot = &entry;
+      break;
+    }
+    if (slot == nullptr &&
+        (entry.api == nullptr || now - entry.time >= std::chrono::seconds(5)))
+      slot = &entry;
+  }
+  if (slot == nullptr ||
+      (slot->api == api && slot->wrapper == wrapper && slot->error == error &&
+       now - slot->time < std::chrono::seconds(5)))
+    return;
+  *slot = {api, wrapper, error, now};
+  TRACE(FLAGCX_ALL, "%s wrapper=%p native_handle=%p native=%d (%s)", api,
+        wrapper, native, static_cast<int>(error), musaGetErrorString(error));
+}
+
 flagcxResult_t musaAdaptorDeviceSynchronize() {
   DEVCHECK(musaDeviceSynchronize());
   return flagcxSuccess;
@@ -253,6 +287,7 @@ flagcxResult_t musaAdaptorStreamQuery(flagcxStream_t stream) {
     } else if (error == musaErrorNotReady) {
       res = flagcxInProgress;
     } else {
+      traceMusaQueryError("musaStreamQuery", stream, stream->base, error);
       res = flagcxUnhandledDeviceError;
     }
   }
@@ -325,6 +360,7 @@ flagcxResult_t musaAdaptorEventQuery(flagcxEvent_t event) {
     } else if (error == musaErrorNotReady) {
       res = flagcxInProgress;
     } else {
+      traceMusaQueryError("musaEventQuery", event, event->base, error);
       res = flagcxUnhandledDeviceError;
     }
   }

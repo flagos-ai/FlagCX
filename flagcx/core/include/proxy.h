@@ -155,6 +155,7 @@ struct flagcxProxyArgs {
   int p2pRecvEventQueryChunk = 0;
   uint64_t p2pRecvEventQueryTimeNs = 0;
   uint64_t p2pTraceTimeNs = 0;
+  uint64_t semaphoreTraceTimeNs = 0;
 
   // Element linking
   struct flagcxProxyArgs *next;

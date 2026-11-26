@@ -777,6 +777,35 @@ flagcxResult_t flagcxProxyFailProgressQueue(
   return result;
 }
 
+static bool proxyOpCompletionReady(flagcxProxyOp *op) {
+  if (op->args.done != 1)
+    return false;
+  // Reuse the one retirement query; diagnostics must not query the event again.
+  if (op->args.semaphore->pollEnd())
+    return true;
+  if (__atomic_load_n(&flagcxDebugLevel, __ATOMIC_ACQUIRE) >=
+          FLAGCX_LOG_TRACE &&
+      (flagcxDebugMask & FLAGCX_PROXY) != 0) {
+    const uint64_t now = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    if (op->args.semaphoreTraceTimeNs == 0 ||
+        now - op->args.semaphoreTraceTimeNs >= 5000000000ULL) {
+      TRACE(FLAGCX_PROXY,
+            "proxy rank=%d peer=%d direction=%s op_id=%d step=%d "
+            "op_hash=%llu sem=%p stage=awaiting_semaphore counter=%d",
+            op->rank, op->root, op->connection->send ? "send" : "recv",
+            op->args.opId, op->args.step,
+            static_cast<unsigned long long>(op->args.p2pOpHash),
+            static_cast<void *>(op->args.semaphore.get()),
+            op->args.semaphore->getCounter());
+      op->args.semaphoreTraceTimeNs = now;
+    }
+  }
+  return false;
+}
+
 // process all the ProxyOps in the consumer queue
 // idle is set to 1 if no operations are pending
 // if idle is set to 0, it means there are pending operations
@@ -819,8 +848,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                 flagcxProxyFailProgressQueue(proxyState, queue, res);
                 op = NULL;
               }
-              if (op != NULL && op->args.done == 1 &&
-                  op->args.semaphore->pollEnd()) {
+              if (op != NULL && proxyOpCompletionReady(op)) {
                 flagcxProxyRetireOp(proxyState, queue, op);
               }
             }
@@ -847,8 +875,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                 flagcxProxyFailProgressQueue(proxyState, queue, res);
                 op = NULL;
               }
-              if (op != NULL && op->args.done == 1 &&
-                  op->args.semaphore->pollEnd()) {
+              if (op != NULL && proxyOpCompletionReady(op)) {
                 flagcxProxyRetireOp(proxyState, queue, op);
               }
             }

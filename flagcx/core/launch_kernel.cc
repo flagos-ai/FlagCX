@@ -424,27 +424,128 @@ void flagcxStreamValueBufferPool::release(uint64_t *signals) {
 
 flagcxResult_t
 flagcxStreamValueSemaphore::enqueueCompletion(flagcxStream_t launchStream) {
-  FLAGCXCHECK(
-      deviceAdaptor->eventCreate(&completionEvent, flagcxEventDisableTiming));
-  FLAGCXCHECK(deviceAdaptor->streamWriteValue64(launchStream, dSignals, 1, 0));
-  FLAGCXCHECK(deviceAdaptor->streamWaitValue64(
-      launchStream, static_cast<char *>(dSignals) + sizeof(uint64_t), 1, 0));
-  FLAGCXCHECK(deviceAdaptor->eventRecord(completionEvent, launchStream));
+  // Log both sides of each existing call so a blocked enqueue is visible.
+  auto traceCall = [&](const char *stage, int result) {
+    TRACE(FLAGCX_PROXY,
+          "stream-value semaphore sem=%p stage=%s stream=%p signals=%p "
+          "device_signals=%p event=%p result=%d",
+          static_cast<void *>(this), stage, static_cast<void *>(launchStream),
+          static_cast<void *>(signals), dSignals,
+          static_cast<void *>(completionEvent), result);
+  };
+  traceCall("event-create-enter", -1);
+  flagcxResult_t result =
+      deviceAdaptor->eventCreate(&completionEvent, flagcxEventDisableTiming);
+  traceCall("event-create-return", result);
+  FLAGCXCHECK(result);
+  traceCall("start-write-enter", -1);
+  result = deviceAdaptor->streamWriteValue64(launchStream, dSignals, 1, 0);
+  traceCall("start-write-return", result);
+  FLAGCXCHECK(result);
+  traceCall("end-wait-enter", -1);
+  result = deviceAdaptor->streamWaitValue64(
+      launchStream, static_cast<char *>(dSignals) + sizeof(uint64_t), 1, 0);
+  traceCall("end-wait-return", result);
+  FLAGCXCHECK(result);
+  traceCall("event-record-enter", -1);
+  result = deviceAdaptor->eventRecord(completionEvent, launchStream);
+  traceCall("event-record-return", result);
+  FLAGCXCHECK(result);
   // Publish the event handle only after it has captured the stream work.
   __atomic_store_n(&completionState, 1, __ATOMIC_RELEASE);
+  traceCall("event-published", flagcxSuccess);
   return flagcxSuccess;
+}
+
+void flagcxStreamValueSemaphore::subCounter(int opId) {
+  auto it = stepInfo.find(opId);
+  assert(it != stepInfo.end());
+  const int idx = it->second;
+  const int completed =
+      __atomic_fetch_add(&steps[idx].first, 1, __ATOMIC_ACQ_REL) + 1;
+  const int required = __atomic_load_n(&steps[idx].second, __ATOMIC_ACQUIRE);
+  if (completed == required) {
+    if (__atomic_sub_fetch(&counter, 1, __ATOMIC_ACQ_REL) == 0) {
+      __atomic_store_n(signals + 1, uint64_t(1), __ATOMIC_RELEASE);
+      TRACE(FLAGCX_PROXY,
+            "stream-value semaphore sem=%p stage=end_signal_published "
+            "op_id=%d signals=%p end_signal=1",
+            static_cast<void *>(this), opId, static_cast<void *>(signals));
+    }
+  }
+  if (__atomic_load_n(&flagcxDebugLevel, __ATOMIC_ACQUIRE) >=
+          FLAGCX_LOG_TRACE &&
+      (flagcxDebugMask & FLAGCX_PROXY) != 0) {
+    TRACE(FLAGCX_PROXY,
+          "stream-value semaphore sem=%p stage=sub-counter op_id=%d "
+          "completed_steps=%d required_steps=%d remaining_counter=%d",
+          static_cast<void *>(this), opId, completed, required, getCounter());
+  }
+}
+
+void flagcxStreamValueSemaphore::traceCompletion(const char *reason,
+                                                 int remaining, int state,
+                                                 bool queried,
+                                                 flagcxResult_t queryResult) {
+  if (__atomic_load_n(&flagcxDebugLevel, __ATOMIC_ACQUIRE) < FLAGCX_LOG_TRACE ||
+      (flagcxDebugMask & FLAGCX_PROXY) == 0)
+    return;
+  std::unique_lock<std::mutex> lock(traceMutex, std::try_to_lock);
+  if (!lock.owns_lock())
+    return;
+  const uint64_t start =
+      signals == nullptr ? 0 : __atomic_load_n(signals, __ATOMIC_ACQUIRE);
+  const uint64_t end =
+      signals == nullptr ? 0 : __atomic_load_n(signals + 1, __ATOMIC_ACQUIRE);
+  const std::array<uint64_t, 6> snapshot = {static_cast<uint64_t>(remaining),
+                                            static_cast<uint64_t>(state),
+                                            start,
+                                            end,
+                                            static_cast<uint64_t>(queried),
+                                            static_cast<uint64_t>(queryResult)};
+  const auto now = std::chrono::steady_clock::now();
+  if (traceSeen && snapshot == traceSnapshot &&
+      now - traceTime < std::chrono::seconds(5))
+    return;
+  traceSeen = true;
+  traceSnapshot = snapshot;
+  traceTime = now;
+  // completionEvent is written by the submitting thread. Read it only after
+  // the acquire load of completionState has observed its publication.
+  TRACE(FLAGCX_PROXY,
+        "stream-value semaphore sem=%p reason=%s counter=%d "
+        "signals=%p device_signals=%p start_signal=%llu end_signal=%llu "
+        "completion_state=%d event=%p event_query=%s event_result=%d",
+        static_cast<void *>(this), reason, remaining,
+        static_cast<void *>(signals), dSignals,
+        static_cast<unsigned long long>(start),
+        static_cast<unsigned long long>(end), state,
+        state == 0 ? nullptr : static_cast<void *>(completionEvent),
+        queried ? "queried" : "not_queried", queried ? int(queryResult) : -1);
 }
 
 int flagcxStreamValueSemaphore::pollEnd() {
   if (isCompletionCancelled())
     return 1;
-  if (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) != 0) {
+  const int remaining = __atomic_load_n(&counter, __ATOMIC_ACQUIRE);
+  const int state = __atomic_load_n(&completionState, __ATOMIC_ACQUIRE);
+  if (remaining != 0) {
+    traceCompletion("counter_pending", remaining, state, false, flagcxSuccess);
     return 0;
   }
-  const int state = __atomic_load_n(&completionState, __ATOMIC_ACQUIRE);
-  if (state == 0)
+  if (state == 0) {
+    traceCompletion("event_unpublished", remaining, state, false,
+                    flagcxSuccess);
     return 0;
-  if (state == 2)
+  }
+  if (state == 2) {
+    traceCompletion("complete_drained", remaining, state, false, flagcxSuccess);
     return 1;
-  return deviceAdaptor->eventQuery(completionEvent) == flagcxSuccess;
+  }
+  const flagcxResult_t result = deviceAdaptor->eventQuery(completionEvent);
+  traceCompletion(result == flagcxSuccess      ? "complete"
+                  : result == flagcxInProgress ? "event_pending"
+                                               : "event_error",
+                  remaining, state, true, result);
+  return result == flagcxSuccess;
 }
