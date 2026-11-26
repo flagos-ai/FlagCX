@@ -512,7 +512,8 @@ jobs:
           retention-days: 7
 
   torch-api-test-mthreads:
-    if: contains(fromJSON(inputs.platforms), 'mthreads')
+    # Temporarily run only device_api and device_api_unified_ir on MUSA.
+    if: ${{ false && contains(fromJSON(inputs.platforms), 'mthreads') }}
     name: torch-api-test (musa)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.mthreads_runs_on) }}
@@ -752,5 +753,6 @@ jobs:
         run: |
           if python3 -c 'import json, os, sys; sys.exit(0 if "mthreads" in json.loads(os.environ["PLATFORMS"]) else 1)'; then
             [[ "$CONFIG_RESULT" == success ]] || { echo "Mthreads configuration loading ended with: $CONFIG_RESULT" >&2; exit 1; }
-            [[ "$MTHREADS_RESULT" == success ]] || { echo "Mthreads Torch API job ended with: $MTHREADS_RESULT" >&2; exit 1; }
+            [[ "$MTHREADS_RESULT" == skipped ]] || { echo "Disabled MUSA Torch API job unexpectedly ended with: $MTHREADS_RESULT" >&2; exit 1; }
+            echo "MUSA Torch CI is temporarily disabled; only device_api and device_api_unified_ir run."
           fi

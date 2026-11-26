@@ -131,16 +131,12 @@ network still needs runner-side network provisioning. This check establishes
 visibility only; the adaptor Host MR and SendRecv tests verify connectivity.
 
 Mthreads CI uses `mt-8g-cicd-flagcx` and the image configured in
-`.github/configs/mthreads.yml`. It runs adaptor, core, device_api_host,
-p2p, rma, runner, service, and symmem host unit suites plus
-homogeneous and heterogeneous collective benchmarks. The symmem job currently
-runs host unit tests only; it does not cover IPC, VMM, or multi-process paths.
-The device adaptor suite excludes `DeviceAdaptorTest.StreamWaitEvent`, which
-currently fails on MUSA; all other device adaptor tests run.
-Device API and unified IR suites are selected but report capability skips because
-this repository has no MUSA device-kernel compiler backend. Device adaptor and
-topology cases run through the adaptor and core suites respectively. Torch plugin tests are also not
-configured for Mthreads. Build its CI image with
+`.github/configs/mthreads.yml`. MUSA CI currently runs only `device_api` and
+`device_api_unified_ir`, using native kernels on four GPUs with logical 2+2
+inter-node coverage and forced-NET phases. These suites remain required.
+All other MUSA unit suites, ordinary/experimental performance jobs and Torch
+jobs are temporarily disabled. Other platforms retain their existing selection.
+Build its CI image with
 `docker build -f docker/mthreads-ci.Dockerfile .`.
 
 CI runs each build and test once by default. Individual commands are bounded
@@ -220,9 +216,8 @@ The Mthreads performance jobs display as `perf-test (musa)` and
 `perf-test-experimental (musa)`. Both select the same `mthreads` configuration
 and runner; the experimental workload adds `COMPILE_KERNEL=1` and runs the
 four-rank UniRunner correctness suite on the pinned MUSA 5.2.0 image.
-The MUSA experimental job is temporarily disabled while its four-rank
-`AllGatherGemm` stall is diagnosed (PR #738, run 45775159982). Its completion
-gate requires the disabled job to be skipped; ordinary performance, Torch,
-and Device API jobs remain required. Re-enable the job and restore its
-required-success gate together after fixing the stall.
+Both MUSA performance jobs and the MUSA Torch job are temporarily disabled
+while CI focuses on the two native Device API suites. Their completion gates
+require these disabled jobs to be skipped. Re-enable each job and restore its
+required-success gate together when broadening MUSA coverage.
 See [MUSA UniRunner kernels](../docs/musa_unirunner.md) for validation details.

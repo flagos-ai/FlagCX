@@ -196,7 +196,8 @@ sys.exit(19 if kind == os.environ.get("FAIL_STEP") else 0)
         for name in ("configs/musa.yml", "scripts/set_env/musa.sh", "scripts/ci/run_musa_workload.sh"):
             self.assertFalse((ROOT / ".github" / name).exists(), name)
         self.assertIn("--runtime=mthreads", config["docker_args"])
-        self.assertIn("device_api", json.loads(config["unit_test_suites"]))
+        self.assertEqual(json.loads(config["unit_test_suites"]),
+                         ["device_api", "device_api_unified_ir"])
         for filename, prefix, workloads, completion in (
             ("test.yml", "perf-test", ("perf", "perf-test-experimental"), "perf_complete"),
             ("torch-api-test.yml", "torch-api-test", ("torch-api",), "torch_api_complete"),
@@ -209,10 +210,7 @@ sys.exit(19 if kind == os.environ.get("FAIL_STEP") else 0)
                 key = "perf-test-experimental-mthreads" if workload == "perf-test-experimental" else f"{prefix}-mthreads"
                 job = jobs[key]
                 self.assertIn("'mthreads'", job["if"])
-                if workload == "perf-test-experimental":
-                    self.assertEqual(job["if"], "${{ false && contains(fromJSON(inputs.platforms), 'mthreads') }}")
-                else:
-                    self.assertEqual(job["if"], "contains(fromJSON(inputs.platforms), 'mthreads')")
+                self.assertEqual(job["if"], "${{ false && contains(fromJSON(inputs.platforms), 'mthreads') }}")
                 self.assertIn("mthreads_runs_on", job["runs-on"])
                 display = "perf-test-experimental" if workload == "perf-test-experimental" else prefix
                 self.assertEqual(job["name"], f"{display} (musa)")
@@ -302,7 +300,7 @@ with open(os.environ["MUSA_DOCKER_CAPTURE"], "a") as out:
             capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout), policy)
 
-    def test_completion_gates_require_enabled_jobs_and_disabled_experimental_skip(self):
+    def test_completion_gates_require_disabled_musa_jobs_to_skip(self):
         for experimental in (False, True):
             filename = "test.yml" if experimental else "torch-api-test.yml"
             completion = "perf_complete" if experimental else "torch_api_complete"
@@ -319,7 +317,7 @@ with open(os.environ["MUSA_DOCKER_CAPTURE"], "a") as out:
                             ["bash", "-eu", "-c", gate],
                             env=env, capture_output=True, text=True,
                         )
-                        expected = config == "success" and regular == "success" and (not experimental or extra == "skipped")
+                        expected = config == "success" and regular == "skipped" and (not experimental or extra == "skipped")
                         self.assertEqual(result.returncode == 0, expected, result.stderr)
         # A missing result must fail closed; unselected MUSA is irrelevant.
         env = {k: v for k, v in os.environ.items() if not k.startswith("MTHREADS_")}

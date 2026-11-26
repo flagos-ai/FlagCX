@@ -41,9 +41,9 @@ execution remain necessary to validate the installed SDK and driver.
 
 Both `device_api` and `device_api_unified_ir` build the library and tests with
 `USE_MUSA=1 COMPILE_KERNEL=1` in the existing shared Mthreads image. The
-`device_api_host` suite retains its host-only configuration. The native suites
-print the installed mcc version and fail on build errors instead of returning
-a successful capability skip.
+`device_api_host` suite retains its host-only configuration for manual use but
+is currently disabled in CI. The native suites print the installed mcc version
+and fail on build errors instead of returning a successful capability skip.
 
 The shared unit runner executes all six public programs: the regular Device
 API and legacy IR intra/inter programs, plus the unified IR intra/inter
@@ -79,8 +79,8 @@ matching the other platforms. Both native Device API suites are required to
 execute. Native SDK/compiler failures,
 missing required test results and unexpected skips fail their jobs.
 
-The MUSA host suite requires both communicator isolation cases to pass in its
-GoogleTest XML: Finalize must complete without draining independent work on a
+When run manually, the MUSA host suite requires both communicator isolation
+cases to pass in its GoogleTest XML: Finalize must complete without draining independent work on a
 second communicator. Native MCCL Finalize retains the communicator; rank-local
 Destroy releases it only after completed finalization, preserving ownership
 when cleanup needs a retry.
@@ -88,9 +88,10 @@ when cleanup needs a retry.
 ## Experimental CI
 
 The MUSA UniRunner experimental job is temporarily disabled after the
-four-rank `AllGatherGemm` stall in PR #738, run 45775159982. Ordinary perf,
-Torch and Device API CI remain enabled. The workload and kernel implementation
-are retained for diagnosis; restoring CI also requires restoring its
+four-rank `AllGatherGemm` stall in PR #738, run 45775159982. MUSA CI currently
+enables only `device_api` and `device_api_unified_ir`; ordinary perf, Torch and
+all other MUSA unit suites are also disabled. The workload and kernel
+implementation are retained for diagnosis; restoring CI also requires restoring its
 required-success completion gate.
 
 The performance jobs are named `perf-test (musa)` and
@@ -142,9 +143,9 @@ The SlicedAR sweep defaults to 64 KiB–64 MiB and can be adjusted through
 `FLAGCX_CI_MUSA_SLICED_AR_MAX_BYTES` when running the workload directly.
 Performance numbers establish a baseline; CI has no bandwidth threshold.
 
-The platform also participates in ordinary perf, the existing Torch API
-suite, and its configured unit suites. Selected MUSA jobs must succeed in the
-workflow completion gate.
+The two selected MUSA Device API suites must succeed. Performance and Torch
+completion gates expect their disabled MUSA jobs to be skipped. Restore the
+required-success checks along with the jobs when re-enabling them.
 
 ## Local checks without the SDK
 
