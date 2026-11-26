@@ -1,4 +1,5 @@
-// SDK-only B/C control for the blocking callback used by heterogeneous groups.
+// SDK-only B/C control for a same-stream, non-pipelined heterogeneous group.
+// C records the group/recv/send completion events; B omits those records.
 // No FlagCX, native collective library, device kernels or stream-value calls.
 #include <cuda_runtime.h>
 #include <mpi.h>
@@ -85,7 +86,6 @@ static int waitEvent(cudaEvent_t event, double deadline, const char *stage) {
 struct CopyState {
   int device;
   int started;
-  int gate;
   int done;
   int expired;
   int workerReady;
@@ -94,7 +94,6 @@ struct CopyState {
   void *destination;
   cudaMemcpyKind copyKind;
   cudaStream_t copyStream;
-  cudaEvent_t ready;
   cudaEvent_t copied[2];
 };
 
@@ -120,8 +119,7 @@ static void *proxy(void *argument) {
   SDK(cudaSetDevice(state->device));
   __atomic_store_n(&state->workerReady, 1, __ATOMIC_RELEASE);
   double deadline = now() + 8;
-  while (!__atomic_load_n(&state->started, __ATOMIC_ACQUIRE) ||
-         !__atomic_load_n(&state->gate, __ATOMIC_ACQUIRE)) {
+  while (!__atomic_load_n(&state->started, __ATOMIC_ACQUIRE)) {
     if (now() >= deadline) {
       state->workerFailed = 1;
       __atomic_store_n(&state->done, 1, __ATOMIC_RELEASE);
@@ -200,25 +198,31 @@ int main(int argc, char **argv) {
     fail("MPI rank count or thread support");
   struct CopyState state = {};
   state.device = ipc && rank == 1 ? 2 : 0;
-  logStage("case kind=%s control=%s device=%d ranks=%d", argv[1], argv[2],
-           state.device, ranks);
+  logStage("case kind=%s control=%s device=%d ranks=%d completion_events=%d "
+           "wait=stream",
+           argv[1], argv[2], state.device, ranks, withCompletion ? 3 : 0);
   int devices;
   SDK(cudaGetDeviceCount(&devices));
   if (devices <= state.device)
     fail("required device unavailable");
   SDK(cudaSetDevice(state.device));
   cudaStream_t userStream;
-  cudaEvent_t groupDone;
+  cudaEvent_t readyRecv, readySend, groupDone, recvDone, sendDone;
   SDK(cudaStreamCreateWithFlags(&userStream, cudaStreamNonBlocking));
   SDK(cudaStreamCreateWithFlags(&state.copyStream, cudaStreamNonBlocking));
-  SDK(cudaEventCreateWithFlags(&state.ready, cudaEventDisableTiming));
+  SDK(cudaEventCreateWithFlags(&readyRecv, cudaEventDisableTiming));
+  SDK(cudaEventCreateWithFlags(&readySend, cudaEventDisableTiming));
   SDK(cudaEventCreateWithFlags(&state.copied[0], cudaEventDisableTiming));
   SDK(cudaEventCreateWithFlags(&state.copied[1], cudaEventDisableTiming));
-  // Allocate this event in both controls; only its Record differs.
+  // Allocate identical events in both controls; only their Records differ.
   SDK(cudaEventCreateWithFlags(&groupDone, cudaEventDisableTiming));
-  logStage("streams user=%p copy=%p events ready=%p groupDone=%p",
-           (void *)userStream, (void *)state.copyStream, (void *)state.ready,
-           (void *)groupDone);
+  SDK(cudaEventCreateWithFlags(&recvDone, cudaEventDisableTiming));
+  SDK(cudaEventCreateWithFlags(&sendDone, cudaEventDisableTiming));
+  logStage("streams user=%p copy=%p events readyRecv=%p readySend=%p "
+           "groupDone=%p recvDone=%p sendDone=%p",
+           (void *)userStream, (void *)state.copyStream, (void *)readyRecv,
+           (void *)readySend, (void *)groupDone, (void *)recvDone,
+           (void *)sendDone);
   void *localDestination;
   unsigned char *input, *output;
   SDK(cudaMallocHost((void **)&input, bytes));
@@ -269,28 +273,47 @@ int main(int argc, char **argv) {
       fail("proxy initialization");
     usleep(1000);
   }
-  SDK(cudaEventRecord(state.ready, userStream));
+  // groupPrepareOne records recv then send readiness. With one operation
+  // stream, its second readiness wait stays on that same stream.
+  SDK(cudaEventRecord(readyRecv, userStream));
+  SDK(cudaEventRecord(readySend, userStream));
+  SDK(cudaStreamWaitEvent(userStream, readySend, 0));
   SDK(cudaLaunchHostFunc(userStream, callback, &state));
-  if (withCompletion)
+  // The proxy may proceed as soon as callback entry publishes started, just
+  // as pollStart does in production; do not gate it on the main thread.
+  if (withCompletion) {
     SDK(cudaEventRecord(groupDone, userStream));
-  __atomic_store_n(&state.gate, 1, __ATOMIC_RELEASE);
-  if (pthread_join(worker, NULL) != 0)
-    fail("pthread_join");
-  if (state.workerFailed || __atomic_load_n(&state.expired, __ATOMIC_ACQUIRE))
-    fail("proxy or callback completion");
-  if (withCompletion && !waitEvent(groupDone, now() + 5, "group completion"))
-    fail("group completion");
+    SDK(cudaEventRecord(recvDone, userStream));
+    SDK(cudaEventRecord(sendDone, userStream));
+  }
+  // Match the sequential C2C planner: synchronize while the proxy is live,
+  // before any host join or completion-event query can wait out its copies.
   SDK(cudaStreamSynchronize(userStream));
   if (__atomic_load_n(&state.expired, __ATOMIC_ACQUIRE))
     fail("callback deadline");
-  // Every importing rank has completed its writes before the owner reads.
+  logStage("begin pthread_join");
+  int joined = pthread_join(worker, NULL);
+  logStage("end pthread_join result=%d", joined);
+  if (joined != 0)
+    fail("pthread_join");
+  if (state.workerFailed || __atomic_load_n(&state.expired, __ATOMIC_ACQUIRE))
+    fail("proxy or callback completion");
+  if (withCompletion) {
+    deadline = now() + 5;
+    if (!waitEvent(groupDone, deadline, "group completion") ||
+        !waitEvent(recvDone, deadline, "recv completion") ||
+        !waitEvent(sendDone, deadline, "send completion"))
+      fail("group completion");
+  }
+  // Outside the measured interval, confirm peer writes before validation.
+  // The probe has no FIFO receive progress to provide this confirmation.
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   if (staging) {
     validate((unsigned char *)localDestination, rank, "callback copy");
   } else {
     SDK(cudaMemcpyAsync(output, localDestination, bytes, cudaMemcpyDeviceToHost,
-                        state.copyStream));
-    SDK(cudaStreamSynchronize(state.copyStream));
+                        userStream));
+    SDK(cudaStreamSynchronize(userStream));
     validate(output, ipc ? 1 - rank : rank, "callback copy");
   }
   if (ipc)
@@ -298,7 +321,10 @@ int main(int argc, char **argv) {
   // No owner frees its export until every peer has closed its import.
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   SDK(cudaEventDestroy(groupDone));
-  SDK(cudaEventDestroy(state.ready));
+  SDK(cudaEventDestroy(recvDone));
+  SDK(cudaEventDestroy(sendDone));
+  SDK(cudaEventDestroy(readyRecv));
+  SDK(cudaEventDestroy(readySend));
   SDK(cudaEventDestroy(state.copied[0]));
   SDK(cudaEventDestroy(state.copied[1]));
   SDK(cudaStreamDestroy(userStream));
