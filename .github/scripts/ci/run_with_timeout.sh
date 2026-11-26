@@ -2,12 +2,13 @@
 
 set -euo pipefail
 
-test_timeout="${FLAGCX_CI_TEST_TIMEOUT:-20m}"
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "$script_dir/timeouts.sh"
+test_timeout="$FLAGCX_CI_TEST_TIMEOUT"
 test_kill_after="${FLAGCX_CI_TEST_KILL_AFTER:-30s}"
 test_label="${FLAGCX_CI_TEST_LABEL:-test invocation}"
-max_attempts="${FLAGCX_CI_TEST_MAX_ATTEMPTS:-2}"
+max_attempts="${FLAGCX_CI_TEST_MAX_ATTEMPTS:-1}"
 diagnostics_after="${FLAGCX_CI_TEST_DIAGNOSTICS_AFTER:-}"
-script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 log_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}"
 safe_label=$(printf '%s' "$test_label" | tr -c 'A-Za-z0-9_.-' '_')
 
@@ -36,14 +37,56 @@ cleanup_workload() {
     diagnostic_pid=
   fi
   if [[ -n "$active_pid" ]]; then
-    # timeout owns a process group; stop leftover ranks before another attempt.
-    if kill -0 -- "-$active_pid" 2>/dev/null; then
-      kill -TERM -- "-$active_pid" 2>/dev/null || true
-      timeout --signal=TERM --kill-after=1s "$test_kill_after" \
-        bash -c 'while kill -0 -- "-$1" 2>/dev/null; do sleep 0.05; done' \
-        bash "$active_pid" >/dev/null 2>&1 || true
-      kill -KILL -- "-$active_pid" 2>/dev/null || true
-    fi
+    # Nested timeout wrappers own separate process groups. Snapshot all of
+    # them before stopping the root, while their parent links still exist.
+    local -a workload_groups=()
+    local groups_text
+    groups_text=$(python3 - "$active_pid" <<'PYGROUPS'
+import os
+from pathlib import Path
+import sys
+root = int(sys.argv[1])
+parents = {}
+proc = Path("/proc")
+if proc.is_dir():
+    for process in proc.iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            fields = (process / "stat").read_text().rsplit(")", 1)[1].split()
+            parents[int(process.name)] = int(fields[1])
+        except (OSError, IndexError, ValueError):
+            pass
+owned = {root}
+while True:
+    expanded = owned | {pid for pid, parent in parents.items() if parent in owned}
+    if expanded == owned:
+        break
+    owned = expanded
+groups = {root}
+for pid in owned:
+    try:
+        groups.add(os.getpgid(pid))
+    except ProcessLookupError:
+        pass
+groups.discard(os.getpgrp())
+for group in sorted(groups):
+    print(group)
+PYGROUPS
+    )
+    while IFS= read -r group_id; do
+      [[ -n "$group_id" ]] && workload_groups+=("$group_id")
+    done <<< "$groups_text"
+    for group_id in "${workload_groups[@]}"; do
+      kill -TERM -- "-$group_id" 2>/dev/null || true
+    done
+    timeout --signal=TERM --kill-after=1s "$test_kill_after" \
+      bash -c 'for group_id; do
+        while kill -0 -- "-$group_id" 2>/dev/null; do sleep 0.05; done
+      done' bash "${workload_groups[@]}" >/dev/null 2>&1 || true
+    for group_id in "${workload_groups[@]}"; do
+      kill -KILL -- "-$group_id" 2>/dev/null || true
+    done
     wait "$active_pid" 2>/dev/null || true
     active_pid=
   fi
@@ -59,22 +102,42 @@ trap 'cancel_workload 143' TERM
 
 attempt=1
 while ((attempt <= max_attempts)); do
+  timeout_info=$(flagcx_ci_limit_timeout "$test_timeout" details) || {
+    status=$?
+    if [[ "$status" == 124 ]]; then
+      echo "$test_label: $timeout_info cumulative budget exhausted; invocation not run" >&2
+    else
+      echo "$test_label: invalid timeout or deadline; invocation not run" >&2
+    fi
+    exit "$status"
+  }
+  read -r effective_timeout timeout_source <<< "$timeout_info"
   attempt_log="$log_dir/attempt-$attempt.log"
-  echo "Starting $test_label (attempt $attempt/$max_attempts, timeout=$test_timeout, kill-after=$test_kill_after)"
+  watchdog_log="$log_dir/watchdog-attempt-$attempt.log"
+  echo "Starting $test_label (attempt $attempt/$max_attempts, timeout=$test_timeout, kill-after=$test_kill_after, effective-timeout=$effective_timeout, limit-source=$timeout_source)"
   exec {log_fd}> >(tee "$attempt_log")
   log_pid=$!
-  timeout --signal=TERM --kill-after="$test_kill_after" \
-    "$test_timeout" "$@" >&"$log_fd" 2>&1 &
+  # Preserve heredoc input for Python preflights launched in the background.
+  exec {input_fd}<&0
+  # Only timeout writes to watchdog_log. The child keeps both output streams
+  # in attempt_log, so a nested timeout cannot claim this watchdog expired.
+  timeout --verbose --signal=TERM --kill-after="$test_kill_after" \
+    "$effective_timeout" bash -c 'exec "$@" 2>&1' bash "$@" \
+    <&"$input_fd" >&"$log_fd" 2>"$watchdog_log" &
   active_pid=$!
+  exec {input_fd}<&-
   if [[ -n "$diagnostics_after" ]]; then
+    diagnostic_delay=$(awk -v requested="$diagnostics_after" -v limit="${effective_timeout%s}" \
+      'BEGIN { ceiling = limit * 0.75; print requested < ceiling ? requested : ceiling }')
     python3 "$script_dir/collect_process_stacks.py" \
-      --pid "$active_pid" --delay "$diagnostics_after" \
+      --pid "$active_pid" --delay "$diagnostic_delay" \
       > "$log_dir/attempt-$attempt-stacks.log" 2>&1 &
     diagnostic_pid=$!
   fi
   status=0
   wait "$active_pid" || status=$?
   cleanup_workload
+  cat "$watchdog_log" >&"$log_fd"
   exec {log_fd}>&-
   wait "$log_pid"
   if [[ "$status" == 0 && "${FLAGCX_CI_REQUIRE_GTEST_PASS:-0}" == 1 ]] &&
@@ -97,8 +160,10 @@ while ((attempt <= max_attempts)); do
     fi
     exit 0
   fi
-  if [[ "$status" == 124 || "$status" == 137 ]]; then
-    echo "$test_label exceeded its $test_timeout timeout on attempt $attempt" >&2
+  if [[ ( "$status" == 124 || "$status" == 137 ) && -s "$watchdog_log" ]]; then
+    echo "$test_label watchdog expired on attempt $attempt (effective-timeout=$effective_timeout, limit-source=$timeout_source, configured-timeout=$test_timeout)" >&2
+  elif [[ "$status" == 124 || "$status" == 137 ]]; then
+    echo "$test_label command exited with status=$status; this invocation's watchdog did not expire" >&2
   fi
   echo "$test_label attempt $attempt failed with exit=$status; log saved to $attempt_log" >&2
   if [[ -n "${FLAGCX_CI_ATTEMPT_FAILURE_HOOK:-}" ]]; then

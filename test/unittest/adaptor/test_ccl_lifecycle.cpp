@@ -81,6 +81,16 @@ TEST(CclOwnerContract, NullDestroySkipsNativeSdk) {
   }
 }
 
+TEST(CclOwnerContract, HcclFailedInitWrapperDoesNotDestroyANullNativeContext) {
+  NativeOwnerProbe::reset();
+  auto *owner = (hcclOwnerContract::flagcxInnerComm_t)hcclOwnerContract::make();
+  owner->base = nullptr;
+  EXPECT_EQ(hcclOwnerContract::hcclAdaptorCommDestroy(owner), flagcxSuccess);
+  EXPECT_EQ(NativeOwnerProbe::destroys, 0);
+  EXPECT_EQ(NativeOwnerProbe::frees, 1);
+  EXPECT_TRUE(NativeOwnerProbe::owners.empty());
+}
+
 TEST(CclOwnerContract, AbortRetainsWrapperAndDestroyDoesNotCloseNativeTwice) {
   for (const auto &sdk : nativeOwners) {
     SCOPED_TRACE(sdk.name);

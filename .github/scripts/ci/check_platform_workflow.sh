@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -ne 8 && $# -ne 9 && $# -ne 10 ]]; then
-  echo "Usage: $0 <platforms-json> <config> <cuda-first> <cuda-second> <hygon> [hygon-experimental] <metax> <ppu> [ppu-experimental] <ascend>" >&2
+  echo "Usage: ILUVATAR_RESULT=<result> $0 <platforms-json> <config> <cuda-first> <cuda-second> <hygon> [hygon-experimental] <metax> <ppu> [ppu-experimental] <ascend>" >&2
   exit 2
 fi
 
@@ -28,7 +28,7 @@ require_success() {
   fi
 }
 
-if selected cuda || selected metax || selected hygon || selected ppu || selected ascend; then
+if selected cuda || selected metax || selected hygon || selected ppu || selected ascend || selected iluvatar; then
   require_success "Hardware config loading" "$config_result"
 fi
 
@@ -78,6 +78,9 @@ if selected ppu; then
 fi
 if selected ascend; then
   require_success "Ascend workload" "$ascend"
+fi
+if selected iluvatar; then
+  require_success "Iluvatar workload" "${ILUVATAR_RESULT:-skipped}"
 fi
 
 echo "All selected platform workloads succeeded."

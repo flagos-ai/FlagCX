@@ -8,6 +8,7 @@ fi
 
 workload=$1
 project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
+source "$project_root/.github/scripts/ci/timeouts.sh"
 perf_runner="$project_root/.github/scripts/ci/run_host_perf_suite.sh"
 : "${FLAGCX_CI_SET_ENV:?The platform configuration must provide set_env}"
 
@@ -23,14 +24,14 @@ export FLAGCX_DEBUG=${FLAGCX_DEBUG:-INFO}
 export FLAGCX_DEBUG_SUBSYS=${FLAGCX_DEBUG_SUBSYS:-INIT,NET,P2P,PROXY}
 
 build_flagcx() {
-  make -C "$project_root" --jobs="$(nproc)" \
+  flagcx_ci_run build make -C "$project_root" --jobs="$(nproc)" \
     "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
 }
 
 case "$workload" in
   perf)
     build_flagcx
-    make -C "$project_root/test/perf" --jobs="$(nproc)" \
+    flagcx_ci_run build-tests make -C "$project_root/test/perf" --jobs="$(nproc)" \
       "${FLAGCX_CI_TEST_MAKE_ARGS[@]}" MPI_HOME="$MPI_HOME"
 
     export FLAGCX_CI_PERF_PLATFORM=Ascend
@@ -50,13 +51,13 @@ case "$workload" in
     # Use the plugin built from this checkout, not the CI image's wheel.
     "$PYTHON_BIN" -m pip uninstall --yes flagcx
     export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-    "$PYTHON_BIN" -c 'import torch, torch_npu; count = torch.npu.device_count(); print("torch", torch.__version__, "torch_npu", torch_npu.__version__, "devices", count); assert count >= 4'
+    flagcx_ci_run preflight "$PYTHON_BIN" -c 'import torch, torch_npu; count = torch.npu.device_count(); print("torch", torch.__version__, "torch_npu", torch_npu.__version__, "devices", count); assert count >= 4'
 
     build_flagcx
-    "$PYTHON_BIN" -m pip install 'setuptools_scm>=8' wheel
+    flagcx_ci_run torch-build "$PYTHON_BIN" -m pip install 'setuptools_scm>=8' wheel
     (
       cd "$project_root"
-      "$PYTHON_BIN" -m pip install --force-reinstall --no-build-isolation --no-deps .
+      flagcx_ci_run torch-build "$PYTHON_BIN" -m pip install --force-reinstall --no-build-isolation --no-deps .
     )
 
     export FLAGCX_TORCH_USE_INSTALLED_PACKAGE=1

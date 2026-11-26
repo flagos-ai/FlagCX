@@ -22,6 +22,7 @@ on:
         default: false
 
 env:
+  FLAGCX_CI_TEST_MAX_ATTEMPTS: 1
   FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs
 
 jobs:
@@ -56,7 +57,7 @@ jobs:
     name: ${{ needs.load_config.outputs.display_name }} / ${{ matrix.suite }}
     needs: load_config
     if: inputs.platform != 'enflame' && inputs.platform != 'kunlunxin'
-    timeout-minutes: 120
+    timeout-minutes: ${{ inputs.cpp_coverage && 60 || 45 }}
     strategy:
       fail-fast: false
       matrix:
@@ -124,11 +125,21 @@ jobs:
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load_config.outputs.ignore_test }}
           FLAGCX_CI_COVERAGE: ${{ inputs.cpp_coverage && '1' || '0' }}
           FLAGCX_CI_CPP_COVERAGE_REPORT: /ci-logs/cpp-coverage/${{ inputs.platform }}/${{ matrix.suite }}
-          FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
-          FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
+          FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '10m' || '3m' }}
+          FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '10m' || '5m' }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           "${{ inputs.platform }}" unittest "${{ matrix.suite }}"
+
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-unit_test-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Cleanup unit-test container
         if: always()
@@ -141,7 +152,7 @@ jobs:
     name: ${{ needs.load_config.outputs.display_name }} / ${{ matrix.suite }}
     needs: load_config
     if: inputs.platform == 'enflame'
-    timeout-minutes: 120
+    timeout-minutes: ${{ inputs.cpp_coverage && 60 || 45 }}
     strategy:
       fail-fast: false
       matrix:
@@ -196,8 +207,8 @@ jobs:
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load_config.outputs.ignore_test }}
           FLAGCX_CI_COVERAGE: ${{ inputs.cpp_coverage && '1' || '0' }}
           FLAGCX_CI_CPP_COVERAGE_REPORT: /ci-logs/cpp-coverage/${{ inputs.platform }}/${{ matrix.suite }}
-          FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
-          FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
+          FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '10m' || '3m' }}
+          FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '10m' || '5m' }}
         run: |
           set -euo pipefail
           bash .github/scripts/ci/run_hardware_workload.sh \
@@ -227,7 +238,7 @@ jobs:
     name: ${{ needs.load_config.outputs.display_name }} / ${{ matrix.suite }}
     needs: load_config
     if: inputs.platform == 'kunlunxin'
-    timeout-minutes: 120
+    timeout-minutes: ${{ inputs.cpp_coverage && 60 || 45 }}
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -242,8 +253,8 @@ jobs:
       run:
         shell: bash
     env:
-      FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
-      FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
+      FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '10m' || '3m' }}
+      FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '10m' || '5m' }}
       FLAGCX_CI_COVERAGE: ${{ inputs.cpp_coverage && '1' || '0' }}
       FLAGCX_CI_CPP_COVERAGE_REPORT: ${{ github.workspace }}/.ci-logs/cpp-coverage/kunlunxin/${{ matrix.suite }}
     steps:

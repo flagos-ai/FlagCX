@@ -52,6 +52,7 @@ class MetaXPerfSuiteTest(unittest.TestCase):
             scripts = root / "scripts"
             scripts.mkdir()
             shutil.copy(PERF_SUITE, scripts / PERF_SUITE.name)
+            shutil.copy(PERF_SUITE.parent / "timeouts.sh", scripts / "timeouts.sh")
             shutil.copy(PERF_SUITE.parent / "ignore_test.py", scripts / "ignore_test.py")
             runner = scripts / "run_mpi_with_timeout.sh"
             runner.write_text(

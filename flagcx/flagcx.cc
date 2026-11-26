@@ -1884,6 +1884,7 @@ fail_info:
 
 flagcxResult_t flagcxOneSideRegister(flagcxComm_t comm, void *buff,
                                      size_t size) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (comm->heteroComm == nullptr)
     return flagcxNotSupported;
@@ -2215,6 +2216,7 @@ fail_mr:
 
 flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
                                            size_t size, int ptrType) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   const bool isVmmAllocation =
       ptrType == FLAGCX_PTR_CUDA && flagcxOneSideRegistryRangeIsVmm(buff, size);
   return flagcxOneSideSignalRegisterInternal(comm, buff, size, ptrType,
@@ -2256,6 +2258,7 @@ flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
 
 flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
                                             size_t size) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
     return flagcxSuccess;
   }
@@ -3610,15 +3613,52 @@ flagcxResult_t flagcxHomoCommInit(struct bootstrapState *state,
   flagcxResult_t uniqueIdResult =
       flagcxBuildHomoRankList(comm, homoGlobalRanks);
   if (uniqueIdResult == flagcxSuccess && comm->homoRank == 0) {
+    INFO(FLAGCX_INIT,
+         "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
+         "stage=native-get-unique-id begin",
+         rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks);
     uniqueIdResult = cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&commId);
+    INFO(FLAGCX_INIT,
+         "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
+         "stage=native-get-unique-id end result=%d",
+         rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks,
+         uniqueIdResult);
   }
-  FLAGCXCHECK(flagcxCollectUniqueIdResult(state, rank, nranks, uniqueIdResult));
+  INFO(FLAGCX_INIT,
+       "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
+       "stage=unique-id-status begin",
+       rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks);
+  flagcxResult_t result =
+      flagcxCollectUniqueIdResult(state, rank, nranks, uniqueIdResult);
+  INFO(FLAGCX_INIT,
+       "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
+       "stage=unique-id-status end result=%d",
+       rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks, result);
+  FLAGCXCHECK(result);
 
-  FLAGCXCHECK(bootstrapCollSubgroupBroadcast(state, homoGlobalRanks.data(),
-                                             comm->homoRank, comm->homoRanks, 0,
-                                             (void *)commId, sizeof(*commId)));
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commInitRank(
-      homoComm, comm->homoRanks, commId, comm->homoRank, NULL));
+  INFO(FLAGCX_INIT,
+       "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
+       "stage=unique-id-broadcast begin",
+       rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks);
+  result = bootstrapCollSubgroupBroadcast(state, homoGlobalRanks.data(),
+                                          comm->homoRank, comm->homoRanks, 0,
+                                          (void *)commId, sizeof(*commId));
+  INFO(FLAGCX_INIT,
+       "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
+       "stage=unique-id-broadcast end result=%d",
+       rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks, result);
+  FLAGCXCHECK(result);
+  INFO(FLAGCX_INIT,
+       "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
+       "stage=native-comm-init-rank begin",
+       rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks);
+  result = cclAdaptors[flagcxCCLAdaptorDevice]->commInitRank(
+      homoComm, comm->homoRanks, commId, comm->homoRank, NULL);
+  INFO(FLAGCX_INIT,
+       "HomoCommInit rank=%d device=%d homoRank=%d homoRanks=%d "
+       "stage=native-comm-init-rank end result=%d",
+       rank, comm->deviceOrdinal, comm->homoRank, comm->homoRanks, result);
+  FLAGCXCHECK(result);
   return flagcxSuccess;
 }
 
@@ -3674,17 +3714,9 @@ static flagcxResult_t initUniRunnerCapabilities(flagcxComm_t comm) {
   return result;
 }
 
-flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
-                                  flagcxUniqueId_t commId, int rank) {
-  if (nranks < 1 || rank < 0 || rank >= nranks) {
-    WARN("Invalid rank requested : %d/%d", rank, nranks);
-    return flagcxInvalidArgument;
-  }
-  if (commId == NULL || comm == NULL) {
-    WARN("flagcxCommInitRank: commId or comm is NULL");
-    return flagcxInvalidArgument;
-  }
-
+static flagcxResult_t flagcxCommInitRankInternal(flagcxComm_t *comm, int nranks,
+                                                 flagcxUniqueId_t commId,
+                                                 int rank) {
   *comm = NULL;
   FLAGCXCHECK(flagcxCalloc(comm, 1));
   (*comm)->pluginRollbackOnly = true;
@@ -4137,6 +4169,31 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
+                                  flagcxUniqueId_t commId, int rank) {
+  if (nranks < 1 || rank < 0 || rank >= nranks) {
+    WARN("Invalid rank requested : %d/%d", rank, nranks);
+    return flagcxInvalidArgument;
+  }
+  if (commId == NULL || comm == NULL) {
+    WARN("flagcxCommInitRank: commId or comm is NULL");
+    return flagcxInvalidArgument;
+  }
+  flagcxResult_t result =
+      flagcxCommInitRankInternal(comm, nranks, commId, rank);
+  if (result != flagcxSuccess && *comm != NULL) {
+    // All failed outputs retain a cleanup owner, including errors before
+    // finalize policy initialization. Plugin-only rollback stays separate.
+    if (!(*comm)->pluginRollbackOnly)
+      (*comm)->initRollbackPending = true;
+    __atomic_store_n(&(*comm)->finalizeState.lastResult, result,
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&(*comm)->finalizeState.lifecycle, flagcxCommDestroying,
+                     __ATOMIC_RELEASE);
+  }
+  return result;
+}
+
 flagcxResult_t flagcxDestroyHomoCommOwner(flagcxComm_t comm,
                                           flagcxInnerComm_t inner);
 static flagcxResult_t flagcxCommPrepareFinalizeStage(flagcxComm_t comm,
@@ -4429,33 +4486,67 @@ static flagcxResult_t flagcxCommPrepareFinalizeStage(flagcxComm_t comm,
     if (flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0 ||
         flagcxGetGroupDepth() != 0)
       return flagcxInvalidUsage;
+    INFO(FLAGCX_INIT,
+         "Lifecycle comm=%p rank=%d finalize drain=submitted-work begin", comm,
+         comm->rank);
     flagcxResult_t drain =
         flagcxWorkDrain(&comm->submittedWork, comm->heteroComm);
+    INFO(
+        FLAGCX_INIT,
+        "Lifecycle comm=%p rank=%d finalize drain=submitted-work end result=%d",
+        comm, comm->rank, drain);
     if (drain != flagcxSuccess)
       return drain;
+    INFO(FLAGCX_INIT, "Lifecycle comm=%p rank=%d finalize drain=c2c begin",
+         comm, comm->rank);
     drain = flagcxC2cDrainPendingResources(comm, 1);
+    INFO(FLAGCX_INIT,
+         "Lifecycle comm=%p rank=%d finalize drain=c2c end result=%d", comm,
+         comm->rank, drain);
     if (drain != flagcxSuccess)
       return drain;
     if (comm->heteroComm != NULL) {
+      INFO(FLAGCX_INIT, "Lifecycle comm=%p rank=%d finalize drain=group begin",
+           comm, comm->rank);
       drain = flagcxGroupDrainWork(comm->heteroComm, 1);
+      INFO(FLAGCX_INIT,
+           "Lifecycle comm=%p rank=%d finalize drain=group end result=%d", comm,
+           comm->rank, drain);
       if (drain != flagcxSuccess)
         return drain;
     }
     if (comm->heteroComm != NULL && comm->heteroComm->proxyState != NULL &&
         comm->heteroComm->proxyState->uniRunnerState.invocationOwner != NULL) {
+      INFO(FLAGCX_INIT,
+           "Lifecycle comm=%p rank=%d finalize drain=uni-runner begin", comm,
+           comm->rank);
       drain = cleanupUniRunner(comm, false);
+      INFO(FLAGCX_INIT,
+           "Lifecycle comm=%p rank=%d finalize drain=uni-runner end result=%d",
+           comm, comm->rank, drain);
       if (drain != flagcxSuccess)
         return drain;
     }
     // Drain local producers before any rank enters transport shutdown.
     if (comm->heteroComm != NULL)
       do {
+        INFO(FLAGCX_INIT,
+             "Lifecycle comm=%p rank=%d finalize drain=quiesce begin", comm,
+             comm->rank);
         flagcxResult_t cleanupResult = flagcxCommQuiesce(comm);
+        INFO(FLAGCX_INIT,
+             "Lifecycle comm=%p rank=%d finalize drain=quiesce end result=%d",
+             comm, comm->rank, cleanupResult);
         if (cleanupResult != flagcxSuccess)
           return cleanupResult;
       } while (0);
     do {
+      INFO(FLAGCX_INIT, "Lifecycle comm=%p rank=%d finalize drain=fused begin",
+           comm, comm->rank);
       flagcxResult_t cleanupResult = flagcxFusedDrainPendingBuffers(comm);
+      INFO(FLAGCX_INIT,
+           "Lifecycle comm=%p rank=%d finalize drain=fused end result=%d", comm,
+           comm->rank, cleanupResult);
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     } while (0);

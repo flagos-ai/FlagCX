@@ -120,6 +120,10 @@ flagcxResult_t hcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 flagcxResult_t hcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
   if (comm == NULL)
     return flagcxInvalidArgument;
+  if (comm->base == NULL) {
+    free(comm);
+    return flagcxSuccess;
+  }
   flagcxResult_t result =
       (flagcxResult_t)h2f_ret_map[HcclCommDestroy(comm->base)];
   if (result != flagcxSuccess)

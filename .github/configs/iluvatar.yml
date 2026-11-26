@@ -6,6 +6,7 @@ display_name: Iluvatar CoreX Tests
 paths_watch:
   - .github/configs/iluvatar.yml
   - .github/scripts/set_env/iluvatar.sh
+  - .github/scripts/ci/run_iluvatar_workload.sh
   - .github/scripts/ci/check_required_gtests.py
   - .github/scripts/ci/run_gtest_rank_xml.sh
   - docker/iluvatar-ci/**

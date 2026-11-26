@@ -9,6 +9,7 @@ fi
 
 workload=$1
 project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
+source "$project_root/.github/scripts/ci/timeouts.sh"
 perf_runner="$project_root/.github/scripts/ci/run_host_perf_suite.sh"
 : "${FLAGCX_CI_SET_ENV:?The platform configuration must provide set_env}"
 
@@ -24,10 +25,10 @@ export FLAGCX_DEBUG=${FLAGCX_DEBUG:-INFO}
 export FLAGCX_DEBUG_SUBSYS=${FLAGCX_DEBUG_SUBSYS:-INIT,NET,P2P,PROXY}
 export HIP_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
 
-python3 -c 'import torch; print("torch", torch.__version__, "devices", torch.cuda.device_count()); assert torch.cuda.device_count() >= 4'
+flagcx_ci_run preflight python3 -c 'import torch; print("torch", torch.__version__, "devices", torch.cuda.device_count()); assert torch.cuda.device_count() >= 4'
 
 build_flagcx() {
-  make -C "$project_root" --jobs="$(nproc)" \
+  flagcx_ci_run build make -C "$project_root" --jobs="$(nproc)" \
     "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
 }
 
@@ -37,24 +38,24 @@ case "$workload" in
     export FLAGCX_DEBUG_SUBSYS=ALL
     export PYTHON_BIN=python3
     build_flagcx
-    "$PYTHON_BIN" -m pip install 'setuptools_scm>=8'
+    flagcx_ci_run torch-build "$PYTHON_BIN" -m pip install 'setuptools_scm>=8'
     (
       cd "$project_root"
       export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-      "$PYTHON_BIN" setup.py build_ext --inplace
+      flagcx_ci_run torch-build "$PYTHON_BIN" setup.py build_ext --inplace
     )
 
     export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
     unset FLAGCX_SKIP_HETERO
     bash "$project_root/test/script/torch_api_test.sh"
     if [[ "${FLAGCX_CI_TORCH_COVERAGE:-0}" == 1 ]]; then
-      "$PYTHON_BIN" -m pip install --quiet coverage==7.10.7
+      flagcx_ci_run torch-build "$PYTHON_BIN" -m pip install --quiet coverage==7.10.7
       bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"
     fi
     ;;
   perf)
     build_flagcx
-    make -C "$project_root/test/perf" --jobs="$(nproc)" \
+    flagcx_ci_run build-tests make -C "$project_root/test/perf" --jobs="$(nproc)" \
       "${FLAGCX_CI_TEST_MAKE_ARGS[@]}"
 
     export FLAGCX_CI_PERF_PLATFORM=Hygon

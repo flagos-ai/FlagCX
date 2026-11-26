@@ -14,9 +14,10 @@ on:
         type: string
 
 env:
+  FLAGCX_CI_TEST_MAX_ATTEMPTS: 1
   FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs
-  FLAGCX_CI_TEST_TIMEOUT: 100m
-  FLAGCX_CI_MPI_TIMEOUT: 60m
+  FLAGCX_CI_TEST_TIMEOUT: 3m
+  FLAGCX_CI_MPI_TIMEOUT: 10m
 
 jobs:
   load-hardware-container-configs:
@@ -34,6 +35,11 @@ jobs:
       metax_set_env: ${{ steps.metax.outputs.set_env }}
       metax_ignore_test: ${{ steps.metax.outputs.ignore_test }}
       metax_runs_on: ${{ steps.metax.outputs.runs_on }}
+      iluvatar_ci_image: ${{ steps.iluvatar.outputs.ci_image }}
+      iluvatar_docker_args: ${{ steps.iluvatar.outputs.docker_args }}
+      iluvatar_set_env: ${{ steps.iluvatar.outputs.set_env }}
+      iluvatar_ignore_test: ${{ steps.iluvatar.outputs.ignore_test }}
+      iluvatar_runs_on: ${{ steps.iluvatar.outputs.runs_on }}
       hygon_ci_image: ${{ steps.hygon.outputs.ci_image }}
       hygon_docker_args: ${{ steps.hygon.outputs.docker_args }}
       hygon_set_env: ${{ steps.hygon.outputs.set_env }}
@@ -77,6 +83,10 @@ jobs:
         id: metax
         run: ruby .github/scripts/ci/load_platform_config.rb metax
 
+      - name: Load Iluvatar configuration
+        id: iluvatar
+        run: ruby .github/scripts/ci/load_platform_config.rb iluvatar
+
       - name: Load Hygon configuration
         id: hygon
         run: ruby .github/scripts/ci/load_platform_config.rb hygon
@@ -102,7 +112,7 @@ jobs:
     name: perf-test-experimental (cuda)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.cuda_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -151,12 +161,64 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  perf-test-iluvatar:
+    if: contains(fromJSON(inputs.platforms), 'iluvatar')
+    name: perf-test (iluvatar)
+    needs: load-hardware-container-configs
+    runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.iluvatar_runs_on) }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Check Docker
+        shell: bash
+        run: docker version
+
+      - name: Run perf-test (iluvatar) in configured container
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-iluvatar-perf-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.iluvatar_docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.iluvatar_ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.iluvatar_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.iluvatar_ignore_test }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$FLAGCX_CI_LOG_DIR"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" \
+            iluvatar perf 2>&1 | tee "$FLAGCX_CI_LOG_DIR/iluvatar-perf.log"
+
+      - name: Cleanup perf-test (iluvatar) container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-iluvatar-perf-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-perf-test-iluvatar-${{ github.run_attempt }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
   perf-test-hygon:
     if: contains(fromJSON(inputs.platforms), 'hygon')
     name: perf-test (hygon)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.hygon_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -206,7 +268,7 @@ jobs:
     name: perf-test-experimental (hygon)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.hygon_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -256,7 +318,7 @@ jobs:
     name: perf-test (cuda)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.cuda_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -310,7 +372,7 @@ jobs:
     name: perf-test (metax)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.metax_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -360,7 +422,7 @@ jobs:
     name: perf-test (ppu)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.ppu_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -410,7 +472,7 @@ jobs:
     name: perf-test-experimental (ppu)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.ppu_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -460,7 +522,7 @@ jobs:
     name: perf-test (mthreads)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.mthreads_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -510,7 +572,7 @@ jobs:
     name: perf-test (ascend)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.ascend_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -560,7 +622,7 @@ jobs:
     name: perf-test (kunlunxin)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.kunlunxin_runs_on) }}
-    timeout-minutes: 240
+    timeout-minutes: 60
     container:
       image: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_ci_image }}
       options: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_container_options }}
@@ -611,6 +673,7 @@ jobs:
     if: always()
     needs:
       - load-hardware-container-configs
+      - perf-test-iluvatar
       - perf-test-experimental-cuda
       - perf-test-hygon
       - perf-test-experimental-hygon
@@ -623,6 +686,7 @@ jobs:
       - perf-test-mthreads
     runs-on: ubuntu-latest
     env:
+      ILUVATAR_RESULT: ${{ needs['perf-test-iluvatar'].result }}
       PLATFORMS: ${{ inputs.platforms }}
       CONFIG_RESULT: ${{ needs['load-hardware-container-configs'].result }}
       CUDA_EXPERIMENTAL_RESULT: ${{ needs['perf-test-experimental-cuda'].result }}

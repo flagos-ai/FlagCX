@@ -33,7 +33,11 @@ class AscendCiTest(unittest.TestCase):
             tmp = Path(tmp)
             binary = self.script(tmp / "runner_mpi_tests", '''
 [[ "$1" == --gtest_list_tests ]]
-printf 'FlagCXCollTest.\n  AllGather\n  AllReduce\nOtherSuite.\n  OtherTest\n'
+if [[ "$2" == --gtest_filter=FlagCXCollTest.AllReduce ]]; then
+  printf 'FlagCXCollTest.\n  AllReduce\n'
+else
+  printf 'FlagCXCollTest.\n  AllGather\n  AllReduce\n'
+fi
 ''')
             launcher = self.script(tmp / "mpirun", '''
 printf '%s\n' "$*" >> "$COMMAND_LOG"
@@ -67,6 +71,8 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
             shutil.copy2(CI / "run_ascend_runner_mpi.sh",
                          ci / "run_ascend_runner_mpi.sh")
             shutil.copy2(CI / "ignore_test.py", ci / "ignore_test.py")
+            for shared in ("run_runner_mpi.sh", "timeouts.sh"):
+                shutil.copy2(CI / shared, ci / shared)
             self.script(ci / "run_mpi_with_timeout.sh",
                         'printf "%s\\n" "$*" >> "$COMMAND_LOG"\n')
             tools = tmp / "tools"
@@ -74,7 +80,7 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
             self.script(tools / "timeout", 'shift 2\nexec "$@"\n')
             binary = self.script(tmp / "runner_mpi_tests", '''
 [[ "$1" == --gtest_list_tests ]]
-printf 'FlagCXCollTest.\n  AllGather\n  AllReduce\n  AlltoAllvAsymmetric\n  Reduce\n  ReduceScatter\nOtherSuite.\n  OtherTest\n'
+printf 'FlagCXCollTest.\n  AllGather\n  AllReduce\n  AlltoAllvAsymmetric\n  Reduce\n  ReduceScatter\n'
 ''')
             log = tmp / "commands"
             env = {**os.environ, "BASH_ENV": "", "COMMAND_LOG": str(log),
@@ -124,7 +130,8 @@ printf 'FlagCXCollTest.\n  AllGather\n  AllReduce\n  AlltoAllvAsymmetric\n  Redu
             tmp = Path(tmp)
             scripts = tmp / ".github/scripts/ci"
             scripts.mkdir(parents=True)
-            shutil.copyfile(CI / "ignore_test.py", scripts / "ignore_test.py")
+            for name in ("ignore_test.py", "timeouts.sh"):
+                shutil.copyfile(CI / name, scripts / name)
             self.script(scripts / "run_with_timeout.sh", 'exec "$@"\n')
             self.script(scripts / "run_ascend_diagnostics.sh", 'exit 0\n')
             self.script(
@@ -161,7 +168,7 @@ flagcx_ci_validate_rdma() { return 0; }
         with tempfile.TemporaryDirectory() as tmp:
             result = subprocess.run(
                 ["bash", str(CI / "run_ascend_diagnostics.sh"), "p2p"],
-                env={**os.environ, "BASH_ENV": "", "FLAGCX_CI_LOG_DIR": tmp},
+                env={**os.environ, "BASH_ENV": "", "FLAGCX_CI_LOG_DIR": tmp, "GITHUB_WORKSPACE": str(ROOT)},
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)

@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+umask 022
 
-mpi_timeout="${FLAGCX_CI_MPI_TIMEOUT:-20m}"
+script_dir=$(cd "$(dirname "$0")" && pwd)
+source "$script_dir/timeouts.sh"
+mpi_timeout="$FLAGCX_CI_MPI_TIMEOUT"
 mpi_kill_after="${FLAGCX_CI_MPI_KILL_AFTER:-30s}"
 mpi_launcher="${FLAGCX_CI_MPIRUN:-mpirun}"
 mpi_label="${FLAGCX_CI_MPI_LABEL:-MPI invocation}"
-script_dir=$(cd "$(dirname "$0")" && pwd)
 test_runner="$script_dir/run_with_timeout.sh"
 
 if ! command -v "$mpi_launcher" >/dev/null 2>&1; then
@@ -55,6 +57,7 @@ if ((require_lifecycle)); then
   result_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}/runner-lifecycle"
   mkdir -p "$result_root"
   result_dir=$(mktemp -d "$result_root/results.XXXXXX")
+  chmod 755 "$result_dir"
   args=("${args[@]:0:runner_index}" bash "$script_dir/run_gtest_rank_xml.sh"
         "$result_dir" "${args[@]:runner_index}")
   status=0

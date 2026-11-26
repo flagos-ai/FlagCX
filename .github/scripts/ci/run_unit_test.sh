@@ -13,6 +13,19 @@ PROJECT_ROOT=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
 export FLAGCX_CI_CONFIG_DIR="${FLAGCX_CI_CONFIG_DIR:-$PROJECT_ROOT/.github/configs}"
 MPI_RUNNER="$PROJECT_ROOT/.github/scripts/ci/run_mpi_with_timeout.sh"
 TEST_RUNNER="$PROJECT_ROOT/.github/scripts/ci/run_with_timeout.sh"
+RUNNER_MPI_RUNNER="$PROJECT_ROOT/.github/scripts/ci/run_runner_mpi.sh"
+source "$PROJECT_ROOT/.github/scripts/ci/timeouts.sh"
+if [[ "${FLAGCX_CI_WORKLOAD_BOUNDED:-0}" != 1 ]]; then
+  workload_timeout=${FLAGCX_CI_WORKLOAD_TIMEOUT:-40m}
+  if [[ "${FLAGCX_CI_COVERAGE:-0}" == 1 ]]; then
+    workload_timeout=${FLAGCX_CI_WORKLOAD_TIMEOUT:-55m}
+  fi
+  flagcx_ci_start_budget FLAGCX_CI_WORKLOAD_DEADLINE "$workload_timeout"
+  export FLAGCX_CI_WORKLOAD_BOUNDED=1 FLAGCX_CI_TEST_MAX_ATTEMPTS=1
+  FLAGCX_CI_TEST_TIMEOUT="$workload_timeout" FLAGCX_CI_TEST_LABEL="unit suite $SUITE" \
+    exec bash "$TEST_RUNNER" env -u FLAGCX_CI_TEST_LABEL FLAGCX_CI_TEST_TIMEOUT="$FLAGCX_CI_TEST_TIMEOUT" \
+    bash "$0" "$@"
+fi
 
 if [[ ! -f "$SET_ENV_SCRIPT" ]]; then
   echo "Platform environment script not found: $SET_ENV_SCRIPT" >&2
@@ -263,9 +276,9 @@ build_googletest() {
   rm -rf -- "$PROJECT_ROOT/third-party/googletest/build"
   rm -rf -- "$PROJECT_ROOT/third-party/googletest/CMakeCache.txt" \
     "$PROJECT_ROOT/third-party/googletest/CMakeFiles"
-  cmake -S "$PROJECT_ROOT/third-party/googletest" \
+  flagcx_ci_run build-tests cmake -S "$PROJECT_ROOT/third-party/googletest" \
     -B "$PROJECT_ROOT/third-party/googletest/build"
-  cmake --build "$PROJECT_ROOT/third-party/googletest/build" --parallel "$(nproc)"
+  flagcx_ci_run build-tests cmake --build "$PROJECT_ROOT/third-party/googletest/build" --parallel "$(nproc)"
 }
 
 build_project() {
@@ -275,7 +288,7 @@ build_project() {
     rm -f "$PROJECT_ROOT/test/kernel/klx/build/obj/device_ir.o" \
       "$PROJECT_ROOT/build/obj/flagcx/adaptor/kernel/kunlunxin/device_api_host_helpers.o"
   fi
-  make -C "$PROJECT_ROOT" --jobs="$(nproc)" "${args[@]}"
+  flagcx_ci_run build make -C "$PROJECT_ROOT" --jobs="$(nproc)" "${args[@]}"
 }
 
 build_suite() {
@@ -298,12 +311,12 @@ build_suite() {
   fi
 
   if [[ "$SUITE" == device_api_host ]]; then
-    make -C "$suite_dir" --jobs="$(nproc)" unit "${args[@]}"
+    flagcx_ci_run build-tests make -C "$suite_dir" --jobs="$(nproc)" unit "${args[@]}"
   elif [[ "$SUITE" == device_api ||
           "$SUITE" == device_api_unified_ir ]]; then
-    make -C "$suite_dir" --jobs="$(nproc)" mpi "${args[@]}"
+    flagcx_ci_run build-tests make -C "$suite_dir" --jobs="$(nproc)" mpi "${args[@]}"
   else
-    make -C "$suite_dir" --jobs="$(nproc)" "${args[@]}"
+    flagcx_ci_run build-tests make -C "$suite_dir" --jobs="$(nproc)" "${args[@]}"
   fi
 }
 
@@ -655,10 +668,10 @@ run_suite() {
           BUILDDIR="$ibuc_test_build"
           FLAGCX_LIB="$ibuc_project_build/lib"
         )
-        make -C "$PROJECT_ROOT" --jobs="$(nproc)" \
+        flagcx_ci_run build make -C "$PROJECT_ROOT" --jobs="$(nproc)" \
           "${ibuc_project_args[@]}" || ibuc_status=$?
         if ((ibuc_status == 0)); then
-          make -C "$suite_dir" --jobs="$(nproc)" \
+          flagcx_ci_run build-tests make -C "$suite_dir" --jobs="$(nproc)" \
             "${ibuc_test_args[@]}" || ibuc_status=$?
         fi
         if ((ibuc_status == 0)); then
@@ -818,10 +831,10 @@ run_suite() {
           FLAGCX_LIB="$shared_project_build/lib"
         )
 
-        make -C "$PROJECT_ROOT" --jobs="$(nproc)" \
+        flagcx_ci_run build make -C "$PROJECT_ROOT" --jobs="$(nproc)" \
           "${shared_project_args[@]}" || shared_status=$?
         if ((shared_status == 0)); then
-          make -C "$suite_dir" --jobs="$(nproc)" \
+          flagcx_ci_run build-tests make -C "$suite_dir" --jobs="$(nproc)" \
             "${shared_test_args[@]}" || shared_status=$?
         fi
         if ((shared_status == 0)); then
@@ -1108,7 +1121,7 @@ run_suite() {
       local unit_status=0 default_status=0 hybrid_status=0 net_status=0 stripe_status=0 pxn_status=0
       local p2p_1m_status=0 net_1m_status=0
       local runner_platform_filter="${FLAGCX_CI_RUNNER_MPI_FILTER:-}"
-      local runner_mpi_runner="$MPI_RUNNER"
+      local runner_mpi_runner="${RUNNER_MPI_RUNNER:-$MPI_RUNNER}"
       local -a runner_net_platform_env=()
       local -a runner_filter_args=()
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
@@ -1554,6 +1567,7 @@ esac
 
 build_project
 build_suite
+flagcx_ci_start_budget FLAGCX_CI_TEST_DEADLINE "$FLAGCX_CI_SUITE_TEST_BUDGET"
 set +e
 (
   set -e

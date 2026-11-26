@@ -31,6 +31,12 @@ directory when changing those settings. The root build selects CUDA SHMEM,
 Default, or CCL according to its normal Makefile options and installed NCCL
 headers; the bitcode receives that exact selection.
 
+For Iluvatar, `DEVICE_BITCODE_ARCH` selects `--cuda-gpu-arch` for both the
+host library's device kernels and the bitcode. Test kernels reuse the platform
+compiler flags. Ordinary builds default to `ivcore11` when the variable is
+unset; the root `device_bitcode` target requires an explicit architecture.
+The Iluvatar bitcode currently supports only `ivcore11`.
+
 ## PPU Device IR for FlagTree
 
 The PPU build uses `DefaultBackend<PpuPlatform>` and compiles the common

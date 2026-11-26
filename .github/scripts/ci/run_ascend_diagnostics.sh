@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Bounded, failure-only reproduction. Its status never replaces the suite result.
 set -euo pipefail
+umask 022
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
@@ -12,6 +13,7 @@ if [[ "${1:-}" == --rank ]]; then
   # Do not overwrite XML from the real test invocation during reproduction.
   unset GTEST_OUTPUT
   trace=$(mktemp "$FLAGCX_CI_DIAGNOSTIC_DIR/rank-$rank.XXXXXX.log")
+  chmod 644 "$trace"
   exec gdb --batch --return-child-result \
     -ex 'set pagination off' -ex 'set print frame-arguments all' \
     -ex run -ex 'thread apply all bt full' -ex 'info registers' \
@@ -37,6 +39,7 @@ fi
 command -v gdb >/dev/null || { echo 'Ascend diagnostics require gdb' >&2; exit 1; }
 export FLAGCX_CI_DIAGNOSTIC_DIR
 FLAGCX_CI_DIAGNOSTIC_DIR=$(mktemp -d "$log_root/ascend-$suite-backtrace.XXXXXX")
+chmod 755 "$FLAGCX_CI_DIAGNOSTIC_DIR"
 export FLAGCX_CI_TEST_TIMEOUT=2m FLAGCX_CI_MPI_TIMEOUT=2m
 export FLAGCX_CI_TEST_KILL_AFTER=10s FLAGCX_CI_MPI_KILL_AFTER=10s
 export FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0

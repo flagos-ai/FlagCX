@@ -258,6 +258,10 @@ static flagcxResult_t groupPrepareOne(struct flagcxAsyncJob *job_,
   // A published proxy prefix needs a transport-completion boundary.
   struct flagcxGroupJob *gjob = (struct flagcxGroupJob *)job_;
   struct flagcxHeteroComm *groupCommHeadMain = *gjob->groupCommHeadPtr;
+  TRACE(FLAGCX_COLL,
+        "Group comm=%p rank=%d stage=prepare-begin private-completion=%d",
+        groupCommHeadMain, groupCommHeadMain ? groupCommHeadMain->rank : -1,
+        (int)privateCompletion);
 
   struct flagcxHeteroComm *groupCommPreconnectHeadMain =
       *gjob->groupCommPreconnectHeadPtr;
@@ -713,6 +717,18 @@ static flagcxResult_t groupPrepareOne(struct flagcxAsyncJob *job_,
     launch->sawDefaultStream = sawDefaultStream;
     launch->submitted = gjob->completion.submitted;
     launch->operationStreams.swap(operationStreams);
+    TRACE(FLAGCX_COLL,
+          "Group comm=%p rank=%d stage=prepare-end launch-stream=%p "
+          "private-completion=%d operations=%zu stream-value=%d",
+          pendingOwner, pendingOwner ? pendingOwner->rank : -1, launchStream,
+          (int)privateCompletion, launch->operationStreams.size(),
+          (int)useStreamValueGroup);
+    for (size_t i = 0; i < launch->operationStreams.size(); ++i)
+      TRACE(FLAGCX_COLL,
+            "Group comm=%p rank=%d stage=operation-stream index=%zu "
+            "operation-stream=%p launch-stream=%p",
+            pendingOwner, pendingOwner ? pendingOwner->rank : -1, i,
+            launch->operationStreams[i], launchStream);
     pending = NULL; // Completion phase owns the unpublished node.
 
     while (!flagcxIntruQueueEmpty(asyncJobsMain)) {
@@ -739,10 +755,20 @@ fail:
   if (gjob->completion.submitted && groupCommHeadMain != NULL)
     flagcxProxyRecordAsyncError(groupCommHeadMain->proxyState, ret);
   if (pending != NULL && pending->work->state == flagcxWorkPreparing) {
+    TRACE(FLAGCX_COLL,
+          "Group comm=%p rank=%d stage=work-finish-begin path=prepare-rollback "
+          "event=%p record-stream=%p record=%d result=%d",
+          pendingOwner, pendingOwner ? pendingOwner->rank : -1,
+          pending->work->event, launchStream, (int)launchSet, (int)ret);
     flagcxResult_t finished =
         launchSet ? flagcxWorkFinish(pending->work, launchStream, ret,
                                      flagcxWorkHeteroGroup, 0, 1)
                   : flagcxWorkCancel(pending->work);
+    TRACE(FLAGCX_COLL,
+          "Group comm=%p rank=%d stage=work-finish-end path=prepare-rollback "
+          "event=%p record-stream=%p result=%d",
+          pendingOwner, pendingOwner ? pendingOwner->rank : -1,
+          pending->work->event, launchStream, (int)finished);
     if (finished == flagcxSuccess ||
         pending->work->state == flagcxWorkRecorded) {
       gjob->completion.stream = launchStream;
@@ -774,17 +800,27 @@ static flagcxResult_t groupFinishOne(flagcxGroupJob *gjob,
   auto &semaphore = pending->semaphore;
   auto *comm = launch->comm;
   flagcxStream_t stream = launch->stream;
+  const char *completionMethod = launch->streamValue ? "stream-value"
+                                 : deviceAsyncKernel ? "device-kernel"
+                                                     : "host-callback";
   gjob->completion = {};
   gjob->completion.submitted = launch->submitted;
   gjob->completion.owner = pending->work->owner;
   if (ret != flagcxSuccess)
     goto fail;
   if (launch->event != NULL) {
+    TRACE(FLAGCX_COLL,
+          "Group comm=%p rank=%d stage=notify-begin method=%s stream=%p", comm,
+          comm->rank, completionMethod, stream);
     if (launch->streamValue) {
       pending->completionState = flagcxGroupCompletionAccepted;
       auto *completion =
           static_cast<flagcxStreamValueSemaphore *>(semaphore.get());
       ret = completion->enqueueCompletion(stream);
+      TRACE(FLAGCX_COLL,
+            "Group comm=%p rank=%d stage=notify-end method=%s stream=%p "
+            "result=%d",
+            comm, comm->rank, completionMethod, stream, (int)ret);
       if (ret != flagcxSuccess) {
         completion->markCompletionUnsafe();
         pending->failedCompletion = completion;
@@ -793,19 +829,35 @@ static flagcxResult_t groupFinishOne(flagcxGroupJob *gjob,
     } else if (deviceAsyncKernel) {
       ret = deviceAdaptor->launchDeviceFunc(stream, deviceAsyncKernel,
                                             semaphore->getSignals());
+      TRACE(FLAGCX_COLL,
+            "Group comm=%p rank=%d stage=notify-end method=%s stream=%p "
+            "result=%d",
+            comm, comm->rank, completionMethod, stream, (int)ret);
       pending->completionState =
           ret == flagcxSuccess      ? flagcxGroupCompletionAccepted
           : ret == flagcxInProgress ? flagcxGroupCompletionUncertain
                                     : flagcxGroupCompletionRejected;
       if (ret != flagcxSuccess)
         goto fail;
+      TRACE(FLAGCX_COLL,
+            "Group comm=%p rank=%d stage=notify-event-record-begin event=%p "
+            "record-stream=%p",
+            comm, comm->rank, launch->event, stream);
       FLAGCXCHECKGOTO(deviceAdaptor->eventRecord(launch->event, stream), ret,
                       fail);
+      TRACE(FLAGCX_COLL,
+            "Group comm=%p rank=%d stage=notify-event-record-end event=%p "
+            "record-stream=%p result=%d",
+            comm, comm->rank, launch->event, stream, (int)ret);
       if (ret != flagcxSuccess)
         goto fail;
     } else {
       ret = deviceAdaptor->launchHostFunc(stream, cpuAsyncKernel,
                                           semaphore.get());
+      TRACE(FLAGCX_COLL,
+            "Group comm=%p rank=%d stage=notify-end method=%s stream=%p "
+            "result=%d",
+            comm, comm->rank, completionMethod, stream, (int)ret);
       pending->completionState =
           ret == flagcxSuccess      ? flagcxGroupCompletionAccepted
           : ret == flagcxInProgress ? flagcxGroupCompletionUncertain
@@ -814,30 +866,58 @@ static flagcxResult_t groupFinishOne(flagcxGroupJob *gjob,
         goto fail;
     }
   }
+  TRACE(FLAGCX_COLL,
+        "Group comm=%p rank=%d stage=work-finish-begin path=normal event=%p "
+        "record-stream=%p record=%d",
+        comm, comm->rank, pending->work->event, stream,
+        (int)(launch->event != NULL));
   ret = launch->event != NULL
             ? flagcxWorkFinish(pending->work, stream, flagcxSuccess,
                                flagcxWorkHeteroGroup, 0, 1)
             : flagcxWorkCancel(pending->work);
+  TRACE(FLAGCX_COLL,
+        "Group comm=%p rank=%d stage=work-finish-end path=normal event=%p "
+        "record-stream=%p result=%d",
+        comm, comm->rank, pending->work->event, stream, (int)ret);
   if (ret != flagcxSuccess)
     goto fail;
   gjob->completion.stream = stream;
   gjob->completion.ready = 1;
   if (launch->event != NULL) {
     for (auto opStream : launch->operationStreams)
-      if (opStream != NULL && opStream != stream)
-        FLAGCXCHECKGOTO(
-            deviceAdaptor->streamWaitEvent(opStream, pending->work->event), ret,
-            fail);
+      if (opStream != NULL && opStream != stream) {
+        TRACE(FLAGCX_COLL,
+              "Group comm=%p rank=%d stage=completion-wait-begin "
+              "wait-stream=%p event=%p record-stream=%p",
+              comm, comm->rank, opStream, pending->work->event, stream);
+        flagcxResult_t waited =
+            deviceAdaptor->streamWaitEvent(opStream, pending->work->event);
+        TRACE(FLAGCX_COLL,
+              "Group comm=%p rank=%d stage=completion-wait-end "
+              "wait-stream=%p event=%p record-stream=%p result=%d",
+              comm, comm->rank, opStream, pending->work->event, stream,
+              (int)waited);
+        FLAGCXCHECKGOTO(waited, ret, fail);
+      }
   }
   goto exit;
 fail:
   if (launch->submitted && comm->proxyState != NULL)
     flagcxProxyRecordAsyncError(comm->proxyState, ret);
   if (pending->work->state == flagcxWorkPreparing) {
+    TRACE(FLAGCX_COLL,
+          "Group comm=%p rank=%d stage=work-finish-begin path=finish-rollback "
+          "event=%p record-stream=%p record=%d result=%d",
+          comm, comm->rank, pending->work->event, stream,
+          (int)(launch->event != NULL), (int)ret);
     flagcxResult_t finished =
         launch->event != NULL ? flagcxWorkFinish(pending->work, stream, ret,
                                                  flagcxWorkHeteroGroup, 0, 1)
                               : flagcxWorkCancel(pending->work);
+    TRACE(FLAGCX_COLL,
+          "Group comm=%p rank=%d stage=work-finish-end path=finish-rollback "
+          "event=%p record-stream=%p result=%d",
+          comm, comm->rank, pending->work->event, stream, (int)finished);
     if (finished == flagcxSuccess ||
         pending->work->state == flagcxWorkRecorded) {
       gjob->completion.stream = stream;

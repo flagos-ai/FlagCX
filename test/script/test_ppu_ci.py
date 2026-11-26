@@ -38,6 +38,7 @@ TEST_RUNNER=$3
 MPI_RUNNER=/fake/mpi
 export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}
 nproc() { echo 2; }
+flagcx_ci_run() { shift; "$@"; }
 make() { "$TEST_RUNNER" "$@"; }
 ''' + helpers + '''
 run_suite() {

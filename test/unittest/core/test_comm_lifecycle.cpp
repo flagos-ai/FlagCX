@@ -1,4 +1,5 @@
 #include "adaptor.h"
+#include "comm.h"
 #include "comm_lifecycle.h"
 #include "global_comm.h"
 #include <gtest/gtest.h>
@@ -29,6 +30,35 @@ TEST(CommLifecyclePolicy, MissingPeerMetadataDoesNotGrantPermission) {
   comm.nranks = 2;
   EXPECT_EQ(flagcxCommInitFinalizePolicy(&comm), flagcxInvalidUsage);
   EXPECT_FALSE(comm.ipcClosePolicyConfirmed);
+}
+
+TEST(CommLifecycleState, PublicOneSideRegistrationRejectsClosedOwners) {
+  flagcxHeteroComm hetero = {};
+  flagcxComm comm = {};
+  char buffer[16] = {};
+  comm.commType = flagcxCommunicatorHybrid;
+  comm.heteroComm = &hetero;
+  for (int state = flagcxCommFinalizing; state <= flagcxCommDestroying;
+       ++state) {
+    comm.finalizeState.lifecycle = (flagcxCommLifecycle)state;
+    EXPECT_EQ(flagcxOneSideRegister(&comm, buffer, sizeof(buffer)),
+              flagcxInvalidUsage);
+    EXPECT_EQ(flagcxOneSideSignalRegister(&comm, buffer, sizeof(buffer),
+                                          FLAGCX_PTR_HOST),
+              flagcxInvalidUsage);
+    EXPECT_EQ(flagcxOneSideStagingRegister(&comm, buffer, sizeof(buffer)),
+              flagcxInvalidUsage);
+    EXPECT_EQ(hetero.oneSideHandleCount, 0);
+    EXPECT_EQ(hetero.signalHandle, nullptr);
+    EXPECT_EQ(hetero.stagingHandle, nullptr);
+  }
+  EXPECT_EQ(flagcxOneSideRegister(nullptr, buffer, sizeof(buffer)),
+            flagcxInvalidArgument);
+  EXPECT_EQ(flagcxOneSideSignalRegister(nullptr, buffer, sizeof(buffer),
+                                        FLAGCX_PTR_HOST),
+            flagcxInvalidArgument);
+  EXPECT_EQ(flagcxOneSideStagingRegister(nullptr, buffer, sizeof(buffer)),
+            flagcxInvalidArgument);
 }
 
 #include "device_api/flagcx_device.h"

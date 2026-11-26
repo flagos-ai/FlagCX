@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Iluvatar CoreX-specific unit-test environment setup.
+# Iluvatar CoreX environment shared by unit, perf and Torch tests.
 
 FLAGCX_CI_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null
@@ -52,6 +52,15 @@ flagcx_ci_configure_suite() {
     runner)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       export FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H=1
+      ;;
+    perf|torch-api)
+      export COREX_VISIBLE_DEVICES=0,1,2,3
+      export CUDA_VISIBLE_DEVICES="$COREX_VISIBLE_DEVICES"
+      export COMPILE_KERNEL=1
+      export FORCE_DEFAULT_PATH=1
+      export FLAGCX_VMM_ENABLE=0
+      FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
+      FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
       ;;
     device_api|device_api_host|device_api_unified_ir)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)

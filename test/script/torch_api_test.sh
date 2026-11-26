@@ -109,7 +109,8 @@ run_torch_api_test() {
     printf '[INFO] Command:'
     printf ' %q' "${command[@]}"
     printf '\n'
-    FLAGCX_CI_TEST_LABEL="PyTorch API tests ($mode)" \
+    FLAGCX_CI_TEST_TIMEOUT="${FLAGCX_CI_TORCH_MODE_TIMEOUT:-15m}" \
+      FLAGCX_CI_TEST_LABEL="PyTorch API tests ($mode)" \
         "$TEST_RUNNER" "${MODE_ENV[@]}" "$@" "${command[@]}"
     echo "[INFO] Completed PyTorch API tests in $mode mode"
     echo "--------------------------------------------------------"

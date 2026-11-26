@@ -138,7 +138,7 @@ exit 7
                     calls = (root / "calls").read_text()
                     self.assertEqual(calls.count("--gtest_filter=FlagCXCollTest.SendRecv"), 1)
                     self.assertEqual(calls.count("--gtest_filter=FlagCXCollTest.AllReduce"),
-                                     2 if include_failure else 0)
+                                     1 if include_failure else 0)
 
     def test_skipped_target_case_fails_even_when_mpi_exits_zero(self):
         reason = timeout_wrapper_unsupported()
@@ -165,7 +165,7 @@ printf '[  SKIPPED ] FlagCXCollTest.SendRecv\n'
 
     def test_platform_has_no_runner_quarantine(self):
         platform = (ROOT / ".github/scripts/set_env/iluvatar.sh").read_text()
-        runner = (CI / "run_iluvatar_runner_mpi.sh").read_text()
+        runner = (CI / "run_runner_mpi.sh").read_text()
         self.assertNotIn("FLAGCX_CI_ILUVATAR_QUARANTINE", platform)
         self.assertNotIn("FLAGCX_CI_ILUVATAR_QUARANTINE", runner)
 
@@ -201,7 +201,7 @@ esac
             )
             self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
             calls = (root / "calls").read_text().splitlines()
-            self.assertEqual(sum("AllGather" in line for line in calls), 2)
+            self.assertEqual(sum("AllGather" in line for line in calls), 1)
             self.assertEqual(sum("SendRecv" in line for line in calls), 1)
             self.assertEqual(sum("AllReduce" in line for line in calls), 1)
             self.assertIn("FlagCXCollTest.SendRecv result=124", result.stdout)
@@ -259,12 +259,13 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
                 env={**os.environ, "BASH_ENV": "", "COMMAND_LOG": str(root / "calls"),
                      "FLAGCX_CI_MPIRUN": str(launcher),
                      "FLAGCX_CI_LOG_DIR": str(root / "logs"),
-                     "FLAGCX_CI_RUNNER_STAGE_BUDGET": "1"},
+                     "FLAGCX_CI_RUNNER_STAGE_BUDGET": "1",
+                     "FLAGCX_CI_MPI_KILL_AFTER": "0.1s"},
                 capture_output=True, text=True, timeout=20,
             )
             # Running out of budget is a failure, never a quiet pass.
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("exhausted its 1s stage budget", result.stderr)
+            self.assertIn("mode cumulative budget exhausted", result.stderr)
             self.assertIn("did not run: RunnerResult.NeverReached", result.stderr)
             calls = (root / "calls").read_text().splitlines()
             self.assertTrue(any("Slow" in line for line in calls))
@@ -325,7 +326,7 @@ printf 'FlagCXCollTest.\n  SendRecv\n  AllReduce\n'
             self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
             self.assertIn("FlagCXCollTest.AllReduce result=0", result.stdout)
 
-    def test_default_timeout_wrapper_still_retries_and_reports_flaky(self):
+    def test_explicit_timeout_wrapper_retry_reports_flaky(self):
         reason = timeout_wrapper_unsupported()
         if reason:
             self.skipTest(reason)
@@ -340,6 +341,7 @@ fi
             result = subprocess.run(
                 ["bash", str(CI / "run_with_timeout.sh"), str(command)],
                 env={**os.environ, "BASH_ENV": "", "ATTEMPT_MARKER": str(root / "first"),
+                     "FLAGCX_CI_TEST_MAX_ATTEMPTS": "2",
                      "FLAGCX_CI_LOG_DIR": str(root / "logs")},
                 capture_output=True, text=True, timeout=10,
             )

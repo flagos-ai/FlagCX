@@ -38,19 +38,27 @@ namespace c10d {
 
 constexpr const char *FLAGCX_BACKEND_NAME = "flagcx";
 
+// Work methods and shutdown share this lock until SDK resources are drained.
+struct flagcxWorkCompletion {
+  std::mutex mutex;
+  bool completed = false;
+};
+
 class flagcxWork : public Work {
   friend class flagcxBackend;
 
 public:
-  flagcxWork(OpType opType, flagcxStream_t stream = nullptr,
-             flagcxDeviceHandle_t devHandle = nullptr,
+  flagcxWork(OpType opType, flagcxStream_t stream,
+             flagcxDeviceHandle_t devHandle,
+             std::shared_ptr<flagcxWorkCompletion> completion,
              c10::intrusive_ptr<c10::ivalue::Future> future =
                  nullptr, // future of the output
              int deviceId = 0)
       : Work(-1, // rank, only used by recvAnySource, irrelevant in this
                  // implementation
              opType),
-        stream_(stream), devHandle_(devHandle), future_(std::move(future)),
+        stream_(stream), devHandle_(devHandle),
+        completion_(std::move(completion)), future_(std::move(future)),
         deviceId_(deviceId), isBarrierOp_(false) {
 #if USE_NVIDIA_ADAPTOR
     event_ = std::make_unique<flagcxCudaEvent>();
@@ -106,6 +114,7 @@ private:
 #endif
   flagcxStream_t stream_;
   flagcxDeviceHandle_t devHandle_;
+  std::shared_ptr<flagcxWorkCompletion> completion_;
   c10::intrusive_ptr<c10::ivalue::Future> future_;
   std::vector<at::Tensor> stashedTensors_;
   int deviceId_;
@@ -356,6 +365,8 @@ protected:
   void retainFailedShutdown();
   struct ShutdownState;
   std::shared_ptr<ShutdownState> shutdownState_;
+  std::shared_ptr<flagcxWorkCompletion> workCompletion_ =
+      std::make_shared<flagcxWorkCompletion>();
   struct pairCoalesceCtx {
     bool active = false;
     int deviceId = -1;

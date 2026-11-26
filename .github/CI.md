@@ -143,11 +143,23 @@ topology cases run through the adaptor and core suites respectively. Torch plugi
 configured for Mthreads. Build its CI image with
 `docker build -f docker/mthreads-ci.Dockerfile .`.
 
-Each test invocation has a timeout and at most one retry. Cancellation and
-missing/non-executable commands do not retry. Builds and container orchestration
-are not retried. Recovered tests emit a flaky warning and Step Summary entry.
-The `attempts-*` artifacts preserve both attempts for seven days, including
-tests executed in explicitly managed Docker containers.
+CI runs each build and test once by default. Individual commands are bounded
+by phase limits in `.github/scripts/ci/timeouts.sh`, and their timeout is capped
+by the remaining suite, mode, and workload budgets. Normal unit jobs have a
+45-minute job limit (60 minutes with coverage); perf and Torch jobs have a
+60-minute limit. Workloads stop earlier to leave time for cleanup and artifacts.
+Image pulls retain their existing three attempts.
+
+Invocation logs report the effective timeout and its limiting source:
+`invocation`, `mode`, `suite`, or `workload`. Each attempt saves the local GNU
+watchdog output in `watchdog-attempt-N.log`; a child returning 124 or 137 does
+not by itself mean the enclosing watchdog expired. Unit jobs upload the existing
+attempt, watchdog, suite, and stack logs even when tests fail.
+
+A manual invocation may set `FLAGCX_CI_TEST_MAX_ATTEMPTS=2` to retry a test once.
+Cancellation and missing/non-executable commands do not retry. Recovered tests
+emit a flaky warning and Step Summary entry. The `attempts-*` artifacts preserve
+invocation logs for seven days, including tests in managed Docker containers.
 
 ## Python Coverage
 

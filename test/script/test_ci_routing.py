@@ -151,6 +151,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 enabled_platform_or_matrix("cuda"),
             ),
             (
+                ".github/scripts/ci/run_iluvatar_workload.sh",
+                enabled_platform_or_matrix("iluvatar"),
+            ),
+            (
                 ".github/scripts/ci/run_cuda_workload.sh",
                 enabled_platform_or_matrix("cuda"),
             ),
@@ -333,6 +337,9 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (
+            ("workflow_dispatch", {"selection": "iluvatar"}, ["iluvatar"]),
+            ("issue_comment", {"comment": "/test iluvatar", "permission": "write",
+                               "is_pull_request": True}, ["iluvatar"]),
             ("workflow_dispatch", {"selection": "enflame"}, ["enflame"]),
             (
                 "issue_comment",
@@ -426,7 +433,7 @@ class CiRetryTest(unittest.TestCase):
             timeout=15,
         )
 
-    def test_transient_failure_retries_and_is_reported_as_flaky(self):
+    def test_explicit_retry_is_reported_as_flaky(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             marker = Path(temp_dir) / "first-attempt"
             summary = Path(temp_dir) / "summary.md"
@@ -437,6 +444,7 @@ class CiRetryTest(unittest.TestCase):
             env["FLAGCX_CI_LOG_DIR"] = str(Path(temp_dir) / "attempt-logs")
             env.update(
                 {
+                    "FLAGCX_CI_TEST_MAX_ATTEMPTS": "2",
                     "FLAGCX_CI_TEST_TIMEOUT": "5s",
                     "FLAGCX_CI_TEST_KILL_AFTER": "1s",
                     "FLAGCX_CI_TEST_LABEL": "retry-test",
@@ -458,7 +466,7 @@ class CiRetryTest(unittest.TestCase):
             self.assertTrue((attempt_dirs[0] / "attempt-1.log").exists())
             self.assertTrue((attempt_dirs[0] / "attempt-2.log").exists())
 
-    def test_persistent_failure_retries_once_then_fails(self):
+    def test_persistent_failure_runs_once_then_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             count_file = Path(temp_dir) / "count"
             command = 'n=$(cat "$COUNT_FILE" 2>/dev/null || echo 0); echo $((n + 1)) > "$COUNT_FILE"; exit 9'
@@ -480,9 +488,9 @@ class CiRetryTest(unittest.TestCase):
             )
             attempts = count_file.read_text().strip()
         self.assertEqual(result.returncode, 9)
-        self.assertEqual(attempts, "2")
+        self.assertEqual(attempts, "1")
 
-    def test_timeout_is_retried_and_can_recover(self):
+    def test_explicit_timeout_retry_can_recover(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             marker = Path(temp_dir) / "first-attempt"
             command = 'if [[ ! -e "$MARKER" ]]; then touch "$MARKER"; sleep 3; else exit 0; fi'
@@ -490,6 +498,7 @@ class CiRetryTest(unittest.TestCase):
             env["MARKER"] = str(marker)
             env.update(
                 {
+                    "FLAGCX_CI_TEST_MAX_ATTEMPTS": "2",
                     "FLAGCX_CI_TEST_TIMEOUT": "1s",
                     "FLAGCX_CI_TEST_KILL_AFTER": "1s",
                     "FLAGCX_CI_TEST_LABEL": "timeout-test",
@@ -504,12 +513,13 @@ class CiRetryTest(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("passed on retry 1", result.stdout)
-        self.assertIn("exceeded its 1s timeout on attempt 1", result.stderr)
+        self.assertIn("watchdog expired on attempt 1", result.stderr)
+        self.assertIn("limit-source=invocation", result.stderr)
 
-    def test_retry_policy_is_fixed_to_one_retry(self):
+    def test_default_policy_does_not_retry(self):
         result = self.run_wrapper("exit 8")
         self.assertEqual(result.returncode, 8)
-        self.assertEqual(result.stderr.count("retrying once"), 1)
+        self.assertEqual(result.stderr.count("retrying once"), 0)
 
     def test_identical_labels_keep_separate_invocation_logs(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -577,7 +587,7 @@ class CiWorkflowWiringTest(unittest.TestCase):
         ):
             source = path.read_text()
             self.assertIn("workflow_call:", source)
-            for platform in ("cuda", "hygon", "metax", "ppu", "kunlunxin"):
+            for platform in ("cuda", "hygon", "metax", "ppu", "kunlunxin", "iluvatar"):
                 self.assertIn(f"contains(fromJSON(inputs.platforms), '{platform}')", source)
             self.assertIn("if: always()", source)
             self.assertIn("check_platform_workflow.sh", source)
@@ -647,7 +657,7 @@ class CiWorkflowWiringTest(unittest.TestCase):
         caller = yaml.safe_load((REPO_ROOT / ".github/workflows/unit-test.yml").read_text())
         token = caller["jobs"]["torch_api_tests"]["secrets"]["FLAGCICD_API_TOKEN"]
         self.assertIn("needs.prepare.outputs.repository == github.repository", token)
-        for platform in ("cuda", "hygon", "metax", "ppu"):
+        for platform in ("cuda", "hygon", "metax", "ppu", "iluvatar"):
             with self.subTest(platform=platform):
                 job = workflow["jobs"][f"torch-api-test-{platform}"]
                 steps = {step.get("name"): step for step in job["steps"]}
@@ -748,6 +758,31 @@ class PlatformWorkflowCompletionTest(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_iluvatar_requires_config_and_workload_success(self):
+        for config in ("success", "failure", "cancelled", "skipped"):
+            for result in (None, "", "success", "failure", "cancelled", "skipped"):
+                with self.subTest(config=config, result=result):
+                    env = os.environ.copy()
+                    env.pop("ILUVATAR_RESULT", None)
+                    if result is not None:
+                        env["ILUVATAR_RESULT"] = result
+                    checked = subprocess.run(
+                        ["bash", str(REPO_ROOT / ".github/scripts/ci/check_platform_workflow.sh"), '["iluvatar"]', config]
+                        + ["skipped"] * 6,
+                        env=env, text=True, capture_output=True)
+                    self.assertEqual(checked.returncode == 0,
+                                     config == "success" and result == "success",
+                                     checked.stdout + checked.stderr)
+
+    def test_unselected_iluvatar_does_not_change_existing_gate(self):
+        env = os.environ.copy()
+        env["ILUVATAR_RESULT"] = "failure"
+        checked = subprocess.run(
+            ["bash", str(REPO_ROOT / ".github/scripts/ci/check_platform_workflow.sh"), '["cuda"]', "success", "success",
+             "success", "skipped", "skipped", "skipped", "skipped"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
 
     def test_hygon_experimental_perf_is_required(self):
         script = str(REPO_ROOT / ".github/scripts/ci/check_platform_workflow.sh")

@@ -8,6 +8,7 @@ fi
 
 workload=$1
 project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
+source "$project_root/.github/scripts/ci/timeouts.sh"
 perf_runner="$project_root/.github/scripts/ci/run_host_perf_suite.sh"
 : "${FLAGCX_CI_SET_ENV:?The platform configuration must provide set_env}"
 
@@ -25,15 +26,15 @@ export FLAGCX_DEBUG_SUBSYS=${FLAGCX_DEBUG_SUBSYS:-INIT,NET,P2P,PROXY}
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 build_flagcx() {
-  make -C "$project_root" --jobs="$(nproc)" USE_PPU=1 USE_ACCL_BAREX=1
+  flagcx_ci_run build make -C "$project_root" --jobs="$(nproc)" USE_PPU=1 USE_ACCL_BAREX=1
 }
 
 case "$workload" in
   torch-api)
     command -v python3
-    python3 -c 'import torch; print("torch", torch.__version__, "devices", torch.cuda.device_count()); assert torch.cuda.device_count() >= 4'
+    flagcx_ci_run preflight python3 -c 'import torch; print("torch", torch.__version__, "devices", torch.cuda.device_count()); assert torch.cuda.device_count() >= 4'
     build_flagcx
-    python3 -m pip install 'setuptools_scm>=8'
+    flagcx_ci_run torch-build python3 -m pip install 'setuptools_scm>=8'
     (
       # The build script is the repo root's; plugin/torch holds only the native
       # backend sources now, and the Python package lives in src/.
@@ -41,7 +42,7 @@ case "$workload" in
       export TORCH_DEVICE_BACKEND_AUTOLOAD=0
       export FLAGCX_ADAPTOR=ppu
       export USE_PPU=1
-      python3 setup.py build_ext --inplace
+      flagcx_ci_run torch-build python3 setup.py build_ext --inplace
     )
 
     export PYTHON_BIN=python3
@@ -56,13 +57,13 @@ case "$workload" in
     export FLAGCX_P2P_TRANSPORT=accl
     bash "$project_root/test/script/torch_api_test.sh"
     if [[ "${FLAGCX_CI_TORCH_COVERAGE:-0}" == 1 ]]; then
-      "$PYTHON_BIN" -m pip install --quiet coverage==7.10.7
+      flagcx_ci_run torch-build "$PYTHON_BIN" -m pip install --quiet coverage==7.10.7
       bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"
     fi
     ;;
   perf)
     build_flagcx
-    make -C "$project_root/test/perf" --jobs="$(nproc)" \
+    flagcx_ci_run build-tests make -C "$project_root/test/perf" --jobs="$(nproc)" \
       USE_PPU=1 USE_ACCL_BAREX=1
 
     export FLAGCX_CI_PERF_PLATFORM=PPU
