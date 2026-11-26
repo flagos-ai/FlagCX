@@ -41,6 +41,7 @@
 
 #include "check.h"
 #include "device_api.h"
+#include "device_api_report.h"
 #include "device_api_window.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
@@ -277,6 +278,8 @@ int main(int argc, char *argv[]) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Main test loop
+  const DeviceApiReporter reporter("test_device_api_inter", proc);
+
   for (size_t size = minBytes; size <= maxBytes; size *= (size_t)stepFactor) {
     size_t countPerPeer = size / sizeof(float) / (size_t)totalProcs;
     if (countPerPeer == 0)
@@ -490,6 +493,7 @@ int main(int argc, char *argv[]) {
     bool k14Ok =
         verifyAlltoAll((const float *)hostBuff, countPerPeer, totalProcs, proc);
     printResult("K14 OneSidedAlltoAll", k14Ok, proc);
+    reporter.report("K14", size, k14Ok ? "PASS" : "FAIL");
     allPass &= k14Ok;
     MPI_Barrier(MPI_COMM_WORLD);
 

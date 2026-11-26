@@ -30,6 +30,7 @@
  ************************************************************************/
 
 #include "check.h"
+#include "device_api_report.h"
 #include "device_api_window.h"
 #include "device_ir.h"
 #include "flagcx.h"
@@ -292,6 +293,8 @@ int main(int argc, char *argv[]) {
     return true;
   };
 
+  const DeviceApiReporter reporter("test_device_ir_inter", proc);
+
   for (size_t size = minBytes; size <= maxBytes; size *= (size_t)stepFactor) {
     size_t countPerPeer =
         std::max((size_t)1, size / sizeof(float) / (size_t)totalProcs);
@@ -506,9 +509,12 @@ int main(int argc, char *argv[]) {
       bool s14Ok = verifyAlltoAll(countPerPeer);
       printf("[rank %d] S14 OneSidedAlltoAll: %s\n", proc,
              s14Ok ? "PASS" : "FAIL");
+      reporter.report("S14", size, s14Ok ? "PASS" : "FAIL");
       fflush(stdout);
       allInterPass &= s14Ok;
       MPI_Barrier(MPI_COMM_WORLD);
+    } else {
+      reporter.report("S14", size, "SKIP");
     }
 
     // --- S15: AlltoAll (two-sided, commented) ---

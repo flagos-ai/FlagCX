@@ -20,6 +20,7 @@
  ************************************************************************/
 
 #include "check.h"
+#include "device_api_report.h"
 #include "device_ir.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
@@ -140,6 +141,8 @@ int main(int argc, char *argv[]) {
   // =========================================================================
   // Main test loop
   // =========================================================================
+  const DeviceApiReporter reporter("test_device_ir_intra", proc);
+
   for (size_t size = minBytes; size <= maxBytes; size *= (size_t)stepFactor) {
     size_t count = size / sizeof(float);
     if (count == 0)
@@ -392,6 +395,7 @@ int main(int argc, char *argv[]) {
       }
     }
     RPRINTF("S10 IntraAllReduce(Scalar): %s\n", s10Pass ? "PASS" : "FAIL");
+    reporter.report("S10", size, s10Pass ? "PASS" : "FAIL");
     allPass &= s10Pass;
 
     if (proc == 0)

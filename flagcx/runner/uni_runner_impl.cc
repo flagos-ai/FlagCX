@@ -6137,7 +6137,7 @@ static flagcxResult_t prepareStaticCollectiveExecution(
 
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
   if (result == flagcxSuccess) {
     result = flagcxGetStaticCollectiveKernelMaxExecutorBlocks(
         static_cast<size_t>(runnerState->uniRunnerNThreads), maxExecutorBlocks);
@@ -6438,7 +6438,7 @@ prepareStaticRedExecution(flagcxHeteroComm_t hcomm,
 
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
   FLAGCXCHECK(flagcxGetStaticReduceKernelMaxExecutorBlocks(
       static_cast<size_t>(runnerState->uniRunnerNThreads), maxExecutorBlocks));
   *maxExecutorBlocks = std::min(
@@ -6567,6 +6567,44 @@ enum uniRunnerStaticStreamIndex {
   uniRunnerStaticNoFailedStream = -1,
 };
 
+struct uniRunnerStaticStreamTrace {
+  int lastResult[uniRunnerStaticNumStreams] = {-1, -1, -1, -1};
+  std::chrono::steady_clock::time_point lastTime[uniRunnerStaticNumStreams]{};
+
+  void queryBegin(flagcxUniRunnerState *state, const char *phase, int index,
+                  flagcxStream_t stream) {
+    if (lastResult[index] == -1 &&
+        __atomic_load_n(&flagcxDebugLevel, __ATOMIC_ACQUIRE) >=
+            FLAGCX_LOG_TRACE &&
+        (flagcxDebugMask & FLAGCX_UNIRUNNER) != 0)
+      TRACE(FLAGCX_UNIRUNNER,
+            "static stream state=%p phase=%s stream_index=%d stream=%p "
+            "stage=query-enter",
+            static_cast<void *>(state), phase, index,
+            static_cast<void *>(stream));
+  }
+
+  void queryEnd(flagcxUniRunnerState *state, const char *phase, int index,
+                flagcxStream_t stream, flagcxResult_t result) {
+    if (__atomic_load_n(&flagcxDebugLevel, __ATOMIC_ACQUIRE) <
+            FLAGCX_LOG_TRACE ||
+        (flagcxDebugMask & FLAGCX_UNIRUNNER) == 0)
+      return;
+    const auto now = std::chrono::steady_clock::now();
+    if (lastResult[index] == static_cast<int>(result) &&
+        now - lastTime[index] < std::chrono::seconds(5))
+      return;
+    static const char *names[] = {"red", "copy", "ipc_comm", "net_comm"};
+    TRACE(FLAGCX_UNIRUNNER,
+          "static stream state=%p phase=%s stream_index=%d stream_name=%s "
+          "stream=%p stage=query-return result=%d",
+          static_cast<void *>(state), phase, index, names[index],
+          static_cast<void *>(stream), result);
+    lastResult[index] = result;
+    lastTime[index] = now;
+  }
+};
+
 static flagcxResult_t
 repairUniRunnerStaticFlags(flagcxUniRunnerState *runnerState,
                            flagcxStream_t stream) {
@@ -6594,6 +6632,7 @@ pollUniRunnerStaticStreams(flagcxUniRunnerState *runnerState,
       runnerState->ipcCommStream, runnerState->netCommStream};
   bool complete[uniRunnerStaticNumStreams] = {};
   size_t remaining = uniRunnerStaticNumStreams;
+  uniRunnerStaticStreamTrace trace;
   if (knownCompleteStream >= 0 &&
       knownCompleteStream < uniRunnerStaticNumStreams) {
     complete[knownCompleteStream] = true;
@@ -6607,11 +6646,14 @@ pollUniRunnerStaticStreams(flagcxUniRunnerState *runnerState,
       if (complete[streamIdx]) {
         continue;
       }
+      trace.queryBegin(runnerState, "drain", streamIdx, streams[streamIdx]);
       flagcxResult_t queryResult =
           streamIdx == uniRunnerStaticNetCommStream &&
                   streams[streamIdx] == NULL
               ? flagcxSuccess
               : deviceAdaptor->streamQuery(streams[streamIdx]);
+      trace.queryEnd(runnerState, "drain", streamIdx, streams[streamIdx],
+                     queryResult);
       if (queryResult == flagcxInProgress) {
         continue;
       }
@@ -6658,7 +6700,7 @@ recoverPoisonedUniRunnerRedStream(flagcxUniRunnerState *runnerState,
   flagcxResult_t recoveryResult = flagcxSuccess;
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
   if (ipcControl != NULL) {
     recoveryResult = flagcxLaunchStaticIpcRecoveryKernel(
         runnerState->ipcReadyMem, ipcControl, recoveryStream);
@@ -6712,6 +6754,7 @@ waitForStaticStreamCompletion(flagcxUniRunnerState *runnerState,
       runnerState->ipcCommStream, runnerState->netCommStream};
   bool complete[uniRunnerStaticNumStreams] = {};
   size_t remaining = uniRunnerStaticNumStreams;
+  uniRunnerStaticStreamTrace trace;
   while (remaining != 0) {
     bool madeProgress = false;
     for (int streamIdx = 0; streamIdx < uniRunnerStaticNumStreams;
@@ -6719,11 +6762,14 @@ waitForStaticStreamCompletion(flagcxUniRunnerState *runnerState,
       if (complete[streamIdx]) {
         continue;
       }
+      trace.queryBegin(runnerState, "wait", streamIdx, streams[streamIdx]);
       flagcxResult_t queryResult =
           streamIdx == uniRunnerStaticNetCommStream &&
                   streams[streamIdx] == NULL
               ? flagcxSuccess
               : deviceAdaptor->streamQuery(streams[streamIdx]);
+      trace.queryEnd(runnerState, "wait", streamIdx, streams[streamIdx],
+                     queryResult);
       if (queryResult == flagcxSuccess) {
         complete[streamIdx] = true;
         --remaining;
@@ -6873,7 +6919,7 @@ static flagcxResult_t runStaticHostRed(flagcxHeteroComm_t hcomm,
   if (prepareResult != flagcxSuccess) {
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
     // Capability/occupancy probing happens before the exact static FIFO is
     // allocated. Preserve the legacy executor on devices where the static
     // cooperative-progress contract is unavailable or cannot be queried.
@@ -6892,14 +6938,24 @@ static flagcxResult_t runStaticHostRed(flagcxHeteroComm_t hcomm,
 
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
   if (numTriggers != 0) {
+    TRACE(FLAGCX_UNIRUNNER,
+          "static RED rank=%d state=%p stage=kernel-launch-enter "
+          "stream=%p triggers=%zu blocks=%zu threads=%llu",
+          hcomm->rank, static_cast<void *>(runnerState),
+          static_cast<void *>(runnerState->redStream), numTriggers,
+          schedule.numRedBlocks,
+          static_cast<unsigned long long>(runnerState->uniRunnerNThreads));
     flagcxResult_t launchResult = flagcxLaunchStaticReduceKernel(
         hcomm->uniRunnerFifoBuffer, numTriggers,
         static_cast<size_t>(runnerState->uniRunnerNThreads),
         schedule.numRedBlocks, maxExecutorBlocks, runnerState->avgDivisor,
         runnerState->redStream, schedule.numNetRedTasks,
         schedule.numNetRedBlocks);
+    TRACE(FLAGCX_UNIRUNNER,
+          "static RED rank=%d state=%p stage=kernel-launch-return result=%d",
+          hcomm->rank, static_cast<void *>(runnerState), launchResult);
     if (launchResult != flagcxSuccess) {
       // A runtime launch API may report an earlier asynchronous error even if
       // this executor was accepted. Abort and queue flag repair behind it on
@@ -6913,7 +6969,13 @@ static flagcxResult_t runStaticHostRed(flagcxHeteroComm_t hcomm,
   }
 #endif
 
+  TRACE(FLAGCX_UNIRUNNER,
+        "static RED rank=%d state=%p stage=host-dag-submit-enter", hcomm->rank,
+        static_cast<void *>(runnerState));
   flagcxResult_t result = submitStaticHostDag(runnerState, hcomm);
+  TRACE(FLAGCX_UNIRUNNER,
+        "static RED rank=%d state=%p stage=host-dag-submit-return result=%d",
+        hcomm->rank, static_cast<void *>(runnerState), result);
   if (result != flagcxSuccess) {
     result = abortAndDrainStaticExecution(runnerState, NULL, result);
   } else if (numTriggers == 0) {
@@ -6924,6 +6986,9 @@ static flagcxResult_t runStaticHostRed(flagcxHeteroComm_t hcomm,
   } else {
     result = waitForStaticStreamCompletion(runnerState, NULL);
   }
+  TRACE(FLAGCX_UNIRUNNER,
+        "static RED rank=%d state=%p stage=stream-completion-return result=%d",
+        hcomm->rank, static_cast<void *>(runnerState), result);
   return result;
 }
 
@@ -6939,7 +7004,7 @@ static flagcxResult_t recoverFailedStaticCollectiveLaunch(
   requestUniRunnerStaticAbort(runnerState);
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
   flagcxResult_t recoveryResult = flagcxLaunchStaticIpcRecoveryKernel(
       runnerState->ipcReadyMem, ipcControl, executorStream);
   preserveFirstUniRunnerError(recoveryResult, &launchResult);
@@ -7152,7 +7217,7 @@ static flagcxResult_t runStaticRingDag(flagcxComm_t comm,
   runnerState->ipcEpoch = control.epoch;
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
   size_t maxExecutorBlocks = 0;
   result = flagcxGetStaticRingDagKernelMaxExecutorBlocks(
       static_cast<size_t>(runnerState->uniRunnerNThreads), &maxExecutorBlocks);
@@ -7174,7 +7239,7 @@ static flagcxResult_t runStaticRingDag(flagcxComm_t comm,
   }
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
   uint64_t *controlDevice =
       static_cast<uint64_t *>(runnerState->ipcRingControlDevice);
   result = flagcxLaunchStaticRingDagKernel(
@@ -7219,7 +7284,7 @@ runStaticHostRedIpc(flagcxComm_t comm, flagcxResult_t localPreparationResult) {
 
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
   flagcxResult_t launchResult = flagcxLaunchStaticCollectiveKernel(
       hcomm->uniRunnerFifoBuffer, numRedTriggers, runnerState->ipcFifoDevicePtr,
       numIpcTriggers, runnerState->ipcInputMem, runnerState->ipcOutputMem,
@@ -7281,7 +7346,7 @@ static flagcxResult_t runDynamicDagFallback(flagcxHeteroComm_t hcomm,
 
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
   FLAGCXCHECK(flagcxLaunchCollectiveKernel(
       hcomm->uniRunnerFifoBuffer, NULL, NULL, NULL, NULL, NULL,
       runnerState->uniRunnerNThreads, runnerState->uniRunnerNRedBlocks, 0,

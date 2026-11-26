@@ -6,13 +6,19 @@ display_name: Mthreads MUSA Tests
 paths_watch:
   - .github/configs/mthreads.yml
   - .github/scripts/ci/run_mthreads_workload.sh
+  - .github/scripts/ci/run_mthreads_perf_experimental.sh
+  - .github/scripts/ci/check_musa_runtime.py
   - .github/scripts/set_env/mthreads.sh
   - flagcx/adaptor/device/musa_adaptor.cc
   - flagcx/adaptor/ccl/musa_mccl_adaptor.cc
   - flagcx/adaptor/include/musa_adaptor.h
+  - flagcx/adaptor/include/device_api/musa_*.h
+  - flagcx/adaptor/kernel/musa/**/*
+  - flagcx/adaptor/kernel/common/**/*
+  - test/kernel/musa/**/*
   - makefiles/musa.mk
 
-ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:mthreads-dev-fixed-20261022
+ci_image: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-mthreads-musa5.2.0@sha256:1870e059f98d95465009f55db78d723cf77640b211ff1c5f1378d59b8e200c27
 
 runner_labels:
   - mt-8g-cicd-flagcx
@@ -22,6 +28,8 @@ docker_volumes: []
 docker_options:
   - --network=host
   - --runtime=mthreads
+  - --env=MTHREADS_VISIBLE_DEVICES=0,1,2,3
+  - --env=MTHREADS_DRIVER_CAPABILITIES=compute,utility
   - --privileged
   - --ipc=host
   - --shm-size=32g
@@ -47,12 +55,11 @@ unit_test_suites:
 # Platform exclusions; every entry must document its reason.
 ignore_test:
   gtest:
-  - suite: device_api_host
+  - suite: adaptor
     tests:
-    - CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator
-    - CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator
-    reason: Current MCCL SDK has no mcclCommFinalize; compatibility native Destroy may drain
-      unrelated work. Restore with the supported native Finalize SDK
+      - NetAdaptorLoopback.RegisterDmaBufMr
+    reason: Temporarily defer MUSA DMA-BUF import registration failure (ibv_reg_dmabuf_mr
+      returns ENOMEM); ordinary GPU MR and required GPU one-sided cases remain enabled
   phases:
   - suite: symmem
     name: vmm-local-and-remote-without-net

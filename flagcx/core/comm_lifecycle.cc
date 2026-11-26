@@ -24,7 +24,9 @@ static bool builtinCompatFinalize(flagcxCCLAdaptor *adaptor) {
 #elif defined(USE_ENFLAME_ADAPTOR)
   return adaptor == &ecclAdaptor;
 #elif defined(USE_MUSA_ADAPTOR)
-  return adaptor == &musa_mcclAdaptor;
+  // The pinned MUSA SDK supports native Finalize, independently of Destroy.
+  (void)adaptor;
+  return false;
 #elif defined(USE_SUNRISE_ADAPTOR)
   return adaptor == &pcclAdaptor;
 #elif defined(USE_KUNLUNXIN_ADAPTOR)

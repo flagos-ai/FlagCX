@@ -53,6 +53,11 @@ jobs:
       ppu_set_env: ${{ steps.ppu.outputs.set_env }}
       ppu_ignore_test: ${{ steps.ppu.outputs.ignore_test }}
       ppu_runs_on: ${{ steps.ppu.outputs.runs_on }}
+      mthreads_ci_image: ${{ steps.mthreads.outputs.ci_image }}
+      mthreads_docker_args: ${{ steps.mthreads.outputs.docker_args }}
+      mthreads_set_env: ${{ steps.mthreads.outputs.set_env }}
+      mthreads_ignore_test: ${{ steps.mthreads.outputs.ignore_test }}
+      mthreads_runs_on: ${{ steps.mthreads.outputs.runs_on }}
       ascend_ci_image: ${{ steps.ascend.outputs.ci_image }}
       ascend_docker_args: ${{ steps.ascend.outputs.docker_args }}
       ascend_set_env: ${{ steps.ascend.outputs.set_env }}
@@ -92,6 +97,10 @@ jobs:
       - name: Load PPU configuration
         id: ppu
         run: ruby .github/scripts/ci/load_platform_config.rb ppu
+
+      - name: Load MUSA configuration
+        id: mthreads
+        run: ruby .github/scripts/ci/load_platform_config.rb mthreads
 
       - name: Load Ascend configuration
         id: ascend
@@ -502,6 +511,85 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  torch-api-test-mthreads:
+    if: contains(fromJSON(inputs.platforms), 'mthreads')
+    name: torch-api-test (musa)
+    needs: load-hardware-container-configs
+    runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.mthreads_runs_on) }}
+    timeout-minutes: 180
+    env:
+      FLAGCICD_TOKEN_SET: ${{ secrets.FLAGCICD_API_TOKEN != '' }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Check Docker
+        shell: bash
+        run: docker version
+
+      - name: Run torch-api-test (musa) in configured container
+        shell: bash
+        env:
+          FLAGCX_CI_TORCH_COVERAGE: '1'
+          FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.mthreads_docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.mthreads_ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.mthreads_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.mthreads_ignore_test }}
+        run: >-
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
+          mthreads torch-api
+
+      - name: Cleanup torch-api-test (musa) container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Collect Python coverage report
+        if: ${{ !cancelled() && hashFiles('.ci-logs/coverage-mthreads-gpu-torch.json') != '' }}
+        run: cp "$FLAGCX_CI_LOG_DIR/coverage-mthreads-gpu-torch.json" coverage-mthreads-gpu-torch.json
+
+      - name: Upload coverage report to FlagCICD
+        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles('coverage-mthreads-gpu-torch.json') != '' }}
+        uses: flagos-ai/FlagOps/actions/post-pytest-report@5bd0e138a6ae482b1a1cc809ea6705ecfd6eb410
+        continue-on-error: true
+        timeout-minutes: 2
+        with:
+          backend_url: https://flagcicd.flagos.net/flagcicd/api/v1/cicd/metrics/
+          api_token: ${{ secrets.FLAGCICD_API_TOKEN }}
+          report_path: coverage-mthreads-gpu-torch.json
+          file_type: coverage
+          job_name: coverage-mthreads-gpu-torch
+          pr_id: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
+          fail_on_error: 'false'
+
+      - name: Archive Python coverage report
+        if: ${{ !cancelled() && hashFiles('coverage-mthreads-gpu-torch.json') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-mthreads-gpu-torch
+          path: coverage-mthreads-gpu-torch.json
+          retention-days: 7
+
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-torch-api-test-mthreads-${{ github.run_attempt }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
   torch-api-test-ascend:
     if: contains(fromJSON(inputs.platforms), 'ascend')
     name: torch-api-test (ascend)
@@ -613,6 +701,7 @@ jobs:
       - torch-api-test-cuda
       - torch-api-test-metax
       - torch-api-test-ppu
+      - torch-api-test-mthreads
       - torch-api-test-ascend
       - torch-api-test-kunlunxin
     runs-on: ubuntu-latest
@@ -626,6 +715,7 @@ jobs:
       METAX_RESULT: ${{ needs['torch-api-test-metax'].result }}
       PPU_RESULT: ${{ needs['torch-api-test-ppu'].result }}
       KUNLUNXIN_RESULT: ${{ needs['torch-api-test-kunlunxin'].result }}
+      MTHREADS_RESULT: ${{ needs['torch-api-test-mthreads'].result }}
       ASCEND_RESULT: ${{ needs['torch-api-test-ascend'].result }}
     steps:
       - name: Checkout Code
@@ -651,4 +741,16 @@ jobs:
           if python3 -c 'import json, os, sys; sys.exit(0 if "kunlunxin" in json.loads(os.environ["PLATFORMS"]) else 1)'; then
             [[ "$CONFIG_RESULT" == success ]] || { echo "KunlunXin configuration loading ended with: $CONFIG_RESULT" >&2; exit 1; }
             [[ "$KUNLUNXIN_RESULT" == success ]] || { echo "KunlunXin Torch API job ended with: $KUNLUNXIN_RESULT" >&2; exit 1; }
+          fi
+
+      - name: Validate selected Mthreads Torch API job
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+          CONFIG_RESULT: ${{ needs['load-hardware-container-configs'].result }}
+          MTHREADS_RESULT: ${{ needs['torch-api-test-mthreads'].result }}
+        shell: bash
+        run: |
+          if python3 -c 'import json, os, sys; sys.exit(0 if "mthreads" in json.loads(os.environ["PLATFORMS"]) else 1)'; then
+            [[ "$CONFIG_RESULT" == success ]] || { echo "Mthreads configuration loading ended with: $CONFIG_RESULT" >&2; exit 1; }
+            [[ "$MTHREADS_RESULT" == success ]] || { echo "MUSA Torch API job ended with: $MTHREADS_RESULT" >&2; exit 1; }
           fi

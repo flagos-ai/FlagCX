@@ -453,7 +453,9 @@ if label == os.environ["FAIL_LABEL"]:
         ).read_text()
         ppu_config = (REPO_ROOT / ".github/configs/ppu.yml").read_text()
         self.assertIn("docker container run --rm", container_runner)
-        self.assertNotIn("docker run --rm", container_runner)
+        # The hardware container receives platform options; the separate log
+        # handoff container intentionally uses plain runc without those options.
+        self.assertIn('"${docker_args[@]}"', container_runner)
         self.assertNotIn("ruby ", container_runner)
         for variable in (
             "FLAGCX_CI_IMAGE",

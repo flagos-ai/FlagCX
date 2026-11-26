@@ -23,7 +23,7 @@ case "${FLAGCX_ADAPTOR:-}" in
   nvidia|metax|ppu|ascend|iluvatar)
     run_multi_segment=1
     ;;
-  enflame)
+  enflame|musa)
     ;;
   du)
     vmm_provider_env+=( -x FLAGCX_VMM_MULTI_SEGMENT_ENABLE=0 )
@@ -33,7 +33,7 @@ case "${FLAGCX_ADAPTOR:-}" in
   "")
     ;;
   *)
-    echo "Unsupported FLAGCX_ADAPTOR '${FLAGCX_ADAPTOR}'; expected nvidia, du, ppu, metax, ascend, klx, or iluvatar" >&2
+    echo "Unsupported FLAGCX_ADAPTOR '${FLAGCX_ADAPTOR}'; expected nvidia, du, ppu, metax, ascend, klx, iluvatar, enflame, or musa" >&2
     exit 2
     ;;
 esac

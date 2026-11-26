@@ -131,16 +131,6 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           "${{ inputs.platform }}" unittest "${{ matrix.suite }}"
 
-      - name: Upload test attempt logs
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: attempts-unit_test-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
-          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
-          include-hidden-files: true
-          if-no-files-found: ignore
-          retention-days: 7
-
       - name: Cleanup unit-test container
         if: always()
         shell: bash

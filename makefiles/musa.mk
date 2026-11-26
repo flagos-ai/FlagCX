@@ -10,6 +10,11 @@ DEVICE_INCLUDE := $(DEVICE_HOME)/include
 # Host-linked test kernel objects call the MUSA runtime directly.
 DEVICE_LINK  := -lmusart -lmusa
 DEVICE_PLATFORM := MUSA
+# Match the Device IR target selected by the root device_bitcode build.
+# The public architecture takes precedence over the native MUSA alias.
+ifneq ($(strip $(DEVICE_BITCODE_ARCH)),)
+override MUSA_ARCH := $(DEVICE_BITCODE_ARCH)
+endif
 MUSA_ARCH ?= mp_31
 DEVICE_COMPILER := $(DEVICE_HOME)/bin/mcc
 DEVICE_COMPILE_FLAG := -std=c++17 -O2 -c -mtgpu \

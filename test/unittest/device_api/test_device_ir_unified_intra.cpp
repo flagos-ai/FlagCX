@@ -25,6 +25,7 @@
  ************************************************************************/
 
 #include "check.h"
+#include "device_api_report.h"
 #include "device_ir.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
@@ -192,6 +193,8 @@ int main(int argc, char *argv[]) {
   // S21-S25 atomically clear this value if any device context fails.
   int passResult = 1;
 
+  const DeviceApiReporter reporter("test_device_ir_unified_intra", proc);
+
   for (size_t size = minBytes; size <= maxBytes; size *= (size_t)stepFactor) {
     size_t count = size / sizeof(float);
     if (count == 0)
@@ -211,10 +214,12 @@ int main(int argc, char *argv[]) {
     // barrier's arrive/wait peer loop iterates over zero peers, so a PASS
     // here would certify nothing cross-rank - report SKIP instead.
     RPRINTF("S16 DevBarrier(INTRA+WORLD): SKIP (peer path not operable)\n");
+    reporter.report("S16", size, "SKIP");
     MPI_Barrier(MPI_COMM_WORLD);
 #else
     const char *skipS16 = std::getenv("FLAGCX_CI_UNIFIED_IR_SKIP_S16");
     if (skipS16 != nullptr && skipS16[0] != '\0' && skipS16[0] != '0') {
+      reporter.report("S16", size, "SKIP");
       if (proc == 0) {
         const char *reason =
             std::getenv("FLAGCX_CI_UNIFIED_IR_SKIP_S16_REASON");
@@ -262,6 +267,7 @@ int main(int argc, char *argv[]) {
       }
 
       RPRINTF("S16 DevBarrier(INTRA+WORLD): %s\n", s16Pass ? "PASS" : "FAIL");
+      reporter.report("S16", size, s16Pass ? "PASS" : "FAIL");
       gradedCases++;
       allPass &= s16Pass;
       MPI_Barrier(MPI_COMM_WORLD);
@@ -275,6 +281,7 @@ int main(int argc, char *argv[]) {
     // gate as S16 (no operable peer path on this backend).
     RPRINTF("S17 DevTeamResolution(INTRA+WORLD): SKIP (peer path not\n"
             "operable)\n");
+    reporter.report("S17", size, "SKIP");
     MPI_Barrier(MPI_COMM_WORLD);
 #else
     {
@@ -330,6 +337,7 @@ int main(int argc, char *argv[]) {
 
       RPRINTF("S17 DevTeamResolution(INTRA+WORLD): %s\n",
               s17Pass ? "PASS" : "FAIL");
+      reporter.report("S17", size, s17Pass ? "PASS" : "FAIL");
       gradedCases++;
       allPass &= s17Pass;
       delete[] s17Recv;
@@ -344,6 +352,7 @@ int main(int argc, char *argv[]) {
     // cross-rank one-sided path the case certifies (MC952 review P1).
     RPRINTF("S18 DevPut+PutValue(INTRA+WORLD): SKIP (peer path not\n"
             "operable)\n");
+    reporter.report("S18", size, "SKIP");
     MPI_Barrier(MPI_COMM_WORLD);
 #else
     {
@@ -507,6 +516,7 @@ int main(int argc, char *argv[]) {
 
       RPRINTF("S18 DevPut+PutValue(INTRA+WORLD): %s\n",
               s18Pass ? "PASS" : "FAIL");
+      reporter.report("S18", size, s18Pass ? "PASS" : "FAIL");
       gradedCases++;
       allPass &= s18Pass;
       MPI_Barrier(MPI_COMM_WORLD);
@@ -518,6 +528,7 @@ int main(int argc, char *argv[]) {
     // every remote-read path traps), so there is no implementation to check.
 #ifdef FLAGCX_TEST_NO_REMOTE_READ
     RPRINTF("S19 DevGet(INTRA+WORLD): SKIP (no remote read on this device)\n");
+    reporter.report("S19", size, "SKIP");
     MPI_Barrier(MPI_COMM_WORLD);
 #else
     {
@@ -562,6 +573,7 @@ int main(int argc, char *argv[]) {
       }
 
       RPRINTF("S19 DevGet(INTRA+WORLD): %s\n", s19Pass ? "PASS" : "FAIL");
+      reporter.report("S19", size, s19Pass ? "PASS" : "FAIL");
       gradedCases++;
       allPass &= s19Pass;
       MPI_Barrier(MPI_COMM_WORLD);
@@ -581,16 +593,22 @@ int main(int argc, char *argv[]) {
 #ifdef FLAGCX_TEST_NO_ATOMIC_COMPLETION
     RPRINTF("S20 DevSignalStandalone(INTRA+WORLD): SKIP (no RMW "
             "completion atomic on this device)\n");
+    reporter.report("S20", size, "SKIP");
     RPRINTF("S21 DevPutSignalWait(INTRA+WORLD): SKIP (no RMW "
             "completion atomic on this device)\n");
+    reporter.report("S21", size, "SKIP");
     RPRINTF("S22 DevPut_RSig(INTRA+WORLD): SKIP (no RMW "
             "completion atomic on this device)\n");
+    reporter.report("S22", size, "SKIP");
     RPRINTF("S23 DevPutCounter(INTRA+WORLD): SKIP (no RMW "
             "completion atomic on this device)\n");
+    reporter.report("S23", size, "SKIP");
     RPRINTF("S24 DevPutValue_RSig(INTRA+WORLD): SKIP (no RMW "
             "completion atomic on this device)\n");
+    reporter.report("S24", size, "SKIP");
     RPRINTF("S25 DevSignalShadowFlush(INTRA+WORLD): SKIP (no RMW "
             "completion atomic on this device)\n");
+    reporter.report("S25", size, "SKIP");
     MPI_Barrier(MPI_COMM_WORLD);
 #else
     // =======================================================================
@@ -615,6 +633,7 @@ int main(int argc, char *argv[]) {
       bool s20Pass = (hostRes == 1);
       RPRINTF("S20 DevSignalStandalone(INTRA+WORLD): %s\n",
               s20Pass ? "PASS" : "FAIL");
+      reporter.report("S20", size, s20Pass ? "PASS" : "FAIL");
       gradedCases++;
       allPass &= s20Pass;
       MPI_Barrier(MPI_COMM_WORLD);
@@ -671,6 +690,7 @@ int main(int argc, char *argv[]) {
 
       RPRINTF("S21 DevPutSignalWait(INTRA+WORLD): %s\n",
               s21Pass ? "PASS" : "FAIL");
+      reporter.report("S21", size, s21Pass ? "PASS" : "FAIL");
       gradedCases++;
       allPass &= s21Pass;
       MPI_Barrier(MPI_COMM_WORLD);
@@ -729,6 +749,7 @@ int main(int argc, char *argv[]) {
       }
 
       RPRINTF("S22 DevPut_RSig(INTRA+WORLD): %s\n", s22Pass ? "PASS" : "FAIL");
+      reporter.report("S22", size, s22Pass ? "PASS" : "FAIL");
       gradedCases++;
       allPass &= s22Pass;
       MPI_Barrier(MPI_COMM_WORLD);
@@ -789,6 +810,7 @@ int main(int argc, char *argv[]) {
 
       RPRINTF("S23 DevPutCounter(INTRA+WORLD): %s\n",
               s23Pass ? "PASS" : "FAIL");
+      reporter.report("S23", size, s23Pass ? "PASS" : "FAIL");
       gradedCases++;
       allPass &= s23Pass;
       MPI_Barrier(MPI_COMM_WORLD);
@@ -843,6 +865,7 @@ int main(int argc, char *argv[]) {
 
       RPRINTF("S24 DevPutValue_RSig(INTRA+WORLD): %s\n",
               s24Pass ? "PASS" : "FAIL");
+      reporter.report("S24", size, s24Pass ? "PASS" : "FAIL");
       gradedCases++;
       allPass &= s24Pass;
       MPI_Barrier(MPI_COMM_WORLD);
@@ -872,6 +895,7 @@ int main(int argc, char *argv[]) {
       bool s25Pass = (hostRes == 1);
       RPRINTF("S25 DevSignalShadowFlush(INTRA+WORLD): %s\n",
               s25Pass ? "PASS" : "FAIL");
+      reporter.report("S25", size, s25Pass ? "PASS" : "FAIL");
       gradedCases++;
       allPass &= s25Pass;
       MPI_Barrier(MPI_COMM_WORLD);

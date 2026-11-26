@@ -179,6 +179,12 @@ void FlagCXCollTest::SetUp() {
 }
 
 flagcxResult_t FlagCXCollTest::synchronizeAndCheckAsyncError() {
+  return synchronizeAndCheckAsyncError(comm, stream);
+}
+
+flagcxResult_t
+FlagCXCollTest::synchronizeAndCheckAsyncError(flagcxComm_t target,
+                                              flagcxStream_t targetStream) {
   const char *expectedRunnerMode = std::getenv("FLAGCX_CI_EXPECT_RUNNER_MODE");
   const ::testing::TestInfo *testInfo =
       ::testing::UnitTest::GetInstance()->current_test_info();
@@ -190,7 +196,7 @@ flagcxResult_t FlagCXCollTest::synchronizeAndCheckAsyncError() {
   if (traceSendRecv)
     std::cerr << traceName << " rank=" << rank << " phase=sync-stream-begin"
               << std::endl;
-  flagcxResult_t localError = devHandle->streamSynchronize(stream);
+  flagcxResult_t localError = devHandle->streamSynchronize(targetStream);
   if (traceSendRecv)
     std::cerr << traceName << " rank=" << rank
               << " phase=sync-stream-end result=" << localError << std::endl;
@@ -199,7 +205,7 @@ flagcxResult_t FlagCXCollTest::synchronizeAndCheckAsyncError() {
     if (traceSendRecv)
       std::cerr << traceName << " rank=" << rank << " phase=async-error-begin"
                 << std::endl;
-    flagcxResult_t queryResult = flagcxCommGetAsyncError(comm, &asyncError);
+    flagcxResult_t queryResult = flagcxCommGetAsyncError(target, &asyncError);
     if (traceSendRecv)
       std::cerr << traceName << " rank=" << rank
                 << " phase=async-error-end result=" << queryResult

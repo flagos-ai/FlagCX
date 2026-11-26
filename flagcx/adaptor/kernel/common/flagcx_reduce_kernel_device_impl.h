@@ -26,6 +26,22 @@
 #define cudaLaunchKernel hipLaunchKernel
 #define cudaError_t hipError_t
 #define cudaSuccess hipSuccess
+#elif defined(USE_MUSA_ADAPTOR)
+#include <musa_runtime.h>
+
+#define cudaGetDevice musaGetDevice
+#define cudaDeviceGetAttribute musaDeviceGetAttribute
+#define cudaDevAttrCooperativeLaunch musaDevAttrCooperativeLaunch
+#define cudaDevAttrConcurrentKernels musaDevAttrConcurrentKernels
+#define cudaDevAttrMultiProcessorCount musaDevAttrMultiProcessorCount
+#define cudaDevAttrMaxThreadsPerBlock musaDevAttrMaxThreadsPerBlock
+#define cudaOccupancyMaxActiveBlocksPerMultiprocessor(...)                     \
+  musaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(__VA_ARGS__,          \
+                                                         musaOccupancyDefault)
+#define cudaLaunchCooperativeKernel musaLaunchCooperativeKernel
+#define cudaLaunchKernel musaLaunchKernel
+#define cudaError_t musaError_t
+#define cudaSuccess musaSuccess
 #elif defined(USE_PPU_ADAPTOR)
 #include <hggc_ad.h>
 
@@ -1899,6 +1915,14 @@ flagcxResult_t flagcxLaunchCollectiveKernel(
   if (nthreads == 0) {
     return flagcxInvalidArgument;
   }
+#if defined(USE_MUSA_ADAPTOR)
+  if (stream == nullptr || nthreads > 1024 || avgDivisor == 0 ||
+      (nRedBlocks != 0 && redFifoBuffer == nullptr) ||
+      (nIpcBlocks != 0 && (ipcFifoBuffer == nullptr || inputMem == nullptr ||
+                           outputMem == nullptr || readyMem == nullptr))) {
+    return flagcxInvalidArgument;
+  }
+#endif
   const size_t nblocks = nRedBlocks + nIpcBlocks;
 
   flagcxDevMem input;
@@ -1914,7 +1938,12 @@ flagcxResult_t flagcxLaunchCollectiveKernel(
                            *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(
       redFifoBuffer, ipcFifoBuffer, input, output, ready, ipcParentFlags,
       static_cast<int>(nRedBlocks), static_cast<int>(nIpcBlocks), avgDivisor);
+#if defined(USE_MUSA_ADAPTOR)
+  return musaGetLastError() == musaSuccess ? flagcxSuccess
+                                           : flagcxUnhandledDeviceError;
+#else
   return flagcxSuccess;
+#endif
 }
 
 static flagcxResult_t
@@ -1930,7 +1959,7 @@ getStaticKernelMaxExecutorBlocks(const void *kernel, const char *kernelName,
   }
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
-    defined(USE_PPU_ADAPTOR)
+    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR)
   int device = -1;
   int cooperativeLaunch = 0;
   int concurrentKernels = 0;
@@ -2028,7 +2057,7 @@ flagcxResult_t flagcxLaunchStaticReduceKernel(
   }
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
-    defined(USE_PPU_ADAPTOR)
+    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR)
   uint64_t *words = static_cast<uint64_t *>(redFifoDeviceBuffer);
   flagcxReduceTrigger *triggers =
       reinterpret_cast<flagcxReduceTrigger *>(words + flagcxFifoIdxData);
@@ -2096,7 +2125,7 @@ flagcxResult_t flagcxLaunchStaticCollectiveKernel(
   }
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
-    defined(USE_PPU_ADAPTOR)
+    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR)
   uint64_t *redWords = static_cast<uint64_t *>(redFifoDeviceBuffer);
   uint64_t *ipcWords = static_cast<uint64_t *>(ipcFifoDeviceBuffer);
   flagcxReduceTrigger *redTriggers =
@@ -2182,7 +2211,7 @@ flagcxResult_t flagcxLaunchStaticRingDagKernel(
     return flagcxInvalidArgument;
   }
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
-    defined(USE_PPU_ADAPTOR)
+    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR)
   flagcxDevMem scratch(*scratchMem);
   flagcxDevMem progress(*progressMem);
   flagcxDevMem ready(*readyMem);
@@ -2224,7 +2253,7 @@ flagcxLaunchStaticIpcRecoveryKernel(flagcxDevMem_t readyMem,
   }
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
-    defined(USE_PPU_ADAPTOR)
+    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR)
   flagcxDevMem ready(*readyMem);
   flagcxStaticIpcControl control = *ipcControl;
   void *args[] = {&ready, &control};

@@ -25,26 +25,44 @@ class LifecycleCiTest(unittest.TestCase):
             ci = root / '.github/scripts/ci'
             ci.mkdir(parents=True)
             shutil.copy(ROOT / '.github/scripts/ci/ignore_test.py', ci)
+            shutil.copy(ROOT / '.github/scripts/ci/check_required_gtests.py', ci)
             target = root / 'test/unittest/device_api/build/bin/test_dev_comm_cleanup'
             target.parent.mkdir(parents=True)
             if binary:
                 target.touch()
             runner = root / 'runner'
             runner.write_text('''#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, xml.etree.ElementTree as ET
 from pathlib import Path
 with open(os.environ['CALLS'], 'a') as out:
     out.write(json.dumps({'args': sys.argv[1:], 'filter': os.getenv('GTEST_FILTER'),
                           'vmm': os.getenv('FLAGCX_VMM_ENABLE')}) + '\\n')
 if sys.argv[1] != 'make' and not Path(sys.argv[1]).is_file():
     sys.exit(127)
+prefix = 'FLAGCX_CI_GTEST_XML_DIR='
+xml_dir = next((a[len(prefix):] for a in sys.argv if a.startswith(prefix)), None)
+output = next((a.split('xml:', 1)[1] for a in sys.argv if a.startswith('--gtest_output=xml:')), None)
+names = []
+if xml_dir:
+    output = str(Path(xml_dir) / 'host-default.xml')
+    names = ['FinalizeDoesNotDrainIndependentCommunicator', 'PartialOwnerCachesDoNotDrainIndependentCommunicator']
+elif output:
+    names = ['HeteroRmaNonVmmFinalizeDoesNotDrainIndependentWork']
+if output:
+    suite = ET.Element('testsuite', name='CommStreamIsolation')
+    for name in names:
+        ET.SubElement(suite, 'testcase', name=name, status='run', result='completed')
+    ET.ElementTree(suite).write(output)
 ''')
             runner.chmod(0o755)
             harness = root / 'run.sh'
             harness.write_text('''#!/bin/bash
 set -euo pipefail
 source "$1"
+SET_ENV_SCRIPT=$1
 PROJECT_ROOT=$2
+suite_log_dir=$PROJECT_ROOT/logs
+mkdir -p "$suite_log_dir"
 TEST_RUNNER=$3
 SUITE=device_api_host
 if declare -F flagcx_ci_configure_suite >/dev/null; then
@@ -123,7 +141,7 @@ fi
         native_cases = {
             'CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator',
             'CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator'}
-        for platform in ('ascend', 'mthreads', 'enflame'):
+        for platform in ('ascend', 'enflame'):
             with self.subTest(platform=platform):
                 result, calls = self.run_device_host(platform)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -133,6 +151,17 @@ fi
                     'CommStreamIsolation.HeteroRmaNonVmmFinalizeDoesNotDrainIndependentWork'})
                 if platform != 'enflame':
                     self.assertEqual(len(calls), 2)
+
+    def test_musa_native_finalize_restores_isolation_and_keeps_fresh_rma(self):
+        result, calls = self.run_device_host('mthreads')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 2)
+        excluded = set(calls[0]['filter'].partition('-')[2].split(':'))
+        self.assertEqual(excluded, {
+            'CommStreamIsolation.HeteroRmaNonVmmFinalizeDoesNotDrainIndependentWork'})
+        self.assertEqual(calls[1]['vmm'], '0')
+        self.assertTrue(any(a.startswith('--gtest_output=xml:')
+                            for a in calls[1]['args']))
 
     def test_public_lifecycle_stays_enabled_with_compat_finalize(self):
         case = 'FlagCXCollTest.FinalizeThenRankLocalDestroy'

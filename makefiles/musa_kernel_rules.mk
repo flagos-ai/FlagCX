@@ -6,7 +6,10 @@ MUSA_KERNEL_INCLUDES := $(foreach dir,$(INCLUDEDIR),-I$(dir)) \
         -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(SHCA_INCLUDE_FLAG)
 MUSA_HOST_CXX_INCLUDES ?= $(shell $(CXX) -E -x c++ -v /dev/null 2>&1 >/dev/null | \
 	sed -n 's|^ \(/[^ ]*include/[^ ]*c++[^ ]*\)$$|-isystem \1|p')
-MUSA_KERNEL_INCLUDES += $(MUSA_HOST_CXX_INCLUDES)
+# Keep the SDK's device C++ wrappers ahead of explicitly discovered GCC
+# headers, especially the device placement-new overloads in <new>.
+MUSA_CXX_WRAPPER_DIR ?= $(shell $(DEVICE_COMPILER) -print-resource-dir 2>/dev/null)/include/cuda_wrappers
+MUSA_KERNEL_INCLUDES += -isystem $(MUSA_CXX_WRAPPER_DIR) $(MUSA_HOST_CXX_INCLUDES)
 MUSA_KERNEL_DEFINES := $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) \
         $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_FLAG)
 

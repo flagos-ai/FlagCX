@@ -19,7 +19,7 @@ CXX = os.environ.get("CXX") or shutil.which("clang++") or shutil.which("g++")
 INCLUDE = ROOT / "flagcx/adaptor/include"
 
 def production_function(source, name):
-    match = re.search(r"(?:static\s+)?(?:inline\s+)?(?:ncclResult_t|flagcxResult_t|MPI_Datatype|MPI_Op|void|stagedBuffer_t)\s+"
+    match = re.search(r"(?:static\s+)?(?:inline\s+)?(?:ncclResult_t|flagcxResult_t|MPI_Datatype|MPI_Op|void|bool|stagedBuffer_t)\s+"
                       + re.escape(name) + r"\s*\(", source)
     if match is None:
         raise ValueError("Missing production function " + name)
@@ -38,7 +38,7 @@ def generate_native_contracts(output):
     platforms = (
         ('nccl', 'nccl', 'nccl', True), ('rccl', 'rccl', 'nccl', True),
         ('durccl', 'durccl', 'nccl', True), ('ixnccl', 'ixnccl', 'nccl', True),
-        ('mccl', 'mccl', 'mccl', True), ('musa_mccl', 'mccl', 'mccl', False),
+        ('mccl', 'mccl', 'mccl', True), ('musa_mccl', 'mccl', 'mccl', True),
         ('ppu_pccl', 'ppupccl', 'pccl', True), ('tccl', 'tccl', 'tccl', True),
         ('hccl', 'hccl', 'Hccl', False), ('cncl', 'cncl', 'cncl', False),
         ('pccl', 'pccl', 'pccl', False), ('xccl', 'xccl', 'bkcl', False),
@@ -487,6 +487,29 @@ assert(kunlunAdaptorSetDevice(4) == flagcxSuccess && nativeSets == 7 && nativeDe
 
 @unittest.skipUnless(CXX, "C++ compiler required")
 class SdkCompileTest(unittest.TestCase):
+    def test_musa_native_finalize_disables_compatibility_destroy(self):
+        policy = production_function(
+            (ROOT / "flagcx/core/comm_lifecycle.cc").read_text(),
+            "builtinCompatFinalize")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "policy.cpp"
+            source.write_text('''#include <cassert>
+struct flagcxCCLAdaptor {};
+static flagcxCCLAdaptor musa_mcclAdaptor, other;
+''' + policy + '''
+int main() {
+  assert(!builtinCompatFinalize(&musa_mcclAdaptor));
+  assert(!builtinCompatFinalize(&other));
+}
+''')
+            binary = root / "policy"
+            result = subprocess.run(
+                [CXX, "-std=c++17", "-DUSE_MUSA_ADAPTOR", str(source), "-o", str(binary)],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            subprocess.run([str(binary)], check=True)
+
     def test_nccl_wrapper_abort_retains_owner_until_every_release_succeeds(self):
         source = r'''
 #include "flagcx.h"

@@ -42,14 +42,21 @@ OPTIMIZED_BC := $(OBJDIR)/libflagcx_device.bc.optimized
 LLVM_IR_FILE := $(OBJDIR)/libflagcx_device.ll
 FINAL_BC := $(LIBDIR)/libflagcx_device.bc
 
-IR_PLATFORM_HEADERS := musa_platform_traits.h musa_comm_traits.h
+IR_PLATFORM_HEADERS := musa_platform_traits.h musa_comm_traits.h musa_proxy_sync.h
 include ../device_ir_headers.mk
 
 DEVICE_HOME ?= /usr/local/musa
-MCC ?= $(DEVICE_HOME)/bin/mcc
-OPT ?= opt
-LLVM_DIS ?= llvm-dis
-LLVM_AS ?= llvm-as
+MUSA_LLVM_BIN ?= $(DEVICE_HOME)/bin
+MCC ?= $(MUSA_LLVM_BIN)/mcc
+OPT ?= $(MUSA_LLVM_BIN)/opt
+LLVM_DIS ?= $(MUSA_LLVM_BIN)/llvm-dis
+LLVM_AS ?= $(MUSA_LLVM_BIN)/llvm-as
+
+# Match native kernel compilation: some mcc installations do not discover
+# the host C++ headers. Device wrappers must precede those host headers.
+MUSA_HOST_CXX_INCLUDES ?= $(shell $(CXX) -E -x c++ -v /dev/null 2>&1 >/dev/null | \
+	sed -n 's|^ \(/[^ ]*include/[^ ]*c++[^ ]*\)$$|-isystem \1|p')
+MUSA_CXX_WRAPPER_DIR ?= $(shell $(MCC) -print-resource-dir 2>/dev/null)/include/cuda_wrappers
 
 # Absolute include roots: mcc runs inside OBJDIR so that its generated file
 # names stay out of the source tree.
@@ -68,6 +75,7 @@ COMMON_CLANG_FLAGS := \
 	-std=c++17 -x musa \
 	--musa-path=$(DEVICE_HOME) --cuda-device-only \
 	--offload-arch=$(MUSA_ARCH) \
+	-isystem $(MUSA_CXX_WRAPPER_DIR) $(MUSA_HOST_CXX_INCLUDES) \
 	$(FLAGCX_INCLUDES) \
 	-D__clang_llvm_bitcode_lib__ \
 	$(ADAPTOR_FLAG) \
@@ -90,7 +98,7 @@ all: llvm_ir
 $(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL)
 	@mkdir -p $(OBJDIR)
 	@echo "[FlagCX][MUSA] Generating unoptimized Device IR"
-	cd $(OBJDIR) && $(MCC) $(CLANG_FLAGS) $(MUSA_SRC_ABS)
+	cd $(OBJDIR) && $(MCC) $(CLANG_FLAGS) $(IR_DEPFLAGS) $(MUSA_SRC_ABS)
 	@mv -f $(MUSA_RAW_BC) $@
 
 $(STRIPPED_LL): $(UNOPTIMIZED_BC)

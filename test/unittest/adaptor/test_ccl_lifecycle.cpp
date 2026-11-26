@@ -54,6 +54,28 @@ TEST(CclOwnerContract, FinalizeRetainsWrapperAndNeverCallsNativeDestroy) {
   }
 }
 
+TEST(CclOwnerContract, NativeFinalizePendingAndErrorRetainOwner) {
+  for (const auto &sdk : nativeOwners) {
+    if (!sdk.nativeFinalize)
+      continue;
+    SCOPED_TRACE(sdk.name);
+    NativeOwnerProbe::reset();
+    void *owner = sdk.make();
+    for (int result : {flagcxInProgress, flagcxRemoteError}) {
+      NativeOwnerProbe::result = result;
+      EXPECT_EQ(sdk.finalize(owner), result);
+      EXPECT_TRUE(sdk.hasNative(owner));
+      EXPECT_EQ(NativeOwnerProbe::owners.count(owner), 1u);
+      EXPECT_EQ(NativeOwnerProbe::destroys + NativeOwnerProbe::frees, 0);
+    }
+    NativeOwnerProbe::result = 0;
+    EXPECT_EQ(sdk.finalize(owner), flagcxSuccess);
+    EXPECT_EQ(NativeOwnerProbe::finalizes, 3);
+    EXPECT_EQ(sdk.destroy(owner), flagcxSuccess);
+    EXPECT_EQ(NativeOwnerProbe::frees, 1);
+  }
+}
+
 TEST(CclOwnerContract, PendingThenErrorThenSuccessRetainsOwnerUntilRelease) {
   for (const auto &sdk : nativeOwners) {
     SCOPED_TRACE(sdk.name);

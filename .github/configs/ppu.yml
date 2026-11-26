@@ -14,6 +14,7 @@ paths_watch:
   - flagcx/adaptor/include/ppu_adaptor.h
   - flagcx/adaptor/include/device_api/ppu_*.h
   - flagcx/adaptor/kernel/ppu/**/*
+  - flagcx/adaptor/kernel/common/**/*
   - test/kernel/ppu/**/*
   - tools/probe_hggc_sdk.py
   - flagcx/adaptor/include/barex_runtime.h

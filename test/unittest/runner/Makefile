@@ -11,13 +11,17 @@ UNIT_TARGET := $(BINDIR)/runner_unit_tests
 
 # [mpi] tests: keep UniRunner-specific GPU cases in the experimental suite.
 UNIRUNNER_EXPERIMENTAL_SRCS := coll_allgather_gemm.cpp coll_gemm_reducescatter.cpp \
-                           coll_uni_runner_group.cpp
+                           coll_uni_runner_group.cpp coll_uni_runner_collectives.cpp
 MPI_SRCS   := $(filter-out $(UNIRUNNER_EXPERIMENTAL_SRCS),$(wildcard coll_*.cpp)) main_mpi.cpp
 MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/runner_mpi_tests
 UNIRUNNER_EXPERIMENTAL_MPI_SRCS := $(UNIRUNNER_EXPERIMENTAL_SRCS) main_mpi.cpp
 UNIRUNNER_EXPERIMENTAL_MPI_OBJS := $(UNIRUNNER_EXPERIMENTAL_MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 UNIRUNNER_EXPERIMENTAL_MPI_TARGET := $(BINDIR)/runner_unirunner_experimental_mpi_tests
+
+# This case selects unsupported reduction types using the host adaptor macros.
+# Keep the other runner translation units backend-neutral.
+$(OBJDIR)/coll_uni_runner_collectives.o: CXXFLAGS += $(HOST_ADAPTOR_DEFINE) $(DEVICE_INCLUDE) $(CCL_INCLUDE)
 
 .PHONY: all clean run-unit run-mpi run unirunner-experimental
 

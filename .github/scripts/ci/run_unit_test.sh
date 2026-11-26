@@ -323,6 +323,13 @@ build_suite() {
 run_device_api_host() {
   local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
+  local host_xml_dir=
+  local -a rma_args=()
+  if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == mthreads ]]; then
+    host_xml_dir=$(mktemp -d "$suite_log_dir/musa-host.XXXXXX")
+    args+=("FLAGCX_CI_GTEST_XML_DIR=$host_xml_dir")
+    rma_args+=("--gtest_output=xml:$host_xml_dir/host-non-vmm.xml")
+  fi
   local rma_case=CommStreamIsolation.HeteroRmaNonVmmFinalizeDoesNotDrainIndependentWork
   local main_filter=${GTEST_FILTER:-*}
   if [[ "$main_filter" == *-* ]]; then
@@ -333,6 +340,12 @@ run_device_api_host() {
   local status=0
   GTEST_FILTER="$main_filter" FLAGCX_CI_TEST_LABEL="device_api_host unit tests" \
     "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || status=$?
+  if [[ -n "$host_xml_dir" ]]; then
+    python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+      --case CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator \
+      --case CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator \
+      "$host_xml_dir/host-default.xml" || status=$?
+  fi
   if ! flagcx_ci_phase_supported non-vmm-rma; then
     return "$status"
   fi
@@ -355,7 +368,12 @@ PYFILTER
   # VMM's cached policy must be zero before the fresh process starts.
   FLAGCX_VMM_ENABLE=0 GTEST_FILTER="$rma_case" \
     FLAGCX_CI_TEST_LABEL="device_api_host non-VMM RMA lifecycle" \
-    "$TEST_RUNNER" "$suite_dir/build/bin/test_dev_comm_cleanup" || status=$?
+    "$TEST_RUNNER" "$suite_dir/build/bin/test_dev_comm_cleanup" \
+      "${rma_args[@]}" || status=$?
+  if [[ -n "$host_xml_dir" ]]; then
+    python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+      --case "$rma_case" "$host_xml_dir/host-non-vmm.xml" || status=$?
+  fi
   return "$status"
 }
 
@@ -365,6 +383,7 @@ flagcx_ci_device_api_intra_only() {
 }
 
 run_device_api() {
+  local MPI_RUNNER=${FLAGCX_CI_DEVICE_API_MPI_RUNNER:-$MPI_RUNNER}
   local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   local platform_name
   platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
@@ -382,7 +401,7 @@ run_device_api() {
     -x FLAGCX_MEM_ENABLE=1
     -x FLAGCX_VMM_ENABLE=0
     -x FLAGCX_TEST_WIN_MODE=asymmetric
-    -x FLAGCX_P2P_DISABLE=1
+    -x FLAGCX_P2P_DISABLE="${FLAGCX_CI_DEVICE_API_P2P_DISABLE:-1}"
     -x FLAGCX_KERNEL_PROXY_PARALLELISM=4
     -x FLAGCX_IB_QPS_PER_CONNECTION=2
     -x LD_LIBRARY_PATH
@@ -391,6 +410,9 @@ run_device_api() {
     common_env+=("${FLAGCX_CI_DEVICE_API_MPI_ARGS[@]}")
   fi
   local -a flags=(-b 1M -e 4M -f 2 -R 2)
+  if declare -p FLAGCX_CI_DEVICE_API_FLAGS >/dev/null 2>&1; then
+    flags=("${FLAGCX_CI_DEVICE_API_FLAGS[@]}")
+  fi
 
   declare -p FLAGCX_CI_NODE1_MPI_ARGS >/dev/null 2>&1 || {
     echo "The platform set_env script must define FLAGCX_CI_NODE1_MPI_ARGS" >&2
@@ -438,6 +460,7 @@ run_device_api() {
 }
 
 run_device_api_unified_ir() {
+  local MPI_RUNNER=${FLAGCX_CI_DEVICE_API_MPI_RUNNER:-$MPI_RUNNER}
   local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   local s16_skip_reason
   s16_skip_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \

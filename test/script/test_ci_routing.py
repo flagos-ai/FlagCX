@@ -163,7 +163,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
             ),
             (
                 "flagcx/adaptor/kernel/common/nested/foo.h",
-                [p for p in ("cuda", "hygon") if p in ALL_ENABLED_PLATFORMS]
+                [p for p in ("cuda", "hygon", "mthreads", "ppu") if p in ALL_ENABLED_PLATFORMS]
                 or ALL_ENABLED_PLATFORMS,
             ),
             (
@@ -185,6 +185,22 @@ class CiMatrixRoutingTest(unittest.TestCase):
             (
                 ".github/scripts/ci/run_hygon_perf_experimental.sh",
                 enabled_platform_or_matrix("hygon"),
+            ),
+            (
+                ".github/scripts/ci/run_mthreads_perf_experimental.sh",
+                enabled_platform_or_matrix("mthreads"),
+            ),
+            (
+                ".github/scripts/ci/check_musa_runtime.py",
+                enabled_platform_or_matrix("mthreads"),
+            ),
+            (
+                "flagcx/adaptor/kernel/musa/flagcx_reduce_kernel_device.mu",
+                enabled_platform_or_matrix("mthreads"),
+            ),
+            (
+                "test/kernel/musa/device_api.mu",
+                enabled_platform_or_matrix("mthreads"),
             ),
             (
                 ".github/scripts/ci/run_metax_workload.sh",

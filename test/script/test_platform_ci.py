@@ -810,6 +810,17 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn("FLAGCX_CI_DOCKER_ARGS:", workflow)
         self.assertIn("outputs.docker_args", workflow)
         self.assertIn("run_hardware_container.sh", workflow)
+        steps = yaml.safe_load(workflow)["jobs"]["unit_test"]["steps"]
+        uploads = [step for step in steps
+                   if step.get("uses", "").startswith("actions/upload-artifact@")]
+        names = [step["with"]["name"] for step in uploads]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(len(uploads), 2)
+        cleanup = next(i for i, step in enumerate(steps)
+                       if step.get("name") == "Cleanup unit-test container")
+        for upload in uploads:
+            self.assertGreater(steps.index(upload), cleanup)
+            self.assertEqual(upload["with"]["if-no-files-found"], "error")
 
     def test_hygon_builds_ibrc_with_shca_abi(self):
         hygon_env = HYGON_ENV.read_text()
@@ -1700,7 +1711,8 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         ).read_text()
         self.assertIn("FLAGCX_CI_MUSA_DEVICES", mthreads_env)
         self.assertIn("musa::atomic_ref", mthreads_env)
-        self.assertIn("FLAGCX_CI_DEVICE_API_SUPPORTED=0", mthreads_env)
+        self.assertNotIn("FLAGCX_CI_DEVICE_API_SUPPORTED=0", mthreads_env)
+        self.assertIn("device_api|device_api_unified_ir|perf-test-experimental", mthreads_env)
         self.assertNotIn("StreamWaitEvent", mthreads_env)
         self.assertIn("mthreads-gmi", mthreads_env)
         self.assertNotIn("flagcx_ci_run_suite_override", mthreads_env)

@@ -131,16 +131,13 @@ network still needs runner-side network provisioning. This check establishes
 visibility only; the adaptor Host MR and SendRecv tests verify connectivity.
 
 Mthreads CI uses `mt-8g-cicd-flagcx` and the image configured in
-`.github/configs/mthreads.yml`. It runs adaptor, core, device_api_host,
-p2p, rma, runner, service, and symmem host unit suites plus
-homogeneous and heterogeneous collective benchmarks. The symmem job currently
-runs host unit tests only; it does not cover IPC, VMM, or multi-process paths.
-The device adaptor suite excludes `DeviceAdaptorTest.StreamWaitEvent`, which
-currently fails on MUSA; all other device adaptor tests run.
-Device API and unified IR suites are selected but report capability skips because
-this repository has no MUSA device-kernel compiler backend. Device adaptor and
-topology cases run through the adaptor and core suites respectively. Torch plugin tests are also not
-configured for Mthreads. Build its CI image with
+`.github/configs/mthreads.yml`. MUSA hardware CI runs all ten configured unit
+suites, `perf-test (musa)` and Torch on four GPUs with a logical 2+2 split where
+applicable. The UniRunner `perf-test-experimental (musa)` job is temporarily
+disabled while its stream-value completion stall is investigated. Existing
+DMA-BUF and SymMem VMM exclusions remain in the platform configuration.
+Other platforms retain their existing selection.
+Build its CI image with
 `docker build -f docker/mthreads-ci.Dockerfile .`.
 
 CI runs each build and test once by default. Individual commands are bounded
@@ -160,6 +157,13 @@ A manual invocation may set `FLAGCX_CI_TEST_MAX_ATTEMPTS=2` to retry a test once
 Cancellation and missing/non-executable commands do not retry. Recovered tests
 emit a flaky warning and Step Summary entry. The `attempts-*` artifacts preserve
 invocation logs for seven days, including tests in managed Docker containers.
+
+After a host-managed workload container stops, the wrapper returns the log
+tree to the invoking runner's UID/GID so artifact upload and workspace cleanup
+can access root-created reports. This uses the already pulled image in a
+short-lived utility container with the ordinary runc runtime and only the log
+mount writable. Test failures retain their exit status; a failed log handoff
+also fails an otherwise successful job.
 
 ## Python Coverage
 
@@ -208,3 +212,13 @@ backend; skipped suites include an explicit reason rather than a fabricated
 zero-percent result. New supplemental GoogleTest cases use the
 `CoverageSupplemental.` suite-name prefix: ordinary PR jobs exclude these
 cases, while the weekly coverage workflow runs them.
+
+The Mthreads performance jobs display as `perf-test (musa)` and
+`perf-test-experimental (musa)`. Both select the same `mthreads` configuration
+and runner; the experimental workload adds `COMPILE_KERNEL=1` and runs the
+four-rank UniRunner correctness suite on the pinned MUSA 5.2.0 image.
+Ordinary MUSA perf and Torch are enabled and required to succeed. The
+experimental UniRunner job is temporarily disabled, and its completion gate
+requires a skipped result. Re-enable it together with its required-success
+gate after fixing the stream-value completion stall.
+See [MUSA UniRunner kernels](../docs/musa_unirunner.md) for validation details.

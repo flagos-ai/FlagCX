@@ -197,6 +197,7 @@ def test_pair_teardown():
     # Only P2P initializes this backend in homogeneous mode. The main native
     # communicator remains absent, and each rank inserts pairs in a different
     # local order before the common numeric shutdown order is exercised.
+    device = torch.device(dev_name, int(os.environ["LOCAL_RANK"]))
     control = dist.new_group(backend="gloo")
     group = dist.new_group(backend=f"cpu:gloo,{dev_name}:flagcx")
     edges = [(a, b) for a in range(WORLD_SIZE) for b in range(a + 1, WORLD_SIZE)]
@@ -204,7 +205,7 @@ def test_pair_teardown():
     for low, high in edges:
         if MY_RANK in (low, high):
             peer = high if MY_RANK == low else low
-            send = torch.full((8,), MY_RANK, device="cuda", dtype=torch.int32)
+            send = torch.full((8,), MY_RANK, device=device, dtype=torch.int32)
             recv = torch.empty_like(send)
             operations = [dist.P2POp(dist.isend, send, peer, group=group),
                           dist.P2POp(dist.irecv, recv, peer, group=group)]
@@ -212,8 +213,8 @@ def test_pair_teardown():
                 work.wait()
             torch.testing.assert_close(recv.cpu(), torch.full((8,), peer, dtype=torch.int32))
         dist.barrier(group=control)
-    backend = group._get_backend(torch.device(dev_name, int(os.environ["LOCAL_RANK"])))
-    closed_input = torch.empty(8, device=torch.device(dev_name, int(os.environ["LOCAL_RANK"])))
+    backend = group._get_backend(device)
+    closed_input = torch.empty(8, device=device)
     flagcx.shutdown_backend(backend)
     for submit in (backend.barrier,
                    lambda: backend.allreduce_coalesced([closed_input])):

@@ -25,6 +25,10 @@ DEVICE_OBJECTS := $(addprefix $(OBJDIR)/,$(addsuffix .device.o,$(KERNEL_NAMES)))
 DEVICE_IMAGES := $(addprefix $(OBJDIR)/,$(addsuffix .mubin,$(KERNEL_NAMES)))
 MUSA_TEST_CXX_ISYSTEM ?= $(shell $(CXX) -E -x c++ -v /dev/null 2>&1 >/dev/null | \
 	sed -n 's|^ \(/[^ ]*include/[^ ]*c++[^ ]*\)$$|-isystem \1|p')
+# Match the library kernels: older mcc installations do not discover the
+# image's host C++ standard-library headers automatically.
+MUSA_DEVICE_CXX_INCLUDES := -isystem $(MUSA_RESOURCE_DIR)/include/cuda_wrappers $(MUSA_TEST_CXX_ISYSTEM)
+MUSA_KERNEL_FLAGS += $(MUSA_DEVICE_CXX_INCLUDES)
 
 .PHONY: all clean device_api.o device_ir.o dlink.o dlink_api.o dlink_ir.o \
 	gdr_visibility.o
@@ -65,7 +69,7 @@ $(OBJDIR)/gdr_visibility.o: gdr_visibility.mu \
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling gdr_visibility.mu (MUSA)"
 	@$(DEVICE_COMPILER) -std=c++17 -O2 -c -fPIC $< -o $@ \
-		$(MUSA_TEST_CXX_ISYSTEM) \
+		$(MUSA_DEVICE_CXX_INCLUDES) \
 		$(FLAGCX_INCLUDES) -I$(PROJECT_ROOT)/test/kernel/include \
 		$(CCL_INCLUDE) $(DEVICE_INCLUDE) $(ADAPTOR_DEFINE)
 
