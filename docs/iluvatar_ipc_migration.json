@@ -1,0 +1,63 @@
+{
+  "baseline": "81abe75fd559b6b70c12bf7913df27e0231e77df",
+  "starting_head": "34a81ae38e83ec571152d4a45b9276b44aff48c3",
+  "protected_files": {
+    "bindings/ir/metax/Makefile": "dbc3b15ec34f306ff38db291151f5c47724f9732ee20d3257e9601bfe8415c56",
+    "flagcx/adaptor/device/maca_adaptor.cc": "fc25aa15826b748732650e1c51422945d136fc76d68dc361df003dcc73f26a92",
+    "flagcx/adaptor/device_api/aclshmem_dev_api_backend.cc": "8336a944990a612044ec06a928bc93c7ff98c0baa7c02c80d5b972269a04200a",
+    "flagcx/adaptor/include/device_api/aclshmem_comm_traits.h": "9e1049e6476fa0e705000816bef948fda5ba5035c705f67f185cc758f10fc01d",
+    "flagcx/adaptor/include/device_api/aclshmem_state_layout.h": "45d34fe0820e05dda1dd8b2305e9192cf4da0ca07444169df114e1dea6c5ae7c",
+    "flagcx/adaptor/include/device_api/ascend_comm_traits.h": "3edbff2b2be89d2b89a761c2622eb35797b5bc91d10d135d84cc5ee2bbdd0454",
+    "flagcx/adaptor/include/device_api/ascend_platform_traits.h": "d197957d7f6ea1e06a30e423a813c271601bb6be635b6fae6bd210f56bfb22e2",
+    "flagcx/adaptor/include/device_api/comm_traits.h": "4234f76852fdc02a8ee66ff883124b87ad61a53f551fcd198e12a1a03c7ec261",
+    "flagcx/adaptor/include/device_api/metax_comm_traits.h": "2b75bd6b628e9cfcbdf544778426ae2aa20e0816e470d15c58a77fab988f3dd4",
+    "flagcx/adaptor/include/device_api/metax_platform_traits.h": "f99df08b8d20f2f72cd6c500f7fa6462f16b85546c440a5977dfa4c65e5efba5",
+    "flagcx/adaptor/include/device_api/platform_traits.h": "84026bdebe1d050b6f7f43e5e550785e0c3abd1ccfcd0c232b396ebd4606ee92",
+    "flagcx/adaptor/include/device_utils.h": "30f542956e23d8f715d6489a6dbcb199b24494c355a11ae292aee28cd2c1c95e",
+    "flagcx/adaptor/kernel/metax/device_api_host_helpers.cu": "2a66e03c5ee72dc9c86189620cc341bc52b6c8e0a9eec2c29b9eb73cbb6f5d99",
+    "flagcx/adaptor/shmem/aclshmem_adaptor.cc": "98f46d34d59cf8e78b1ff80549048d8e74136a4a2957b1371298d750d549ae63",
+    "flagcx/adaptor/shmem/aclshmem_adaptor.h": "616a4f1a9a8a3d81915efaaf7dcb537e001f2faa142d606930ad1115a844e3de",
+    "makefiles/ascend.mk": "c922036a771eac568f168d58e2b006c0d35d5d40f67d559c7a904bc29d1da6ff",
+    "makefiles/metax.mk": "a65c23c7a17e0345eef5407e18e0a5828addc148f7760760a0e6203c29a5397e",
+    "test/kernel/ascend/Makefile": "af5e98a4d5bb39022c4a12f81061e13d586840e22359264110670886187a1c17",
+    "test/kernel/ascend/device_api.asc": "f7e01fe3bfb3360b6fee591b5f6a45ea34b6893ae9d08161cec0abf99369c261",
+    "test/kernel/ascend/device_ir.asc": "af9501b2648910ab9d361f65da25976e3cd9846ffca90cf9ca93bd26d0ed2679",
+    "test/kernel/maca/Makefile": "feec4c93a9031e74f1dea593b625cf99ce1fd275881128a2ccbe03786f3ca94b",
+    "test/kernel/maca/device_api.cu": "8c647496e0c0a166e991b0963da173fe4865dc0a755c24ccbb0b70a1d31292b3",
+    "test/kernel/maca/device_ir.cu": "187c6884fc7fe4f9263eee760653217c4e9359bde6e163ace5bc13bfef07c67d",
+    "test/script/test_metax_device_api.py": "8c097097192def34dd3d68363162960824a5f633fb2befee4ca7c329cd04f50f"
+  },
+  "retained_adaptor_snapshot": "fa80ac88",
+  "steps": [
+    {
+      "step": 1,
+      "description": "Record Device API preservation boundaries",
+      "status": "complete"
+    },
+    {
+      "step": 2,
+      "description": "Restore baseline communication execution without work tracking",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "description": "Close external Window imports without releasing user allocations",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "description": "Separate internal import owners from backing allocations",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "description": "Finalize internal imports before local Destroy",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "description": "Align public contracts, tests and CI",
+      "status": "pending"
+    }
+  ]
+}
