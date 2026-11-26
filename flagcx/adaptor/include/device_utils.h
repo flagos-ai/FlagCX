@@ -654,8 +654,17 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_HOST_DECORATOR
 #define FLAGCX_DEVICE_DECORATOR __aicore__
 #define FLAGCX_GLOBAL_DECORATOR __global__ __aicore__
+#if defined(__clang_llvm_bitcode_lib__)
+// Standalone IR TU: drop `inline` so the wrapper entries are emitted with
+// external linkage (same convention as the CUDA/HIP/Iluvatar branches).
+#define FLAGCX_DEVICE_INLINE_DECORATOR                                         \
+  __aicore__ __attribute__((always_inline))
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
+  __aicore__ __attribute__((always_inline))
+#else
 #define FLAGCX_DEVICE_INLINE_DECORATOR __aicore__ inline
 #define FLAGCX_HOST_DEVICE_INLINE __aicore__ inline
+#endif
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR __aicore__
 #endif
 #if defined(__CCE_IS_AICORE__)
