@@ -174,7 +174,7 @@ unit_suites = selected.to_h do |entry|
 end
 planned_groups = []
 planned_groups << "unit suites" unless level == "L0"
-planned_groups.concat(["performance", "Torch API"]) if %w[L2 L3].include?(level)
+planned_groups.concat(["performance", "Torch API"]) if %w[L2 L3].include?(level) && !selected.empty?
 plan = {
   "schema_version" => 1,
   "source_sha" => context.fetch("ref", ""),

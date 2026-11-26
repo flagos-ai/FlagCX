@@ -149,7 +149,9 @@ flagcxResult_t macaAdaptorDeviceMalloc(void **ptr, size_t size,
     DEVCHECK(mcMallocManaged(ptr, size, mcMemAttachGlobal));
   } else {
     if (stream == NULL) {
-      DEVCHECK(mcMalloc(ptr, size));
+      // Default Device API kernels publish and poll IPC-imported memory.
+      // Native stream memops do not accept this allocation in the CI SDK.
+      DEVCHECK(mcExtMallocWithFlags(ptr, size, mcDeviceMallocFinegrained));
     } else {
       DEVCHECK(mcMallocAsync(ptr, size, stream->base));
     }
@@ -215,7 +217,9 @@ flagcxResult_t macaAdaptorGdrMemAlloc(void **ptr, size_t size,
     return flagcxInvalidArgument;
   }
   if (!flagcxParamVmmEnable()) {
-    DEVCHECK(mcMalloc(ptr, size));
+    // flagcxMemAlloc uses this route in hetero mode, including Device API
+    // payload and signal buffers. Share the finegrained IPC allocation policy.
+    FLAGCXCHECK(macaAdaptorDeviceMalloc(ptr, size, flagcxMemDevice, NULL));
     mcPointerAttribute_t attrs;
     DEVCHECK(mcPointerGetAttributes(&attrs, *ptr));
     unsigned flags = 1;
@@ -598,11 +602,10 @@ flagcxResult_t macaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
   if (flags & ~FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
     return flagcxInvalidArgument;
 
-  // The current MACA runtime does not implement the acquire/flush semantics
-  // required after a NIC or peer device writes the waited-on value.  Reject
-  // the stronger contract before calling mcStreamWaitValue64 so callers can
-  // select another path without causing a runtime error or poisoning the
-  // device context.
+  // This adaptor has no validated MACA mapping for the acquire/flush guarantee
+  // needed after a NIC or peer device publishes incoming writes. A plain GEQ
+  // wait does not establish that stronger contract. Reject it explicitly so
+  // callers can select another path; this is not a NIC capability query.
   if (flags & FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
     return flagcxNotSupported;
 

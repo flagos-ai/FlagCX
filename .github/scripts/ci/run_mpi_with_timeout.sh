@@ -54,10 +54,26 @@ PYFILTER
   )
 fi
 if ((require_lifecycle)); then
-  result_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}/runner-lifecycle"
+  lifecycle_log_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}"
+  result_root="$lifecycle_log_root/runner-lifecycle"
   mkdir -p "$result_root"
   result_dir=$(mktemp -d "$result_root/results.XXXXXX")
-  chmod 755 "$result_dir"
+  # The container runs as root, while upload-artifact runs as the host user.
+  # mktemp -d always starts at 0700, independently of the caller's umask.
+  chmod 0755 "$lifecycle_log_root" "$result_root" "$result_dir"
+  publish_lifecycle_xml() {
+    local original_status=$? permission_status=0 report
+    trap - EXIT
+    for report in "$result_dir"/rank-*.xml; do
+      [[ -f "$report" ]] || continue
+      chmod 0644 "$report" || permission_status=$?
+    done
+    if ((original_status != 0)); then
+      exit "$original_status"
+    fi
+    exit "$permission_status"
+  }
+  trap publish_lifecycle_xml EXIT
   args=("${args[@]:0:runner_index}" bash "$script_dir/run_gtest_rank_xml.sh"
         "$result_dir" "${args[@]:runner_index}")
   status=0
@@ -69,10 +85,12 @@ if ((require_lifecycle)); then
   xml=("$result_dir"/rank-*.xml)
   if [[ ! -f "${xml[0]}" || ${#xml[@]} -ne $np ]]; then
     echo "$mpi_label: expected $np lifecycle XML reports in $result_dir" >&2
-    status=1
+    if ((status == 0)); then status=1; fi
   else
     python3 "$script_dir/check_required_gtests.py" \
-      --case FlagCXCollTest.FinalizeThenRankLocalDestroy "${xml[@]}" || status=1
+      --case FlagCXCollTest.FinalizeThenRankLocalDestroy "${xml[@]}" || {
+        if ((status == 0)); then status=1; fi
+      }
   fi
   exit "$status"
 fi

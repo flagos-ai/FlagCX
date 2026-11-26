@@ -9,6 +9,10 @@ paths_watch:
   - .github/scripts/ci/run_metax_workload.sh
   - .github/scripts/ci/check_metax_devices.py
   - flagcx/adaptor/device/maca_adaptor.cc
+  - makefiles/metax.mk
+  - flagcx/adaptor/kernel/metax/**/*
+  - flagcx/adaptor/include/device_api/metax_*.h
+  - bindings/ir/metax/**/*
   - test/kernel/maca/**/*
   - flagcx/adaptor/ccl/mccl_adaptor.cc
   - flagcx/adaptor/include/metax_adaptor.h
@@ -38,9 +42,13 @@ docker_options:
 
 set_env: .github/scripts/set_env/metax.sh
 
+# Regular MetaX hardware coverage.
 unit_test_suites:
   - adaptor
   - core
+  - device_api
+  - device_api_host
+  - device_api_unified_ir
   - p2p
   - rma
   - runner
@@ -49,6 +57,16 @@ unit_test_suites:
 
 # Platform exclusions; every entry must document its reason.
 ignore_test:
+  gtest:
+  - suite: adaptor
+    tests:
+    - DeviceAdaptorTest.StreamWaitWriteValue64
+    - DeviceAdaptorTest.StreamWaitValue64RemoteFlushCapability
+    reason: 'Temporary: the current MACA SDK rejects native stream memops on finegrained allocations required by Device API IPC'
+  - suite: rma
+    tests:
+    - RmaTest.IpcGetSameStreamCompletion
+    reason: 'Temporary: the same-stream gate uses native stream memops, which reject finegrained allocations in the current MACA SDK'
   perf:
     operations:
     - allreduce

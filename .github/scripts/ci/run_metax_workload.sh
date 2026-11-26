@@ -43,7 +43,7 @@ case "$workload" in
     exit "$perf_result"
     ;;
   torch-api)
-    export CUDA_VISIBLE_DEVICES=0,1,2,3
+    export CUDA_VISIBLE_DEVICES=$MACA_VISIBLE_DEVICES
     export FLAGCX_DEBUG=INFO
     export FLAGCX_DEBUG_SUBSYS=ALL
     export USE_METAX=1

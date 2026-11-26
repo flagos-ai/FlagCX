@@ -29,6 +29,16 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
               "Bulk32 must occupy and align to 32 bytes");
 #endif
 
+// MACA is independent of NVIDIA even when its compatibility frontend also
+// defines __CUDACC__. The explicit marker is used by native and bitcode
+// recipes.
+#if defined(USE_METAX_ADAPTOR) &&                                              \
+    (defined(__MACACC__) || defined(FLAGCX_METAX_DEVICE_COMPILE))
+#ifndef FLAGCX_METAX_DEVICE_COMPILE
+#define FLAGCX_METAX_DEVICE_COMPILE 1
+#endif
+#endif
+
 // Device compiler detection — defined when any GPU device compiler is active.
 // Extend with __ASCEND_CC__ etc. as new platforms are added.
 //
@@ -45,12 +55,14 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
     (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
      defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
     defined(__TOPSCC__) || defined(__HGGCCC__) ||                              \
+    defined(FLAGCX_METAX_DEVICE_COMPILE) ||                                    \
     (defined(USE_ASCEND_ADAPTOR) && defined(FLAGCX_ASCEND_DEVICE_COMPILE))
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
 // Select the SDK trap only in the device compilation pass.
-#if defined(__CUDA_ARCH__) || (defined(__MUSA_ARCH__) && __MUSA_ARCH__ > 0)
+#if (defined(__CUDA_ARCH__) && !defined(USE_METAX_ADAPTOR)) ||                 \
+    (defined(__MUSA_ARCH__) && __MUSA_ARCH__ > 0)
 #define FLAGCX_DEVICE_TRAP() __trap()
 #else
 #define FLAGCX_DEVICE_TRAP() __builtin_trap()
@@ -69,7 +81,8 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
     defined(__xpu__) || defined(__CCE_IS_AICORE__) ||                          \
     (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
      defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
-    defined(__TOPSCC__) || defined(__HGGCCC__)
+    defined(__TOPSCC__) || defined(__HGGCCC__) ||                              \
+    defined(FLAGCX_METAX_DEVICE_COMPILE)
 #define FLAGCX_CHECK_DEVICE_CC 1
 #else
 #define FLAGCX_CHECK_DEVICE_CC 0
@@ -318,6 +331,47 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #endif // FLAGCX_ILUVATAR_DEVICE_COMPILE
 
 #define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
+
+#elif defined(USE_METAX_ADAPTOR)
+#include <mcr/mc_runtime.h>
+
+#if defined(FLAGCX_METAX_DEVICE_COMPILE)
+#define FLAGCX_HOST_DECORATOR __host__
+#define FLAGCX_DEVICE_DECORATOR __device__
+#define FLAGCX_GLOBAL_DECORATOR __global__
+#if defined(__clang_llvm_bitcode_lib__)
+#define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __attribute__((always_inline))
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
+  __host__ __device__ __attribute__((always_inline))
+#else
+#define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __forceinline__
+#define FLAGCX_HOST_DEVICE_INLINE __host__ __device__ __forceinline__
+#endif
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
+#define FLAGCX_DEVICE_THREAD_FENCE __threadfence_system
+#define FLAGCX_DEVICE_SYNC_THREADS __syncthreads
+#define FLAGCX_THREAD_IDX_X threadIdx.x
+#define FLAGCX_BLOCK_IDX_X blockIdx.x
+#define FLAGCX_BLOCK_DIM_X blockDim.x
+#define FLAGCX_GRID_DIM_X gridDim.x
+#define FLAGCX_SHARED_DECORATOR __shared__
+#else
+#define FLAGCX_HOST_DECORATOR
+#define FLAGCX_DEVICE_DECORATOR
+#define FLAGCX_GLOBAL_DECORATOR
+#define FLAGCX_DEVICE_INLINE_DECORATOR inline
+#define FLAGCX_HOST_DEVICE_INLINE inline
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR
+#define FLAGCX_DEVICE_THREAD_FENCE() ((void)0)
+#define FLAGCX_DEVICE_SYNC_THREADS() ((void)0)
+#define FLAGCX_THREAD_IDX_X 0
+#define FLAGCX_BLOCK_IDX_X 0
+#define FLAGCX_BLOCK_DIM_X 1
+#define FLAGCX_GRID_DIM_X 1
+#define FLAGCX_SHARED_DECORATOR static
+#endif
+#define FLAGCX_SIMT_WIDTH 64
+#define FLAGCX_DEVICE_STREAM_PTR mcStream_t *
 
 #elif defined(USE_MUSA_ADAPTOR)
 #include <musa_runtime.h>

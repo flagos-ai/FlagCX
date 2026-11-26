@@ -1,9 +1,9 @@
 # Device API bitcode
 
 FlagCX can build Device API LLVM bitcode for NVIDIA CUDA, Iluvatar CoreX,
-Hygon DU, and PPU. A kernel consumer links `libflagcx_device.bc` and includes
-the headers from the same build. Choose an architecture supported by the
-installed SDK.
+Hygon DU, PPU, and MetaX MACA. A kernel consumer links `libflagcx_device.bc` and
+includes the headers from the same build. Choose an architecture supported by
+the installed SDK.
 
 ## Build from the repository root
 
@@ -21,6 +21,9 @@ make USE_DU=1 DEVICE_HOME=/opt/dtk CCL_HOME=/opt/dtk \
 
 make USE_PPU=1 DEVICE_HOME=/usr/local/PPU_SDK \
   DEVICE_BITCODE_ARCH=ppu001 BUILDDIR="$PWD/build/ppu-bc" device_bitcode
+
+make USE_METAX=1 DEVICE_HOME=/opt/maca \
+  DEVICE_BITCODE_ARCH=xcore1000 BUILDDIR="$PWD/build/metax-bc" device_bitcode
 ```
 
 `build/` contains `lib/libflagcx.so`, `lib/libflagcx_device.bc`, and consumer
@@ -67,6 +70,51 @@ Use LLVM tools from the same SDK build as the compiler so they understand
 its PPU intrinsics. These overrides also work as environment variables when
 building a wheel.
 
+## MetaX Device API and Device IR
+
+MetaX selects `DefaultBackend<MetaxPlatform>`, independently of MCCL's native
+Device API support. The common implementation exports Scalar IR, Unified IR,
+and compatibility entry points. All names in `bindings/ir/public_symbols.txt`
+must have definitions in the final module. The build checks LLVM validity and
+rejects host and foreign GPU targets.
+
+The build uses native `mxcc -x maca -maca-device-only -emit-llvm`, with
+`DEVICE_BITCODE_ARCH` passed to both bitcode generation and the host library's
+kernel build. Native relocatable kernels are linked by `mxcc -maca-link`;
+ordinary host objects are passed as `-maca-host-input`. The `mxcc`, `opt`,
+`llvm-dis`, and `llvm-as` defaults are under `/opt/maca/mxgpu_llvm/bin`.
+Override `MACA_LLVM_BIN` or the individual `MXCC`, `OPT`, `LLVM_DIS`, and
+`LLVM_AS` paths for another SDK layout. Use LLVM tools from that SDK.
+
+Synchronous `deviceMalloc` and the non-VMM GDR allocator use
+`mcExtMallocWithFlags(..., mcDeviceMallocFinegrained)` for IPC kernel
+publication and polling. Direct `mcMalloc` supports ordinary stream memops
+in the tested SDK, but timed out in the first Unified IR intra barrier.
+Use the existing Default Device API, Scalar IR, and Unified IR intra tests to
+validate IPC kernel-write visibility for this allocation path. The
+asynchronous pool allocator retains its stream-ordered allocation/free
+contract. VMM allocations and homogeneous `mcclMemAlloc` allocations
+have their own memory properties. They are not covered by the non-VMM hetero
+Device API CI configuration (`FLAGCX_USE_HETERO_COMM=1`, `FLAGCX_VMM_ENABLE=0`).
+Allocations supplied by a caller must support the required peer visibility.
+Uncached IPC memory does not remove the adaptor's NIC DMA flush requirements.
+
+MetaX CI temporarily excludes `DeviceAdaptorTest.StreamWaitWriteValue64`,
+`DeviceAdaptorTest.StreamWaitValue64RemoteFlushCapability`, and
+`RmaTest.IpcGetSameStreamCompletion`: the current MACA SDK rejects their native
+stream memops on finegrained allocations. The exclusions are recorded under
+`ignore_test.gtest` in `.github/configs/metax.yml`; the other adaptor/RMA and
+Device API cases remain enabled. The adaptor still reports errors normally
+outside CI. Its strong remote-write wait returns `flagcxNotSupported` because
+an acquire/flush mapping has not been validated; this does not mean the NIC
+cannot transfer GPU data.
+
+The existing `device_api`, `device_api_host`, and `device_api_unified_ir`
+MetaX CI suites build the Default backend with `COMPILE_KERNEL=1` and exercise
+native API, Scalar IR and Unified IR tests. Inter tests use two logical nodes
+on the same runner; actual cross-host operation and downstream FlagTree linking
+and execution require validation in those environments.
+
 ## Include bitcode in a Python wheel
 
 Set `FLAGCX_BITCODE_ARCH` when installing from the repository root:
@@ -83,6 +131,9 @@ FLAGCX_ADAPTOR=du DEVICE_HOME=/opt/dtk CCL_HOME=/opt/dtk \
 
 FLAGCX_ADAPTOR=ppu DEVICE_HOME=/usr/local/PPU_SDK \
   FLAGCX_BITCODE_ARCH=ppu001 pip install . -v --no-build-isolation
+
+FLAGCX_ADAPTOR=metax DEVICE_HOME=/opt/maca \
+  FLAGCX_BITCODE_ARCH=xcore1000 pip install . -v --no-build-isolation
 ```
 
 The wheel includes `flagcx/lib/libflagcx_device.bc`, `libflagcx.so`, and the

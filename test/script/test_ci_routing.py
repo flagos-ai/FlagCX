@@ -63,6 +63,26 @@ class CiMatrixRoutingTest(unittest.TestCase):
             outputs["platforms"] = json.loads(outputs["platforms"])
             return outputs, result.stdout
 
+    def test_metax_full_coverage_includes_other_workloads(self):
+        config = yaml.safe_load((CONFIG_DIR / "metax.yml").read_text())
+        self.assertIn("symmem", config["unit_test_suites"])
+        self.assertIn("core", config["unit_test_suites"])
+        for context in (
+            {"event_name": "pull_request", "labels": ["platform:metax"]},
+            {"event_name": "workflow_dispatch", "selection": "metax", "level": "L2"},
+            {"event_name": "workflow_dispatch", "selection": "metax", "level": "L3"},
+            {"event_name": "pull_request", "labels": ["platform:cuda", "platform:metax"]},
+            {"event_name": "push"},
+        ):
+            with self.subTest(context=context):
+                outputs, _ = self.resolve(context)
+                self.assertIn("metax", outputs["platforms"])
+                self.assertIn("metax", [p["platform"] for p in outputs["matrix"]["include"]])
+        workflow = yaml.safe_load((REPO_ROOT / '.github/workflows/unit-test.yml').read_text())
+        for job in ('performance_tests', 'torch_api_tests'):
+            self.assertEqual(workflow['jobs'][job]['with']['platforms'],
+                             '${{ needs.prepare.outputs.platforms }}')
+
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
         self.assertEqual(
             ALL_ENABLED_PLATFORMS,
@@ -292,10 +312,46 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 ["ruby", str(MATRIX_SCRIPT), str(CONFIG_DIR), str(context_path)],
                 check=True, capture_output=True, text=True, env=env,
             )
-            entry = json.loads(plan_path.read_text())["ignore_test"][0]
+            entries = json.loads(plan_path.read_text())["ignore_test"]
+            perf_entries = [
+                entry for entry in entries
+                if entry["platform"] == "metax" and entry["kind"] == "perf"
+            ]
+            self.assertEqual(len(perf_entries), 1)
+            entry = perf_entries[0]
             self.assertEqual(entry["modes"], ["homogeneous"])
             self.assertEqual(entry["operations"], ["allreduce", "reducescatter"])
-            self.assertIn('"modes":["homogeneous"]', summary_path.read_text())
+            summary = summary_path.read_text()
+            self.assertIn('"modes":["homogeneous"]', summary)
+
+            expected_gtest = yaml.safe_load(
+                (CONFIG_DIR / "metax.yml").read_text()
+            )["ignore_test"]["gtest"]
+            gtest_entries = [
+                entry for entry in entries
+                if entry["platform"] == "metax" and entry["kind"] == "gtest"
+            ]
+            self.assertCountEqual(
+                [entry["suite"] for entry in gtest_entries],
+                [entry["suite"] for entry in expected_gtest],
+            )
+            for expected in expected_gtest:
+                with self.subTest(suite=expected["suite"]):
+                    entry = next(
+                        entry for entry in gtest_entries
+                        if entry["suite"] == expected["suite"]
+                    )
+                    self.assertEqual(entry["tests"], expected["tests"])
+                    self.assertEqual(entry["reason"], expected["reason"])
+                    summary_line = next(
+                        line for line in summary.splitlines()
+                        if line.startswith(f'- **metax/gtest/{expected["suite"]}:**')
+                    )
+                    self.assertIn(expected["reason"], summary_line)
+                    self.assertIn(
+                        json.dumps(expected["tests"], separators=(",", ":")),
+                        summary_line,
+                    )
 
     def test_mixed_platform_and_unknown_changes_run_all_platforms(self):
         outputs, _ = self.resolve(

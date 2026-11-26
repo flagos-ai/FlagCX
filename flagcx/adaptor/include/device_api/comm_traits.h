@@ -171,6 +171,8 @@ using DeviceAPI = CommTraits<DefaultBackend<EnflamePlatform>>;
 #endif
 #elif defined(USE_MUSA_ADAPTOR)
 #include "musa_comm_traits.h"
+#elif defined(USE_METAX_ADAPTOR)
+#include "metax_comm_traits.h"
 #elif defined(USE_ASCEND_ADAPTOR)
 #include "ascend_comm_traits.h"
 #else
