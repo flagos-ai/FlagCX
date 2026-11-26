@@ -1192,6 +1192,7 @@ static void flagcxSymFinishPendingCleanup(flagcxSymWindow_t d) {
     owner->defaultBase = nullptr;
     owner->isSymmetricDefault = 0;
     owner->winFlags = 0;
+    owner->cleanupStarted = false;
   }
   flagcxSymFreeWindowState(d);
   if (!publicOwner)
@@ -2739,6 +2740,7 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
     win->defaultBase = nullptr;
   }
 
+  win->cleanupStarted = false;
   if (win->ownerComm == nullptr)
     free(win);
   return flagcxSuccess;

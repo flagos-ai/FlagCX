@@ -293,6 +293,8 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
     return flagcxInvalidArgument;
   flagcxResult_t localPrepare =
       buff == nullptr || size == 0 ? flagcxInvalidArgument : flagcxSuccess;
+  if (win != nullptr && win->cleanupStarted)
+    localPrepare = flagcxInvalidUsage;
   flagcxDevMem_t handle = nullptr;
   if (localPrepare == flagcxSuccess) {
     handle = (flagcxDevMem_t)malloc(sizeof(struct flagcxDevMemInternal));
@@ -568,7 +570,10 @@ flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e) {
   if (e->hostPeerBasePtrs != nullptr) {
     for (int i = 0; i < e->nPeers; i++) {
       if (e->hostPeerBasePtrs[i] != nullptr) {
-        FLAGCXCHECK(deviceAdaptor->ipcMemHandleClose(e->hostPeerBasePtrs[i]));
+        flagcxResult_t result =
+            deviceAdaptor->ipcMemHandleClose(e->hostPeerBasePtrs[i]);
+        if (result != flagcxSuccess)
+          return result;
         e->hostPeerBasePtrs[i] = nullptr;
       }
     }
@@ -576,8 +581,10 @@ flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e) {
     e->hostPeerBasePtrs = nullptr;
   }
   if (e->devPeerPtrs != nullptr) {
-    FLAGCXCHECK(
-        deviceAdaptor->deviceFree(e->devPeerPtrs, flagcxMemDevice, nullptr));
+    flagcxResult_t result =
+        deviceAdaptor->deviceFree(e->devPeerPtrs, flagcxMemDevice, nullptr);
+    if (result != flagcxSuccess)
+      return result;
     e->devPeerPtrs = nullptr;
   }
   free(e->hostPeerPtrs);
@@ -588,6 +595,7 @@ flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e) {
   e->refCount = 0;
   e->inUse = false;
   e->ownerHeld = false;
+  e->ownership = flagcxBufferExternal;
   return flagcxSuccess;
 }
 

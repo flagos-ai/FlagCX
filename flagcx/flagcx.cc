@@ -2918,6 +2918,8 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     reusable->defaultBase = created->defaultBase;
     reusable->isSymmetricDefault = created->isSymmetricDefault;
     reusable->winFlags = created->winFlags;
+    reusable->ownership = created->ownership;
+    reusable->cleanupStarted = false;
     if (reusable->defaultBase != nullptr)
       reusable->defaultBase->owner = reusable;
     free(created);
@@ -2943,6 +2945,7 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (win->devMemRefs != 0)
     return flagcxInvalidUsage;
+  win->cleanupStarted = true;
 
   if (useHomoComm(comm) && !useHeteroComm() && win->vendorBase != nullptr &&
       !win->isSymmetricDefault) {
@@ -2953,6 +2956,7 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
                   comm->homoComm, win->vendorBase)
             : flagcxSuccess;
     if (res == flagcxSuccess) {
+      win->cleanupStarted = false;
       win->vendorBase = nullptr;
       win->winFlags = 0;
       if (win->ownerComm == nullptr)
@@ -2966,6 +2970,8 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   int ipcSlot = sym != NULL ? sym->ipcSlot : -1;
   int mrIndex = sym != NULL ? sym->mrIndex : -1;
   bool hasNetworkMrRef = sym != NULL && sym->hasNetworkMrRef;
+  if (ipcSlot >= comm->ipcTableCapacity)
+    return flagcxInvalidUsage;
   if (ipcSlot >= 0 && comm->ipcTable[ipcSlot].refCount != 0)
     return flagcxInvalidUsage;
   // Close the submission gate before waiting for callers already enqueueing.
@@ -2975,10 +2981,9 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   while (sym != nullptr &&
          __atomic_load_n(&sym->inSubmit, __ATOMIC_ACQUIRE) != 0)
     sched_yield();
+  // Callers complete user streams and direct Device API kernels first.
+  // Deregistration does not synchronize unrelated device work.
   flagcxResult_t syncResult = flagcxSuccess;
-  if (sym != nullptr && deviceAdaptor != nullptr &&
-      deviceAdaptor->deviceSynchronize != nullptr)
-    syncResult = deviceAdaptor->deviceSynchronize();
   flagcxResult_t commonSyncResult = syncResult;
   // Failed collective registration must keep every rank in the same rollback
   // sequence, including ranks with no synchronization callback to execute.

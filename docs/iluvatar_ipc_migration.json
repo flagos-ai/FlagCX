@@ -44,7 +44,8 @@
     {
       "step": 3,
       "description": "Close external Window imports without releasing user allocations",
-      "status": "pending"
+      "status": "complete",
+      "validation": "Host/mock build and core 234 pass/5 hardware skips, including five real WindowDeregister legacy IPC/VMM ownership and retry tests."
     },
     {
       "step": 4,

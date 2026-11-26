@@ -9,6 +9,7 @@
 #ifndef FLAGCX_SYM_HEAP_H_
 #define FLAGCX_SYM_HEAP_H_
 
+#include "buffer_owner.h"
 #include "comm.h"
 #include "flagcx.h"
 #include "flagcx_device_adaptor.h"
@@ -26,6 +27,8 @@ struct flagcxWindow {
   flagcxComm_t ownerComm;
   flagcxWindow_t nextOwned;
   uint32_t devMemRefs;
+  flagcxBufferOwnership ownership;
+  bool cleanupStarted;
 };
 
 enum flagcxSymWindowState {

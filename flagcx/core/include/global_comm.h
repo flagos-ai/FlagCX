@@ -2,6 +2,7 @@
 #define FLAGCX_GLOBAL_COMM_H_
 
 #include "bootstrap.h"
+#include "buffer_owner.h"
 #include "dev_comm_state.h"
 #include "flagcx.h"
 #include "flagcx_tuner.h"
@@ -18,6 +19,7 @@ typedef struct flagcxInnerComm *flagcxInnerComm_t;
 #define FLAGCX_MAX_IPC_ENTRIES 16
 
 struct flagcxIpcTableEntry {
+  flagcxBufferOwnership ownership;
   void **hostPeerPtrs;     // host array: peer user-buffer pointers
   void **hostPeerBasePtrs; // raw mappings returned by ipcMemHandleOpen
   void **devPeerPtrs;      // device array: peer buffer ptrs (for cudaFree)
