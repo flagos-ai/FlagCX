@@ -20,13 +20,13 @@ export FLAGCX_CI_TEST_DIAGNOSTICS_AFTER=
 export FLAGCX_CI_MPI_DIAGNOSTICS_AFTER=
 export FLAGCX_CI_REQUIRE_GTEST_PASS=0
 
-printf 'case\tranks\texit\tresult\tdirectory\n' > "$results/summary.tsv"
+printf 'case\tkind\trecord_count\tranks\texit\tresult\tdirectory\n' > "$results/summary.tsv"
 build_status=0
 FLAGCX_CI_BUILD_TEST_TIMEOUT=60s FLAGCX_CI_TEST_LABEL="Iluvatar native copy build" \
   flagcx_ci_run build-tests make -C "$project_root/test/unittest/runner" \
     native-copy-probe USE_ILUVATAR=1 || build_status=$?
 if ((build_status != 0)); then
-  printf 'build\t0\t%s\tFAIL\t%s\n' "$build_status" "$FLAGCX_CI_LOG_DIR" >> "$results/summary.tsv"
+  printf 'build\t-\t-\t0\t%s\tFAIL\t%s\n' "$build_status" "$FLAGCX_CI_LOG_DIR" >> "$results/summary.tsv"
   cat "$results/summary.tsv"
   echo 'Native copy probe build failed; ordinary runner tests were not executed.' >&2
   exit "$build_status"
@@ -39,33 +39,34 @@ binary="$project_root/test/unittest/runner/build/bin/iluvatar_native_copy_probe"
 } > "$results/libraries.log" 2>&1
 
 status=0
-for kind in local ipc staging; do
-  ranks=1
-  if [[ "$kind" == ipc ]]; then ranks=2; fi
-  for control in B C; do
-    case_dir=$(mktemp -d "$results/$kind-$control.XXXXXX")
-    chmod 755 "$case_dir"
-    case_status=0
-    FLAGCX_CI_MPI_TIMEOUT=15s FLAGCX_CI_MPI_LABEL="Iluvatar native $kind $control" \
-      bash "$script_dir/run_mpi_with_timeout.sh" --allow-run-as-root --bind-to none \
-        -np "$ranks" "$binary" "$kind" "$control" "$case_dir" || case_status=$?
-    if [[ "$case_status" == 130 || "$case_status" == 143 ]]; then
-      exit "$case_status"
-    fi
-    # An exit status alone must not hide a missing rank or an unexecuted case.
-    for ((rank=0; rank<ranks; ++rank)); do
-      if ! grep -Fxq "ILUVATAR_COPY_PROBE_PASS kind=$kind case=$control rank=$rank" \
-        "$case_dir/rank-$rank.result"; then
-        echo "$kind-$control: missing PASS report for rank $rank" >&2
-        if ((case_status == 0)); then case_status=1; fi
-      fi
-    done
-    result=PASS
-    if ((case_status != 0)); then status=1; result=FAIL; fi
-    printf '%s\n' "$case_status" > "$case_dir/exit.status"
-    printf '%s-%s\t%s\t%s\t%s\t%s\n' "$kind" "$control" "$ranks" \
-      "$case_status" "$result" "$case_dir" >> "$results/summary.tsv"
-  done
+# Local D2D already reproduces the stall. Isolate post-callback record count
+# before rechecking IPC/staging. Repeated counts are fresh cases, not retries.
+record_counts=(0 1 2 3 3 0)
+for index in "${!record_counts[@]}"; do
+  case_number=$((index + 1))
+  record_count=${record_counts[index]}
+  case_dir=$(mktemp -d "$results/local-$case_number-records-$record_count.XXXXXX")
+  chmod 755 "$case_dir"
+  case_status=0
+  FLAGCX_CI_MPI_TIMEOUT=15s \
+    FLAGCX_CI_MPI_LABEL="Iluvatar native local case $case_number record_count=$record_count" \
+    bash "$script_dir/run_mpi_with_timeout.sh" --allow-run-as-root --bind-to none \
+      -np 1 "$binary" local "$record_count" "$case_dir" || case_status=$?
+  if [[ "$case_status" == 130 || "$case_status" == 143 ]]; then
+    exit "$case_status"
+  fi
+  # An exit status alone must not hide an unexecuted case or a stale report.
+  if [[ ! -f "$case_dir/rank-0.result" ]] ||
+     ! grep -Fxq "ILUVATAR_COPY_PROBE_PASS kind=local record_count=$record_count rank=0" \
+       "$case_dir/rank-0.result"; then
+    echo "local case $case_number record_count=$record_count: missing PASS report for rank 0" >&2
+    if ((case_status == 0)); then case_status=1; fi
+  fi
+  result=PASS
+  if ((case_status != 0)); then status=1; result=FAIL; fi
+  printf '%s\n' "$case_status" > "$case_dir/exit.status"
+  printf '%s\tlocal\t%s\t1\t%s\t%s\t%s\n' "$case_number" "$record_count" \
+    "$case_status" "$result" "$case_dir" >> "$results/summary.tsv"
 done
 cat "$results/summary.tsv"
 if ((status != 0)); then

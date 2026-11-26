@@ -1,5 +1,5 @@
-// SDK-only B/C control for a same-stream, non-pipelined heterogeneous group.
-// C records the group/recv/send completion events; B omits those records.
+// SDK-only record-count controls for a same-stream heterogeneous group.
+// Record the first 0..3 group/recv/send completion events after the callback.
 // No FlagCX, native collective library, device kernels or stream-value calls.
 #include <cuda_runtime.h>
 #include <mpi.h>
@@ -71,6 +71,7 @@ static void fail(const char *stage) {
   } while (0)
 
 static int waitEvent(cudaEvent_t event, double deadline, const char *stage) {
+  double started = now();
   logStage("begin %s event=%p", stage, (void *)event);
   cudaError_t result;
   do {
@@ -79,7 +80,8 @@ static int waitEvent(cudaEvent_t event, double deadline, const char *stage) {
       break;
     usleep(1000);
   } while (now() < deadline);
-  logStage("end %s result=%d", stage, (int)result);
+  logStage("end %s result=%d elapsed=%.6f", stage, (int)result,
+           now() - started);
   return result == cudaSuccess;
 }
 
@@ -171,8 +173,8 @@ int main(int argc, char **argv) {
   if (argc != 4 ||
       (strcmp(argv[1], "local") && strcmp(argv[1], "ipc") &&
        strcmp(argv[1], "staging")) ||
-      (strcmp(argv[2], "B") && strcmp(argv[2], "C"))) {
-    fprintf(stderr, "Usage: %s local|ipc|staging B|C result-directory\n",
+      (argv[2][0] < '0' || argv[2][0] > '3' || argv[2][1] != '\0')) {
+    fprintf(stderr, "Usage: %s local|ipc|staging 0|1|2|3 result-directory\n",
             argv[0]);
     return 2;
   }
@@ -193,14 +195,13 @@ int main(int argc, char **argv) {
   MPI_CHECK(MPI_Comm_size(MPI_COMM_WORLD, &ranks));
   int ipc = strcmp(argv[1], "ipc") == 0;
   int staging = strcmp(argv[1], "staging") == 0;
-  int withCompletion = strcmp(argv[2], "C") == 0;
+  int recordCount = argv[2][0] - '0';
   if (ranks != (ipc ? 2 : 1) || provided < MPI_THREAD_MULTIPLE)
     fail("MPI rank count or thread support");
   struct CopyState state = {};
   state.device = ipc && rank == 1 ? 2 : 0;
-  logStage("case kind=%s control=%s device=%d ranks=%d completion_events=%d "
-           "wait=stream",
-           argv[1], argv[2], state.device, ranks, withCompletion ? 3 : 0);
+  logStage("case kind=%s record_count=%d device=%d ranks=%d wait=stream",
+           argv[1], recordCount, state.device, ranks);
   int devices;
   SDK(cudaGetDeviceCount(&devices));
   if (devices <= state.device)
@@ -214,10 +215,13 @@ int main(int argc, char **argv) {
   SDK(cudaEventCreateWithFlags(&readySend, cudaEventDisableTiming));
   SDK(cudaEventCreateWithFlags(&state.copied[0], cudaEventDisableTiming));
   SDK(cudaEventCreateWithFlags(&state.copied[1], cudaEventDisableTiming));
-  // Allocate identical events in both controls; only their Records differ.
+  // Allocate identical events for every count; only their Records differ.
   SDK(cudaEventCreateWithFlags(&groupDone, cudaEventDisableTiming));
   SDK(cudaEventCreateWithFlags(&recvDone, cudaEventDisableTiming));
   SDK(cudaEventCreateWithFlags(&sendDone, cudaEventDisableTiming));
+  cudaEvent_t completionEvents[3] = {groupDone, recvDone, sendDone};
+  const char *completionStages[3] = {"group completion", "recv completion",
+                                     "send completion"};
   logStage("streams user=%p copy=%p events readyRecv=%p readySend=%p "
            "groupDone=%p recvDone=%p sendDone=%p",
            (void *)userStream, (void *)state.copyStream, (void *)readyRecv,
@@ -281,10 +285,15 @@ int main(int argc, char **argv) {
   SDK(cudaLaunchHostFunc(userStream, callback, &state));
   // The proxy may proceed as soon as callback entry publishes started, just
   // as pollStart does in production; do not gate it on the main thread.
-  if (withCompletion) {
-    SDK(cudaEventRecord(groupDone, userStream));
-    SDK(cudaEventRecord(recvDone, userStream));
-    SDK(cudaEventRecord(sendDone, userStream));
+  for (int i = 0; i < recordCount; ++i) {
+    logStage("begin completion record index=%d event=%p stream=%p", i + 1,
+             (void *)completionEvents[i], (void *)userStream);
+    cudaError_t recorded = cudaEventRecord(completionEvents[i], userStream);
+    logStage("end completion record index=%d event=%p stream=%p result=%d",
+             i + 1, (void *)completionEvents[i], (void *)userStream,
+             (int)recorded);
+    if (recorded != cudaSuccess)
+      fail("completion event record");
   }
   // Match the sequential C2C planner: synchronize while the proxy is live,
   // before any host join or completion-event query can wait out its copies.
@@ -298,11 +307,9 @@ int main(int argc, char **argv) {
     fail("pthread_join");
   if (state.workerFailed || __atomic_load_n(&state.expired, __ATOMIC_ACQUIRE))
     fail("proxy or callback completion");
-  if (withCompletion) {
-    deadline = now() + 5;
-    if (!waitEvent(groupDone, deadline, "group completion") ||
-        !waitEvent(recvDone, deadline, "recv completion") ||
-        !waitEvent(sendDone, deadline, "send completion"))
+  deadline = now() + 5;
+  for (int i = 0; i < recordCount; ++i) {
+    if (!waitEvent(completionEvents[i], deadline, completionStages[i]))
       fail("group completion");
   }
   // Outside the measured interval, confirm peer writes before validation.
@@ -344,14 +351,14 @@ int main(int argc, char **argv) {
     logStage("FAIL open rank result");
     return 1;
   }
-  int written =
-      fprintf(report, "ILUVATAR_COPY_PROBE_PASS kind=%s case=%s rank=%d\n",
-              argv[1], argv[2], rank);
+  int written = fprintf(
+      report, "ILUVATAR_COPY_PROBE_PASS kind=%s record_count=%d rank=%d\n",
+      argv[1], recordCount, rank);
   int closed = fclose(report);
   if (written < 0 || closed != 0)
     return 1;
-  logStage("ILUVATAR_COPY_PROBE_PASS kind=%s case=%s rank=%d", argv[1], argv[2],
-           rank);
+  logStage("ILUVATAR_COPY_PROBE_PASS kind=%s record_count=%d rank=%d", argv[1],
+           recordCount, rank);
   fclose(rankLog);
   return 0;
 }
