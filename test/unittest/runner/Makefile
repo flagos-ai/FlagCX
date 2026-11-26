@@ -19,7 +19,7 @@ UNIRUNNER_EXPERIMENTAL_MPI_SRCS := $(UNIRUNNER_EXPERIMENTAL_SRCS) main_mpi.cpp
 UNIRUNNER_EXPERIMENTAL_MPI_OBJS := $(UNIRUNNER_EXPERIMENTAL_MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 UNIRUNNER_EXPERIMENTAL_MPI_TARGET := $(BINDIR)/runner_unirunner_experimental_mpi_tests
 
-.PHONY: all clean run-unit run-mpi run unirunner-experimental
+.PHONY: all clean run-unit run-mpi run unirunner-experimental native-copy-probe
 
 ALL_TARGETS :=
 ifneq ($(UNIT_SRCS),)
@@ -30,6 +30,13 @@ ALL_TARGETS += $(MPI_TARGET)
 endif
 
 all: $(ALL_TARGETS)
+
+# Explicit SDK-only diagnostic: usable before FlagCX or GoogleTest is built.
+native-copy-probe: $(BINDIR)/iluvatar_native_copy_probe
+
+$(BINDIR)/iluvatar_native_copy_probe: iluvatar_native_copy_probe.cpp
+	@mkdir -p $(BINDIR)
+	$(CXX) $(CXXFLAGS) $(DEVICE_INCLUDE) $(MPI_INCLUDE) $< -o $@ $(DEVICE_LINK) $(MPI_LINK) -lpthread
 
 $(UNIT_TARGET): $(UNIT_OBJS)
 	@mkdir -p $(BINDIR)

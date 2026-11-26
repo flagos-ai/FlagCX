@@ -1208,18 +1208,8 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                 "service",
                 "symmem",
             ],
-            "iluvatar": [
-                "adaptor",
-                "core",
-                "device_api",
-                "device_api_host",
-                "device_api_unified_ir",
-                "p2p",
-                "rma",
-                "runner",
-                "service",
-                "symmem",
-            ],
+            # Temporarily isolate runner and its native B/C copy controls.
+            "iluvatar": ["runner"],
             "enflame": [
                 "adaptor",
                 "core",

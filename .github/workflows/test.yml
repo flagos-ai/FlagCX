@@ -162,7 +162,8 @@ jobs:
           retention-days: 7
 
   perf-test-iluvatar:
-    if: contains(fromJSON(inputs.platforms), 'iluvatar')
+    # Temporary runner-only Iluvatar CI while diagnosing asynchronous copies.
+    if: false && contains(fromJSON(inputs.platforms), 'iluvatar')
     name: perf-test (iluvatar)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.iluvatar_runs_on) }}
@@ -708,10 +709,13 @@ jobs:
           persist-credentials: false
 
       - name: Validate selected performance jobs
-        run: >-
-          bash .github/scripts/ci/check_platform_workflow.sh
-          "$PLATFORMS" "$CONFIG_RESULT" "$CUDA_EXPERIMENTAL_RESULT" "$CUDA_RESULT"
-          "$HYGON_RESULT" "$HYGON_EXPERIMENTAL_RESULT" "$METAX_RESULT"
+        run: |
+          set -euo pipefail
+          # Match the temporary suspension of the Iluvatar perf job above.
+          platforms=$(python3 -c 'import json, sys; print(json.dumps([p for p in json.loads(sys.argv[1]) if p != "iluvatar"]))' "$PLATFORMS")
+          bash .github/scripts/ci/check_platform_workflow.sh \
+          "$platforms" "$CONFIG_RESULT" "$CUDA_EXPERIMENTAL_RESULT" "$CUDA_RESULT" \
+          "$HYGON_RESULT" "$HYGON_EXPERIMENTAL_RESULT" "$METAX_RESULT" \
           "$PPU_RESULT" "$PPU_EXPERIMENTAL_RESULT" "$ASCEND_RESULT"
 
       - name: Validate selected KunlunXin performance job

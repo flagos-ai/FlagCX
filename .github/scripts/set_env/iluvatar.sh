@@ -77,6 +77,9 @@ flagcx_ci_prepare() {
   command -v ixsmi
   mpirun --version
   ixsmi -L
+  if [[ "$suite" == runner ]]; then
+    bash "$FLAGCX_CI_ENV_DIR/../ci/run_iluvatar_native_copy_probe.sh"
+  fi
 }
 
 flagcx_ci_validate_rdma() {
