@@ -55,7 +55,7 @@ flagcx_ci_configure_suite() {
   local suite=$1
 
   case "$suite" in
-    device_api|device_api_host|device_api_unified_ir)
+    device_api|device_api_host|device_api_unified_ir|perf-test-experimental)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
       ;;
@@ -77,7 +77,7 @@ flagcx_ci_prepare() {
   echo "Preparing MetaX environment for CI workload: $suite"
   echo "MACA_VISIBLE_DEVICES=$MACA_VISIBLE_DEVICES"
   if [[ "$suite" == adaptor || "$suite" == rma ]]; then
-    echo "MetaX CI temporary exclusions: native stream wait/write value operations reject finegrained allocations; see ignore_test.gtest in .github/configs/metax.yml."
+    echo "MetaX CI temporary exclusions: native stream wait/write value operations failed on the tested finegrained allocation path; see ignore_test.gtest in .github/configs/metax.yml."
   fi
   command -v mpirun
   command -v mxcc
@@ -86,7 +86,7 @@ flagcx_ci_prepare() {
         "$suite" == "rma" || "$suite" == "runner" ||
         "$suite" == "symmem" || "$suite" == "perf" ||
         "$suite" == "device_api" || "$suite" == "device_api_unified_ir" ||
-        "$suite" == "torch-api" ]]; then
+        "$suite" == "torch-api" || "$suite" == "perf-test-experimental" ]]; then
     if [[ -d /sys/class/net/bond0 ]]; then
       export FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-bond0}
     fi

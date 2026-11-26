@@ -1222,6 +1222,15 @@ static flagcxResult_t cannAdaptorGetAddressRange(const void *ptr, void **base,
   return flagcxSuccess;
 }
 
+static flagcxResult_t cannAdaptorDeviceMallocWithFlags(void **ptr, size_t size,
+                                                       flagcxMemType_t type,
+                                                       flagcxStream_t stream,
+                                                       unsigned int flags) {
+  if (ptr == NULL || (flags & ~FLAGCX_DEVICE_ALLOC_UNIRUNNER) != 0)
+    return flagcxInvalidArgument;
+  return cannAdaptorDeviceMalloc(ptr, size, type, stream);
+}
+
 struct flagcxDeviceAdaptor cannAdaptor {
   "CANN",
       // Basic functions
@@ -1292,6 +1301,7 @@ struct flagcxDeviceAdaptor cannAdaptor {
       cannAdaptorSymFlatMapSegmentOne, cannAdaptorSymLsaGetCapacity,
       cannAdaptorSymLsaVaReserve, cannAdaptorSymLsaVaFree,
       cannAdaptorSymLsaMapBeginAt, NULL, NULL, NULL, NULL,
+      cannAdaptorDeviceMallocWithFlags,
 };
 
 #endif // USE_ASCEND_ADAPTOR

@@ -1409,6 +1409,15 @@ flagcxResult_t duhipAdaptorSymLsaMapBeginAt(
                                   mappingBase);
 }
 
+static flagcxResult_t duhipAdaptorDeviceMallocWithFlags(void **ptr, size_t size,
+                                                        flagcxMemType_t type,
+                                                        flagcxStream_t stream,
+                                                        unsigned int flags) {
+  if (ptr == NULL || (flags & ~FLAGCX_DEVICE_ALLOC_UNIRUNNER) != 0)
+    return flagcxInvalidArgument;
+  return duhipAdaptorDeviceMalloc(ptr, size, type, stream);
+}
+
 struct flagcxDeviceAdaptor duhipAdaptor {
   "DUHIP",
       // Basic functions
@@ -1497,7 +1506,7 @@ struct flagcxDeviceAdaptor duhipAdaptor {
       duhipAdaptorSymFlatMapSegmentsBegin, duhipAdaptorSymFlatMapSegmentOne,
       duhipAdaptorSymLsaGetCapacity, duhipAdaptorSymLsaVaReserve,
       duhipAdaptorSymLsaVaFree, duhipAdaptorSymLsaMapBeginAt, NULL, NULL, NULL,
-      NULL,
+      NULL, duhipAdaptorDeviceMallocWithFlags,
 };
 
 #endif // USE_DU_ADAPTOR

@@ -42,6 +42,22 @@ def runtime_device_count():
     log(f"MACA runtime={runtime._name}, mcGetDeviceCount status={result}, count={count.value}")
     if result != 0:
         raise RuntimeError(f"mcGetDeviceCount failed with status {result}")
+    for name in ("mcRuntimeGetVersion", "mcDriverGetVersion"):
+        query = getattr(runtime, name, None)
+        if query is not None:
+            query.argtypes = [ctypes.POINTER(ctypes.c_int)]
+            query.restype = ctypes.c_int
+            version = ctypes.c_int()
+            status = query(ctypes.byref(version))
+            log(f"{name} status={status}, version={version.value}")
+    query_bus = getattr(runtime, "mcDeviceGetPCIBusId", None)
+    if query_bus is not None:
+        query_bus.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+        query_bus.restype = ctypes.c_int
+        for ordinal in range(count.value):
+            bus_id = ctypes.create_string_buffer(64)
+            status = query_bus(bus_id, len(bus_id), ordinal)
+            log(f"logical GPU {ordinal}: PCI BDF={bus_id.value.decode()}, status={status}")
     return count.value
 
 
@@ -82,7 +98,7 @@ def check_mccl_alltoall():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("workload", choices=("perf",))
+    parser.add_argument("workload", choices=("perf", "perf-test-experimental"))
     args = parser.parse_args()
 
     log(f"workload={args.workload}, Python={sys.executable}")
@@ -106,10 +122,11 @@ def main():
             raise RuntimeError(f"MACA sees {native_count} devices; four are required")
     except Exception as error:
         failures.append(f"MACA runtime: {error}")
-    try:
-        check_mccl_alltoall()
-    except Exception as error:
-        failures.append(f"MCCL: {error}")
+    if args.workload == "perf":
+        try:
+            check_mccl_alltoall()
+        except Exception as error:
+            failures.append(f"MCCL: {error}")
     if failures:
         for failure in failures:
             log(f"FAILED: {failure}")

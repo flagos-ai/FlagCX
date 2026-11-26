@@ -151,12 +151,19 @@ When `FLAGCX_USE_HETERO_COMM=1`, UniRunner DAG algorithms reject calls made
 between `flagcxGroupStart` and `flagcxGroupEnd` with `flagcxInvalidUsage`.
 Use `FLAGCX_UNIRUNNER_ALGO=8` for AllGather inside a user group; the default
 GroupedAG algorithm (7) does not switch to P2P automatically in that case.
-UniRunner exchanges kernel and stream-value capabilities once during
-communicator initialization and uses the saved all-rank results when selecting
-an execution path. Stream-value group synchronization is limited to DAG-owned
-groups; ordinary groups retain their host/device semaphore selection. Algorithm
-settings and group depth are checked locally during collective calls; configure
-the same algorithm and group size on all ranks.
+UniRunner exchanges compiled kernel availability during communicator
+initialization. Before its first use it collectively prepares device-control
+and host-mapped semaphore capabilities, cached separately for each adaptor and
+device. MetaX defers both optional memory-operation checks until UniRunner is
+selected, so ordinary communicator initialization does not depend on them.
+Device-control allocation uses the internal `UNIRUNNER` purpose; MetaX maps
+synchronous device controls to `mcMalloc`, while ordinary IPC allocations keep
+their finegrained policy. Other platforms retain their existing allocator.
+These capabilities do not imply remote-write flush support. Explicit algorithm
+7 returns an error if its required capabilities are absent, rather than passing
+through algorithm 8. Stream-value group synchronization remains limited to
+DAG-owned groups. Configure the same algorithm and group size on all ranks.
+See [MetaX UniRunner](metax_unirunner.md) for CI coverage and validation.
 
 ---
 

@@ -1199,95 +1199,23 @@ static inline void *getDagNodeFlag(flagcxUniRunnerState *runnerState,
                                    int nodeIdx) {
   assert(nodeIdx >= 0 &&
          static_cast<size_t>(nodeIdx) < runnerState->streamFlagsSize);
-  return runnerState->streamFlags[nodeIdx];
-}
-
-static void refreshStreamFlagAddressQueue(flagcxUniRunnerState *runnerState) {
-  if (runnerState->streamFlagsPool == NULL ||
-      runnerState->streamFlags == NULL) {
-    return;
-  }
-
-  char *base = static_cast<char *>(runnerState->streamFlagsPool);
-  for (size_t i = 0; i < runnerState->streamFlagsCapacity; ++i) {
-    runnerState->streamFlags[i] =
-        static_cast<void *>(base + i * sizeof(uint64_t));
-  }
-}
-
-static flagcxResult_t
-resizeStreamFlagAddressQueue(flagcxUniRunnerState *runnerState,
-                             size_t newCapacity) {
-  if (newCapacity <= runnerState->streamFlagsCapacity) {
-    return flagcxSuccess;
-  }
-  if (newCapacity >
-      std::numeric_limits<size_t>::max() / sizeof(*runnerState->streamFlags)) {
-    return flagcxInvalidArgument;
-  }
-
-  if (runnerState->streamFlagsCapacity == 0) {
-    if (runnerState->streamFlags != NULL) {
-      free(runnerState->streamFlags);
-      runnerState->streamFlags = NULL;
-    }
-    FLAGCXCHECK(flagcxCalloc(&runnerState->streamFlags, newCapacity));
-  } else {
-    FLAGCXCHECK(flagcxRealloc(&runnerState->streamFlags,
-                              runnerState->streamFlagsCapacity, newCapacity));
-  }
-
-  return flagcxSuccess;
+  return runnerState->streamFlagPool.addresses[nodeIdx];
 }
 
 static flagcxResult_t
 ensureStreamFlagQueueCapacity(flagcxUniRunnerState *runnerState,
                               size_t requiredFlags) {
-  if (requiredFlags > runnerState->streamFlagsCapacity) {
-    const size_t maxSize = std::numeric_limits<size_t>::max();
-    const size_t maxCapacity =
-        std::min(maxSize / sizeof(*runnerState->streamFlags),
-                 maxSize / sizeof(uint64_t));
-    if (requiredFlags > maxCapacity) {
-      return flagcxInvalidArgument;
-    }
-    size_t newCapacity = runnerState->streamFlagsCapacity == 0
-                             ? 1
-                             : runnerState->streamFlagsCapacity;
-    while (newCapacity < requiredFlags) {
-      if (newCapacity > maxCapacity / 2) {
-        newCapacity = requiredFlags;
-        break;
-      }
-      newCapacity *= 2;
-    }
-
-    void *newPool = NULL;
-    flagcxResult_t res = deviceAdaptor->deviceMalloc(
-        &newPool, newCapacity * sizeof(uint64_t), flagcxMemDevice, NULL);
-    if (res != flagcxSuccess) {
-      return res;
-    }
-    res = resizeStreamFlagAddressQueue(runnerState, newCapacity);
-    if (res != flagcxSuccess) {
-      (void)deviceAdaptor->deviceFree(newPool, flagcxMemDevice, NULL);
-      return res;
-    }
-    if (runnerState->streamFlagsPool != NULL) {
-      res = deviceAdaptor->deviceFree(runnerState->streamFlagsPool,
-                                      flagcxMemDevice, NULL);
-      if (res != flagcxSuccess) {
-        (void)deviceAdaptor->deviceFree(newPool, flagcxMemDevice, NULL);
-        return res;
-      }
-    }
-
-    runnerState->streamFlagsPool = newPool;
-    runnerState->streamFlagsCapacity = newCapacity;
-    refreshStreamFlagAddressQueue(runnerState);
+  const size_t previousCapacity = runnerState->streamFlagPool.capacity;
+  flagcxResult_t result = flagcxUniRunnerReserveStreamFlags(
+      deviceAdaptor, &runnerState->streamFlagPool, requiredFlags);
+  if (result == flagcxSuccess &&
+      previousCapacity != runnerState->streamFlagPool.capacity) {
+    INFO(FLAGCX_UNIRUNNER,
+         "DAG flags: purpose=UNIRUNNER adaptor=%s ptr=%p capacity=%zu",
+         deviceAdaptor->name, runnerState->streamFlagPool.buffer,
+         runnerState->streamFlagPool.capacity);
   }
-
-  return flagcxSuccess;
+  return result;
 }
 
 static flagcxResult_t prepareDagStreamFlags(flagcxUniRunnerState *runnerState) {
@@ -1298,10 +1226,10 @@ static flagcxResult_t prepareDagStreamFlags(flagcxUniRunnerState *runnerState) {
   runnerState->streamFlagsSize = activeFlags;
 
   if (runnerState->streamFlagsSize != 0) {
-    FLAGCXCHECK(deviceAdaptor->deviceMemset(runnerState->streamFlagsPool, 0,
-                                            runnerState->streamFlagsSize *
-                                                sizeof(uint64_t),
-                                            flagcxMemDevice, NULL));
+    FLAGCXCHECK(deviceAdaptor->deviceMemset(
+        runnerState->streamFlagPool.buffer, 0,
+        runnerState->streamFlagsSize * sizeof(uint64_t), flagcxMemDevice,
+        NULL));
   }
 
   return flagcxSuccess;
@@ -1448,26 +1376,11 @@ prepareRedWorkerRuntimeState(flagcxUniRunnerState *runnerState) {
 
 static flagcxResult_t
 destroyStreamFlagQueue(flagcxUniRunnerState *runnerState) {
-  if (runnerState == NULL) {
+  if (runnerState == NULL)
     return flagcxSuccess;
-  }
-
-  if (runnerState->streamFlagsPool != NULL) {
-    do {
-      flagcxResult_t cleanupResult = deviceAdaptor->deviceFree(
-          runnerState->streamFlagsPool, flagcxMemDevice, NULL);
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-    } while (0);
-    runnerState->streamFlagsPool = NULL;
-  }
-
-  if (runnerState->streamFlags != NULL) {
-    free(runnerState->streamFlags);
-    runnerState->streamFlags = NULL;
-  }
+  FLAGCXCHECK(flagcxUniRunnerReleaseStreamFlags(deviceAdaptor,
+                                                &runnerState->streamFlagPool));
   runnerState->streamFlagsSize = 0;
-  runnerState->streamFlagsCapacity = 0;
   return flagcxSuccess;
 }
 
@@ -5828,6 +5741,7 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
     return flagcxInvalidArgument;
   if (!comm->uniRunnerKernelSupported)
     return flagcxNotSupported;
+  FLAGCXCHECK(flagcxPrepareUniRunnerCapabilities(comm));
   auto *state = &comm->heteroComm->proxyState->uniRunnerState;
   for (auto *record : state->invocationWork)
     if (record != NULL)
@@ -6137,7 +6051,8 @@ static flagcxResult_t prepareStaticCollectiveExecution(
 
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                  \
+     defined(USE_METAX_ADAPTOR))
   if (result == flagcxSuccess) {
     result = flagcxGetStaticCollectiveKernelMaxExecutorBlocks(
         static_cast<size_t>(runnerState->uniRunnerNThreads), maxExecutorBlocks);
@@ -6303,7 +6218,7 @@ static flagcxResult_t prepareStaticCollectiveExecution(
         runnerState->fifo->buffer + flagcxFifoIdxData);
     result = populateUniRunnerStaticRedTriggers(
         runnerState->dagNodes, static_cast<size_t>(runnerState->numDagNodes),
-        &runnerState->dagPlan, runnerState->streamFlags,
+        &runnerState->dagPlan, runnerState->streamFlagPool.addresses,
         runnerState->streamFlagsSize, redTriggers, redTasks, numRedTriggers);
   }
 
@@ -6320,7 +6235,7 @@ static flagcxResult_t prepareStaticCollectiveExecution(
     size_t materializedMaxChunks = 0;
     result = populateUniRunnerStaticIpcTriggers(
         runnerState->dagNodes, static_cast<size_t>(runnerState->numDagNodes),
-        &runnerState->dagPlan, runnerState->streamFlags,
+        &runnerState->dagPlan, runnerState->streamFlagPool.addresses,
         runnerState->streamFlagsSize, &config, ipcTriggers, ipcTasks,
         numIpcTriggers, &materializedMaxChunks);
     if (result == flagcxSuccess && materializedMaxChunks != maxIpcParallelism) {
@@ -6438,7 +6353,8 @@ prepareStaticRedExecution(flagcxHeteroComm_t hcomm,
 
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                  \
+     defined(USE_METAX_ADAPTOR))
   FLAGCXCHECK(flagcxGetStaticReduceKernelMaxExecutorBlocks(
       static_cast<size_t>(runnerState->uniRunnerNThreads), maxExecutorBlocks));
   *maxExecutorBlocks = std::min(
@@ -6478,7 +6394,7 @@ prepareStaticRedExecution(flagcxHeteroComm_t hcomm,
                                                      flagcxFifoIdxData);
   result = populateUniRunnerStaticRedTriggers(
       runnerState->dagNodes, static_cast<size_t>(runnerState->numDagNodes),
-      &runnerState->dagPlan, runnerState->streamFlags,
+      &runnerState->dagPlan, runnerState->streamFlagPool.addresses,
       runnerState->streamFlagsSize, triggers, redTasks, numTriggers,
       schedule->numRedBlocks > 1 ? &schedule->numNetRedTasks : NULL);
   if (result != flagcxSuccess) {
@@ -6612,7 +6528,8 @@ repairUniRunnerStaticFlags(flagcxUniRunnerState *runnerState,
   for (size_t flagIdx = 0; flagIdx < runnerState->streamFlagsSize; ++flagIdx) {
     preserveFirstUniRunnerError(
         deviceAdaptor->streamWriteValue64(
-            stream, runnerState->streamFlags[flagIdx], flagcxStreamFlagDone, 0),
+            stream, runnerState->streamFlagPool.addresses[flagIdx],
+            flagcxStreamFlagDone, 0),
         &result);
   }
   return result;
@@ -6700,7 +6617,8 @@ recoverPoisonedUniRunnerRedStream(flagcxUniRunnerState *runnerState,
   flagcxResult_t recoveryResult = flagcxSuccess;
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                  \
+     defined(USE_METAX_ADAPTOR))
   if (ipcControl != NULL) {
     recoveryResult = flagcxLaunchStaticIpcRecoveryKernel(
         runnerState->ipcReadyMem, ipcControl, recoveryStream);
@@ -6919,7 +6837,8 @@ static flagcxResult_t runStaticHostRed(flagcxHeteroComm_t hcomm,
   if (prepareResult != flagcxSuccess) {
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                  \
+     defined(USE_METAX_ADAPTOR))
     // Capability/occupancy probing happens before the exact static FIFO is
     // allocated. Preserve the legacy executor on devices where the static
     // cooperative-progress contract is unavailable or cannot be queried.
@@ -6938,7 +6857,8 @@ static flagcxResult_t runStaticHostRed(flagcxHeteroComm_t hcomm,
 
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                  \
+     defined(USE_METAX_ADAPTOR))
   if (numTriggers != 0) {
     TRACE(FLAGCX_UNIRUNNER,
           "static RED rank=%d state=%p stage=kernel-launch-enter "
@@ -7004,7 +6924,8 @@ static flagcxResult_t recoverFailedStaticCollectiveLaunch(
   requestUniRunnerStaticAbort(runnerState);
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                  \
+     defined(USE_METAX_ADAPTOR))
   flagcxResult_t recoveryResult = flagcxLaunchStaticIpcRecoveryKernel(
       runnerState->ipcReadyMem, ipcControl, executorStream);
   preserveFirstUniRunnerError(recoveryResult, &launchResult);
@@ -7135,7 +7056,8 @@ static flagcxResult_t runStaticRingDag(flagcxComm_t comm,
   if (result == flagcxSuccess)
     result = populateUniRunnerStaticRingDag(
         runnerState->dagNodes, static_cast<size_t>(runnerState->numDagNodes),
-        &plan, runnerState->streamFlags, runnerState->streamFlagsSize, hcomm,
+        &plan, runnerState->streamFlagPool.addresses,
+        runnerState->streamFlagsSize, hcomm,
         runnerState->ipcRingSimpleBufferBytes, hostTriggers.data(),
         hostTriggers.size(), hostLanes.data(), hostLanes.size());
   if (result == flagcxSuccess)
@@ -7217,7 +7139,8 @@ static flagcxResult_t runStaticRingDag(flagcxComm_t comm,
   runnerState->ipcEpoch = control.epoch;
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                  \
+     defined(USE_METAX_ADAPTOR))
   size_t maxExecutorBlocks = 0;
   result = flagcxGetStaticRingDagKernelMaxExecutorBlocks(
       static_cast<size_t>(runnerState->uniRunnerNThreads), &maxExecutorBlocks);
@@ -7239,7 +7162,8 @@ static flagcxResult_t runStaticRingDag(flagcxComm_t comm,
   }
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                  \
+     defined(USE_METAX_ADAPTOR))
   uint64_t *controlDevice =
       static_cast<uint64_t *>(runnerState->ipcRingControlDevice);
   result = flagcxLaunchStaticRingDagKernel(
@@ -7284,7 +7208,8 @@ runStaticHostRedIpc(flagcxComm_t comm, flagcxResult_t localPreparationResult) {
 
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                  \
+     defined(USE_METAX_ADAPTOR))
   flagcxResult_t launchResult = flagcxLaunchStaticCollectiveKernel(
       hcomm->uniRunnerFifoBuffer, numRedTriggers, runnerState->ipcFifoDevicePtr,
       numIpcTriggers, runnerState->ipcInputMem, runnerState->ipcOutputMem,
@@ -7346,7 +7271,8 @@ static flagcxResult_t runDynamicDagFallback(flagcxHeteroComm_t hcomm,
 
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                  \
+     defined(USE_METAX_ADAPTOR))
   FLAGCXCHECK(flagcxLaunchCollectiveKernel(
       hcomm->uniRunnerFifoBuffer, NULL, NULL, NULL, NULL, NULL,
       runnerState->uniRunnerNThreads, runnerState->uniRunnerNRedBlocks, 0,

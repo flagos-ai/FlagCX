@@ -385,6 +385,15 @@ flagcxResult_t ptpuAdaptorHostUnregister(void *ptr) {
   return flagcxNotSupported;
 }
 
+static flagcxResult_t ptpuAdaptorDeviceMallocWithFlags(void **ptr, size_t size,
+                                                       flagcxMemType_t type,
+                                                       flagcxStream_t stream,
+                                                       unsigned int flags) {
+  if (ptr == NULL || (flags & ~FLAGCX_DEVICE_ALLOC_UNIRUNNER) != 0)
+    return flagcxInvalidArgument;
+  return ptpuAdaptorDeviceMalloc(ptr, size, type, stream);
+}
+
 struct flagcxDeviceAdaptor ptpuAdaptor {
   "PTPU",
       // Basic functions
@@ -448,6 +457,8 @@ struct flagcxDeviceAdaptor ptpuAdaptor {
       NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_UNKNOWN, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, ptpuAdaptorDeviceMallocWithFlags,
 };
 #endif // USE_SUNRISE_ADAPTOR

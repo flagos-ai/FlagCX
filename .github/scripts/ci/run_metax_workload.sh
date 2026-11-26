@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 <torch-api|perf>" >&2
+  echo "Usage: $0 <torch-api|perf|perf-test-experimental>" >&2
   exit 2
 fi
 
@@ -22,6 +22,10 @@ export FLAGCX_ADAPTOR=metax
 export TORCH_DISTRIBUTED_BACKEND=mccl
 
 case "$workload" in
+  perf-test-experimental)
+    flagcx_ci_run preflight python3 "$project_root/.github/scripts/ci/check_metax_devices.py" perf-test-experimental
+    source "$project_root/.github/scripts/ci/run_metax_perf_experimental.sh"
+    ;;
   perf)
     python3 "$project_root/.github/scripts/ci/check_metax_devices.py" perf
     flagcx_ci_run build make -C "$project_root" --jobs="$(nproc)" USE_METAX=1

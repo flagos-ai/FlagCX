@@ -1413,6 +1413,25 @@ flagcxResult_t macaAdaptorGetAddressRange(const void *ptr, void **base,
   return flagcxSuccess;
 }
 
+static flagcxResult_t macaAdaptorDeviceMallocWithFlags(void **ptr, size_t size,
+                                                       flagcxMemType_t type,
+                                                       flagcxStream_t stream,
+                                                       unsigned int flags) {
+  if (ptr == NULL || (flags & ~FLAGCX_DEVICE_ALLOC_UNIRUNNER) != 0)
+    return flagcxInvalidArgument;
+  if (flags == FLAGCX_DEVICE_ALLOC_UNIRUNNER && type == flagcxMemDevice &&
+      stream == NULL) {
+    // Local stream/kernel control words. IPC allocations keep finegrained.
+    DEVCHECK(mcMalloc(ptr, size));
+    INFO(FLAGCX_UNIRUNNER,
+         "MACA allocation: purpose=UNIRUNNER allocator=mcMalloc ptr=%p "
+         "bytes=%zu",
+         *ptr, size);
+    return flagcxSuccess;
+  }
+  return macaAdaptorDeviceMalloc(ptr, size, type, stream);
+}
+
 struct flagcxDeviceAdaptor macaAdaptor {
   "MACA",
       // Basic functions
@@ -1496,7 +1515,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorSymLsaVaReserve, macaAdaptorSymLsaVaFree,
       macaAdaptorSymLsaMapBeginAt, macaAdaptorSymLsaMulticastGranularity,
       macaAdaptorSymLsaMulticastMap, macaAdaptorSymLsaMulticastBind,
-      macaAdaptorSymLsaMulticastUnbind,
+      macaAdaptorSymLsaMulticastUnbind, macaAdaptorDeviceMallocWithFlags,
 };
 
 #endif // USE_METAX_ADAPTOR

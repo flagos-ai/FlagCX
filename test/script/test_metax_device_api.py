@@ -301,6 +301,8 @@ class MetaxBuildTest(unittest.TestCase):
     def test_library_and_all_six_mpi_binaries_use_native_device_link(self):
         library = self.make("USE_METAX=1", "COMPILE_KERNEL=1").stdout
         self.assertIn("/kernel/metax/device_api_host_helpers.cu", library)
+        self.assertIn("/kernel/metax/flagcx_reduce_kernel_device.cu", library)
+        self.assertIn("/kernel/metax/flagcx_reduce_kernel_device.o", library)
         self.assertIn("-maca-link", library)
         self.assertIn("-maca-host-input", library)
         self.assertNotIn(" -dlink ", library)
@@ -321,6 +323,24 @@ class MetaxBuildTest(unittest.TestCase):
                     if "/bin/test_dev_comm_cleanup " in line)
         self.assertTrue(link.startswith("g++ "), link)
         self.assertNotIn(" -maca-link ", link)
+
+    def test_unirunner_experimental_target_has_required_sources(self):
+        build = self.make("USE_METAX=1", "COMPILE_KERNEL=1",
+                          "FORCE_DEFAULT_PATH=1", "unirunner-experimental",
+                          directory=ROOT / "test/unittest/runner").stdout
+        self.assertIn("runner_unirunner_experimental_mpi_tests", build)
+        for source in ("main_mpi.cpp", "coll_allgather_gemm.cpp",
+                       "coll_gemm_reducescatter.cpp", "coll_uni_runner_group.cpp"):
+            self.assertIn(source, build)
+
+    def test_experimental_host_perf_target_excludes_device_benchmarks(self):
+        build = self.make("USE_METAX=1", "COMPILE_KERNEL=1",
+                          "FORCE_DEFAULT_PATH=1", "host_api",
+                          directory=ROOT / "test/perf").stdout
+        for binary in ("perf_allreduce", "perf_allgather", "perf_ipc_rebind"):
+            self.assertIn(f"/host_api/build/bin/{binary} ", build)
+        self.assertNotIn("/test/perf/device_api", build)
+        self.assertNotIn("/test/kernel/maca/build/obj/device_api.o", build)
 
     def test_bitcode_uses_matching_architecture_and_complete_exports(self):
         build = self.make("USE_METAX=1", "DEVICE_BITCODE_ARCH=xcore2000",

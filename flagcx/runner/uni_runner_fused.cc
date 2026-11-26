@@ -544,7 +544,8 @@ static flagcxResult_t validateCommon(const void *input, const void *weight,
   }
 #if !defined(COMPILE_KERNEL_HOST) ||                                           \
     (!defined(USE_NVIDIA_ADAPTOR) && !defined(USE_DU_ADAPTOR) &&               \
-     !defined(USE_PPU_ADAPTOR) && !defined(USE_MUSA_ADAPTOR))
+     !defined(USE_PPU_ADAPTOR) && !defined(USE_MUSA_ADAPTOR) &&                \
+     !defined(USE_METAX_ADAPTOR))
   return flagcxNotSupported;
 #else
   if (firstDim > UINT32_MAX || n > UINT32_MAX || k > UINT32_MAX) {
@@ -636,6 +637,8 @@ flagcxAllGatherGemmImpl(const void *input, const void *weight, void *output,
   if (res != flagcxSuccess)
     selectionResult = res;
   FLAGCXCHECK(selectionResult);
+  INFO(FLAGCX_UNIRUNNER, "UniRunner actual algorithm=%d",
+       static_cast<int>(algorithm));
 
   flagcxFusedInvocationBuffers *buffers = nullptr;
   res = flagcxFusedDrainPendingBuffers(comm);
@@ -779,6 +782,8 @@ flagcxGemmReduceScatterImpl(const void *input, const void *weight, void *output,
       m % static_cast<size_t>(comm->nranks) != 0)
     selectionResult = flagcxInvalidArgument;
   FLAGCXCHECK(selectionResult);
+  INFO(FLAGCX_UNIRUNNER, "UniRunner actual algorithm=%d",
+       static_cast<int>(algorithm));
 
   flagcxFusedInvocationBuffers *buffers = nullptr;
   res = flagcxFusedDrainPendingBuffers(comm);

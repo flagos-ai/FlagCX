@@ -6,6 +6,7 @@
 #include "global_comm.h"
 #include "runner_fixtures.hpp"
 #include "transport.h"
+#include "uni_runner_impl.h"
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -109,23 +110,38 @@ void FlagCXCollTest::SetUp() {
         << static_cast<int>(comm->commType);
   }
 
-  if (std::getenv("FLAGCX_CI_EXPECT_UNIRUNNER_KERNEL") != nullptr) {
-    const char *selectedRunner = std::getenv("FLAGCX_USE_HETERO_COMM");
-    int localSupported = selectedRunner != nullptr &&
-                         std::strcmp(selectedRunner, "1") == 0 &&
-                         comm->uniRunnerKernelSupported;
-    int allSupported = 0;
-    MPI_Allreduce(&localSupported, &allSupported, 1, MPI_INT, MPI_MIN,
-                  MPI_COMM_WORLD);
-    ASSERT_EQ(allSupported, 1) << "UniRunner device kernels are unavailable";
+  const char *expectedDeviceControl =
+      std::getenv("FLAGCX_CI_EXPECT_DEVICE_STREAM_CONTROL");
+  if (expectedDeviceControl != nullptr) {
+    ASSERT_TRUE(std::strcmp(expectedDeviceControl, "0") == 0 ||
+                std::strcmp(expectedDeviceControl, "1") == 0);
+    const flagcxResult_t capability = flagcxPrepareUniRunnerCapabilities(comm);
+    ASSERT_TRUE(capability == flagcxSuccess ||
+                capability == flagcxNotSupported);
   }
-  if (std::getenv("FLAGCX_CI_EXPECT_STREAM_VALUE") != nullptr) {
-    int localSupported = comm->streamValueSupported ? 1 : 0;
-    int allSupported = 0;
-    MPI_Allreduce(&localSupported, &allSupported, 1, MPI_INT, MPI_MIN,
+  const auto matchesCapability = [&](const char *name, bool actual) {
+    const char *expected = std::getenv(name);
+    if (expected == nullptr)
+      return true;
+    int localMatches = (std::strcmp(expected, "0") == 0 && !actual) ||
+                       (std::strcmp(expected, "1") == 0 && actual);
+    int allMatch = 0;
+    MPI_Allreduce(&localMatches, &allMatch, 1, MPI_INT, MPI_MIN,
                   MPI_COMM_WORLD);
-    ASSERT_EQ(allSupported, 1) << "stream value operations are unavailable";
-  }
+    if (allMatch != 1)
+      std::cerr << name << "=" << expected
+                << " does not match capability on every rank" << std::endl;
+    return allMatch == 1;
+  };
+  const char *selectedRunner = std::getenv("FLAGCX_USE_HETERO_COMM");
+  ASSERT_TRUE(matchesCapability("FLAGCX_CI_EXPECT_UNIRUNNER_KERNEL",
+                                selectedRunner != nullptr &&
+                                    std::strcmp(selectedRunner, "1") == 0 &&
+                                    comm->uniRunnerKernelSupported));
+  ASSERT_TRUE(matchesCapability("FLAGCX_CI_EXPECT_STREAM_VALUE",
+                                comm->streamValueSupported));
+  ASSERT_TRUE(matchesCapability("FLAGCX_CI_EXPECT_DEVICE_STREAM_CONTROL",
+                                comm->uniRunnerDeviceControlSupported));
   if (std::getenv("FLAGCX_CI_EXPECT_LOCAL_P2P") != nullptr) {
     int localMatches =
         comm->heteroComm != nullptr && comm->heteroComm->peerInfo != nullptr;

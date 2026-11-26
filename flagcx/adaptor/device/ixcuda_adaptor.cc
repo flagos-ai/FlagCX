@@ -1043,6 +1043,16 @@ flagcxResult_t ixcudaAdaptorGetPointerType(const void *ptr, int *ptrType) {
   return flagcxSuccess;
 }
 
+static flagcxResult_t ixcudaAdaptorDeviceMallocWithFlags(void **ptr,
+                                                         size_t size,
+                                                         flagcxMemType_t type,
+                                                         flagcxStream_t stream,
+                                                         unsigned int flags) {
+  if (ptr == NULL || (flags & ~FLAGCX_DEVICE_ALLOC_UNIRUNNER) != 0)
+    return flagcxInvalidArgument;
+  return ixcudaAdaptorDeviceMalloc(ptr, size, type, stream);
+}
+
 struct flagcxDeviceAdaptor ixcudaAdaptor {
   "IXCUDA",
       // Basic functions
@@ -1136,5 +1146,6 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
       NULL, NULL, NULL, NULL, NULL,
 #endif
+      ixcudaAdaptorDeviceMallocWithFlags,
 };
 #endif // USE_ILUVATAR_ADAPTOR
