@@ -31,7 +31,7 @@ case "$workload" in
 esac
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-project_root=$(cd "$script_dir/../../.." && pwd)
+project_root=$(cd "$script_dir/../../.." && pwd -P)
 source "$script_dir/timeouts.sh"
 workload_timeout=${FLAGCX_CI_WORKLOAD_TIMEOUT:-55m}
 if [[ "$workload" == unittest && "${FLAGCX_CI_COVERAGE:-0}" != 1 ]]; then
@@ -64,22 +64,75 @@ for proxy_var in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy
 done
 
 cleanup() {
-  docker container rm --force "$container_name" >/dev/null 2>&1 || true
+  local remaining
+  if docker container rm --force "$container_name" >/dev/null 2>&1; then
+    return 0
+  fi
+  # --rm may already have removed a completed container. A remaining container
+  # must be stopped before handing its logs back to the host.
+  if ! remaining=$(docker container ls --all --quiet \
+      --filter "name=^/${container_name}$"); then
+    echo "Cannot determine whether CI container $container_name stopped" >&2
+    return 1
+  fi
+  if [[ -n "$remaining" ]]; then
+    echo "Could not remove CI container $container_name" >&2
+    return 1
+  fi
 }
+log_owner_uid=$(id -u)
+log_owner_gid=$(id -g)
+workload_attempted=0
 log_dir=${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-/tmp}/flagcx-ci-attempts}
 mkdir -p "$log_dir"
+log_dir=$(cd "$log_dir" && pwd -P)
+if [[ "$log_dir" == / || "$log_dir" == "$project_root" ||
+      "$project_root" == "$log_dir/"* ]]; then
+  echo "CI logs must use a dedicated directory, not the workspace or its ancestors" >&2
+  exit 2
+fi
 summary_file=$(mktemp "$log_dir/summary.XXXXXX.md")
+restore_log_owner() {
+  # Use the image already pulled for this workload, with no hardware runtime.
+  docker run --rm --pull=never --runtime=runc --network=none --user=root \
+    --volume "$log_dir:/ci-logs" \
+    --volume "$script_dir/restore_ci_log_owner.sh:/restore_ci_log_owner.sh:ro" \
+    --entrypoint /bin/sh "$image" \
+    /restore_ci_log_owner.sh /ci-logs "$log_owner_uid" "$log_owner_gid"
+}
 finish() {
+  local status=$? cleanup_status=0 owner_status=0
+  trap - EXIT
+  trap '' INT TERM
   if [[ "$platform" == ascend && "$workload" == perf ]]; then
     bash "$script_dir/ascend_rdma_host_inventory.sh" \
       >"$log_dir/ascend-rdma-host-inventory-after.log" 2>&1 || true
   fi
-  cleanup
-  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-    cat "$summary_file" >> "$GITHUB_STEP_SUMMARY"
+  cleanup || cleanup_status=$?
+  if ((workload_attempted && cleanup_status == 0)); then
+    restore_log_owner || owner_status=$?
+    if ((owner_status != 0)); then
+      echo "CI log ownership restoration failed (exit=$owner_status); workload exit=$status" >&2
+    else
+      echo "CI logs returned to host uid=$log_owner_uid gid=$log_owner_gid: $log_dir"
+    fi
+  elif ((workload_attempted)); then
+    echo "CI log ownership restoration skipped: workload container may still be running" >&2
   fi
+  if ((status == 0 && (cleanup_status != 0 || owner_status != 0))); then
+    status=1
+  fi
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    if ! cat "$summary_file" >> "$GITHUB_STEP_SUMMARY"; then
+      echo "Failed to append CI step summary" >&2
+      if ((status == 0)); then status=1; fi
+    fi
+  fi
+  exit "$status"
 }
 trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 pull_image() {
   local attempt pull_log pull_timeout status
@@ -126,6 +179,7 @@ if [[ "$platform" == "ascend" ]]; then
   fi
 fi
 
+workload_attempted=1
 FLAGCX_CI_TEST_TIMEOUT="$workload_timeout" FLAGCX_CI_TEST_LABEL="$platform container" \
   bash "$script_dir/run_with_timeout.sh" docker container run --rm \
   --name "$container_name" \

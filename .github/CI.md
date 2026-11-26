@@ -161,6 +161,13 @@ Cancellation and missing/non-executable commands do not retry. Recovered tests
 emit a flaky warning and Step Summary entry. The `attempts-*` artifacts preserve
 invocation logs for seven days, including tests in managed Docker containers.
 
+After a host-managed workload container stops, the wrapper returns the log
+tree to the invoking runner's UID/GID so artifact upload and workspace cleanup
+can access root-created reports. This uses the already pulled image in a
+short-lived utility container with the ordinary runc runtime and only the log
+mount writable. Test failures retain their exit status; a failed log handoff
+also fails an otherwise successful job.
+
 ## Python Coverage
 
 The CUDA, Hygon, MetaX, and PPU Torch jobs run `plugin/torch/tests/test_*.py`
