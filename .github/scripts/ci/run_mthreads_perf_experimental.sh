@@ -2,19 +2,21 @@
 set -euo pipefail
 
 project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
+source "$project_root/.github/scripts/ci/timeouts.sh"
+export FLAGCX_CI_MPI_TIMEOUT=$FLAGCX_CI_PERF_TIMEOUT
 perf_bin="$project_root/test/perf/host_api/build/bin"
 runner_bin="$project_root/test/unittest/runner/build/bin/runner_unirunner_experimental_mpi_tests"
 mpi_runner="$project_root/.github/scripts/ci/run_mpi_with_timeout.sh"
 log_dir=${FLAGCX_CI_LOG_DIR:-$project_root/.ci-logs}
 mkdir -p "$log_dir"
 
-make -C "$project_root" --jobs="$(nproc)" "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
-make -C "$project_root/test/perf" host_api --jobs="$(nproc)" \
+flagcx_ci_run build make -C "$project_root" --jobs="$(nproc)" "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
+flagcx_ci_run build-tests make -C "$project_root/test/perf" host_api --jobs="$(nproc)" \
   "${FLAGCX_CI_TEST_MAKE_ARGS[@]}"
-cmake -S "$project_root/third-party/googletest" \
+flagcx_ci_run build-tests cmake -S "$project_root/third-party/googletest" \
   -B "$project_root/third-party/googletest/build"
-cmake --build "$project_root/third-party/googletest/build" --parallel "$(nproc)"
-make -C "$project_root/test/unittest/runner" --jobs="$(nproc)" \
+flagcx_ci_run build-tests cmake --build "$project_root/third-party/googletest/build" --parallel "$(nproc)"
+flagcx_ci_run build-tests make -C "$project_root/test/unittest/runner" --jobs="$(nproc)" \
   "${FLAGCX_CI_TEST_MAKE_ARGS[@]}" unirunner-experimental
 
 common_env=(

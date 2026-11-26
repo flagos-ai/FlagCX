@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,11 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 CI = ROOT / ".github/scripts/ci"
+
+
+def copy_timeout_scripts(directory):
+    for name in ("timeouts.sh", "run_with_timeout.sh", "collect_process_stacks.py"):
+        shutil.copy2(CI / name, directory / name)
 
 
 class MusaCiTest(unittest.TestCase):
@@ -42,6 +48,7 @@ class MusaCiTest(unittest.TestCase):
             scripts.mkdir(parents=True)
             handler = scripts / "run_mthreads_workload.sh"
             handler.write_text((CI / handler.name).read_text())
+            copy_timeout_scripts(scripts)
             environment = root / "environment.sh"
             environment.write_text('''export MPI_HOME=/fake/mpi
 export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}
@@ -73,6 +80,7 @@ sys.exit(19 if kind == os.environ.get("FAIL_MODE") else 0)
                         ["bash", str(handler), "perf"],
                         env={**os.environ, "GITHUB_WORKSPACE": str(root),
                              "FLAGCX_CI_SET_ENV": environment.name,
+                             "FLAGCX_CI_LOG_DIR": str(root / "logs"),
                              "PATH": f"{fake_bin}:{os.environ['PATH']}",
                              "CAPTURE": str(capture), "FAIL_MODE": failure},
                         capture_output=True, text=True,
@@ -95,6 +103,7 @@ sys.exit(19 if kind == os.environ.get("FAIL_MODE") else 0)
                 scripts.mkdir(parents=True)
                 handler = scripts / "run_mthreads_workload.sh"
                 handler.write_text((CI / handler.name).read_text())
+                copy_timeout_scripts(scripts)
                 environment = root / "environment.sh"
                 environment.write_text("""export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_MUSA=1)
@@ -135,13 +144,22 @@ sys.exit(19 if kind == os.environ.get("FAIL_STEP") else 0)
                 (fake_bin / "make").chmod(0o755)
                 # A system interpreter without Torch must not be used by the workload.
                 for name in ("python3", "python"):
-                    (fake_bin / name).write_text("#!/bin/sh\nexit 29\n")
+                    # The common watchdog uses Python for deadlines and process
+                    # cleanup. Reject Torch work on system Python only.
+                    (fake_bin / name).write_text(
+                        f"#!{sys.executable}\n" + '''import os, sys
+args = sys.argv[1:]
+if args[:1] == ["-"] or (args[:1] == ["-c"] and "import time" in args[1]):
+    os.execv(sys.executable, [sys.executable, *args])
+sys.exit(29)
+''')
                     (fake_bin / name).chmod(0o755)
                 (fake_bin / "nproc").write_text("#!/bin/sh\necho 2\n")
                 (fake_bin / "nproc").chmod(0o755)
                 capture = root / "calls"
                 env = {k: v for k, v in os.environ.items() if k != "PYTHON_BIN"}
                 env.update(GITHUB_WORKSPACE=str(root), FLAGCX_CI_SET_ENV=environment.name,
+                           FLAGCX_CI_LOG_DIR=str(root / "logs"),
                            PATH=f"{fake_bin}:{os.environ['PATH']}", CAPTURE=str(capture),
                            FAIL_STEP=failure, FLAGCX_CI_TORCH_COVERAGE="1",
                            VIRTUAL_ENV=str(python.parents[1]))
@@ -197,10 +215,11 @@ sys.exit(19 if kind == os.environ.get("FAIL_STEP") else 0)
             self.assertFalse((ROOT / ".github" / name).exists(), name)
         self.assertIn("--runtime=mthreads", config["docker_args"])
         self.assertEqual(json.loads(config["unit_test_suites"]),
-                         ["device_api", "device_api_unified_ir"])
+                         ["adaptor", "core", "device_api", "device_api_host",
+                          "device_api_unified_ir", "p2p", "rma", "runner", "service", "symmem"])
         unit_jobs = yaml.safe_load((ROOT / ".github/workflows/unit_tests_common.yml").read_text())["jobs"]
         self.assertEqual(unit_jobs["unit_test"]["if"],
-                         "inputs.platform != 'enflame' && inputs.platform != 'kunlunxin' && inputs.platform != 'mthreads'")
+                         "inputs.platform != 'enflame' && inputs.platform != 'kunlunxin'")
         self.assertEqual(unit_jobs["unit_test_enflame"]["if"], "inputs.platform == 'enflame'")
         self.assertEqual(unit_jobs["kunlunxin_unit_test"]["if"], "inputs.platform == 'kunlunxin'")
         for filename, prefix, workloads, completion in (
@@ -215,9 +234,9 @@ sys.exit(19 if kind == os.environ.get("FAIL_STEP") else 0)
                 key = "perf-test-experimental-mthreads" if workload == "perf-test-experimental" else f"{prefix}-mthreads"
                 job = jobs[key]
                 self.assertIn("'mthreads'", job["if"])
-                expected_condition = ("contains(fromJSON(inputs.platforms), 'mthreads')"
+                expected_condition = ("${{ false && contains(fromJSON(inputs.platforms), 'mthreads') }}"
                                       if workload == "perf-test-experimental"
-                                      else "${{ false && contains(fromJSON(inputs.platforms), 'mthreads') }}")
+                                      else "contains(fromJSON(inputs.platforms), 'mthreads')")
                 self.assertEqual(job["if"], expected_condition)
                 self.assertIn("mthreads_runs_on", job["runs-on"])
                 display = "perf-test-experimental" if workload == "perf-test-experimental" else prefix
@@ -308,7 +327,7 @@ with open(os.environ["MUSA_DOCKER_CAPTURE"], "a") as out:
             capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout), policy)
 
-    def test_completion_gates_require_musa_experimental_success_and_other_jobs_skipped(self):
+    def test_completion_gates_require_musa_standard_success_and_experimental_skipped(self):
         for experimental in (False, True):
             filename = "test.yml" if experimental else "torch-api-test.yml"
             completion = "perf_complete" if experimental else "torch_api_complete"
@@ -325,7 +344,7 @@ with open(os.environ["MUSA_DOCKER_CAPTURE"], "a") as out:
                             ["bash", "-eu", "-c", gate],
                             env=env, capture_output=True, text=True,
                         )
-                        expected = config == "success" and regular == "skipped" and (not experimental or extra == "success")
+                        expected = config == "success" and regular == "success" and (not experimental or extra == "skipped")
                         self.assertEqual(result.returncode == 0, expected, result.stderr)
         # A missing result must fail closed; unselected MUSA is irrelevant.
         env = {k: v for k, v in os.environ.items() if not k.startswith("MTHREADS_")}
@@ -371,6 +390,7 @@ printf '%s\\n' "${FLAGCX_CI_DEVICE_API_MPI_ARGS[*]}" "${FLAGCX_CI_UNIFIED_IR_MPI
         root = Path(directory)
         scripts = root / ".github/scripts/ci"
         scripts.mkdir(parents=True, exist_ok=True)
+        copy_timeout_scripts(scripts)
         # Execute the real workload with build/launcher shims. The real XML
         # validator still checks all requested cases on all four ranks.
         for name in ("run_mthreads_perf_experimental.sh", "check_required_gtests.py"):
@@ -405,18 +425,22 @@ if label == os.getenv("FAIL_LABEL"):
             path.chmod(0o755)
         capture = root / "calls.jsonl"
         capture.write_text("")
+        fake_bin = root / "bin"
+        fake_bin.mkdir(exist_ok=True)
+        for name in ("make", "cmake"):
+            tool = fake_bin / name
+            tool.write_text('''#!/usr/bin/env bash
+if [[ "$(basename "$0")" == make && "${FAIL_PROJECT_BUILD:-0}" == 1 ]]; then
+  exit 23
+fi
+''')
+            tool.chmod(0o755)
         # The host container wrapper creates this directory before mounting it.
         logs = root / "logs"
         logs.mkdir(exist_ok=True)
         logs.chmod(0o755)
         command = r'''set -euo pipefail
 umask "$MUSA_TEST_UMASK"
-make() {
-  if [[ "${FAIL_PROJECT_BUILD:-0}" == 1 ]]; then
-    return 23
-  fi
-}
-cmake() { :; }
 nproc() { echo 2; }
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_MUSA=1 COMPILE_KERNEL=1)
 FLAGCX_CI_TEST_MAKE_ARGS=("${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}")
@@ -426,6 +450,7 @@ source "$GITHUB_WORKSPACE/.github/scripts/ci/run_mthreads_perf_experimental.sh"
         result = subprocess.run(
             ["bash", "-c", command],
             env={**os.environ, "GITHUB_WORKSPACE": str(root), "CAPTURE": str(capture),
+                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
                  "FAIL_LABEL": fail_label, "XML_MODE": xml_mode,
                  "FAIL_PROJECT_BUILD": "1" if fail_project_build else "0",
                  "FAIL_AFTER_REPORTS": "1" if fail_after_reports else "0",

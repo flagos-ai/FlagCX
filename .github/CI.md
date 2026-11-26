@@ -131,12 +131,12 @@ network still needs runner-side network provisioning. This check establishes
 visibility only; the adaptor Host MR and SendRecv tests verify connectivity.
 
 Mthreads CI uses `mt-8g-cicd-flagcx` and the image configured in
-`.github/configs/mthreads.yml`. MUSA hardware CI currently runs only
-`perf-test-experimental (musa)`, using native UniRunner kernels on four GPUs
-with a logical 2+2 split. This job is required to succeed. All MUSA unit-test
-jobs, ordinary performance and Torch are temporarily disabled. The unit suite
-list is retained in the configuration for later restoration; the shared unit
-workflow disables their MUSA job. Other platforms retain their existing selection.
+`.github/configs/mthreads.yml`. MUSA hardware CI runs all ten configured unit
+suites, `perf-test (musa)` and Torch on four GPUs with a logical 2+2 split where
+applicable. The UniRunner `perf-test-experimental (musa)` job is temporarily
+disabled while its stream-value completion stall is investigated. Existing
+DMA-BUF and SymMem VMM exclusions remain in the platform configuration.
+Other platforms retain their existing selection.
 Build its CI image with
 `docker build -f docker/mthreads-ci.Dockerfile .`.
 
@@ -217,8 +217,8 @@ The Mthreads performance jobs display as `perf-test (musa)` and
 `perf-test-experimental (musa)`. Both select the same `mthreads` configuration
 and runner; the experimental workload adds `COMPILE_KERNEL=1` and runs the
 four-rank UniRunner correctness suite on the pinned MUSA 5.2.0 image.
-The experimental job is enabled and required to succeed while CI focuses on
-MUSA UniRunner support. Ordinary MUSA perf and Torch remain disabled, and their
-completion gates require skipped results. Re-enable each disabled job and
-restore its required-success gate together when broadening MUSA coverage.
+Ordinary MUSA perf and Torch are enabled and required to succeed. The
+experimental UniRunner job is temporarily disabled, and its completion gate
+requires a skipped result. Re-enable it together with its required-success
+gate after fixing the stream-value completion stall.
 See [MUSA UniRunner kernels](../docs/musa_unirunner.md) for validation details.

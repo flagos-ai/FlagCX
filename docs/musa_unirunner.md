@@ -94,12 +94,13 @@ when cleanup needs a retry.
 
 ## Experimental CI
 
-MUSA hardware CI currently enables only `perf-test-experimental (musa)` and
-requires it to succeed. All MUSA unit-test jobs (including the two native
-Device API suites), ordinary perf and Torch are temporarily disabled. The
-experimental job runs the full four-rank workload, including AllGatherGemm;
-the stall previously observed in run 45775159982 still requires hardware
-validation and diagnosis.
+MUSA hardware CI enables all ten configured unit suites, including both native
+Device API suites and the ordinary runner suite, as well as ordinary perf and
+Torch. The `perf-test-experimental (musa)` job is temporarily disabled while
+the AllGatherGemm stream-value completion stall is investigated. Its native
+kernel implementation and full four-rank workload remain available for manual
+validation and later CI restoration. Existing DMA-BUF and SymMem VMM exclusions
+remain in effect.
 
 The performance jobs are named `perf-test (musa)` and
 `perf-test-experimental (musa)`. Both use the single platform configuration
@@ -150,9 +151,9 @@ The SlicedAR sweep defaults to 64 KiB–64 MiB and can be adjusted through
 `FLAGCX_CI_MUSA_SLICED_AR_MAX_BYTES` when running the workload directly.
 Performance numbers establish a baseline; CI has no bandwidth threshold.
 
-The MUSA experimental job must succeed. Ordinary perf and Torch completion
-gates expect their disabled MUSA jobs to be skipped. Restore the
-required-success checks along with the jobs when re-enabling them.
+Ordinary MUSA perf and Torch jobs must succeed. The experimental job's
+completion gate requires its disabled job to be skipped. Restore its
+required-success check together with the job after fixing the stall.
 
 ## Local checks without the SDK
 

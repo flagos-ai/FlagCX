@@ -36,7 +36,9 @@ if sys.argv[1] == 'pull':
 elif sys.argv[1:3] == ['container', 'run']:
     (root / 'workload-started').touch()
     if os.environ.get('WORKLOAD_SIGNAL'):
-        os.kill(os.getppid(), getattr(signal, 'SIG' + os.environ['WORKLOAD_SIGNAL']))
+        # The direct parent is GNU timeout, not the container launcher.
+        os.kill(int(os.environ['TEST_CONTAINER_LAUNCHER_PID']),
+                getattr(signal, 'SIG' + os.environ['WORKLOAD_SIGNAL']))
     sys.exit(int(os.environ['WORKLOAD_STATUS']))
 elif sys.argv[1] == 'run':
     sys.exit(int(os.environ['RESTORE_STATUS']))
@@ -78,7 +80,8 @@ class HardwareContainerPullTest(unittest.TestCase):
                 GITHUB_STEP_SUMMARY=str(root / "summary.md"),
             )
             result = subprocess.run(
-                ["bash", str(SCRIPT), "cuda", "unittest", "device_api"],
+                ["bash", "-c", 'export TEST_CONTAINER_LAUNCHER_PID=$$; exec bash "$@"',
+                 "container-launcher", str(SCRIPT), "cuda", "unittest", "device_api"],
                 env=environment,
                 capture_output=True,
                 text=True,
@@ -200,7 +203,10 @@ class HardwareContainerPullTest(unittest.TestCase):
             with self.subTest(signal=name):
                 result, calls, _, _ = self.run_container(workload_signal=name)
                 self.assertEqual(result.returncode, status, result.stderr)
+                self.assertEqual(sum(c[:3] == ["docker", "container", "run"]
+                                     for c in calls), 1)
                 self.assertEqual(sum(c[:2] == ["docker", "run"] for c in calls), 1)
+                self.assertNotIn("watchdog expired", result.stderr)
 
     def test_workspace_and_ancestor_log_roots_are_rejected(self):
         for path in (REPO_ROOT, REPO_ROOT.parent, Path("/")):

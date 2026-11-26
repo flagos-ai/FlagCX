@@ -62,19 +62,19 @@ case "$workload" in
       fi
     fi
     export PYTHON_BIN
-    "$PYTHON_BIN" -c 'import sys, torch, torch_musa; print("python", sys.executable, "torch", torch.__version__, "devices", torch.musa.device_count()); assert torch.musa.device_count() >= 4'
-    make -C "$project_root" --jobs="$(nproc)" "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
-    "$PYTHON_BIN" -m pip install 'setuptools_scm>=8'
+    flagcx_ci_run preflight "$PYTHON_BIN" -c 'import sys, torch, torch_musa; print("python", sys.executable, "torch", torch.__version__, "devices", torch.musa.device_count()); assert torch.musa.device_count() >= 4'
+    flagcx_ci_run build make -C "$project_root" --jobs="$(nproc)" "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
+    flagcx_ci_run torch-build "$PYTHON_BIN" -m pip install 'setuptools_scm>=8'
     (
       cd "$project_root"
       export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-      "$PYTHON_BIN" setup.py build_ext --inplace
+      flagcx_ci_run torch-build "$PYTHON_BIN" setup.py build_ext --inplace
     )
     export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
     bash "$project_root/test/script/torch_api_test.sh"
     if [[ "${FLAGCX_CI_TORCH_COVERAGE:-0}" == 1 ]]; then
-      "$PYTHON_BIN" -m pip install --quiet coverage==7.10.7
-      bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"
+      flagcx_ci_run torch-build "$PYTHON_BIN" -m pip install --quiet coverage==7.10.7
+      flagcx_ci_run torch-coverage bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"
     fi
     ;;
 esac
