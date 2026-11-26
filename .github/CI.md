@@ -52,7 +52,9 @@ PR run remains the merge gate.
 
 ## Test Levels
 
-PRs and pushes default to L1 so daytime runs execute unit suites only. Add a
+PRs and manual dispatch default to L1 so daytime runs execute unit suites only;
+pushes default to L2 and include performance and Torch API tests because both
+stay short. Add a
 `level:L0` through `level:L3` label to choose a PR level;
 when several level labels are present, the highest level wins. Manual dispatch
 accepts the same level input. The nightly schedule runs L3 on all enabled
@@ -62,7 +64,7 @@ platforms. Manual dispatch without a level uses L1.
 | --- | --- | --- |
 | L0 | Common checks and CI plan only | Workflow/configuration-only validation |
 | L1 | Selected platforms' unit suites | Fast PR feedback |
-| L2 | Unit, performance, and Torch API tests on selected platforms | Opt-in PR/manual coverage |
+| L2 | Unit, performance, and Torch API tests on selected platforms | Push and opt-in PR/manual coverage |
 | L3 | Same test groups as L2 on all enabled platforms | Explicit PR/manual run and nightly coverage |
 
 The prepare job writes the selected platforms, level, configured suites,
@@ -95,8 +97,9 @@ The rollout should proceed in these stages:
    GPU count, test type, and start/end time. Keep unit tests separate from
    end-to-end tests, and identify end-to-end tests expected to run longer than
    one hour.
-2. During daytime hours, admit unit-test jobs only. The current PR/push default
-   is L1. A future shared dispatcher should use a single-GPU queue where
+2. During daytime hours, admit unit-test jobs only. The current PR/dispatch
+   default is L1; pushes also run the short performance and Torch API tests. A
+   future shared dispatcher should use a single-GPU queue where
    applicable and dispatch a job when a GPU is free. Jobs from all repositories
    must use the same resource pool and admission rules.
 3. During the configured night window, admit long-running multi-GPU end-to-end

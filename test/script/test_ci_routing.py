@@ -135,15 +135,15 @@ class CiMatrixRoutingTest(unittest.TestCase):
             )["unit_test_suites"]
             self.assertEqual(entry["suites"], expected)
 
-    def test_pr_and_push_default_to_unit_only_level(self):
-        for event_name, context in (
-            ("pull_request", {"files": ["test/unittest/p2p/test_p2p.cc"]}),
-            ("push", {"files": ["test/unittest/p2p/test_p2p.cc"]}),
-            ("workflow_dispatch", {"selection": "metax"}),
+    def test_pr_and_dispatch_default_to_unit_only_and_push_to_l2(self):
+        for event_name, context, expected_level in (
+            ("pull_request", {"files": ["test/unittest/p2p/test_p2p.cc"]}, "L1"),
+            ("push", {"files": ["test/unittest/p2p/test_p2p.cc"]}, "L2"),
+            ("workflow_dispatch", {"selection": "metax"}, "L1"),
         ):
             with self.subTest(event_name=event_name):
                 outputs, _ = self.resolve({"event_name": event_name, **context})
-                self.assertEqual(outputs["level"], "L1")
+                self.assertEqual(outputs["level"], expected_level)
                 self.assertEqual(outputs["execution_window"], "day")
                 self.assertEqual(outputs["scheduling"]["unit"]["resource_class"], "single-gpu")
 
@@ -739,6 +739,7 @@ class CiWorkflowWiringTest(unittest.TestCase):
         for job_name in ("performance_tests", "torch_api_tests"):
             condition = workflow["jobs"][job_name]["if"]
             self.assertIn("needs.prepare.outputs.execution_window == 'night'", condition)
+            self.assertIn("needs.prepare.outputs.event == 'push'", condition)
 
     def test_platform_specific_jobs_are_conditioned_on_matrix_selection(self):
         for path in (

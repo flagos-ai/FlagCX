@@ -149,7 +149,7 @@ parse_selection = lambda do |value|
   requested.include?("all") ? platform_names : requested.uniq
 end
 
-level = normalise_level.call(context.fetch("level", "L1"))
+level = normalise_level.call(context.fetch("level", event_name == "push" ? "L2" : "L1"))
 level_labels = labels.filter_map { |label| label.delete_prefix("level:") if label.start_with?("level:") }
 level = normalise_level.call(level_labels.max_by { |value| level_number.call(value) }) unless level_labels.empty?
 
@@ -339,6 +339,7 @@ outputs = {
   "repository" => context.fetch("repository", ""),
   "ref" => context.fetch("ref", ""),
   "level" => level,
+  "event" => event_name,
   "execution_window" => execution_window,
   "scheduling" => JSON.generate(scheduling),
   "plan_status" => plan_status,

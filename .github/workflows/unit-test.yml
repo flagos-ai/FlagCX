@@ -26,7 +26,7 @@ on:
         description: "CI test level: L0, L0.5 (runner smoke), L1, L2, or L3"
         required: true
         type: string
-        default: L1
+        default: L2
   issue_comment:
     types: [created]
 
@@ -54,6 +54,7 @@ jobs:
       repository: ${{ steps.resolve.outputs.repository }}
       ref: ${{ steps.resolve.outputs.ref }}
       level: ${{ steps.resolve.outputs.level }}
+      event: ${{ steps.resolve.outputs.event }}
       execution_window: ${{ steps.resolve.outputs.execution_window }}
       scheduling: ${{ steps.resolve.outputs.scheduling }}
       runner_matrix: ${{ steps.resolve.outputs.runner_matrix }}
@@ -79,7 +80,7 @@ jobs:
           EVENT_REPOSITORY: ${{ github.repository }}
           EVENT_SELECTION: ${{ inputs.platform || 'all' }}
           EVENT_SUITES: ${{ inputs.suite || 'all' }}
-          EVENT_LEVEL: ${{ inputs.level || 'L1' }}
+          EVENT_LEVEL: ${{ inputs.level || (github.event_name == 'push' && 'L2' || 'L1') }}
           ACTOR: ${{ github.actor }}
           FLAGCX_CI_PLAN_PATH: ${{ runner.temp }}/flagcx-ci-plan.json
         shell: bash
@@ -201,7 +202,7 @@ jobs:
       needs.prepare.outputs.active == 'true' &&
       needs.prepare.outputs.suite_filter_active != 'true' &&
       (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3') &&
-      needs.prepare.outputs.execution_window == 'night'
+      (needs.prepare.outputs.execution_window == 'night' || needs.prepare.outputs.event == 'push')
     uses: ./.github/workflows/test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -215,7 +216,7 @@ jobs:
       needs.prepare.outputs.active == 'true' &&
       needs.prepare.outputs.suite_filter_active != 'true' &&
       (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3') &&
-      needs.prepare.outputs.execution_window == 'night'
+      (needs.prepare.outputs.execution_window == 'night' || needs.prepare.outputs.event == 'push')
     uses: ./.github/workflows/torch-api-test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
