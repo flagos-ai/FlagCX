@@ -1,10 +1,25 @@
 # MetaX GPU RDMA allocation probe
 
-MetaX CI temporarily runs only this hardware suite while startup and RDMA
-atomics are being diagnosed. Other MetaX unit suites, performance and Torch
-API hardware jobs are disabled; common checks and other platforms retain their
-normal selection. Restore the regular `unit_test_suites` list in
-`.github/configs/metax.yml` to resume the full MetaX matrix.
+The RDMA atomic probe is disabled in automatic MetaX CI. Regular MetaX unit
+suites are enabled in `.github/configs/metax.yml`; performance and Torch API
+hardware jobs follow the normal CI level and platform selection. Existing
+platform exclusions remain in effect. Probe code remains available for
+manual diagnosis; add `rdma_atomic_probe` to the configured
+suite list to enable it in automatic CI again.
+
+The shared MetaX CI environment sets `MACA_VISIBLE_DEVICES=0,2,4,6` inside
+the test container before runtime initialization. Probe MPI workers explicitly
+inherit this selection. Rank device indices remain logical indices 0–3 in
+that visible set; the logged PCI bus IDs identify the GPUs actually used.
+The GPU4/NIC2 and GPU6/NIC3 affinities are hypotheses awaiting topology
+confirmation. This selection also applies to the other MetaX workloads.
+The runner PXN case independently selects
+`FLAGCX_CI_PXN_VISIBLE_DEVICES=0,1,4,5` and
+`FLAGCX_CI_PXN_HCAS=bnxt_roce0,bnxt_roce2`. Its two logical nodes contain
+GPUs [0,1] and [4,5]; SendRecv pairs GPU0 with GPU4 and GPU1 with GPU5.
+The intended sender-side relay paths are GPU1 -> GPU0 -> bnxt_roce0 and
+GPU5 -> GPU4 -> bnxt_roce2. These require eligible CCI paths between the
+GPU pairs and NIC-local relay GPUs, which must be confirmed at runtime.
 
 `rdma_atomic_probe` is an independent MetaX hardware CI suite for diagnosing
 the signal-only FetchAdd failure in PR #737. It does not change the production
@@ -205,9 +220,10 @@ future production allocation change.
 
 ## Running on a MetaX host
 
-The platform YAML enables this suite only for MetaX. The normal unit-test CI
-entry builds the library, then the supervisor builds each worker independently
-and runs the complete matrix. The probe Makefile also provides separate
+The probe is a MetaX-only diagnostic and is not currently selected by the
+platform YAML. Its unit-test entry remains callable manually: it builds the
+library, then the supervisor builds each worker independently and runs the
+complete matrix. The probe Makefile also provides separate
 `native` and `adaptor` targets. For an equivalent SDK-equipped local environment:
 
 ```bash
@@ -215,9 +231,10 @@ bash .github/scripts/ci/run_unit_test.sh .github/scripts/set_env/metax.sh rdma_a
 ```
 
 Hardware-free supervisor coverage lives in
-`test/script/test_metax_rdma_probe.py`: complete allocation matrix, MetaX-only
-routing, GPU-signal enforcement, missing-rank/error classification, bounded
-timeout recovery, failure continuation and dependency reporting. Build-failure
+`test/script/test_metax_rdma_probe.py`: complete allocation matrix, disabled
+automatic CI selection, GPU-signal enforcement, missing-rank/error
+classification, bounded timeout recovery, failure continuation and dependency
+reporting. Build-failure
 controls verify that each remaining layer runs, all allocation modes remain
 covered, build evidence is saved, and failed builds cannot reuse stale binaries.
 Startup controls cover independent host discovery, partial/empty output,

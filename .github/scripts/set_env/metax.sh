@@ -7,6 +7,9 @@ FLAGCX_CI_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
 
 export FLAGCX_ADAPTOR=metax
+# Select one GPU per presumed GPU/NIC branch; confirm the physical mapping
+# from the runtime PCI bus IDs recorded by the probe.
+export MACA_VISIBLE_DEVICES=0,2,4,6
 
 FLAGCX_CI_MPI_BASE_HOME=${MPI_HOME:-/usr/local/mpi}
 
@@ -33,10 +36,11 @@ FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=2
 FLAGCX_CI_RUNNER_NP=4
 export NP=4
-FLAGCX_CI_PXN_VISIBLE_DEVICES=0,2,4,7
-# Keep GPU 0 off its directly adjacent bnxt_roce0 during PXN so GPU 2 can
-# relay through bnxt_roce1 on both three- and four-HCA runners.
-FLAGCX_CI_PXN_HCAS=bnxt_roce1,bnxt_roce2,bnxt_roce3
+# Each logical node has a presumed NIC-local GPU and a source GPU: [0,1], [4,5].
+# Expect GPU 1 to relay through GPU 0 / bnxt_roce0, and GPU 5 through
+# GPU 4 / bnxt_roce2, subject to actual CCI and GPU/NIC topology eligibility.
+FLAGCX_CI_PXN_VISIBLE_DEVICES=0,1,4,5
+FLAGCX_CI_PXN_HCAS=bnxt_roce0,bnxt_roce2
 
 FLAGCX_CI_NODE1_MPI_ARGS=(
   -x FLAGCX_HOSTID=node0
@@ -67,6 +71,7 @@ flagcx_ci_configure_suite() {
 flagcx_ci_prepare() {
   local suite=$1
   echo "Preparing MetaX environment for CI workload: $suite"
+  echo "MACA_VISIBLE_DEVICES=$MACA_VISIBLE_DEVICES"
   if [[ "$suite" == adaptor || "$suite" == rma ]]; then
     echo "MetaX CI temporary exclusions: native stream wait/write value operations reject finegrained allocations; see ignore_test.gtest in .github/configs/metax.yml."
   fi

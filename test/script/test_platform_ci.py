@@ -1235,7 +1235,16 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                 "symmem",
             ],
             "metax": [
-                "rdma_atomic_probe",
+                "adaptor",
+                "core",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
             ],
             "kunlunxin": [
                 "adaptor",

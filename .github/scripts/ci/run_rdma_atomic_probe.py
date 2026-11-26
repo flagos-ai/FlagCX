@@ -383,6 +383,8 @@ def case_command(case, binary, barrier, mpirun):
     common = ["-x", "FLAGCX_SIGNAL_HOST_ENABLE=0", "-x", "FLAGCX_VMM_ENABLE=0",
               "-x", "FLAGCX_USE_HETERO_COMM=1", "-x", "LD_LIBRARY_PATH",
               "-x", "FLAGCX_CI_RDMA_PROBE_TOKEN"]
+    if os.environ.get("MACA_VISIBLE_DEVICES"):
+        common += ["-x", "MACA_VISIBLE_DEVICES"]
     if case["layer"] == "barrier":
         arguments = [str(barrier), "-b", "1K", "-e", "1K", "-f", "2", "-R", "1"]
         common += ["-x", "FLAGCX_CI_RDMA_PROBE_BARRIER_ONLY=1"]

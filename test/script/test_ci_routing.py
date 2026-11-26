@@ -64,7 +64,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
             outputs["workload_platforms"] = json.loads(outputs["workload_platforms"])
             return outputs, result.stdout
 
-    def test_metax_probe_only_preserves_unit_platform_and_disables_other_workloads(self):
+    def test_metax_regular_coverage_includes_other_workloads(self):
         for context in (
             {"event_name": "pull_request", "labels": ["platform:metax"]},
             {"event_name": "workflow_dispatch", "selection": "metax", "level": "L2"},
@@ -75,7 +75,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 outputs, _ = self.resolve(context)
                 self.assertIn("metax", outputs["platforms"])
                 self.assertEqual(outputs["workload_platforms"],
-                                 [p for p in outputs["platforms"] if p != "metax"])
+                                 outputs["platforms"])
                 self.assertIn("metax", [p["platform"] for p in outputs["matrix"]["include"]])
         workflow = yaml.safe_load((REPO_ROOT / '.github/workflows/unit-test.yml').read_text())
         for job in ('performance_tests', 'torch_api_tests'):

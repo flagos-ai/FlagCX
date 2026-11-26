@@ -67,13 +67,12 @@ class MetaXAtomicProbeTest(unittest.TestCase):
                 self.assertTrue(any(c["layer"] == "adaptor" and c["mode"] == mode
                                     and c["hca"] == "bnxt_roce1:1" for c in matrix))
 
-    def test_only_metax_enables_suite_and_host_signals_are_forced_off(self):
+    def test_probe_is_disabled_in_ci_and_host_signals_are_forced_off(self):
         for path in (ROOT / ".github/configs").glob("*.yml"):
             config = yaml.safe_load(path.read_text())
             if not isinstance(config, dict) or "unit_test_suites" not in config:
                 continue
-            self.assertEqual("rdma_atomic_probe" in config["unit_test_suites"],
-                             path.stem == "metax", path.name)
+            self.assertNotIn("rdma_atomic_probe", config["unit_test_suites"], path.name)
         case = probe.build_matrix(["bnxt_roce0:1"], 4096)[-1]
         with mock.patch.dict(os.environ, FLAGCX_SIGNAL_HOST_ENABLE="1",
                              FLAGCX_DEVICE_ONE_SIDED_FORCE_NET="1",
