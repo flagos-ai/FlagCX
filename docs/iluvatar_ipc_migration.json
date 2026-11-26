@@ -62,7 +62,92 @@
     {
       "step": 6,
       "description": "Align public contracts, tests and CI",
-      "status": "pending"
+      "status": "complete",
+      "validation": "Both Linux host/mock builds passed: IBRC 573 tests, IBUC 581 tests, with hardware/capability skips reported separately. Four real-bootstrap lifecycle tests passed at 2 and 4 ranks for each build. Script discovery ran 293 tests with 8 missing-tool skips; missing-Ruby failures and one updated proxy source-contract check all passed targeted reruns. Torch source tests 6 passed. Hardware-test source and COMPILE_KERNEL_HOST syntax checks passed. All 24 protected Device API hashes and baseline group.cc verified."
     }
-  ]
+  ],
+  "validation_summary": {
+    "artifact_directory": "/private/tmp/iluvatar-ipc-validation",
+    "device_operations": "mock; no accelerator/NIC acceptance claimed",
+    "IBRC": {
+      "core": {
+        "pass": 249,
+        "skip": 5
+      },
+      "runner": {
+        "pass": 102,
+        "skip": 0
+      },
+      "rma": {
+        "pass": 54,
+        "skip": 0
+      },
+      "service": {
+        "pass": 57,
+        "skip": 0
+      },
+      "adaptor": {
+        "pass": 66,
+        "skip": 2
+      },
+      "device_api_host": {
+        "pass": 45,
+        "skip": 3
+      }
+    },
+    "IBUC": {
+      "core": {
+        "pass": 249,
+        "skip": 5
+      },
+      "runner": {
+        "pass": 102,
+        "skip": 0
+      },
+      "rma": {
+        "pass": 54,
+        "skip": 0
+      },
+      "service": {
+        "pass": 57,
+        "skip": 0
+      },
+      "adaptor": {
+        "pass": 74,
+        "skip": 3
+      },
+      "device_api_host": {
+        "pass": 45,
+        "skip": 3
+      }
+    },
+    "bootstrap": {
+      "cases": 4,
+      "ranks": [
+        2,
+        4
+      ],
+      "builds": [
+        "IBRC",
+        "IBUC"
+      ],
+      "result": "all passed on every rank"
+    },
+    "scripts": {
+      "discovered": 293,
+      "tool_skips": 8,
+      "initial_errors": "68 missing-Ruby subtest errors; one proxy source marker changed with the cleanup split",
+      "reruns": "all 24 routing tests and the corrected proxy source-contract test passed; no unresolved failures",
+      "torch_source_pass": 6
+    },
+    "observations": [
+      "One IBRC RMA quiesce test timed out waiting for the worker before progress. The unchanged test then passed 20 focused repetitions and a full 54-case RMA rerun. Initial failure and rerun logs are retained."
+    ],
+    "pending_hardware": [
+      "Iluvatar native callback/event probe",
+      "heterogeneous AllGather and Device API IPC/isolation",
+      "SDK-specific native Finalize/Destroy behavior and performance/overlap measurements"
+    ],
+    "caller_contract": "Complete user streams, Device API kernels and graph replays before lifecycle calls. Native Finalize limitations are preserved; no Destroy fallback."
+  }
 }

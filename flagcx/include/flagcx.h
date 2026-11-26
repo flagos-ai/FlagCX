@@ -277,6 +277,9 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle,
  * allocation alive until every rank that imported it has closed its mapping.
  * Participating ranks can deregister locally, then use an application-level
  * barrier before releasing their backing allocations.
+ * Deregistration never frees the user backing allocation. Destroy all DevMem
+ * views of this Window first. A close/free failure or InProgress retains the
+ * Window and completed cleanup progress for retry; it cannot create new views.
  * A successfully deregistered Window handle is empty and may be passed to a
  * later register call on the same communicator. */
 #ifdef __cplusplus
@@ -324,15 +327,25 @@ flagcxResult_t flagcxGetUniqueId(flagcxUniqueId_t uniqueId);
 flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
                                   flagcxUniqueId_t commId, int rank);
 
-/* Finalize a communicator. flagcxCommFinalize flushes all issued
- * communications, and marks communicator state as flagcxInProgress. The state
- * will change to flagcxSuccess when the communicator is globally quiescent and
- * related resources are freed; then, calling flagcxCommDestroy can locally free
- * the rest of the resources (e.g. communicator itself) without blocking. */
+/* Before lifecycle calls, complete all user streams, Device API kernels and
+ * graph replays that access this communicator or its buffers. Do not submit
+ * concurrently with Finalize/Destroy or invoke them inside an open group.
+ * Finalize rejects new submissions, drains internal producers, closes imports,
+ * and collectively confirms internal IPC closure before native SDK Finalize.
+ * Internal backing stays owned until Destroy; external backing stays
+ * user-owned. There is no per-operation work tracker or device-wide
+ * synchronization. All ranks in a FlagCX IPC domain must enter/retry unfinished
+ * Finalize in the same order, including ranks with no local allocation. On
+ * Success, repeated Finalize is a local no-op. On error/InProgress the handle
+ * and saved cleanup progress remain available for retry; the communicator stays
+ * closed. Native SDK Finalize support and its asynchronous progress rules still
+ * apply. */
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm);
 
-/* Frees local resources associated with communicator object.
-   The comm pointer is invalidated and must not be accessed after this call. */
+/* Calls Finalize if necessary, then releases local backing and other owners.
+ * After successful Finalize, FlagCX adds no cross-rank shutdown exchanges;
+ * native SDK Destroy retains its own platform restrictions. Only Success
+ * consumes comm. On error/InProgress, retain the pointer and retry Destroy. */
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm);
 
 /* Frees resources associated with communicator object and aborts any operations

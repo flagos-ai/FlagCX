@@ -441,7 +441,7 @@ flagcxProxyFreeConnections(struct flagcxProxyConnectionPool *pool,
     int count =
         b == pool->banks - 1 ? pool->offset : FLAGCX_PROXY_CONN_POOL_SIZE;
     for (int i = 0; i < count; ++i) {
-      auto *connection = pool->pools[b] + i;
+      struct flagcxProxyConnection *connection = pool->pools[b] + i;
       if (connection->state == connUninitialized)
         continue;
       if (release && connection->transport == TRANSPORT_P2P &&
@@ -1957,7 +1957,7 @@ fail_workers:
 }
 
 static flagcxResult_t proxyRetireWorkers(flagcxHeteroComm *comm, bool release) {
-  auto *state = comm->proxyState;
+  struct flagcxProxyState *state = comm->proxyState;
   pthread_mutex_lock(&state->mutex);
   __atomic_store_n(&state->progressState.stop, 1, __ATOMIC_RELEASE);
   pthread_cond_signal(&state->cond);
@@ -2013,18 +2013,18 @@ void *flagcxProxyService(void *args) {
   int maxnpeers = 0;
 
   // Connection pool — owns all connection structs
-  auto *pool =
-      (flagcxProxyConnectionPool *)calloc(1, sizeof(flagcxProxyConnectionPool));
-  if (pool == nullptr || pollfds == nullptr || peers == nullptr) {
-    free(pool);
+  struct flagcxProxyConnectionPool *connectionPool =
+      (struct flagcxProxyConnectionPool *)calloc(
+          1, sizeof(struct flagcxProxyConnectionPool));
+  if (connectionPool == nullptr || pollfds == nullptr || peers == nullptr) {
+    free(connectionPool);
     free(pollfds);
     free(peers);
     comm->proxyState->cleanupResult = flagcxSystemError;
     return nullptr;
   }
-  comm->proxyState->connectionPool = pool;
-  auto &connectionPool = *pool;
-  connectionPool.offset = FLAGCX_PROXY_CONN_POOL_SIZE;
+  comm->proxyState->connectionPool = connectionPool;
+  connectionPool->offset = FLAGCX_PROXY_CONN_POOL_SIZE;
 
   // Set device context
   FLAGCXCHECKGOTO(deviceAdaptor->setDevice(comm->cudaDev), res, out);
@@ -2068,7 +2068,7 @@ void *flagcxProxyService(void *args) {
         res = (asyncResult != flagcxSuccess &&
                asyncResult != flagcxInProgress && !proxyCleanupOpType(op->type))
                   ? asyncResult
-                  : proxyProgressAsync(peer, op, &asyncOpCount, &connectionPool,
+                  : proxyProgressAsync(peer, op, &asyncOpCount, connectionPool,
                                        comm);
         if (res == flagcxSuccess || res == flagcxInProgress) {
           op = opNext;
@@ -2112,7 +2112,7 @@ void *flagcxProxyService(void *args) {
           INFO(FLAGCX_PROXY, "[Service thread] Received close from peer");
           return false; // graceful close from peer
         } else if (proxyMatchOpType(type)) {
-          res = proxyServiceInitOp(type, curPeer, &connectionPool, comm,
+          res = proxyServiceInitOp(type, curPeer, connectionPool, comm,
                                    &asyncOpCount);
           if (res != flagcxSuccess) {
             WARN("[Service thread] Error encountered initializing operation "
@@ -2215,7 +2215,7 @@ out:
   // Close imports on the service thread; retain exporters for local Destroy.
   comm->proxyState->cleanupResult =
       workerCleanup == flagcxSuccess
-          ? flagcxProxyFreeConnections(&connectionPool, comm, false)
+          ? flagcxProxyFreeConnections(connectionPool, comm, false)
           : workerCleanup;
 
   flagcxSocketClose(&comm->proxyState->listenSock);
@@ -3261,8 +3261,8 @@ flagcxResult_t flagcxProxyCloseRelayImports(struct flagcxHeteroComm *comm) {
   bool relayDeviceSet = false;
   const uint64_t nowNs = flagcxProxyMonotonicNs();
   const uint64_t releaseDeadlineNs = nowNs == 0 ? 0 : nowNs + 30000000000ULL;
-  for (auto *import = comm->proxyState->relayImports; import != NULL;
-       import = import->next) {
+  for (struct flagcxNetRelayImport *import = comm->proxyState->relayImports;
+       import != NULL; import = import->next) {
     bool active = false;
     do {
       active = false;
@@ -3391,7 +3391,7 @@ flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm) {
 flagcxResult_t flagcxProxyFinalize(struct flagcxHeteroComm *comm) {
   if (!comm || !comm->proxyState)
     return flagcxInvalidArgument;
-  auto *state = comm->proxyState;
+  struct flagcxProxyState *state = comm->proxyState;
   if (state->initialized == 1 && !state->serviceJoined) {
     if (pthread_join(state->thread, nullptr) != 0)
       return flagcxSystemError;
@@ -3408,7 +3408,7 @@ flagcxResult_t flagcxProxyFinalize(struct flagcxHeteroComm *comm) {
 flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm) {
   if (!comm || !comm->proxyState || !comm->importsClosedConfirmed)
     return flagcxInvalidUsage;
-  auto *state = comm->proxyState;
+  struct flagcxProxyState *state = comm->proxyState;
   if (state->initialized == 1 && !state->serviceJoined)
     return flagcxInvalidUsage;
   FLAGCXCHECKSTRICT(
@@ -3418,7 +3418,7 @@ flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm) {
   FLAGCXCHECKSTRICT(proxyRetireWorkers(comm, true));
   FLAGCXCHECKSTRICT(flagcxProxyFree(comm));
   while (state->relayImports) {
-    auto *import = state->relayImports;
+    struct flagcxNetRelayImport *import = state->relayImports;
     state->relayImports = import->next;
     free(import);
   }

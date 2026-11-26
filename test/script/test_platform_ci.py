@@ -3014,10 +3014,10 @@ run_suite
             immediate_completion.index("flagcxKernelProxyAdvanceCompleted("),
         )
         kernel_retire = proxy_source.index(
-            "// Retire all kernel workers before destroying any GPU-visible FIFO."
+            "static flagcxResult_t proxyRetireWorkers("
         )
         deferred_fifo_destroy = proxy_source.index(
-            "fifo->flagcxFifoDestroy()", kernel_retire
+            "->flagcxFifoDestroy()", kernel_retire
         )
         self.assertLess(
             proxy_source.index("comm->workerPool->retire(", kernel_retire),

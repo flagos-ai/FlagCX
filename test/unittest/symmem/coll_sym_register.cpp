@@ -2,6 +2,7 @@
 // SymMemTest cases require MPI + GPUs; SymWindowRollback uses host mocks.
 
 #include "adaptor.h"
+#include "comm_lifecycle_check.hpp"
 #include "dev_api_backend.h"
 #include "device_api/flagcx_device_internal.h"
 #include "device_api_window.h"
@@ -2285,6 +2286,36 @@ TEST_F(SymMemTest, CommDestroyReleasesLiveWindow) {
   ASSERT_TRUE(allRanksSucceeded(result));
   testComm = nullptr;
   EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
+}
+
+TEST_F(SymMemTest, FinalizeConfirmsImportsBeforeLocalExporterRelease) {
+  flagcxComm_t testComm = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(createTestComm(&testComm)));
+  ASSERT_NE(testComm, nullptr);
+  void *buffer = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommAllocInternalBuffer(
+      testComm, &buffer, size, flagcxInternalBufferDevice)));
+  flagcxDevMem_t view = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(
+      flagcxIpcWindowRegisterAndDevMemCreate(testComm, buffer, size, &view)));
+  ASSERT_NE(view, nullptr);
+  int slot = view->ipcIndex;
+  ASSERT_GE(slot, 0);
+  EXPECT_EQ(testComm->ipcTable[slot].ownership, flagcxBufferInternal);
+  // Dropping the view must retain the internal import until Finalize.
+  ASSERT_TRUE(allRanksSucceeded(flagcxDevMemDestroy(testComm, view)));
+  EXPECT_TRUE(testComm->ipcTable[slot].ownerHeld);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommFinalize(testComm)));
+  EXPECT_TRUE(testComm->internalImportsConfirmed);
+  EXPECT_EQ(testComm->ipcTable[slot].hostPeerBasePtrs, nullptr);
+  bool backingRetained = false;
+  for (flagcxInternalBuffer *owner = testComm->internalBuffers; owner;
+       owner = owner->next)
+    backingRetained |= owner->pointer == buffer;
+  EXPECT_TRUE(backingRetained);
+  // Every other rank waits outside FlagCX while this rank releases backing.
+  ASSERT_EQ(flagcxTestFinalizeAndDestroyRankLocally(&testComm, rank, nranks),
+            flagcxSuccess);
 }
 
 TEST_F(SymMemTest, SegmentedVmmRegistrationUsesBoundedFds) {

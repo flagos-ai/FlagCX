@@ -137,7 +137,7 @@ fi
                     self.assertEqual(calls[1]['filter'], case)
                     self.assertEqual(calls[1]['vmm'], '0')
 
-    def test_compat_finalize_excludes_only_native_isolation(self):
+    def test_platform_filters_exclude_only_native_isolation(self):
         native_cases = {
             'CommStreamIsolation.FinalizeDoesNotDrainIndependentCommunicator',
             'CommStreamIsolation.PartialOwnerCachesDoNotDrainIndependentCommunicator'}

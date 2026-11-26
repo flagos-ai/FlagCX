@@ -1702,7 +1702,7 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
 flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   if (!comm)
     return flagcxInvalidArgument;
-  auto *proxy = comm->rmaProxy;
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   if (!proxy || proxy->stopComplete)
     return flagcxSuccess;
   FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyQuiesce(comm));
@@ -1739,7 +1739,7 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
 flagcxResult_t flagcxHeteroRmaProxyRelease(flagcxHeteroComm_t comm) {
   if (!comm)
     return flagcxInvalidArgument;
-  auto *proxy = comm->rmaProxy;
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   if (!proxy)
     return flagcxSuccess;
   if (!comm->importsClosedConfirmed || !proxy->stopComplete || proxy->worker)

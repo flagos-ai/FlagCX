@@ -1889,7 +1889,8 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
   w->isSymmetricDefault = 1;
   w->winFlags = winFlags;
   if (comm->ownerComm != nullptr)
-    for (auto *node = comm->ownerComm->internalBuffers; node; node = node->next)
+    for (struct flagcxInternalBuffer *node = comm->ownerComm->internalBuffers;
+         node; node = node->next)
       if (node->pointer == buff) {
         w->ownership = flagcxBufferInternal;
         break;

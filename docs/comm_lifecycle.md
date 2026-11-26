@@ -1,114 +1,114 @@
-# Communicator lifecycle
+# Communicator and IPC lifetime
 
-FlagCX supports one process per rank. Finalize and Destroy run on the calling
-thread. There is no lifecycle worker or background allocation recycler.
+The communication execution path follows `81abe75f`: no per-operation work
+tracker, work snapshots or completion events are appended after host callbacks.
+Readiness events, proxy copy-stream completion events and Device API semaphore
+ordering remain part of execution. Finalize and Destroy run on the caller's
+thread; there is no lifecycle recycler thread.
 
-`flagcxCommFinalize` closes submission admission, drains this communicator's
-accepted work, closes internal imports and agrees closure through bootstrap.
-It then finalizes each distinct native communicator, including tuner aliases
-and an automatically created host communicator. Success is cached. New work
-and new Device API owners are rejected once finalization begins.
+## Caller completion boundary
 
-`flagcxCommDestroy` first calls Finalize if needed. After successful Finalize,
-FlagCX releases resources locally without another bootstrap exchange, relay RPC
-or SHM peer-close wait. A failed free preserves its owner; retrying Destroy does
-not repeat completed frees or native Finalize. A failed initialization with a
-non-null output also retains an owner: Destroy routes it through initialization
-rollback, rather than normal Finalize of a partially initialized communicator.
+Before Finalize, finish every user stream, directly launched Device API kernel,
+and captured graph replay that can access the communicator or its buffers.
+Do not submit concurrently with lifecycle calls, and finish open groups first.
+Finalize drains internal producers and transport owners; it does not discover
+all previously accepted user work or synchronize the entire device. This is an
+explicit change from the removed work-tracking contract.
 
-## Internal IPC resources
+## External buffers
 
-| Resource | Import closure | Allocation owner and release |
+A public Window borrows the caller's allocation. The safe order is:
+
+```text
+complete local device work and remote accesses
+    -> destroy the Window's DevMem views
+    -> WindowDeregister on every importing rank
+       [close local IPC/VMM mappings and registration handles]
+    -> application confirms that all importers have deregistered
+    -> caller frees the original allocation
+```
+
+WindowDeregister is local. It does not close another rank's imports, free the
+user buffer, or supply the application-wide confirmation. It also cannot
+revoke raw pointers or graph replays retained by the application. A successful
+Window handle is empty and reusable on the same Comm. If cleanup fails or
+returns InProgress, retain the handle and retry; completed close/unmap steps
+are saved and new views of that handle are rejected.
+
+## Internal buffers
+
+Exported internal allocations have an explicit Comm or transport owner.
+Destroying a Default Device API view can retire its IPC generation to the Comm
+without closing imports or freeing backing. A subsequent generation gets its
+own resources. Ordinary per-call private scratch keeps its existing execution
+cleanup; exported persistent allocations remain owned until Destroy.
+
+```text
+caller completes all user work
+    -> Finalize closes submission admission
+    -> drain internal producers and pending runner cleanup
+    -> close local views, Windows and registrations
+    -> complete relay release ACKs on all ranks
+    -> stop/join proxy services and close their imports
+    -> close residual IPC-table imports
+    -> native SDK Finalize
+    -> all phases successful: remember import-closure permission
+    -> Destroy: release local backing and remaining owners
+```
+
+| Resource | Finalize | Destroy |
 | --- | --- | --- |
-| DevComm barrier, signal and staging buffers | DevComm/view cleanup | Parent Comm, after Finalize |
-| UniRunner ready, ring scratch and progress | UniRunner views and IPC table | Parent Comm, local Destroy |
-| P2P FIFO | Proxy import-close phase | Receiving transport, local Destroy after bootstrap permission |
-| PXN relay pool | Import close plus existing release ACK | Relay transport, local Destroy |
-| RMA completion counters | Stop worker/callbacks and CPU mappings | RMA proxy, local Release in Destroy |
-| Cached device views and private scratch | Retire views after their recorded work | Deferred Comm allocation or private owner, local Destroy |
+| DevComm barrier, signal, staging and retired generations | Close peer mappings; retain exporter and cached backing | Free retained allocations/SHM |
+| UniRunner ready/ring storage | Close data/ready/ring views | Free Comm-owned backing and private persistent scratch |
+| P2P FIFO | Close imports | Free local FIFO/SHM, streams and events |
+| NET/PXN relay resources | Deregister and finish existing release ACKs | Free local connections/pools |
+| RMA completion counters | Retire workers; close IPC and CPU device mappings | Free device counters and allocated host counters |
+| External live Windows | Close this Comm's local imports/registrations | Never free user backing |
 
-IPC participation is declared during initialization or collective resource
-creation, before publication. Empty ranks participate in an agreed domain.
-Pure native homogeneous communicators without FlagCX IPC resources have no
-extra IPC shutdown exchange. IPC status agreement uses the node's rank list;
-compatibility native close and host contexts can require agreement over their
-FlagCX communicator. Existing cross-node relay protocols remain in place.
+The full FlagCX communicator participates in the internal IPC agreement,
+including ranks with no local allocation. Heterogeneous initialization declares
+this participation before publishing owners. Pure native communicators without
+FlagCX IPC resources add no FlagCX shutdown agreement.
 
-Each phase saves local completion separately from common completion. A local
-success is not permission to free an exporter while another participant reports
-failure. Close failures retain resources and retry the same common phase;
-free failures after confirmation only need a local retry. A lost bootstrap
-connection preserves ownership but can require job recovery.
+Each phase records local completion separately from common completion. A rank
+that succeeds locally retains backing while another rank reports failure. All
+ranks retry unfinished Finalize in the same order. A failed or InProgress call
+keeps the communicator closed to new submissions and preserves remaining owners.
+Bootstrap failures can prevent collective recovery; ownership is retained rather
+than treating an unconfirmed close as permission to free.
 
-Device API handles are local views. Their Destroy does not free the Comm's
-internal exported backing. User-provided allocations remain user-owned.
+After successful Finalize, repeated Finalize is a local no-op. Destroy adds no
+FlagCX bootstrap exchange, relay RPC or SHM peer-close wait. A local free failure
+retains the owner and saved progress; retry Destroy on that rank. Only Success
+consumes the Comm pointer. Native SDK Destroy can still impose its own waits.
 
-## Native SDK boundaries
+## Native SDK and integration limits
 
-NCCL, RCCL, DU, Iluvatar, MetaX, MUSA MCCL, TCCL and PPU retain their separate adaptor
-Finalize/Destroy operations. Accepted native asynchronous Finalize is issued
-once and progressed through GetAsyncError before Finalize completes.
+Every distinct native communicator, including tuner aliases and an automatic
+host communicator, is finalized once. Native Finalize returning InProgress is
+submitted once and polled through its asynchronous-error API on subsequent
+Finalize calls. A synchronous Success does not require an asynchronous poller.
+Errors, unsupported operations and missing progress support preserve the owner.
+There is no core fallback that substitutes native Destroy for Finalize, and no
+new platform conditional compilation to simulate support.
 
-HCCL, CNCL, ECCL, legacy Sunrise PCCL and XCCL currently report
-`flagcxNotSupported` from adaptor Finalize. Core explicitly selects compatibility
-close for these built-in adaptors, invokes Destroy in the coordinated vendor
-phase, and clears every consumed wrapper alias on strict success. Unknown
-plugins and other errors do not trigger this fallback. This records current
-adaptor integration, not a claim that every SDK version lacks Finalize.
+Consequently, an adaptor whose Finalize is unsupported or fails cannot satisfy
+successful public Finalize/Destroy through this path. Existing SDK-specific
+restrictions and CI exclusions remain visible; they are not a guarantee of
+rank-local SDK destruction. Ascend SHMEM and MetaX Device API integrations are
+preserved independently of those native lifecycle limitations.
 
-Abort remains available after a failed Finalize. It serializes owner changes
-with Finalize/Destroy and retains every handle on error or InProgress. A
-successful native Abort clears the native context and retains its host wrapper;
-local Destroy releases the wrapper without calling the SDK again. Registration
-and device-view cleanup also skip the retired context. Heterogeneous Abort
-remains unsupported.
+This change does not retain the generic initialization-rollback state machine,
+Abort owner machinery, or explicit Torch shutdown/retry APIs introduced with the
+removed lifecycle series. Those features must not be assumed by callers.
 
-Abort does not grant permission to free IPC exports. If peer import closure is
-still pending, it returns InProgress with the communicator retained; the
-participants must complete Finalize before retrying cleanup. Only success from
-the public Abort consumes its handle, including through the NCCL wrapper.
+## Validation
 
-One CI exception remains:
-
-- PPU keeps native `pcclCommFinalize` in Finalize and `pcclCommDestroy` in Destroy.
-  Its current SDK can wait for peer Destroy even after Finalize. The runner's
-  rank-local native Destroy case is excluded until the SDK boundary supports it.
-
-MUSA uses the pinned 5.2.0 runtime with native `mcclCommFinalize`. Both native
-stream-isolation cases are required, alongside non-VMM RMA isolation and IPC
-cleanup. MUSA no longer uses compatibility Destroy during Finalize.
-
-The native stream-isolation cases also require a separate native Finalize on
-other compatibility adaptors. Ascend and Enflame declare these exclusions in
-CI; the cases check the initialized communicator's compatibility policy before
-submitting work for local runs and platforms without a CI entry. Public
-Finalize/Destroy and mock IPC lifecycle coverage are retained.
-
-Iluvatar CI remains enabled. Its previously reported initialization/communication
-timeout is tracked separately and is not hidden with another exclusion.
-
-Enflame's host Device API target remains disabled, including the fresh-process
-non-VMM RMA invocation. Kunlunxin excludes only the three host-callback stream
-isolation cases; its other host cleanup tests remain enabled. The fresh RMA
-invocation respects the effective positive and negative GoogleTest filter.
-These exclusions report missing coverage rather than successful execution.
-
-## Work completion and Torch shutdown
-
-Completion events and transport records come from the original submission
-boundary. Finalize does not append an event to a user stream or synchronize the
-whole device. Applications must complete directly launched Device API kernels
-and captured graph replays before destroying their views or communicator.
-Graph capture/replay is not tracked by this mechanism.
-
-The Torch backend closes pair communicators in numeric `(min_rank, max_rank)`
-order, then the process-group communicator, then events, owned streams and the
-device handle. Borrowed Ascend streams keep their ownership rules.
-`flagcx.shutdown_backend(backend)` provides an explicit retryable close while
-the backend exists. Once shutdown starts, initialization and submission are
-rejected, including barrier and coalesced operations, even if cleanup fails.
-If destruction encounters a cleanup failure, a retained
-cleanup object owns its remaining handles and tensor dependencies;
-`flagcx.retry_pending_cleanup()` retries it on the caller's thread. The original
-participants must enter any unfinished Finalize in compatible order. Completion
-that cannot be proven remains retained and reports failure.
+Host tests inject import-close, backing-free, native asynchronous-progress,
+transport and device-selection failures. Real bootstrap tests exercise two and
+four ranks, empty ranks, collective retry and sequential rank-local Destroy.
+These use mocked local device operations and do not certify accelerator IPC.
+Hardware runner AllGather, Window/Device API IPC, independent-Comm isolation,
+and SDK teardown remain required on the corresponding platform. Iluvatar's
+native callback/event probe and runner regressions are pending hardware access;
+removing work events alone is not evidence of their measured completion.
