@@ -15,8 +15,14 @@
 # The driver rejects -o when it generates multiple files, so the modules are
 # collected from a staging directory instead.
 #
-# The toolkit has no `opt`; llvm-link's --internalize with the shared public
-# symbol list plays the internalize role.
+# CCE gives every device function a per-core suffix, so the modules define
+# <name>.vector / <name>.cube rather than the bare C name. A bisheng-compiled
+# consumer references external aicore functions with the same suffix (measured
+# on the 910C: a call to probeAdd becomes @probeAdd.vector), so the two sides
+# link name-for-name at the LLVM level. The toolkit's llvm-link accepts
+# --internalize but does not apply it on this install (one internal definition
+# before and after, with both the file and list spellings), so the modules are
+# shipped directly and helper definitions stay external.
 
 EMIT_LLVM_IR ?= 1
 
@@ -45,8 +51,7 @@ endif
 include ../device_ir_headers.mk
 
 # Toolchain. The container ships bisheng on PATH; the wildcard spellings cover
-# the historical toolkit layouts. llvm-link sits next to the real cc1 in
-# <toolkit>/tools/bisheng_compiler/bin, one level up from bisheng's bin.
+# the historical toolkit layouts.
 DEVICE_HOME ?= /usr/local/Ascend/ascend-toolkit/latest
 SHMEM_HOME  ?= /usr/local/Ascend/shmem/latest
 ASCEND_SOC  ?= Ascend910_9382
@@ -58,15 +63,6 @@ BISHENG ?= $(firstword $(wildcard \
 	$(shell command -v bisheng 2>/dev/null))
 ifeq ($(strip $(BISHENG)),)
 $(error bisheng not found: set BISHENG=/path/to/bisheng or put it on PATH)
-endif
-
-LLVM_LINK ?= $(firstword \
-	$(wildcard $(dir $(BISHENG))../tools/bisheng_compiler/bin/llvm-link) \
-	$(wildcard $(DEVICE_HOME)/tools/bisheng_compiler/bin/llvm-link) \
-	$(wildcard $(DEVICE_HOME)/compiler/tools/bisheng_compiler/bin/llvm-link) \
-	$(shell command -v llvm-link 2>/dev/null))
-ifeq ($(strip $(LLVM_LINK)),)
-$(error llvm-link not found: set LLVM_LINK=/path/to/llvm-link)
 endif
 
 # Absolute on purpose: the compile runs with CWD in the staging directory.
@@ -109,9 +105,8 @@ SYMBOLS_FILE := $(abspath ../public_symbols.txt)
 
 all: llvm_ir
 
-# One bisheng invocation emits both core modules; the stamp records it so the
-# two llvm-link steps never race.
-$(COMPILE_STAMP): $(LLVM_SRC) $(SYMBOLS_FILE) \
+# One bisheng invocation emits both core modules; the stamp records it.
+$(COMPILE_STAMP): Makefile $(LLVM_SRC) $(SYMBOLS_FILE) \
 		$(wildcard $(FLAGCX_ROOT)/flagcx/adaptor/include/*.h) \
 		$(wildcard $(FLAGCX_ROOT)/flagcx/adaptor/include/device_api/*.h) \
 		$(wildcard $(FLAGCX_ROOT)/flagcx/include/*.h) \
@@ -120,14 +115,10 @@ $(COMPILE_STAMP): $(LLVM_SRC) $(SYMBOLS_FILE) \
 	@mkdir -p $(STAGE_DIR) $(LIBDIR)
 	@rm -rf $(STAGE_DIR)
 	@mkdir -p $(STAGE_DIR)
-	@echo "Generating unoptimized LLVM bitcode (bisheng, $(ASCEND_SOC))..."
+	@echo "Generating LLVM bitcode (bisheng, $(ASCEND_SOC))..."
 	cd $(STAGE_DIR) && $(BISHENG) $(CLANG_FLAGS) $(abspath $(LLVM_SRC))
-	$(LLVM_LINK) --internalize \
-		--internalize-public-api-file=$(SYMBOLS_FILE) \
-		$(STAGE_DIR)/*-vec.bc -o $(FINAL_BC)
-	$(LLVM_LINK) --internalize \
-		--internalize-public-api-file=$(SYMBOLS_FILE) \
-		$(STAGE_DIR)/*-cube.bc -o $(FINAL_CUBE_BC)
+	cp $(STAGE_DIR)/*-vec.bc $(FINAL_BC)
+	cp $(STAGE_DIR)/*-cube.bc $(FINAL_CUBE_BC)
 	@touch $@
 
 $(FINAL_BC) $(FINAL_CUBE_BC): $(COMPILE_STAMP)
@@ -141,14 +132,15 @@ $(FINAL_CUBE_LL): $(FINAL_CUBE_BC)
 check_public_symbols: $(FINAL_LL) $(FINAL_CUBE_LL)
 	@echo "Checking public Device IR symbols..."
 	@missing=0; \
-	for ir in $(FINAL_LL) $(FINAL_CUBE_LL); do \
+	for core in vector cube; do \
+		if [ $$core = vector ]; then ir=$(FINAL_LL); else ir=$(FINAL_CUBE_LL); fi; \
 		while IFS= read -r symbol; do \
 			case "$$symbol" in ''|'#'*) continue ;; esac; \
-			if ! grep -Eq "^define .*@$$symbol\\(" $$ir; then \
-				echo "Missing public Device IR symbol in $$ir: $$symbol"; \
+			if ! grep -Eq "^define .*@$$symbol\.$$core\\(" $$ir; then \
+				echo "Missing public Device IR symbol in $$ir: $$symbol.$$core"; \
 				missing=1; \
-			elif grep -Eq "^define [^@]*internal[^@]*@$$symbol\\(" $$ir; then \
-				echo "Public Device IR symbol not exported in $$ir: $$symbol"; \
+			elif grep -Eq "^define [^@]*internal[^@]*@$$symbol\.$$core\\(" $$ir; then \
+				echo "Public Device IR symbol not exported in $$ir: $$symbol.$$core"; \
 				missing=1; \
 			fi; \
 		done < $(SYMBOLS_FILE); \
