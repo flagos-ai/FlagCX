@@ -10,6 +10,34 @@ shared_paths_watch:
   - makefiles/**
   - .github/workflows/**
   - .github/scripts/ci/**
+scheduling:
+  unit:
+    kind: unit
+    resource_class: single-gpu
+    gpu_count: 1
+    allowed_windows: [day, night]
+    long_running_after_minutes: 20
+    timeout_policy: historical_p95_plus_grace
+    grace_minutes: 10
+    hard_timeout_minutes: 120
+  performance:
+    kind: end-to-end
+    resource_class: multi-gpu
+    gpu_count: 2
+    allowed_windows: [night]
+    long_running_after_minutes: 60
+    timeout_policy: historical_p95_plus_grace
+    grace_minutes: 15
+    hard_timeout_minutes: 240
+  torch_api:
+    kind: end-to-end
+    resource_class: multi-gpu
+    gpu_count: 2
+    allowed_windows: [night]
+    long_running_after_minutes: 60
+    timeout_policy: historical_p95_plus_grace
+    grace_minutes: 15
+    hard_timeout_minutes: 180
 suites:
   adaptor: [flagcx/adaptor/**]
   core: [test/unittest/core/**, flagcx/core/**]

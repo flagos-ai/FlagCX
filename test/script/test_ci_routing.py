@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -62,6 +63,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
             outputs["matrix"] = json.loads(outputs["matrix"])
             outputs["runner_matrix"] = json.loads(outputs["runner_matrix"])
             outputs["platforms"] = json.loads(outputs["platforms"])
+            outputs["scheduling"] = json.loads(outputs["scheduling"])
             return outputs, result.stdout
 
     def test_push_routes_by_changed_paths_and_schedule_runs_full_matrix(self):
@@ -132,6 +134,23 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 (CONFIG_DIR / f"{entry['platform']}.yml").read_text()
             )["unit_test_suites"]
             self.assertEqual(entry["suites"], expected)
+
+    def test_pr_and_push_default_to_unit_only_level(self):
+        for event_name, context in (
+            ("pull_request", {"files": ["test/unittest/p2p/test_p2p.cc"]}),
+            ("push", {"files": ["test/unittest/p2p/test_p2p.cc"]}),
+            ("workflow_dispatch", {"selection": "metax"}),
+        ):
+            with self.subTest(event_name=event_name):
+                outputs, _ = self.resolve({"event_name": event_name, **context})
+                self.assertEqual(outputs["level"], "L1")
+                self.assertEqual(outputs["execution_window"], "day")
+                self.assertEqual(outputs["scheduling"]["unit"]["resource_class"], "single-gpu")
+
+        scheduled, _ = self.resolve({"event_name": "schedule"})
+        self.assertEqual(scheduled["level"], "L3")
+        self.assertEqual(scheduled["execution_window"], "night")
+        self.assertEqual(scheduled["scheduling"]["performance"]["gpu_count"], 2)
 
     def test_requested_suite_unavailable_on_selected_platform_fails_clearly(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -570,6 +589,21 @@ class CiRetryTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("passed on retry 1", result.stdout)
             self.assertIn("::warning title=Flaky CI test::", result.stdout)
+            attempt_logs = sorted((Path(temp_dir) / "attempt-logs").glob("retry-test.*/attempt-*.log"))
+            self.assertEqual(len(attempt_logs), 2)
+            result_lines = [
+                line.split("\t")
+                for log in attempt_logs
+                for line in log.read_text().splitlines()
+                if line.startswith("FLAGCX_CI_RESULT\t")
+            ]
+            self.assertEqual(
+                result_lines,
+                [
+                    ["FLAGCX_CI_RESULT", "retry-test", "1", "7", "0"],
+                    ["FLAGCX_CI_RESULT", "retry-test", "2", "0", "0"],
+                ],
+            )
             self.assertIn("First attempt log", summary.read_text())
             attempt_dirs = list((Path(temp_dir) / "attempt-logs").glob("retry-test.*"))
             self.assertEqual(len(attempt_dirs), 1)
@@ -641,7 +675,7 @@ class CiRetryTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
             logs = list(Path(temporary).glob("same-label.*/attempt-1.log"))
             self.assertEqual(len(logs), 2)
-            self.assertEqual({log.read_text().strip() for log in logs},
+            self.assertEqual({re.sub(r"FLAGCX_CI_RESULT\tsame-label\t1\t0\t\d+", "", log.read_text()).strip() for log in logs},
                              {"first invocation", "second invocation"})
 
     def test_cancellation_stops_workload_without_retrying(self):
@@ -699,6 +733,12 @@ class CiWorkflowWiringTest(unittest.TestCase):
             "format-check.yml",
         ):
             self.assertIn(reusable, workflow)
+
+    def test_daytime_runs_cannot_start_long_running_end_to_end_jobs(self):
+        workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/unit-test.yml").read_text())
+        for job_name in ("performance_tests", "torch_api_tests"):
+            condition = workflow["jobs"][job_name]["if"]
+            self.assertIn("needs.prepare.outputs.execution_window == 'night'", condition)
 
     def test_platform_specific_jobs_are_conditioned_on_matrix_selection(self):
         for path in (
@@ -812,7 +852,7 @@ class CiWorkflowWiringTest(unittest.TestCase):
 
 
 class CiCompletionGateTest(unittest.TestCase):
-    def check(self, *results, level=None, suite_filter_active=None, runner_smoke=None):
+    def check(self, *results, level=None, suite_filter_active=None, runner_smoke=None, execution_window=None):
         if level is not None:
             results += (level,)
         if suite_filter_active is not None:
@@ -825,6 +865,14 @@ class CiCompletionGateTest(unittest.TestCase):
             if suite_filter_active is None:
                 results += ("false",)
             results += (runner_smoke,)
+        if execution_window is not None:
+            if level is None:
+                results += ("L2",)
+            if suite_filter_active is None:
+                results += ("false",)
+            if runner_smoke is None:
+                results += ("skipped",)
+            results += (execution_window,)
         return subprocess.run(
             ["bash", str(GATE_SCRIPT), *results],
             capture_output=True,
@@ -894,6 +942,23 @@ class CiCompletionGateTest(unittest.TestCase):
             level="L2", suite_filter_active="true",
         )
         self.assertNotEqual(failed.returncode, 0)
+
+    def test_daytime_l2_l3_may_skip_night_only_jobs_without_failure(self):
+        passed = self.check(
+            "true", "true", "success", "success", "skipped", "skipped", "success",
+            level="L2", execution_window="day",
+        )
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        failed = self.check(
+            "true", "true", "success", "success", "skipped", "failure", "success",
+            level="L2", execution_window="day",
+        )
+        self.assertNotEqual(failed.returncode, 0)
+        night_failed = self.check(
+            "true", "true", "success", "success", "skipped", "skipped", "success",
+            level="L2", execution_window="night",
+        )
+        self.assertNotEqual(night_failed.returncode, 0)
 
 
 class PlatformWorkflowCompletionTest(unittest.TestCase):

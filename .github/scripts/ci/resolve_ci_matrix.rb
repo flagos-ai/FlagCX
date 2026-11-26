@@ -43,6 +43,43 @@ platform_names = platforms.map { |entry| entry.fetch("platform") }
 abort "No enabled platform configs found in #{config_dir}" if platforms.empty?
 suites_config_path = File.join(config_dir, "suites.yml")
 suites_config = File.file?(suites_config_path) ? load_yaml.call(suites_config_path) : {}
+scheduling = suites_config.fetch("scheduling", {})
+if scheduling.empty?
+  scheduling = {
+    "unit" => {"kind" => "unit", "resource_class" => "single-gpu", "gpu_count" => 1,
+               "allowed_windows" => %w[day night], "long_running_after_minutes" => 20,
+               "timeout_policy" => "historical_p95_plus_grace", "grace_minutes" => 10,
+               "hard_timeout_minutes" => 120},
+    "performance" => {"kind" => "end-to-end", "resource_class" => "multi-gpu", "gpu_count" => 2,
+                       "allowed_windows" => ["night"], "long_running_after_minutes" => 60,
+                       "timeout_policy" => "historical_p95_plus_grace", "grace_minutes" => 15,
+                       "hard_timeout_minutes" => 240},
+    "torch_api" => {"kind" => "end-to-end", "resource_class" => "multi-gpu", "gpu_count" => 2,
+                    "allowed_windows" => ["night"], "long_running_after_minutes" => 60,
+                    "timeout_policy" => "historical_p95_plus_grace", "grace_minutes" => 15,
+                    "hard_timeout_minutes" => 180}
+  }
+end
+abort "#{suites_config_path}: scheduling must be a map" unless scheduling.is_a?(Hash)
+required_workloads = %w[unit performance torch_api]
+required_workloads.each do |workload|
+  policy = scheduling.fetch(workload) { abort "#{suites_config_path}: missing scheduling.#{workload}" }
+  abort "#{suites_config_path}: scheduling.#{workload} must be a map" unless policy.is_a?(Hash)
+  %w[kind resource_class gpu_count allowed_windows long_running_after_minutes timeout_policy grace_minutes hard_timeout_minutes].each do |key|
+    abort "#{suites_config_path}: scheduling.#{workload}.#{key} is required" unless policy.key?(key)
+  end
+  %w[grace_minutes hard_timeout_minutes long_running_after_minutes].each do |key|
+    unless policy.fetch(key).is_a?(Integer) && policy.fetch(key) > 0
+      abort "#{suites_config_path}: scheduling.#{workload}.#{key} must be positive"
+    end
+  end
+  unless policy.fetch("gpu_count").is_a?(Integer) && policy.fetch("gpu_count") > 0
+    abort "#{suites_config_path}: scheduling.#{workload}.gpu_count must be positive"
+  end
+  unless policy.fetch("allowed_windows").is_a?(Array) && policy.fetch("allowed_windows").all? { |window| %w[day night].include?(window) }
+    abort "#{suites_config_path}: scheduling.#{workload}.allowed_windows must contain day/night"
+  end
+end
 
 canonical_platform = ->(name) { name == "musa" ? "mthreads" : name }
 valid_levels = %w[L0 L0.5 L1 L2 L3]
@@ -68,6 +105,7 @@ labels.each do |label|
 end
 requested_suites = requested_suites.map(&:strip).reject { |suite| suite.empty? || suite == "all" }.uniq
 event_name = context.fetch("event_name")
+execution_window = event_name == "schedule" ? "night" : "day"
 selection = nil
 active = true
 routing_reason = []
@@ -111,7 +149,7 @@ parse_selection = lambda do |value|
   requested.include?("all") ? platform_names : requested.uniq
 end
 
-level = normalise_level.call(context.fetch("level", "L2"))
+level = normalise_level.call(context.fetch("level", "L1"))
 level_labels = labels.filter_map { |label| label.delete_prefix("level:") if label.start_with?("level:") }
 level = normalise_level.call(level_labels.max_by { |value| level_number.call(value) }) unless level_labels.empty?
 
@@ -221,12 +259,14 @@ plan = {
   "schema_version" => 1,
   "source_sha" => context.fetch("ref", ""),
   "event" => event_name,
+  "execution_window" => execution_window,
   "level" => level,
   "status" => plan_status,
   "blocked" => [],
   "platforms" => selected.map { |entry| entry.fetch("platform") },
   "unit_suites" => unit_suites,
   "planned_groups" => planned_groups,
+  "scheduling" => scheduling,
   "routing_reason" => routing_reason,
   "changed_files" => files,
   "ignore_test" => ignore_entries,
@@ -253,11 +293,15 @@ if summary_path && !summary_path.empty?
     summary.puts "### Test plan"
     summary.puts
     summary.puts "- Stage: **#{event_name}**"
+    summary.puts "- Execution window: **#{execution_window}**"
     summary.puts "- Level: **#{level}**"
     summary.puts "- Plan status: **#{plan_status}**"
     summary.puts "- Gate policy: configured exclusions stay visible; blocked work does not cancel executable jobs"
     summary.puts "- Changed files: **#{files.length}**"
     summary.puts "- Planned groups: **#{planned_groups.empty? ? "common checks only" : planned_groups.join(", ")}**"
+    scheduling.each do |workload, policy|
+      summary.puts "- #{workload}: **#{policy.fetch("resource_class")} / #{policy.fetch("gpu_count")} GPU / #{policy.fetch("allowed_windows").join(", ")} / >#{policy.fetch("long_running_after_minutes")} min / hard #{policy.fetch("hard_timeout_minutes")} min**"
+    end
     summary.puts "- Unit suites: **#{unit_suites.values.flatten.uniq.length} configured**"
     matrix_entries.each { |entry| summary.puts "- #{entry.fetch("platform")} selected suites: #{entry.fetch("suites").join(", ")}" }
     unit_suites.each { |platform, suites| summary.puts "- #{platform} suites: #{suites.join(", ")}" }
@@ -295,6 +339,8 @@ outputs = {
   "repository" => context.fetch("repository", ""),
   "ref" => context.fetch("ref", ""),
   "level" => level,
+  "execution_window" => execution_window,
+  "scheduling" => JSON.generate(scheduling),
   "plan_status" => plan_status,
   "plan_path" => plan_path.to_s
 }

@@ -26,7 +26,7 @@ on:
         description: "CI test level: L0, L0.5 (runner smoke), L1, L2, or L3"
         required: true
         type: string
-        default: L2
+        default: L1
   issue_comment:
     types: [created]
 
@@ -54,6 +54,8 @@ jobs:
       repository: ${{ steps.resolve.outputs.repository }}
       ref: ${{ steps.resolve.outputs.ref }}
       level: ${{ steps.resolve.outputs.level }}
+      execution_window: ${{ steps.resolve.outputs.execution_window }}
+      scheduling: ${{ steps.resolve.outputs.scheduling }}
       runner_matrix: ${{ steps.resolve.outputs.runner_matrix }}
       plan_status: ${{ steps.resolve.outputs.plan_status }}
     steps:
@@ -77,7 +79,7 @@ jobs:
           EVENT_REPOSITORY: ${{ github.repository }}
           EVENT_SELECTION: ${{ inputs.platform || 'all' }}
           EVENT_SUITES: ${{ inputs.suite || 'all' }}
-          EVENT_LEVEL: ${{ inputs.level || 'L2' }}
+          EVENT_LEVEL: ${{ inputs.level || 'L1' }}
           ACTOR: ${{ github.actor }}
           FLAGCX_CI_PLAN_PATH: ${{ runner.temp }}/flagcx-ci-plan.json
         shell: bash
@@ -195,7 +197,11 @@ jobs:
   performance_tests:
     name: Platform performance tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.suite_filter_active != 'true' && (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3')
+    if: >
+      needs.prepare.outputs.active == 'true' &&
+      needs.prepare.outputs.suite_filter_active != 'true' &&
+      (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3') &&
+      needs.prepare.outputs.execution_window == 'night'
     uses: ./.github/workflows/test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -205,7 +211,11 @@ jobs:
   torch_api_tests:
     name: Platform Torch API tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.suite_filter_active != 'true' && (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3')
+    if: >
+      needs.prepare.outputs.active == 'true' &&
+      needs.prepare.outputs.suite_filter_active != 'true' &&
+      (needs.prepare.outputs.level == 'L2' || needs.prepare.outputs.level == 'L3') &&
+      needs.prepare.outputs.execution_window == 'night'
     uses: ./.github/workflows/torch-api-test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -241,6 +251,7 @@ jobs:
           RUNNER_RESULT: ${{ needs.runner_smoke.result }}
           PERF_RESULT: ${{ needs.performance_tests.result }}
           TORCH_RESULT: ${{ needs.torch_api_tests.result }}
+          EXECUTION_WINDOW: ${{ needs.prepare.outputs.execution_window }}
           FORMAT_RESULT: ${{ needs.format-check.result }}
           LEVEL: ${{ needs.prepare.outputs.level }}
           SUITE_FILTER_ACTIVE: ${{ needs.prepare.outputs.suite_filter_active }}
@@ -249,4 +260,4 @@ jobs:
           bash .github/scripts/ci/check_ci_results.sh \
             "$ACTIVE" "$HAS_PLATFORMS" "$PREPARE_RESULT" "$UNIT_RESULT" \
             "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT" "$LEVEL" \
-            "$SUITE_FILTER_ACTIVE" "$RUNNER_RESULT"
+            "$SUITE_FILTER_ACTIVE" "$RUNNER_RESULT" "${EXECUTION_WINDOW:-day}"

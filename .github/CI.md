@@ -1,10 +1,11 @@
 # FlagCX CI
 
 The hardware CI matrix enables nine platforms: CUDA, Hygon, Iluvatar,
-MetaX, KunlunXin, Mthreads, PPU, Ascend, and Enflame. PR runs select platforms from changed paths
-and PR labels; push and scheduled runs select all enabled platforms. Unit,
-performance, and Torch API jobs run for the selected platforms alongside
-common checks. See `configs/platforms.yml` for the active registry.
+MetaX, KunlunXin, Mthreads, PPU, Ascend, and Enflame. PR and push runs select
+platforms from changed paths and labels; scheduled runs select all enabled
+platforms. The selected level controls whether unit, performance, and Torch API
+jobs run alongside common checks. See `configs/platforms.yml` for the active
+registry.
 
 Platform-specific test exclusions are defined under `ignore_test` in each
 platform's `configs/*.yml` file. The same configuration drives test filtering
@@ -51,24 +52,72 @@ PR run remains the merge gate.
 
 ## Test Levels
 
-PRs default to L2. Add a `level:L0` through `level:L3` label to choose a level;
+PRs and pushes default to L1 so daytime runs execute unit suites only. Add a
+`level:L0` through `level:L3` label to choose a PR level;
 when several level labels are present, the highest level wins. Manual dispatch
-accepts the same level input. Pushes and the nightly schedule always use L3.
+accepts the same level input. The nightly schedule runs L3 on all enabled
+platforms. Manual dispatch without a level uses L1.
 
 | Level | Workloads | Typical use |
 | --- | --- | --- |
 | L0 | Common checks and CI plan only | Workflow/configuration-only validation |
 | L1 | Selected platforms' unit suites | Fast PR feedback |
-| L2 | Unit, performance, and Torch API tests on selected platforms | Default PR coverage |
-| L3 | Same test groups as L2 on all enabled platforms | Push and nightly coverage |
+| L2 | Unit, performance, and Torch API tests on selected platforms | Opt-in PR/manual coverage |
+| L3 | Same test groups as L2 on all enabled platforms | Explicit PR/manual run and nightly coverage |
 
 The prepare job writes the selected platforms, level, configured suites,
 `ignore_test` entries, routing reasons, and blocked-work policy to the GitHub
-Summary and archives the machine-readable plan. An unmapped changed path selects
+Summary and archives the machine-readable plan. The plan also records the
+execution window and scheduling contract for each workload: resource class,
+GPU count, allowed window, long-running threshold, historical timeout policy,
+grace period, and hard timeout. An unmapped changed path selects
 the full platform matrix. If a workload is unavailable, it should be recorded
 as blocked while other runnable jobs continue; an unknown path or a partial
 plan does not stop test execution. Actual selected test failures still fail
 `ci-complete`.
+
+## GPU Scheduling Plan
+
+The platform matrix routes CI work by platform and test suite; it does not yet
+provide a shared GPU scheduler across repositories. The current workflow cannot
+preempt a running job. GPU scheduling should therefore be introduced as queue
+admission, with jobs starting only when their complete GPU requirement is
+available.
+
+The first enforceable stage is active: PRs and pushes default to L1, which runs
+unit suites only, while the scheduled nightly run selects L3 across all enabled
+platforms. Performance and Torch API jobs start only in the night window; a
+daytime L2 or L3 request plans them but the workflow skips those jobs, so the
+gate treats them as intentional skips at reduced levels and not as failures.
+The rollout should proceed in these stages:
+
+1. Inventory tests across repositories and record repository, suite, required
+   GPU count, test type, and start/end time. Keep unit tests separate from
+   end-to-end tests, and identify end-to-end tests expected to run longer than
+   one hour.
+2. During daytime hours, admit unit-test jobs only. The current PR/push default
+   is L1. A future shared dispatcher should use a single-GPU queue where
+   applicable and dispatch a job when a GPU is free. Jobs from all repositories
+   must use the same resource pool and admission rules.
+3. During the configured night window, admit long-running multi-GPU end-to-end
+   jobs. A job starts only when all requested GPUs are available together; do
+   not occupy a partial allocation while waiting. Give aged multi-GPU jobs
+   priority over newly submitted single-GPU work so they cannot starve.
+4. Track runtime and queue-wait metrics by test. Use historical high-percentile
+   runtime plus a grace period for the soft timeout, and a separately configured
+   hard timeout for termination. The resolver publishes this contract in the
+   plan artifact; the dispatcher should enforce it when it owns the runner.
+   Do not use the average runtime as the kill threshold. Preserve logs and
+   report timeout as a test failure.
+5. Review queue wait, GPU utilization, timeout frequency, and nightly backlog
+   before expanding the policy to shorter integration or performance tests.
+
+The initial policy does not interrupt running tests. If the night window ends
+before a multi-GPU job can start or finish, keep it queued for the next window
+and report the backlog; do not silently spill long jobs into daytime unit-test
+capacity. Until a shared dispatcher and runner resource reporting are in place,
+the day/night policy is a rollout target rather than behavior enforced by this
+workflow.
 
 ## Required Check
 

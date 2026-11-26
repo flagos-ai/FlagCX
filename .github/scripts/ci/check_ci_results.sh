@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if [[ $# -lt 7 || $# -gt 10 ]]; then
-  echo "Usage: $0 <active> <has-platforms> <prepare> <unit> <perf> <torch-api> <format> [level] [suite-filter-active] [runner-smoke]" >&2
+if [[ $# -lt 7 || $# -gt 11 ]]; then
+  echo "Usage: $0 <active> <has-platforms> <prepare> <unit> <perf> <torch-api> <format> [level] [suite-filter-active] [runner-smoke] [execution-window]" >&2
   exit 2
 fi
 
@@ -17,6 +17,7 @@ format_result=$7
 level=${8:-L2}
 suite_filter_active=${9:-false}
 runner_smoke_result=${10:-skipped}
+execution_window=${11:-day}
 
 case "$level" in
   L0|L0.5|L1|L2|L3) ;;
@@ -57,6 +58,9 @@ if [[ "$has_platforms" == true ]]; then
         done
       else
         for result in "$perf_result" "$torch_result"; do
+          if [[ "$execution_window" != night && "$result" == skipped ]]; then
+            continue
+          fi
           [[ "$result" == success ]] || {
             echo "Selected platform workflow ended with result: $result" >&2
             exit 1
