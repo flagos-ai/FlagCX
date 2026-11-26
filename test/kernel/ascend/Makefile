@@ -14,7 +14,8 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) \
 	-I$(PROJECT_ROOT)/bindings/ir \
 	-I$(PROJECT_ROOT)/test/kernel/include \
 	$(CCL_INCLUDE) \
-	$(DEVICE_INCLUDE)
+	$(DEVICE_INCLUDE) \
+	$(SHMEM_INCLUDE)
 
 # -DNDEBUG is load-bearing on this pass, not hygiene: probe r141 measured
 # that assert() in the instantiated shared templates (default_comm_traits.h
@@ -43,8 +44,9 @@ $(OBJDIR)/device_api.o: device_api.asc
 	@$(DEVICE_COMPILER) $(ASCEND_TEST_FLAGS) -o $@ $< $(ALL_INCLUDES) \
 		-DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
 
-# Device IR launchers for test_device_ir_unified_intra (S16-S18; the file
-# itself records why S19-S25 stay undefined). Same flags as the device_api
+# Device IR launchers for test_device_ir_unified_intra (S16-S25 under the
+# cann-shmem build; the file itself records why S19-S25 stay undefined on
+# the IPC pass). Same flags as the device_api
 # object: the bisheng pass links the device image inside -c, so an
 # undefined trap reference fails HERE, not at test link.
 $(OBJDIR)/device_ir.o: device_ir.asc

@@ -157,7 +157,14 @@ struct PlatformTraits<AscendPlatform> {
       asc_dcci_entire_all();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR void threadfenceSystem() {
+#if defined(FLAGCX_COMM_TRAITS_SHMEM)
+      // cann-shmem moves data with the MTE engine at device scope, and the
+      // measured release/acquire pair is the strongest ordering this soc
+      // offers, so the shared IR's Net barrier uses it instead of trapping.
+      threadfenceDevice();
+#else
       FLAGCX_ASCEND_UNSUPPORTED("threadfenceSystem() on AscendPlatform");
+#endif
     }
     template <typename DstPtr, typename SrcPtr>
     static FLAGCX_DEVICE_INLINE_DECORATOR void

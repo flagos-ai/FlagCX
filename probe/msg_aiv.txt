@@ -1,0 +1,13 @@
+ascend/shmem: run the unified-IR kernels on one vector core
+
+The vendor's transport kernels are MIX kernels that drive aclshmem from AIV
+only (barrier_all_kernel.cpp:16-31 puts behind ASCEND_IS_AIV + sub-block 0;
+mte/sdma are vector-core engines). Our bare __aicore__ kernels land on the
+cube core: the puts are issued, completion is not tracked, and np=2 hangs at
+S16 on rank 1 right after rank 0 reads its own ticket.
+
+core_ratio(0, 1) pins each kernel to a single vector core, the smallest
+shape that matches the vendor's without pulling in the AscendC headers the
+ASCEND_IS_AIV guard needs.
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>

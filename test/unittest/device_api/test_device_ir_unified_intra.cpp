@@ -36,6 +36,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <unistd.h>
 
 constexpr int kUnifiedIrSignalComboCount = 12;
 constexpr int kUnifiedIrS23ComboCount = 18;
@@ -127,6 +128,25 @@ int main(int argc, char *argv[]) {
   void *sendMemPtr = nullptr, *recvMemPtr = nullptr;
   FLAGCXCHECK(flagcxDevMemGetDevicePtr(sendMem, &sendMemPtr));
   FLAGCXCHECK(flagcxDevMemGetDevicePtr(recvMem, &recvMemPtr));
+
+#ifdef FLAGCX_ASCEND_PUTVALUE_TAIL
+  // MC952 review P2: sub-word putValue destinations whose last byte is the
+  // last byte of their registered allocation.  14 % 4 != 0 keeps the window
+  // ending mid-word, so a 32-bit read-back at the tail crosses the
+  // allocation (and the byte at offset 13 is also unaligned).
+  constexpr size_t kSubwordTailBytes = 14;
+  void *tailBuff = nullptr;
+  FLAGCXCHECK(flagcxMemAlloc(&tailBuff, kSubwordTailBytes, flagcxMemSHMEM));
+  flagcxWindow_t tailWin = nullptr;
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, tailBuff, kSubwordTailBytes,
+                                       &tailWin, flagcxTestWindowFlags(),
+                                       flagcxMemSHMEM));
+  flagcxDevMem_t tailMem = nullptr;
+  FLAGCXCHECK(
+      flagcxDevMemCreate(comm, tailBuff, kSubwordTailBytes, tailWin, &tailMem));
+  void *tailMemPtr = nullptr;
+  FLAGCXCHECK(flagcxDevMemGetDevicePtr(tailMem, &tailMemPtr));
+#endif
 
   // Allocate results buffer
   int *devResults = nullptr;
@@ -360,8 +380,11 @@ int main(int argc, char *argv[]) {
         int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
         for (size_t i = 0; i < count && s18Pass; i++) {
           float expected = (float)(senderRank * 1000 + off + i);
-          if (hostRecv[off + i] != expected)
+          if (hostRecv[off + i] != expected) {
+            RPRINTF("  S18A mismatch combo=%d i=%zu exp=%.1f got=%.1f\n", combo,
+                    i, (double)expected, (double)hostRecv[off + i]);
             s18Pass = false;
+          }
         }
       }
 
@@ -385,8 +408,10 @@ int main(int argc, char *argv[]) {
 #endif
       constexpr size_t kPutValueStrideWords =
           kPutValueStrideBytes / sizeof(uint64_t);
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * kPutValueStrideBytes,
-                                          flagcxMemDevice, stream));
+      // 0xAA sentinel, not 0: an untouched slot must be distinguishable from
+      // a transfer that landed carrying a zero.
+      FLAGCXCHECK(devHandle->deviceMemset(
+          recvBuff, 0xAA, 6 * kPutValueStrideBytes, flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
@@ -403,15 +428,82 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(hostRecvV, recvBuff,
                                           6 * kPutValueStrideBytes,
                                           flagcxMemcpyDeviceToHost, stream));
-      if (hostRes != 1)
+      if (hostRes != 1) {
+        RPRINTF("  S18 results[0]=%d (expected 1)\n", hostRes);
         s18Pass = false;
-      for (int combo = 0; combo < 6 && s18Pass; combo++) {
+      }
+      // Every slot is checked, not just up to the first mismatch: a loss
+      // confined to combo 0 and a scattered one are different faults.
+      bool s18bOk = true;
+      for (int combo = 0; combo < 6; combo++) {
         int teamIdx = combo % 2;
         int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
         uint64_t expected = (uint64_t)(senderRank * 100 + combo);
-        if (hostRecvV[combo * kPutValueStrideWords] != expected)
-          s18Pass = false;
+        if (hostRecvV[combo * kPutValueStrideWords] != expected) {
+          RPRINTF("  S18B mismatch bytes=%zu combo=%d exp=%llu got=0x%llx\n",
+                  bytes, combo, (unsigned long long)expected,
+                  (unsigned long long)hostRecvV[combo * kPutValueStrideWords]);
+          s18bOk = false;
+        }
       }
+      // A slot that is correct a moment later was late, not lost. The host
+      // copy that reads it is not ordered against the SDMA queue the put was
+      // posted on, so a transfer still in flight shows up as the sentinel.
+      if (!s18bOk) {
+        usleep(200000);
+        FLAGCXCHECK(devHandle->deviceMemcpy(hostRecvV, recvBuff,
+                                            6 * kPutValueStrideBytes,
+                                            flagcxMemcpyDeviceToHost, stream));
+        for (int combo = 0; combo < 6; combo++) {
+          int teamIdx = combo % 2;
+          int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
+          uint64_t expected = (uint64_t)(senderRank * 100 + combo);
+          if (hostRecvV[combo * kPutValueStrideWords] == expected) {
+            RPRINTF("  S18B late bytes=%zu combo=%d\n", bytes, combo);
+          }
+        }
+      }
+      s18Pass &= s18bOk;
+
+#ifdef FLAGCX_ASCEND_PUTVALUE_TAIL
+      // --- Sub-block C: sub-word values ending on the allocation tail ---
+      // MC952 review P2: a 1-byte and a 2-byte putValue whose last byte is
+      // the last byte of the registered window, so the read-back must never
+      // load a wider word.  bytes = 0 selects the kernel's tail mode.
+      {
+        FLAGCXCHECK(devHandle->deviceMemset(tailBuff, 0xAA, kSubwordTailBytes,
+                                            flagcxMemDevice, stream));
+        FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
+                                            flagcxMemDevice, stream));
+        FLAGCXCHECK(devHandle->streamSynchronize(stream));
+        MPI_Barrier(MPI_COMM_WORLD);
+        launchKernelDevPutValueIntraWorldS(devCommPtr, tailMemPtr, devResults,
+                                           0, stream);
+        FLAGCXCHECK(devHandle->streamSynchronize(stream));
+        MPI_Barrier(MPI_COMM_WORLD);
+        FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
+                                            flagcxMemcpyDeviceToHost, stream));
+        unsigned char tailHost[kSubwordTailBytes];
+        FLAGCXCHECK(devHandle->deviceMemcpy(tailHost, tailBuff,
+                                            kSubwordTailBytes,
+                                            flagcxMemcpyDeviceToHost, stream));
+        // The 2-byte value lands last: [12] = 0x10 + sender, [13] = 0x5A.
+        bool s18cOk = (hostRes == 1);
+        for (size_t i = 0; i < kSubwordTailBytes; i++) {
+          unsigned char want = 0xAA;
+          if (i + 2 == kSubwordTailBytes)
+            want = (unsigned char)(0x10 + prevIntra);
+          if (i + 1 == kSubwordTailBytes)
+            want = 0x5A;
+          if (tailHost[i] != want) {
+            RPRINTF("  S18C mismatch i=%zu exp=0x%02x got=0x%02x\n", i,
+                    (unsigned)want, (unsigned)tailHost[i]);
+            s18cOk = false;
+          }
+        }
+        s18Pass &= s18cOk;
+      }
+#endif
 
       RPRINTF("S18 DevPut+PutValue(INTRA+WORLD): %s\n",
               s18Pass ? "PASS" : "FAIL");
@@ -800,10 +892,19 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->deviceFree(devResults, flagcxMemDevice, NULL));
   FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
   FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
+#ifdef FLAGCX_ASCEND_PUTVALUE_TAIL
+  FLAGCXCHECK(flagcxDevMemDestroy(comm, tailMem));
+#endif
   FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
   FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
+#ifdef FLAGCX_ASCEND_PUTVALUE_TAIL
+  FLAGCXCHECK(flagcxCommWindowDeregister(comm, tailWin, flagcxMemSHMEM));
+#endif
   FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
   FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
+#ifdef FLAGCX_ASCEND_PUTVALUE_TAIL
+  FLAGCXCHECK(flagcxMemFree(tailBuff, flagcxMemSHMEM));
+#endif
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommFinalize(comm));

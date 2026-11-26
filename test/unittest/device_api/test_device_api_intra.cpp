@@ -418,11 +418,12 @@ int main(int argc, char *argv[]) {
 #else
     // All three wait on ranks before reading what they wrote: K8/K9 go
     // through flagcxDevBarrier<Intra>, and K10 is the same composite the
-    // barrier feeds.  An intra-node device barrier needs an ordered
-    // read-modify-write on global memory, which this platform declares absent
-    // (struct CceAtomic, ascend_platform_traits.h:201, rejecting add/sub/
-    // bitOr/bitAnd/exch/cas at :439-488) -- see the note atop
-    // test/kernel/ascend/device_api.asc.
+    // barrier feeds.  The IPC pass has neither the peer mapping nor a
+    // barrier the atomic layer can support (struct CceAtomic,
+    // ascend_platform_traits.h:201, rejecting add/sub/bitOr/bitAnd/exch/cas
+    // at :439-488), so its build compiles these cases out; the cann-shmem
+    // build backs all three and grades them (test/kernel/ascend/
+    // device_api.asc).
 #endif
 
     if (proc == 0)

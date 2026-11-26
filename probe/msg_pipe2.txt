@@ -1,0 +1,12 @@
+ascend/shmem: retire local GM stores before the engine reads them
+
+pipe_barrier at kernel entry was too early: the stale read is the scratch
+word written two instructions before the put, not the FFTS config. Move the
+barrier into the put wrapper so every transfer whose source is a local store
+(putValue's scratch, the barrier tickets) retires those stores first, while
+transfers from prepared buffers pay one pipe barrier.
+
+Measured symptom: np=2, S18B combo 0 arrives as 0 on rank 0 in 4 of 15
+sizes, always the first putValue of the kernel and never combos 1-5.
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>

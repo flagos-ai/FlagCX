@@ -75,6 +75,37 @@ FLAGCX_CI_UNIFIED_IR_FALLBACK_INTRA=0
 UNIFIED_IR_NP=1
 export UNIFIED_IR_NP
 
+# cann-shmem (aclshmem) backend: when the runner carries the runtime the
+# Ascend suites build with USE_SHMEM=1 and the unified IR suite grades its
+# cross-rank cases at the same four-chip world the intra suite already runs
+# (UNIFIED_IR_NP follows FLAGCX_CI_INTRA_NP).  When it is absent the
+# IPC-gated build above stays and the lost shmem coverage is surfaced as a
+# warning - a missing runtime must never render as silently green coverage.
+if [[ "${FLAGCX_CI_ASCEND_SHMEM:-1}" == 1 ]]; then
+  if ASCEND_SHMEM_HOME=$("$FLAGCX_CI_ENV_DIR/../ci/check_shmem.sh"); then
+    export SHMEM_HOME=$ASCEND_SHMEM_HOME
+    export ASCEND_HOME_PATH=${ASCEND_HOME_PATH:-$DEVICE_HOME}
+    export LD_LIBRARY_PATH="$SHMEM_HOME/lib:${LD_LIBRARY_PATH:-}"
+    FLAGCX_CI_PROJECT_MAKE_ARGS+=(USE_SHMEM=1)
+    FLAGCX_CI_TEST_MAKE_ARGS+=(USE_SHMEM=1)
+    # Do not flip FLAGCX_CI_DEVICE_API_IR here: that gate launches the legacy
+    # build/bin/test_device_ir_intra, which the Ascend Makefile never builds
+    # (SKIPPED_TARGETS).  The unified IR suite has its own matrix entry
+    # (device_api_unified_ir) and its own runner path (MC952 review P1).
+    UNIFIED_IR_NP=$FLAGCX_CI_INTRA_NP
+    export UNIFIED_IR_NP
+    # Informational only: keep stdout clean, consumers capture it as the
+    # FLAGCX_CI_IGNORE_TEST JSON (test/script/test_platform_ci.py).
+    echo "cann-shmem backend enabled: SHMEM_HOME=$SHMEM_HOME" >&2
+  else
+    echo "::warning title=Ascend shmem backend not exercised::cann-shmem runtime not found in the CI image; the IPC-gated build runs and the shmem cross-rank cases stay skipped" >&2
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      printf -- '- **Ascend shmem backend not exercised:** cann-shmem runtime not found in the CI image\n' \
+        >> "$GITHUB_STEP_SUMMARY"
+    fi
+  fi
+fi
+
 flagcx_ci_configure_suite() {
   case "$1" in
     device_api|device_api_unified_ir)

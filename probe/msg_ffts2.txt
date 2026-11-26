@@ -1,0 +1,8 @@
+ascend/shmem: make the FFTS getter a plain host inline
+
+FLAGCX_DEVICE_INLINE_DECORATOR expands to "[aicore] inline" on both bisheng
+passes (device_utils.h:541-549), so the getter was aicore-qualified and the
+host launcher that calls it failed with "no matching function" at all five
+launch sites. The setter keeps the qualifier: the kernels call it.
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>

@@ -322,6 +322,12 @@ INCLUDEDIR := \
 # Append NVSHMEM include path (must come after INCLUDEDIR := assignment)
 ifeq ($(USE_SHMEM), 1)
 INCLUDEDIR += $(SHMEM_HOME)/include
+ifeq ($(USE_ASCEND), 1)
+# cann-shmem's headers include each other from two source roots (see
+# test/make.inc); the installed tree keeps them under device/ and src/.
+INCLUDEDIR += $(SHMEM_HOME)/include/device $(SHMEM_HOME)/src/device \
+	$(SHMEM_HOME)/src
+endif
 endif
 
 LIBSRCFILES:= \

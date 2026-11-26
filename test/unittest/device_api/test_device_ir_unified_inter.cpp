@@ -362,8 +362,21 @@ int main(int argc, char *argv[]) {
       }
 
       // --- Sub-block B: DevPutValue (6 combos, scalar uint64 per slot) ---
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * sizeof(uint64_t),
-                                          flagcxMemDevice, stream));
+      // Slot stride is the shared test parameter (see the intra suite): the
+      // Ascend kernel isolates each 8-byte slot on its own 128-byte GM line,
+      // every other backend packs dense 8-byte slots.  Kernel and oracle
+      // must agree, so the switch moves both.
+      constexpr size_t kPutValueStrideBytes =
+#ifdef FLAGCX_ASCEND_PUTVALUE_LINE_STRIDE
+          128;
+#else
+          sizeof(uint64_t);
+#endif
+      constexpr size_t kPutValueStrideWords =
+          kPutValueStrideBytes / sizeof(uint64_t);
+      // 0xAA sentinel: an untouched slot must not look like a landed zero.
+      FLAGCXCHECK(devHandle->deviceMemset(
+          recvBuff, 0xAA, 6 * kPutValueStrideBytes, flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
@@ -376,9 +389,9 @@ int main(int argc, char *argv[]) {
 
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
-      uint64_t hostRecvV[6];
+      uint64_t hostRecvV[6 * kPutValueStrideWords];
       FLAGCXCHECK(devHandle->deviceMemcpy(hostRecvV, recvBuff,
-                                          6 * sizeof(uint64_t),
+                                          6 * kPutValueStrideBytes,
                                           flagcxMemcpyDeviceToHost, stream));
       if (hostRes != 1)
         s18Pass = false;
@@ -386,7 +399,7 @@ int main(int argc, char *argv[]) {
         int teamIdx = combo % 2;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
         uint64_t expected = (uint64_t)(senderRank * 100 + combo);
-        if (hostRecvV[combo] != expected)
+        if (hostRecvV[combo * kPutValueStrideWords] != expected)
           s18Pass = false;
       }
 

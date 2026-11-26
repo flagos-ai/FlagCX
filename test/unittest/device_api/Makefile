@@ -27,8 +27,10 @@ DEVICE_API_OBJ := $(KERNEL_OBJ_DIR)/device_api.o
 DEVICE_IR_OBJ  := $(KERNEL_OBJ_DIR)/device_ir.o
 
 # Device-link objects (only needed for NVSHMEM). KLX selects xccl xshmem with the
-# same USE_SHMEM switch, but its device code is linked into device_api.o.
-ifeq ($(USE_SHMEM)$(KERNEL_PLATFORM), 1klx)
+# same USE_SHMEM switch, but its device code is linked into device_api.o; on
+# Ascend bisheng embeds the device image inside -c (makefiles/ascend.mk:179),
+# so there is no device-link product either.
+ifneq ($(filter 1klx 1ascend,$(USE_SHMEM)$(KERNEL_PLATFORM)),)
 DLINK_API_OBJ :=
 DLINK_IR_OBJ  :=
 else ifeq ($(USE_SHMEM), 1)
@@ -149,27 +151,39 @@ endif
 
 # Ascend/CANN.  Two suites build.  test_device_api_intra keeps its launchers
 # in test/kernel/ascend/device_api.asc and the switches that compile out the
-# cases this hardware cannot satisfy (peer memory, coop groups, the block
-# barrier).  test_device_ir_unified_intra is the Device IR suite: its
-# launchers live in test/kernel/ascend/device_ir.asc (S16-S18), which is
+# cases the selected backend cannot satisfy (peer memory and coop groups on
+# both; the intra barrier only on the IPC build, since cann-shmem has the
+# transport for it).  test_device_ir_unified_intra is the Device IR suite: its
+# launchers live in test/kernel/ascend/device_ir.asc (S16-S25; the net half
+# only under USE_SHMEM=1), which is
 # build-gated by the in--c device link - an undefined trap reference fails
-# the object, not the test.  The unified INTER product stays out of scope:
-# it drives the one-sided net path, which this platform declares absent
-# (the shared IR arms are pruned behind FLAGCX_DEVICE_HAS_NET_TRANSPORT).
-# NO_REMOTE_READ compiles the S19 call sites out (IPC read-back of peer GM
-# is not a measured path here; the reference file itself states the same
-# rule for P800).  NO_ATOMIC_COMPLETION compiles S20-S25 out: 2201 exposes
-# no global-memory RMW that survives this pass (u32 fetchAdd is refused
-# even under a target-feature spelling, and the plain-u64 loads/stores
-# bound first are the dcci pair, not an add), so the completion-based
-# cases have no implementation to exercise - and their launchers remain
-# declared-but-not-defined, which turns any resurrected call site into a
-# link failure instead of a reportable pass.  Each switch names its reason
-# at the site it guards; the point is that a skipped case never reaches
-# the report as a pass.
+# the object, not the test.  The two leg-across suites (test_device_api_inter
+# and test_device_ir_unified_inter) build only under USE_SHMEM=1, where the
+# net transport exists; the IPC build declares their launchers absent.
+# NO_REMOTE_READ compiles the S19 call sites out in the IPC build (read-back
+# of peer GM is not a measured path there; the reference file itself states
+# the same rule for P800); the shmem build keeps S19, whose transport is
+# cann-shmem's MTE get.  NO_ATOMIC_COMPLETION compiles S20-S25 out of the
+# IPC build: 2201 exposes no global-memory RMW that survives this pass (u32
+# fetchAdd is refused even under a target-feature spelling, and the
+# plain-u64 loads/stores bound first are the dcci pair, not an add), so the
+# completion-based cases have no implementation to exercise - and their
+# launchers remain declared-but-not-defined, which turns any resurrected
+# call site into a link failure instead of a reportable pass.  The shmem
+# backend needs no RMW (per-source tickets + a single-writer local counter;
+# aclshmem_comm_traits.h), so S20-S25 are graded there.  Each switch names
+# its reason at the site it guards; the point is that a skipped case never
+# reaches the report as a pass.
 ifeq ($(KERNEL_PLATFORM), ascend)
   ASCEND_IR_TARGETS  := $(BINDIR)/test_device_ir_unified_intra
   ASCEND_API_TARGETS := $(BINDIR)/test_device_api_intra
+  # The leg-across suites build only on the cann-shmem backend: they need the
+  # net transport (aclshmem MTE puts + signal tickets) that the IPC build
+  # declares absent.  Must be added before SKIPPED_TARGETS is computed.
+  ifeq ($(USE_SHMEM),1)
+    ASCEND_API_TARGETS += $(BINDIR)/test_device_api_inter
+    ASCEND_IR_TARGETS  += $(BINDIR)/test_device_ir_unified_inter
+  endif
   # The skip list is the original universe minus everything this platform
   # actually builds.  Ascend keeps ONE IR suite (unified_intra) AND the
   # legacy api_intra suite, so filter out both - not just the IR target -
@@ -179,18 +193,30 @@ ifeq ($(KERNEL_PLATFORM), ascend)
   IR_TARGETS      := $(ASCEND_IR_TARGETS)
   API_TARGETS     := $(ASCEND_API_TARGETS)
   CXXFLAGS += -DFLAGCX_TEST_NO_COOP_GROUPS -DFLAGCX_TEST_NO_PEER_POINTER \
-              -DFLAGCX_TEST_NO_INTRA_BARRIER \
-              -DFLAGCX_TEST_NO_REMOTE_READ \
-              -DFLAGCX_TEST_NO_ATOMIC_COMPLETION \
-              -DFLAGCX_TEST_NO_CROSS_RANK_COMM \
               -DFLAGCX_ASCEND_PUTVALUE_LINE_STRIDE
   # NO_CROSS_RANK_COMM skips S16-S18 outright: the measured peer-store
   # fault freeze (ascend.sh) makes cross-rank rendezvous inoperable, and
   # at world size 1 those cases degenerate to zero-iteration peer loops /
   # self copies whose PASS would be a fake certification (MC952 review
   # P1).  PUTVALUE_LINE_STRIDE keeps the S18 oracle aligned with the
-  # 910C kernel's 128-byte line-isolated slots if that gate is ever
-  # lifted; every other platform keeps the packed 8-byte default.
+  # 910C kernel's 128-byte line-isolated slots (the stride the shmem
+  # kernel writes; every other platform keeps the packed 8-byte default).
+  ifeq ($(USE_SHMEM),1)
+    # cann-shmem supplies the cross-rank transport (MTE puts, MTE gets and
+    # local polling) that the peer-VA path cannot: S16-S25 are runnable,
+    # and so are K8/K9/K10 (device_api.asc: the INTRA barrier plus peer
+    # reads through aclshmem_ptr, both proven on this backend).
+    # Everything else this platform lacks is unchanged.
+    # PUTVALUE_TAIL adds S18 sub-block C: 1/2-byte putValue destinations
+    # whose last byte is the last byte of their registered allocation
+    # (MC952 review P2).
+    CXXFLAGS += -DFLAGCX_ASCEND_PUTVALUE_TAIL
+  else
+    CXXFLAGS += -DFLAGCX_TEST_NO_CROSS_RANK_COMM \
+                -DFLAGCX_TEST_NO_REMOTE_READ \
+                -DFLAGCX_TEST_NO_ATOMIC_COMPLETION \
+                -DFLAGCX_TEST_NO_INTRA_BARRIER
+  endif
 endif
 
 MPI_TARGETS := $(IR_TARGETS) $(API_TARGETS)
@@ -351,6 +377,8 @@ UNIFIED_TEST_ARGS := -b 1K -e 16M -f 2
 # rendezvous is not a supported hardware capability narrow this to 1
 # (see set_env/ascend.sh); everywhere else keeps the historical -n 4.
 UNIFIED_IR_NP ?= 4
+# Unified-inter ranks per logical node (the asc 2x4 leg overrides to 4).
+UNIFIED_IR_INTER_NP ?= 2
 
 # Legacy intra-node tests. Platforms only run targets selected in MPI_TARGETS;
 # this prevents a stale executable from bypassing a platform capability filter.
@@ -378,22 +406,25 @@ ifeq ($(filter $(BINDIR)/test_device_ir_intra $(BINDIR)/test_device_api_intra $(
 	@echo "Skipped legacy intra Device API/IR tests on $(KERNEL_PLATFORM)"
 endif
 
-# Inter-node tests use two logical two-rank nodes. This exercises inter-node
-# discovery even on a single physical host.
+# Inter-node tests use two logical nodes of INTER_NP ranks each (default 2).
+# This exercises inter-node discovery even on a single physical host; the
+# Ascend shmem run overrides it to 4 (-n 4 : -n 4, the delivery's 2x4).
+INTER_NP ?= 2
+
 run-mpi-inter: $(filter $(BINDIR)/test_device_ir_inter,$(MPI_TARGETS)) \
                $(filter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS))
 ifneq ($(filter $(BINDIR)/test_device_ir_inter,$(MPI_TARGETS)),)
 	@echo "Running inter-node Device IR tests..."
 	$(MPIRUN) $(MPI_ROOT_ARGS) \
-		-n 2 $(INTER_ENV) $(INTER_NODE0_ENV) $(BINDIR)/test_device_ir_inter \
-		: -n 2 $(INTER_ENV) $(INTER_NODE1_ENV) $(BINDIR)/test_device_ir_inter
+		-n $(INTER_NP) $(INTER_ENV) $(INTER_NODE0_ENV) $(BINDIR)/test_device_ir_inter \
+		: -n $(INTER_NP) $(INTER_ENV) $(INTER_NODE1_ENV) $(BINDIR)/test_device_ir_inter
 endif
 ifneq ($(filter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS)),)
 	@echo "Running inter-node Device API tests..."
 	$(MPIRUN) $(MPI_ROOT_ARGS) \
-		-n 2 $(INTER_ENV) $(INTER_NODE0_ENV) \
+		-n $(INTER_NP) $(INTER_ENV) $(INTER_NODE0_ENV) \
 		$(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2 \
-		: -n 2 $(INTER_ENV) $(INTER_NODE1_ENV) \
+		: -n $(INTER_NP) $(INTER_ENV) $(INTER_NODE1_ENV) \
 		$(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2
 endif
 ifeq ($(filter $(BINDIR)/test_device_ir_inter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS)),)
@@ -414,9 +445,9 @@ ifneq ($(filter $(BINDIR)/test_device_ir_unified_inter,$(MPI_TARGETS)),)
 run-mpi-unified-inter: $(BINDIR)/test_device_ir_unified_inter
 	@echo "Running unified inter suite tests (INTER + WORLD, full coop matrices)..."
 	$(MPIRUN) $(MPI_ROOT_ARGS) \
-		-n 2 $(UNIFIED_COMMON_ENV) $(INTER_NODE0_ENV) \
+		-n $(UNIFIED_IR_INTER_NP) $(UNIFIED_COMMON_ENV) $(INTER_NODE0_ENV) \
 		$(BINDIR)/test_device_ir_unified_inter $(UNIFIED_TEST_ARGS) \
-		: -n 2 $(UNIFIED_COMMON_ENV) $(INTER_NODE1_ENV) \
+		: -n $(UNIFIED_IR_INTER_NP) $(UNIFIED_COMMON_ENV) $(INTER_NODE1_ENV) \
 		$(BINDIR)/test_device_ir_unified_inter $(UNIFIED_TEST_ARGS)
 else
 run-mpi-unified-inter:

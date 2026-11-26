@@ -381,7 +381,11 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertNotIn("-n 8", device_makefile)
         self.assertNotIn("-n 4 $(INTER_ENV)", device_makefile)
         self.assertIn("--nproc_per_node 4", torch_script)
-        self.assertIn("-n 2 $(INTER_ENV)", device_makefile)
+        # Inter-node ranks default to 2 per logical node; the Ascend shmem
+        # delivery overrides INTER_NP to 4 for its 2x4 world, so the assert
+        # follows the variable instead of the old hard-coded count.
+        self.assertIn("INTER_NP ?= 2", device_makefile)
+        self.assertIn("-n $(INTER_NP) $(INTER_ENV)", device_makefile)
 
     def test_device_kernel_sources_use_the_selected_platform(self):
         for platform, adaptor in (
