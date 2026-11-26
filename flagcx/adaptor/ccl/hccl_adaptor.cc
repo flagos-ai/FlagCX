@@ -3,6 +3,10 @@
 #ifdef USE_ASCEND_ADAPTOR
 
 #include "adaptor.h"
+#if __has_include(<aclnnop/aclnn_div.h>)
+#include <aclnnop/aclnn_div.h>
+#include <dlfcn.h>
+#endif
 #include "alloc.h"
 #include "comm.h"
 #include "debug.h"
@@ -239,15 +243,104 @@ flagcxResult_t hcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
   return flagcxNotSupported;
 }
 
+#if __has_include(<aclnnop/aclnn_div.h>)
+// Resolve optional CANN operators only when a multi-rank AVG needs division.
+struct HcclAvgApi {
+  void *lib = dlopen("libopapi.so", RTLD_LAZY | RTLD_LOCAL);
+  template <typename T> T symbol(const char *name) const {
+    return lib ? reinterpret_cast<T>(dlsym(lib, name)) : nullptr;
+  }
+  decltype(&aclCreateTensor) tensor = symbol<decltype(tensor)>("aclCreateTensor");
+  decltype(&aclCreateScalar) scalar = symbol<decltype(scalar)>("aclCreateScalar");
+  decltype(&aclDestroyTensor) freeTensor = symbol<decltype(freeTensor)>("aclDestroyTensor");
+  decltype(&aclDestroyScalar) freeScalar = symbol<decltype(freeScalar)>("aclDestroyScalar");
+  using Cancel = aclnnStatus (*)(aclOpExecutor *);
+  Cancel cancel = symbol<Cancel>("aclDestroyAclOpExecutor");
+  decltype(&aclnnInplaceDivsGetWorkspaceSize) prepare =
+      symbol<decltype(prepare)>("aclnnInplaceDivsGetWorkspaceSize");
+  decltype(&aclnnInplaceDivs) divide = symbol<decltype(divide)>("aclnnInplaceDivs");
+  bool available() const {
+    return tensor && scalar && freeTensor && freeScalar && cancel && prepare && divide;
+  }
+};
+#endif
+
+// HCCL provides SUM; normalize only the output owned by this rank.
+template <typename Reduce>
+static flagcxResult_t hcclReduction(flagcxRedOp_t op, flagcxDataType_t datatype,
+                                    const void *input, void *output, size_t count, int root,
+                                    flagcxInnerComm_t comm, flagcxStream_t stream,
+                                    Reduce reduce) {
+  if (op != flagcxAvg)
+    return h2f_ret_map[reduce(f2h_reduceop_map[op])];
+
+  // HCCL must also recognize the input dtype on the SUM-only path.
+  if (!f2h_datatype_map.count(datatype))
+    return flagcxNotSupported;
+  uint32_t size, rank;
+  if (HcclGetRankSize(comm->base, &size) != HCCL_SUCCESS || size == 0 ||
+      (root >= 0 && HcclGetRankId(comm->base, &rank) != HCCL_SUCCESS))
+    return flagcxUnhandledCCLError;
+  auto submitSum = [&]() {
+    HcclResult status = reduce(HCCL_REDUCE_SUM);
+    if (status == HCCL_SUCCESS)
+      return flagcxSuccess;
+    auto it = h2f_ret_map.find(status);
+    return it == h2f_ret_map.end() ? flagcxUnhandledCCLError : it->second;
+  };
+  if (size == 1 || count == 0)
+    return submitSum();
+
+#if __has_include(<aclnnop/aclnn_div.h>)
+  aclDataType type;
+  switch (datatype) {
+    case flagcxHalf: type = ACL_FLOAT16; break;
+    case flagcxBfloat16: type = ACL_BF16; break;
+    case flagcxFloat: type = ACL_FLOAT; break;
+    case flagcxDouble: type = ACL_DOUBLE; break;
+    default: return flagcxNotSupported;
+  }
+  static const HcclAvgApi api;
+  if (!api.available())
+    return flagcxNotSupported;
+  // Prepare DIV on every rank before SUM. Non-root Reduce has no output.
+  bool ownsOutput = root < 0 || rank == static_cast<uint32_t>(root);
+  const int64_t length = count, stride = 1;
+  auto tensor = api.tensor(&length, 1, type, &stride, 0, ACL_FORMAT_ND,
+                                &length, 1, ownsOutput ? output : const_cast<void *>(input));
+  int64_t divisor = size;
+  auto scalar = api.scalar(&divisor, ACL_INT64);
+  aclOpExecutor *executor = nullptr;
+  uint64_t workspace = 0;
+  auto result = flagcxUnhandledDeviceError;
+  if (tensor && scalar &&
+      api.prepare(tensor, scalar, &workspace, &executor) == 0) {
+    result = workspace == 0 ? submitSum() : flagcxNotSupported;
+    if (result == flagcxSuccess && ownsOutput) {
+      if (api.divide(nullptr, 0, executor, stream->base) != 0)
+        result = flagcxUnhandledDeviceError;
+    } else if (api.cancel(executor) != 0) {
+      result = flagcxUnhandledDeviceError;
+    }
+  }
+  if (scalar) api.freeScalar(scalar);
+  if (tensor) api.freeTensor(tensor);
+  return result;
+#else
+  return flagcxNotSupported;
+#endif
+}
+
 flagcxResult_t hcclAdaptorReduce(const void *sendbuff, void *recvbuff,
                                  size_t count, flagcxDataType_t datatype,
                                  flagcxRedOp_t op, int root,
                                  flagcxInnerComm_t comm,
                                  flagcxStream_t stream) {
-  void *sendbuffptr = (void *)sendbuff;
-  return (flagcxResult_t)h2f_ret_map[HcclReduce(
-      sendbuffptr, recvbuff, count, (HcclDataType)f2h_datatype_map[datatype],
-      (HcclReduceOp)f2h_reduceop_map[op], root, comm->base, stream->base)];
+  return hcclReduction(op, datatype, sendbuff, recvbuff, count, root, comm, stream,
+                       [&](HcclReduceOp reduceOp) {
+    return HcclReduce((void *)sendbuff, recvbuff, count, f2h_datatype_map[datatype],
+                      reduceOp, root, comm->base, stream->base);
+  });
 }
 
 // TODO: unsupported
@@ -316,21 +409,22 @@ flagcxResult_t hcclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
                                     size_t count, flagcxDataType_t datatype,
                                     flagcxRedOp_t op, flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
-  void *sendbuffptr = (void *)sendbuff;
-  return (flagcxResult_t)h2f_ret_map[HcclAllReduce(
-      sendbuffptr, recvbuff, count, (HcclDataType)f2h_datatype_map[datatype],
-      (HcclReduceOp)f2h_reduceop_map[op], comm->base, stream->base)];
+  return hcclReduction(op, datatype, sendbuff, recvbuff, count, -1, comm, stream,
+                       [&](HcclReduceOp reduceOp) {
+    return HcclAllReduce((void *)sendbuff, recvbuff, count, f2h_datatype_map[datatype],
+                      reduceOp, comm->base, stream->base);
+  });
 }
 
 flagcxResult_t
 hcclAdaptorReduceScatter(const void *sendbuff, void *recvbuff, size_t recvcount,
                          flagcxDataType_t datatype, flagcxRedOp_t op,
                          flagcxInnerComm_t comm, flagcxStream_t stream) {
-  void *sendbuffptr = (void *)sendbuff;
-  return (flagcxResult_t)h2f_ret_map[HcclReduceScatter(
-      sendbuffptr, recvbuff, recvcount,
-      (HcclDataType)f2h_datatype_map[datatype],
-      (HcclReduceOp)f2h_reduceop_map[op], comm->base, stream->base)];
+  return hcclReduction(op, datatype, sendbuff, recvbuff, recvcount, -1, comm, stream,
+                       [&](HcclReduceOp reduceOp) {
+    return HcclReduceScatter((void *)sendbuff, recvbuff, recvcount, f2h_datatype_map[datatype],
+                      reduceOp, comm->base, stream->base);
+  });
 }
 
 flagcxResult_t hcclAdaptorAllGather(const void *sendbuff, void *recvbuff,
