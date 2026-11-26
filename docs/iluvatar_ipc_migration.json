@@ -74,8 +74,8 @@
     "native_probe_in_feature_reference": false,
     "IBRC": {
       "core": {
-        "pass": 270,
-        "skip": 0
+        "pass": 285,
+        "skip": 5
       },
       "runner": {
         "pass": 105,
@@ -90,18 +90,18 @@
         "skip": 0
       },
       "adaptor": {
-        "pass": 73,
-        "skip": 0
+        "pass": 71,
+        "skip": 2
       },
       "device_api_host": {
-        "pass": 48,
-        "skip": 0
+        "pass": 45,
+        "skip": 3
       }
     },
     "IBUC": {
       "core": {
-        "pass": 270,
-        "skip": 0
+        "pass": 285,
+        "skip": 5
       },
       "runner": {
         "pass": 105,
@@ -116,12 +116,12 @@
         "skip": 0
       },
       "adaptor": {
-        "pass": 82,
-        "skip": 0
+        "pass": 79,
+        "skip": 3
       },
       "device_api_host": {
-        "pass": 48,
-        "skip": 0
+        "pass": 45,
+        "skip": 3
       }
     },
     "bootstrap": {
@@ -150,7 +150,8 @@
       "heterogeneous AllGather and Device API IPC/isolation",
       "SDK-specific native Finalize/Destroy behavior and performance/overlap measurements"
     ],
-    "caller_contract": "Caller completes user streams and directly launched kernels before lifecycle calls. Core generic work tracking removed; specific retryable cleanup owners and proxy copy completion events retained. Existing builtin SDK native-close compatibility policy retained. Torch shutdown explicitly drains its communication streams."
+    "caller_contract": "Caller completes user streams and directly launched kernels before lifecycle calls. Core generic work tracking removed; specific retryable cleanup owners and proxy copy completion events retained. Existing builtin SDK native-close compatibility policy retained. Torch shutdown explicitly drains its communication streams.",
+    "native_review_round1": "20 added core regressions passed in both transport builds. Native kernel-host syntax passed. 77 affected source-warning/platform CI tests passed. See external CR reports for the final independent verdict."
   },
   "historical_pre_repair_validation": {
     "artifact_directory": "/private/tmp/iluvatar-ipc-validation",

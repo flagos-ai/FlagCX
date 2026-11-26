@@ -185,6 +185,7 @@ struct flagcxProxyArgs {
 };
 
 struct flagcxProxyOp {
+  bool retirementCounted = false;
   struct flagcxProxyConnection *connection;
   ssize_t nbytes;
   uint64_t opCount;
@@ -394,6 +395,7 @@ struct flagcxProxyState {
   struct pollfd *servicePollFds;
   int nServicePeers;
   flagcxResult_t workerCleanupResult;
+  uint64_t pendingTransportOps;
   pthread_t threadUDS;
   struct flagcxSocket listenSock;
   struct flagcxSocket ipcSock;
@@ -504,6 +506,8 @@ void *flagcxProxyService(void *args);
 flagcxResult_t flagcxProxySaveOp(struct flagcxHeteroComm *comm,
                                  struct flagcxProxyOp *proxyOp,
                                  bool *justInquire = NULL);
+flagcxResult_t flagcxProxyScratchReady(struct flagcxHeteroComm *comm);
+
 flagcxResult_t flagcxProxyRecordCopy(struct flagcxProxyArgs *args,
                                      flagcxEvent_t event,
                                      flagcxStream_t stream);

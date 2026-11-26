@@ -561,7 +561,9 @@ flagcxResult_t flagcxHeteroCommCloseRegistrations(flagcxHeteroComm_t comm) {
                                                 flagcxSymCleanupLocal));
   }
   FLAGCXCHECKSTRICT(flagcxSymLsaDestroy(comm));
+  FLAGCXCHECKSTRICT(flagcxGroupDrainRejected(comm));
   FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyStop(comm));
+  FLAGCXCHECKSTRICT(flagcxGroupDrainRejected(comm));
   FLAGCXCHECKSTRICT(globalRegPool.releaseOwner(comm));
   FLAGCXCHECKSTRICT(globalRegPool.removeAllP2pHandles(comm));
   FLAGCXCHECKSTRICT(globalRegPool.removeAllNetHandles(comm));

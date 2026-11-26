@@ -324,21 +324,16 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     return flagcxSuccess;
 
   fail_peer_shm:
-    for (int lr = 0; lr < registeredPeerCount; lr++)
-      shmHostUnregister(peerCpuPtrs[lr]);
-    free(hostDevPtrs);
-    if (devPeerPtrs)
-      deviceAdaptor->deviceFree(devPeerPtrs, flagcxMemDevice, NULL);
-    if (peerShmHandles) {
-      for (int lr = 0; lr < localRanks; lr++)
-        if (peerShmHandles[lr] && peerShmHandles[lr] != myShmHandle)
-          flagcxShmClose(peerShmHandles[lr]);
-      free(peerShmHandles);
-    }
-    free(peerCpuPtrs);
   fail_own_shm:
-    if (myShmHandle)
-      flagcxShmClose(myShmHandle);
+    // Creation rollback uses the same persistent owner as normal destroy.
+    devComm->nLocalRanks = localRanks;
+    devComm->myShmHandle = myShmHandle;
+    devComm->localBarrierShmPtr = myCpuPtr;
+    devComm->peerShmHandles = peerShmHandles;
+    devComm->peerBarrierShmPtrs = peerCpuPtrs;
+    devComm->registeredBarrierShmCount = registeredPeerCount;
+    devComm->barrierDevPeerPtrsRaw = (uint64_t **)devPeerPtrs;
+    free(hostDevPtrs);
     return res;
   }
 

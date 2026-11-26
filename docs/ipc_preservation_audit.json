@@ -1022,7 +1022,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "5dbcb99acb6638d61614940161c0cdf38586caf09b587c63b186560cbb707271",
+      "current_sha256": "909a83bf29be0790380e6a764c1e175764b97fed275a86b5b5f05290e597ab4c",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -1048,7 +1048,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "f29dbb514f73bd056fb3a837169b447cff5604b7a479ae37636aebf52072c186",
+      "current_sha256": "67cef4fe947882aa7cb425032da75aadd4899c1fa6aebc75fddcc248c4a010e9",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -1784,7 +1784,7 @@
           "decision": "preserve-independent-fixes"
         }
       ],
-      "current_sha256": "027cbb7cf8b4c74da783d4003f30960c253264fe865ff945b859e0acacc3f972",
+      "current_sha256": "5310735e3f6698cfa9f9ff30551aa9dddea84997043036623bf1ef5ce7fc654e",
       "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
@@ -3408,7 +3408,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "eb7a1c95125f8ae70c4d66cc48cfbba70621be3f8b804cbf23d005bbd19f600a",
+      "current_sha256": "a37cdc15d2c2b1789e39d911c691da1d7043bc2b74393b386490fe785ae1c733",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -3460,7 +3460,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "053c827f7e5c8ae1a75711c00270057ff92d2fcd5350e48734da89bb5dba3cce",
+      "current_sha256": "3e5312fcb16a5470d3e68cd017c2e8178c1d8da6d7d0a996803bd63c65ba5050",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -3640,7 +3640,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "1ab1b31665dc4e8acc90510dace7517b0c61efe60645922adb51f7ec37a795f7",
+      "current_sha256": "f5d5ba38a4381cb72fd9cf4bf19e329bf197089d5dff224dfde934909019bef2",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -3786,7 +3786,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "95726b8b3de554c52fcf108c2e407d0b5fe2e2cce8a7913e59cf90fddd001b71",
+      "current_sha256": "bb7a3381f4c0a183fa94f8ae2173ecc733eb730c2f31de572134945cdfcbfb8e",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -3904,8 +3904,8 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "f288b6abadda56f97b5751ea8ddded5a762288074732f63e01a9d5321a71d094",
-      "current_resolution": "exact feature-reference content"
+      "current_sha256": "da5d53139b6bb45e25aa26d235d02f1576dc32ffe47e379f686b237973bacc86",
+      "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
       "path": "flagcx/core/include/reg_pool.h",
@@ -4154,7 +4154,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "399082e9320429a1e7736b4c2316dab91c8d7f3b94158a9c171f78e51b07585a",
+      "current_sha256": "52689a8a66cb12f742447b086e35b8fafb0cdb85971f2044cea25a8b213718fb",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -4285,7 +4285,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "a5141817ac6d13c1235797ba1e05da0b1562e3ffff9cee925908d8e5adacff7c",
+      "current_sha256": "1b155a3895744ad2121214657a9e55f9d2e82db624c17275ea4ecbc674e9993e",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -5133,7 +5133,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "0e05ebfc757153e2d8d3650ca686bbea10d6265c3ab3388bda5456c7a9250584",
+      "current_sha256": "e3839347d6a9627c8e6fc088fb207b481bab2162f2fc17e96dae724b6b9d748b",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -6502,7 +6502,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "da1257fdda11aa4ddb119287aeac842af7eef5ac445fdd17e6e97cd29738d573",
+      "current_sha256": "ef8b44469bd528956068e2db724230fbd6fb1a407e17482dc699c5cbbceb2dc2",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -6681,7 +6681,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "7a0d320665be6270e3423902c7d48132dff976fd71bdea86478a882d0ef19f8a",
+      "current_sha256": "69bcae5d6dd31a74f3b4797dd0efcbad71eb39cc741f6a7cd1ea2f6e29bea9e3",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -7178,7 +7178,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "79d82f07b9b2d947c80308d9dd9287b19ffbf6e04c6a433c1097932c10b9b419",
+      "current_sha256": "d1c4c5f0f4fddd1e28465f23e791272e65215a21e2ba27097356cd9d56152891",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -7344,7 +7344,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "0b1f3348f1a1da9820ada62f853fa58ddb28d4082adfe56798f06c5221f22efa",
+      "current_sha256": "a7fcd4268833da55c5f7d6959a31c6597d4660042a4f0efd1856b00a6509754e",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -7844,7 +7844,7 @@
         }
       ],
       "current_sha256": "3a921339d0145e78119cd8bbb9093b5ff50cba2a0c53a590e3349bb27404f2d8",
-      "current_resolution": "Original Torch Work/shutdown ownership retained; shutdown explicitly completes backend streams before core teardown, retaining failed-sync owner and completed progress."
+      "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
       "path": "plugin/torch/tests/test_backend_source.py",
@@ -7870,7 +7870,7 @@
         }
       ],
       "current_sha256": "a2e9ccd7b0d2263ec61e9c5223954dcd7dc1d81ba13fa1bfdb5af8c24ed0a12a",
-      "current_resolution": "Real shutdown/wait compilation regression now also injects InProgress stream drain and verifies no native owner is destroyed before drain succeeds."
+      "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
       "path": "probe/msg_aiv.txt",
@@ -9598,12 +9598,22 @@
     "db9c863a",
     "10d0fea1",
     "ba4cb7c1",
-    "cd70528b"
+    "cd70528b",
+    "035dac7b"
   ],
   "native_review": {
-    "status": "pending",
-    "scope": "current branch vs main, fork at original feature_reference",
+    "status": "tracked-in-external-reports",
+    "scope": "current branch vs main, merge-base at original feature_reference",
     "associated_pr": "No associated PR feedback found",
-    "authorization": "User explicitly authorized cyclic native CR, fixes and one commit per review round until LGTM."
+    "authorization": "User explicitly authorized cyclic native CR, fixes and one commit per review round until LGTM.",
+    "reports": "/Users/chenmo/WORKDIR/.cr/reviews/cr-FlagCX-iluvatar-hang-issue-round*.md",
+    "round1": {
+      "reviewed_head": "035dac7b",
+      "findings": {
+        "P1": 6,
+        "P2": 4
+      },
+      "resolution": "All ten findings repaired; default/multiple streams, callback/slot owners, partial notification cancellation, closing guards, SHM rollback and group cleanup/depth tested. All new locks use pthread. Transport retirement retains failed runner scratch. No generic core work records or tracker tail events restored."
+    }
   }
 }

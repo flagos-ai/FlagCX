@@ -5811,6 +5811,8 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
   if (state->netCommStream != NULL)
     FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(state->netCommStream));
 
+  FLAGCXCHECKSTRICT(flagcxProxyScratchReady(hcomm));
+
   if (state->groupedAgInputReadyEvent != nullptr) {
     flagcxResult_t destroyResult =
         deviceAdaptor->eventDestroy(state->groupedAgInputReadyEvent);

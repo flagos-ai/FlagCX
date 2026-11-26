@@ -3731,7 +3731,9 @@ static bool builtinCompatFinalize(flagcxCCLAdaptor *adaptor) {
 #elif defined(USE_ENFLAME_ADAPTOR)
   return adaptor == &ecclAdaptor;
 #elif defined(USE_MUSA_ADAPTOR)
-  return adaptor == &musa_mcclAdaptor;
+  // The pinned MUSA SDK has native Finalize, independently of Destroy.
+  (void)adaptor;
+  return false;
 #elif defined(USE_SUNRISE_ADAPTOR)
   return adaptor == &pcclAdaptor;
 #elif defined(USE_KUNLUNXIN_ADAPTOR)
@@ -4491,6 +4493,7 @@ static flagcxResult_t flagcxCommAgreeIpcClose(flagcxComm_t comm,
 static flagcxResult_t flagcxCommFinalizePhase(flagcxComm_t comm, int phase) {
   switch (phase) {
     case 0:
+      FLAGCXCHECKSTRICT(flagcxGroupDrainRejected(comm->heteroComm));
       FLAGCXCHECKSTRICT(flagcxC2cDrainPendingResources(comm));
       if (comm->heteroComm != NULL && comm->heteroComm->proxyState != NULL) {
         flagcxUniRunnerState *state =
@@ -5209,6 +5212,7 @@ flagcxResult_t flagcxGetAsync(void *localbuff, size_t count,
                               flagcxWindow_t peerWin, size_t peerWinOffset,
                               unsigned int flags, flagcxComm_t comm,
                               flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   if (flags != 0 || comm == NULL || comm->heteroComm == NULL ||
       peerWin == NULL || stream == NULL)
     return flagcxInvalidArgument;

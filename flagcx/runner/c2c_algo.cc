@@ -1,6 +1,7 @@
 #include "c2c_algo.h"
 #include "c2c_ir.h"
 #include "coll_proxy_transport.h"
+#include "proxy.h"
 #include "runner.h"
 #include "runner_result.h"
 #include <cstdint>
@@ -9,7 +10,8 @@
 
 // Only failed invocation cleanup is retained here. No completion events or
 // per-operation tracker records are created for ordinary C2C submissions.
-static flagcxResult_t releaseC2cResources(struct flagcxC2cResources *owner) {
+static flagcxResult_t releaseC2cResources(struct flagcxC2cResources *owner,
+                                          flagcxComm_t comm) {
   if (owner->needDrain && !owner->userDrained) {
     FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(owner->userStream));
     owner->userDrained = true;
@@ -19,6 +21,7 @@ static flagcxResult_t releaseC2cResources(struct flagcxC2cResources *owner) {
     FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(owner->privateStream));
     owner->privateDrained = true;
   }
+  FLAGCXCHECKSTRICT(flagcxProxyScratchReady(comm->heteroComm));
   if (owner->scratch != NULL) {
     FLAGCXCHECKSTRICT(deviceAdaptor->deviceFree(owner->scratch, flagcxMemDevice,
                                                 owner->userStream));
@@ -36,7 +39,7 @@ flagcxResult_t flagcxC2cDrainPendingResources(flagcxComm_t comm) {
     return flagcxInvalidArgument;
   while (comm->pendingC2cResources != NULL) {
     struct flagcxC2cResources *owner = comm->pendingC2cResources;
-    FLAGCXCHECKSTRICT(releaseC2cResources(owner));
+    FLAGCXCHECKSTRICT(releaseC2cResources(owner, comm));
     comm->pendingC2cResources = owner->next;
     free(owner);
   }
@@ -2675,7 +2678,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
   owner->scratch = scratchBuffer_;
   owner->privateStream = hetStream;
   owner->needDrain = result != flagcxSuccess;
-  flagcxResult_t cleanup = releaseC2cResources(owner);
+  flagcxResult_t cleanup = releaseC2cResources(owner, comm_);
   scratchBuffer_ = NULL;
   if (cleanup != flagcxSuccess) {
     owner->next = comm_->pendingC2cResources;

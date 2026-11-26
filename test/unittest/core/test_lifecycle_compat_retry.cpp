@@ -1,4 +1,5 @@
 #include "ipc_lifecycle_mock.hpp"
+#include <unistd.h>
 
 TEST_F(IpcLifecycleMock, BuiltinCompatFinalizeDestroysNativeButKeepsBacking) {
   addBackingAndImport();
@@ -130,4 +131,69 @@ TEST_F(IpcLifecycleMock, RetiredProxyErrorIsReportedBeforeRetryCompletes) {
   EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
   destroySuccessfully();
   EXPECT_EQ(transportFrees, 1);
+}
+
+TEST_F(IpcLifecycleMock, ClosedFusedAndAsyncGetEntriesRejectBeforePreparation) {
+  comm->closing = true;
+  EXPECT_EQ(flagcxAllGatherGemm(nullptr, nullptr, nullptr, 1, 1, 1, flagcxFloat,
+                                comm, nullptr),
+            flagcxInvalidUsage);
+  EXPECT_EQ(flagcxGemmReduceScatter(nullptr, nullptr, nullptr, 1, 1, 1,
+                                    flagcxFloat, flagcxSum, comm, nullptr),
+            flagcxInvalidUsage);
+  EXPECT_EQ(
+      flagcxGetAsync(nullptr, 0, flagcxFloat, 0, nullptr, 0, 0, comm, nullptr),
+      flagcxInvalidUsage);
+}
+
+TEST_F(IpcLifecycleMock, HostMappedBarrierRollbackRetainsPinnedMappingOwner) {
+  // Re-exec isolates the cached runtime parameter from other test cases.
+  std::string previous = ::testing::FLAGS_gtest_death_test_style;
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  flagcxDevCommRequirements requirements =
+      FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  requirements.intraBarrierCount = 1;
+  EXPECT_EXIT(
+      {
+        setenv("FLAGCX_SIGNAL_HOST_ENABLE", "1", 1);
+        auto check = [](bool ok) {
+          if (!ok)
+            _exit(90);
+        };
+        comm->magic = (uint64_t)getpid();
+        comm->localRankToRank = (int *)calloc(1, sizeof(int));
+        device.hostRegister = [](void *, size_t) {
+          ++active->transportCloses;
+          return flagcxSuccess;
+        };
+        device.hostUnregister = [](void *) {
+          ++active->backendCleanups;
+          return active->failDevice ? flagcxInProgress : flagcxSuccess;
+        };
+        device.hostGetDevicePointer = [](void **, void *) {
+          return flagcxRemoteError;
+        };
+        flagcxDevCommInternal view = {};
+        view.barrierIpcIndex = view.signalIpcSlot = -1;
+        check(backend.devCommCreate(comm, &requirements, sizeof(requirements),
+                                    &view) == flagcxRemoteError);
+        check(transportCloses == 1 && backendCleanups == 0);
+        check(view.registeredBarrierShmCount == 1);
+        check(view.myShmHandle != nullptr &&
+              view.localBarrierShmPtr != nullptr);
+        auto owner = view.myShmHandle;
+        auto mapping = view.localBarrierShmPtr;
+        failDevice = true;
+        check(backend.devCommDestroy(comm, &view) == flagcxInProgress);
+        check(view.myShmHandle == owner && view.localBarrierShmPtr == mapping);
+        check(view.registeredBarrierShmCount == 1);
+        failDevice = false;
+        check(backend.devCommDestroy(comm, &view) == flagcxSuccess);
+        check(view.myShmHandle == nullptr &&
+              view.registeredBarrierShmCount == 0);
+        check(backendCleanups == 2);
+        _exit(0);
+      },
+      ::testing::ExitedWithCode(0), "");
+  ::testing::FLAGS_gtest_death_test_style = previous;
 }

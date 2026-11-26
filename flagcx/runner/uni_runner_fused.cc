@@ -28,6 +28,8 @@ extern "C" flagcxResult_t flagcxFusedDrainPendingBuffers(flagcxComm_t comm) {
     return flagcxSuccess;
   FLAGCXCHECKSTRICT(deviceAdaptor->setDevice(comm->heteroComm->cudaDev));
 
+  FLAGCXCHECKSTRICT(flagcxProxyScratchReady(comm->heteroComm));
+
   bool needsRunnerCleanup = false;
   for (auto *node = state->pendingFusedBuffers; node != nullptr;
        node = node->next)
@@ -615,6 +617,7 @@ flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
                                    void *output, size_t mPerRank, size_t n,
                                    size_t k, flagcxDataType_t datatype,
                                    flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   flagcxResult_t res = validateCommon(input, weight, output, mPerRank, n, k,
                                       datatype, comm, stream);
   if (comm == nullptr) {
@@ -747,6 +750,7 @@ flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
                                        flagcxDataType_t datatype,
                                        flagcxRedOp_t op, flagcxComm_t comm,
                                        flagcxStream_t stream) {
+  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
   flagcxResult_t res = validateCommon(input, weight, output, m, n, kPerRank,
                                       datatype, comm, stream);
   if (comm == nullptr) {

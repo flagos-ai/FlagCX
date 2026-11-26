@@ -122,3 +122,48 @@ TEST_F(IpcLifecycleMock, UniRunnerPartialStreamCreationRetainsFirstOwner) {
   EXPECT_EQ(cleanupUniRunner(comm), flagcxSuccess);
   EXPECT_EQ(state.redStream, nullptr);
 }
+
+TEST_F(IpcLifecycleMock,
+       CancelledCopyKeepsRunnerWorkspaceUntilTransportRetires) {
+  addTransport();
+  auto &state = comm->heteroComm->proxyState->uniRunnerState;
+  auto *buffers = (flagcxFusedInvocationBuffers *)calloc(
+      1, sizeof(flagcxFusedInvocationBuffers));
+  buffers->workspace = calloc(1, 64);
+  buffers->runnerCleanupPending = true;
+  state.pendingFusedBuffers = buffers;
+  state.redStream = (flagcxStream_t)0x1000;
+  device.streamSynchronize = [](flagcxStream_t) { return flagcxSuccess; };
+  device.streamDestroy = [](flagcxStream_t) {
+    ++active->syncs;
+    return flagcxSuccess;
+  };
+  comm->heteroComm->proxyState->asyncResult = flagcxRemoteError;
+  comm->heteroComm->proxyState->pendingTransportOps = 1;
+  EXPECT_EQ(flagcxFusedDrainPendingBuffers(comm), flagcxInProgress);
+  EXPECT_EQ(state.pendingFusedBuffers, buffers);
+  EXPECT_NE(buffers->workspace, nullptr);
+  EXPECT_TRUE(frees.empty());
+  EXPECT_EQ(syncs, 0);
+  comm->heteroComm->proxyState->pendingTransportOps = 0;
+  EXPECT_EQ(flagcxFusedDrainPendingBuffers(comm), flagcxSuccess);
+  EXPECT_EQ(state.pendingFusedBuffers, nullptr);
+  EXPECT_EQ(syncs, 1);
+  EXPECT_EQ(frees.size(), 1u);
+}
+
+TEST_F(IpcLifecycleMock, CancelledCopyKeepsC2cScratchUntilTransportRetires) {
+  addTransport();
+  auto *owner = (flagcxC2cResources *)calloc(1, sizeof(flagcxC2cResources));
+  owner->scratch = calloc(1, 64);
+  comm->pendingC2cResources = owner;
+  comm->heteroComm->proxyState->asyncResult = flagcxRemoteError;
+  comm->heteroComm->proxyState->pendingTransportOps = 1;
+  EXPECT_EQ(flagcxC2cDrainPendingResources(comm), flagcxInProgress);
+  EXPECT_EQ(comm->pendingC2cResources, owner);
+  EXPECT_TRUE(frees.empty());
+  comm->heteroComm->proxyState->pendingTransportOps = 0;
+  EXPECT_EQ(flagcxC2cDrainPendingResources(comm), flagcxSuccess);
+  EXPECT_EQ(comm->pendingC2cResources, nullptr);
+  EXPECT_EQ(frees.size(), 1u);
+}

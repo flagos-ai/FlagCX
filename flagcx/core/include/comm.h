@@ -177,6 +177,7 @@ struct flagcxHeteroComm {
   bool importsClosedConfirmed, registrationsClosed, closeLocalDone;
   bool netPluginHeld;
   bool initRollbackPending;
+  struct flagcxProxyOp *rejectedGroupOps;
   int closePhase, closeRunning;
   uint64_t startMagic;
   bool destroyProxyComplete;

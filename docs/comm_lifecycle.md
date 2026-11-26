@@ -92,13 +92,17 @@ submitted once and polled through its asynchronous-error API on subsequent
 Finalize calls. A synchronous Success does not require an asynchronous poller.
 Errors, unsupported operations and missing progress support preserve the owner.
 The existing built-in SDK compatibility policy is retained: HCCL, CNCL,
-ECCL, MUSA MCCL, PCCL and XCCL use their supported native Destroy operation
+ECCL, PCCL and XCCL use their supported native Destroy operation
 at the Finalize boundary. Selection uses the actual built-in adaptor identity;
 an unknown plugin does not inherit this behavior from its name. A failed or
 InProgress compatibility close retains the native owner and aliases. Only
 strict Success clears them. Exported FlagCX backing remains allocated until
 public Destroy. Required native collective closure is agreed during init,
 separately from the IPC participation bit.
+
+MUSA's pinned 5.2 SDK uses native `mcclCommFinalize` separately from Destroy.
+It does not use compatibility Destroy at the Finalize boundary. Native
+stream-isolation and IPC cleanup coverage remain required on MUSA.
 
 Initializer failures keep acquired plugin references and partial native owners
 for Destroy retry. This path does not call native Finalize on a half-built SDK
@@ -128,9 +132,18 @@ Ascend SHMEM and MetaX Device API integrations are preserved independently.
 The ordinary host-callback group path is:
 
 ```text
-launch stream:  readiness events -> host callback
-proxy stream:  accepted copy -> copy completion event
+each operation stream: readiness -> common input-ready wait -> host callback
+proxy copy stream:     accepted copy -> copy completion event
 ```
+
+The default stream participates through its native-null stream wrapper. Every
+participating operation stream waits for all inputs before entering a callback;
+one callback starts the shared proxy semaphore and the others wait for its
+completion. Callbacks are submitted for all Comms before GroupEnd returns. A
+sealed notification owner prevents proxy retirement while submission is still
+being built, and callback references keep it alive until every callback returns.
+Device semaphore slots remain leased until both device completion and host
+retirement are confirmed. Their expandable pool uses pthread mutexes.
 
 No core WorkFinish/group-associated completion events are appended to the
 callback's launch stream. Existing data-path events remain, including readiness,
@@ -143,6 +156,13 @@ all SDK callback/event combinations are safe.
 Ordinary GroupEnd retains baseline submission behavior. Failed C2C/UniRunner
 cleanup retains concrete buffer/stream owners and retries stream-level cleanup;
 it creates no per-operation tracker events and adds no device-wide fallback.
+A partial notification failure cancels the posted prefix, retains rejected
+proxy owners and discards unsubmitted tasks. Cancellation can release a callback
+before accepted copy/network requests finish: existing transport retirement
+keeps those owners, and a transport-queue count prevents failed runner cleanup
+from freeing their private scratch early. Notification streams are queried on
+failed retirement; an SDK error or InProgress retains the owner for retry.
+This count does not collect public API work or record stream-tail events.
 Caller completion before Finalize replaces the removed automatic user-work
 drain guarantee. Its performance and overlap effects need hardware measurement.
 

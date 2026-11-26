@@ -93,6 +93,32 @@ static flagcxResult_t asyncProxyOpEnqueue(struct flagcxProxyLocalPeer *peer,
   return flagcxSuccess;
 }
 
+// Private scratch may outlive a cancelled callback while its accepted copy or
+// network requests are still retiring. This counts only the transport queue.
+flagcxResult_t flagcxProxyScratchReady(struct flagcxHeteroComm *comm) {
+  if (comm == NULL)
+    return flagcxSuccess;
+  if (__atomic_load_n(&comm->rejectedGroupOps, __ATOMIC_ACQUIRE) != NULL)
+    return flagcxInProgress;
+  if (comm->proxyState == NULL)
+    return flagcxSuccess;
+  flagcxResult_t error =
+      __atomic_load_n(&comm->proxyState->asyncResult, __ATOMIC_ACQUIRE);
+  if (error != flagcxSuccess && error != flagcxInProgress &&
+      __atomic_load_n(&comm->proxyState->pendingTransportOps,
+                      __ATOMIC_ACQUIRE) != 0)
+    return flagcxInProgress;
+  return flagcxSuccess;
+}
+
+static void proxyTransportRetired(struct flagcxProxyState *state,
+                                  struct flagcxProxyOp *op) {
+  if (op->retirementCounted) {
+    __atomic_fetch_sub(&state->pendingTransportOps, 1, __ATOMIC_RELEASE);
+    op->retirementCounted = false;
+  }
+}
+
 flagcxResult_t flagcxProxyRecordCopy(struct flagcxProxyArgs *args,
                                      flagcxEvent_t event,
                                      flagcxStream_t stream) {
@@ -156,6 +182,7 @@ static flagcxResult_t proxyRetireAccepted(flagcxProxyConnection *connection,
 
 static flagcxResult_t asyncProxyOpDequeue(struct flagcxProxyLocalPeer *peer,
                                           flagcxProxyAsyncOp *op) {
+  FLAGCXCHECKSTRICT(flagcxReleaseSemaphore(&op->args.semaphore));
   if (peer->asyncOps == op)
     peer->asyncOps = op->next;
   if (op->next)
@@ -166,7 +193,6 @@ static flagcxResult_t asyncProxyOpDequeue(struct flagcxProxyLocalPeer *peer,
     free(op->reqBuff);
   if (op->respSize)
     free(op->respBuff);
-  op->args.semaphore.reset();
   delete op;
   return flagcxSuccess;
 }
@@ -624,6 +650,9 @@ static flagcxResult_t SaveProxy(struct flagcxHeteroComm *comm,
     pthread_mutex_lock(&comm->proxyState->mutex);
     flagcxProdProgChannelListEnList(&comm->proxyState->prodProgChannelHead,
                                     proxyOps);
+    op->retirementCounted = true;
+    __atomic_fetch_add(&comm->proxyState->pendingTransportOps, 1,
+                       __ATOMIC_RELEASE);
     flagcxIntruQueueEnqueue(queue, op);
     pthread_cond_signal(&comm->proxyState->cond);
     pthread_mutex_unlock(&comm->proxyState->mutex);
@@ -702,14 +731,22 @@ static void flagcxProxyRetireOp(
       op->args.semaphore->subCounter(op->args.opId);
     op->args.done = 1;
   }
+  flagcxResult_t notification = op->args.semaphore == nullptr
+                                    ? flagcxSuccess
+                                    : op->args.semaphore->drainNotifications();
   const bool gpuDone =
-      op->args.semaphore == nullptr || op->args.semaphore->pollEnd();
+      notification == flagcxSuccess &&
+      (op->args.semaphore == nullptr || op->args.semaphore->pollEnd());
   int retired = 0;
   flagcxResult_t cleanup =
       proxyRetireAccepted(op->connection, &op->args, &retired);
   flagcxIntruQueueDelete(queue, op);
   if (gpuDone && retired)
     cleanup = flagcxNetCancelRelaySendOp(op);
+  if (gpuDone && retired && cleanup == flagcxSuccess)
+    cleanup = flagcxReleaseSemaphore(&op->args.semaphore);
+  if (notification != flagcxSuccess && notification != flagcxInProgress)
+    cleanup = notification;
   if (!gpuDone || !retired || cleanup != flagcxSuccess) {
     if (cleanup != flagcxSuccess && cleanup != flagcxInProgress) {
       flagcxResult_t expected = flagcxSuccess;
@@ -721,7 +758,7 @@ static void flagcxProxyRetireOp(
     proxyState->deferredRelayOps = op;
     return;
   }
-  op->args.semaphore.reset();
+  proxyTransportRetired(proxyState, op);
   delete op;
 }
 
@@ -731,6 +768,9 @@ static void flagcxProxyRetireFailedQueue(
         *queue) {
   while (!flagcxIntruQueueEmpty(queue)) {
     struct flagcxProxyOp *op = flagcxIntruQueueHead(queue);
+    if (op->args.semaphore != NULL)
+      op->args.semaphore->cancelNotifications(
+          __atomic_load_n(&proxyState->asyncResult, __ATOMIC_ACQUIRE));
     flagcxProxyRetireOp(proxyState, queue, op);
   }
 }
@@ -740,13 +780,22 @@ static void flagcxProxyDrainDeferredRelayOps(struct flagcxProxyState *state,
   flagcxProxyOp **link = &state->deferredRelayOps;
   while (*link != NULL) {
     flagcxProxyOp *op = *link;
+    flagcxResult_t notification =
+        op->args.semaphore == nullptr
+            ? flagcxSuccess
+            : op->args.semaphore->drainNotifications();
     const bool gpuDone =
-        op->args.semaphore == nullptr || op->args.semaphore->pollEnd();
+        notification == flagcxSuccess &&
+        (op->args.semaphore == nullptr || op->args.semaphore->pollEnd());
     int retired = 0;
     flagcxResult_t cleanup =
         proxyRetireAccepted(op->connection, &op->args, &retired);
     if (gpuDone && retired)
       cleanup = flagcxNetCancelRelaySendOp(op);
+    if (gpuDone && retired && cleanup == flagcxSuccess)
+      cleanup = flagcxReleaseSemaphore(&op->args.semaphore);
+    if (notification != flagcxSuccess && notification != flagcxInProgress)
+      cleanup = notification;
     if (!gpuDone || !retired || cleanup != flagcxSuccess) {
       if (cleanup != flagcxSuccess && cleanup != flagcxInProgress) {
         flagcxResult_t expected = flagcxSuccess;
@@ -759,7 +808,7 @@ static void flagcxProxyDrainDeferredRelayOps(struct flagcxProxyState *state,
       continue;
     }
     *link = op->next;
-    op->args.semaphore.reset();
+    proxyTransportRetired(state, op);
     delete op;
   }
 }
@@ -771,6 +820,10 @@ flagcxResult_t flagcxProxyFailProgressQueue(
   if (queue == NULL)
     return flagcxInvalidArgument;
   flagcxProxyRecordAsyncError(proxyState, result);
+  for (struct flagcxProxyOp *op = flagcxIntruQueueHead(queue); op != NULL;
+       op = op->next)
+    if (op->args.semaphore != NULL)
+      op->args.semaphore->cancelNotifications(result);
   flagcxProxyRetireFailedQueue(proxyState, queue);
   return result;
 }
@@ -830,6 +883,11 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
             struct flagcxProxyOp *op = flagcxIntruQueueHead(queue);
             flagcxResult_t asyncResult =
                 __atomic_load_n(&proxyState->asyncResult, __ATOMIC_ACQUIRE);
+            if (op->args.semaphore != NULL &&
+                op->args.semaphore->getNotificationError() != flagcxSuccess) {
+              asyncResult = op->args.semaphore->getNotificationError();
+              flagcxProxyRecordAsyncError(proxyState, asyncResult);
+            }
             if (asyncResult != flagcxSuccess &&
                 asyncResult != flagcxInProgress) {
               flagcxProxyRetireFailedQueue(proxyState, queue);
@@ -857,6 +915,11 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
             struct flagcxProxyOp *op = flagcxIntruQueueHead(queue);
             flagcxResult_t asyncResult =
                 __atomic_load_n(&proxyState->asyncResult, __ATOMIC_ACQUIRE);
+            if (op->args.semaphore != NULL &&
+                op->args.semaphore->getNotificationError() != flagcxSuccess) {
+              asyncResult = op->args.semaphore->getNotificationError();
+              flagcxProxyRecordAsyncError(proxyState, asyncResult);
+            }
             if (asyncResult != flagcxSuccess &&
                 asyncResult != flagcxInProgress) {
               flagcxProxyRetireFailedQueue(proxyState, queue);
