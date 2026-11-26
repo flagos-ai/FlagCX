@@ -32,39 +32,50 @@ flagcxResult_t flagcxDeviceSemaphoreBufferPool::clear() {
   return flagcxSuccess;
 }
 
-int flagcxDeviceSemaphoreBufferPool::getSlotId() {
-  assert(capacity != -1);
-  if (events[slotId] != nullptr) {
-    // wait for the previous event to complete
-    while (deviceAdaptor->eventQuery(events[slotId]) != flagcxSuccess) {
+flagcxResult_t flagcxDeviceSemaphoreBufferPool::getSlotId(int *id) {
+  if (id == NULL || capacity <= 0)
+    return flagcxInvalidArgument;
+  if (events[slotId] != NULL) {
+    for (;;) {
+      flagcxResult_t result = deviceAdaptor->eventQuery(events[slotId]);
+      if (result == flagcxSuccess)
+        break;
+      if (result != flagcxInProgress)
+        return result;
       sched_yield();
     }
-    events[slotId] = nullptr;
+    events[slotId] = NULL;
   }
-  // set this slot signals to zero
   int offset = FLAGCX_SIGNALS_PER_SEMAPHORE * slotId;
   memset(signalsPool + offset, 0, FLAGCX_SIGNALS_PER_SEMAPHORE * sizeof(int));
-  int ret = slotId;
-  // Move to next slot
+  *id = slotId;
   slotId = (slotId + 1) % capacity;
-  return ret;
+  return flagcxSuccess;
 }
 
-void flagcxDeviceSemaphoreBufferPool::initialize() {
-  capacity = flagcxParamSemaphoreBufferPoolCapacity();
+flagcxResult_t flagcxDeviceSemaphoreBufferPool::initialize() {
+  if (capacity > 0)
+    return flagcxSuccess;
+  int count = flagcxParamSemaphoreBufferPoolCapacity();
+  if (count <= 0 ||
+      (size_t)count > SIZE_MAX / FLAGCX_SIGNALS_PER_SEMAPHORE / sizeof(int))
+    return flagcxInvalidArgument;
+  // An adaptor may return a partial allocation owner on failure.
+  FLAGCXCHECKSTRICT(clear());
+  FLAGCXCHECKSTRICT(flagcxCalloc(&events, count));
+  FLAGCXCHECKSTRICT(deviceAdaptor->deviceMalloc(
+      (void **)&signalsPool,
+      (size_t)count * FLAGCX_SIGNALS_PER_SEMAPHORE * sizeof(int), flagcxMemHost,
+      NULL));
+  if (signalsPool == NULL)
+    return flagcxSystemError;
+  FLAGCXCHECKSTRICT(
+      deviceAdaptor->hostGetDevicePointer(&dSignalsPool, signalsPool));
+  if (dSignalsPool == NULL)
+    return flagcxSystemError;
+  capacity = count;
   slotId = 0;
-  // Allocate host-pinned memory for all semaphores (3 ints each)
-  deviceAdaptor->deviceMalloc((void **)&signalsPool,
-                              capacity * FLAGCX_SIGNALS_PER_SEMAPHORE *
-                                  sizeof(int),
-                              flagcxMemHost, nullptr);
-  // Get device pointer alias
-  deviceAdaptor->hostGetDevicePointer(&dSignalsPool, (void *)signalsPool);
-  // Init events to nullptr
-  flagcxCalloc(&events, capacity);
-  for (int i = 0; i < capacity; i++) {
-    events[i] = nullptr;
-  }
+  return flagcxSuccess;
 }
 
 // Set event for a semaphore

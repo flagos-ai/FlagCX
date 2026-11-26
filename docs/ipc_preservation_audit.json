@@ -9039,5 +9039,24 @@
       "step": 5,
       "status": "pending"
     }
-  ]
+  ],
+  "repair_step3": {
+    "status": "validated",
+    "scope": [
+      "strict tuner aliases",
+      "SDK -> runner -> public InProgress propagation",
+      "UniRunner and C2C failed scratch cleanup ownership",
+      "FIFO idempotence",
+      "semaphore initialization owner/error handling",
+      "private stream probe retained; no device-wide group fallback"
+    ],
+    "validation": {
+      "core_passed": 256,
+      "core_hardware_skipped": 5,
+      "runner_passed": 105,
+      "platform": "Linux host/mock, no accelerator",
+      "logs": "/private/tmp/iluvatar-ipc-validation/preserve3-*-final.log"
+    },
+    "tracker_restored": false
+  }
 }

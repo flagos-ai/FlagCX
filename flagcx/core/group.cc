@@ -129,6 +129,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
   } else {
     semaphore = std::make_shared<flagcxHostSemaphore>();
   }
+  if (semaphore->initResult != flagcxSuccess)
+    return semaphore->initResult;
   flagcxStream_t launchStream = nullptr;
   flagcxEvent_t launchEvent = nullptr;
   // temporary stored proxy ops in step order
@@ -203,6 +205,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
       goto fail;
   }
 
+  TRACE(FLAGCX_COLL, "group launch prepare head %p", groupCommHeadMain);
   if (groupCommHeadMain != nullptr) {
     struct flagcxHeteroComm *comm = groupCommHeadMain;
     // post all send/recv tasks
@@ -244,6 +247,13 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                                      .proxyConn.connection;
                 op->stream = sendTasks[i]->stream;
                 op->event = semaphore->getEvent();
+                if (op->event == NULL) {
+                  ret = semaphore->initResult == flagcxSuccess
+                            ? flagcxSystemError
+                            : semaphore->initResult;
+                  delete op;
+                  goto fail;
+                }
                 op->args.chunkSteps = 1; // single step
                 op->args.semaphore = semaphore;
                 op->args.opId = sendTasks[i]->opId == INT_MAX
@@ -336,6 +346,13 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                     ? (p2pScheduleDisable ? defaultStep : roundRecvStep)
                     : p2p->step;
             op->event = semaphore->getEvent();
+            if (op->event == NULL) {
+              ret = semaphore->initResult == flagcxSuccess
+                        ? flagcxSystemError
+                        : semaphore->initResult;
+              delete op;
+              goto fail;
+            }
             semaphore->addCounter(op->args.opId);
             defaultOpId++;
             roundRecvStep++;
@@ -389,6 +406,13 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                     ? (p2pScheduleDisable ? defaultStep : roundSendStep)
                     : p2p->step;
             op->event = semaphore->getEvent();
+            if (op->event == NULL) {
+              ret = semaphore->initResult == flagcxSuccess
+                        ? flagcxSystemError
+                        : semaphore->initResult;
+              delete op;
+              goto fail;
+            }
             semaphore->addCounter(op->args.opId);
             defaultOpId++;
             roundSendStep++;
@@ -421,6 +445,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
     }
   }
 
+  TRACE(FLAGCX_COLL, "group launch notify stream %p event %p", launchStream,
+        launchEvent);
   if (launchStream != nullptr && launchEvent != nullptr) {
     if (useStreamValueGroup) {
       ret = streamValueSemaphore->enqueueCompletion(launchStream);
@@ -435,8 +461,6 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
         }
         flagcxResult_t syncResult =
             deviceAdaptor->streamSynchronize(launchStream);
-        if (syncResult != flagcxSuccess)
-          syncResult = deviceAdaptor->deviceSynchronize();
         if (syncResult == flagcxSuccess)
           streamValueSemaphore->markCompletionDrained();
         else {

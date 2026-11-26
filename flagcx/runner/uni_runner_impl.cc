@@ -5645,7 +5645,9 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
   return flagcxSuccess;
 }
 
-flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
+static flagcxResult_t initUniRunnerImpl(flagcxComm_t comm,
+                                        flagcxStream_t stream, bool *started) {
+  *started = false;
   if (!comm->uniRunnerKernelSupported)
     return flagcxNotSupported;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
@@ -5683,6 +5685,7 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
     WARN("UniRunner invocation-local state was not fully cleaned before init");
     return flagcxInvalidUsage;
   }
+  *started = true;
   runnerState->dagNodes = NULL;
   runnerState->numDagNodes = 0;
   runnerState->dagPlan.topoOrder = NULL;
@@ -5753,8 +5756,7 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
   runnerState->numPendingNodes = 0;
 
   // Create dedicated reduce and copy streams
-  flagcxStream_t redStream = NULL;
-  flagcxResult_t result = deviceAdaptor->streamCreate(&redStream);
+  flagcxResult_t result = deviceAdaptor->streamCreate(&runnerState->redStream);
   if (result != flagcxSuccess) {
     delete runnerState->ipcFifo;
     runnerState->ipcFifo = NULL;
@@ -5762,20 +5764,29 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
     runnerState->fifo = NULL;
     return result;
   }
-  flagcxStream_t cpyStream = NULL;
-  result = deviceAdaptor->streamCreate(&cpyStream);
+  result = deviceAdaptor->streamCreate(&runnerState->cpyStream);
   if (result != flagcxSuccess) {
-    (void)deviceAdaptor->streamDestroy(redStream);
     delete runnerState->ipcFifo;
     runnerState->ipcFifo = NULL;
     delete runnerState->fifo;
     runnerState->fifo = NULL;
     return result;
   }
-  runnerState->redStream = redStream;
-  runnerState->cpyStream = cpyStream;
   runnerState->ipcCommStream = stream;
   return flagcxSuccess;
+}
+
+flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
+  bool started = false;
+  flagcxResult_t result = initUniRunnerImpl(comm, stream, &started);
+  if (started && result != flagcxSuccess) {
+    // No stream work has been submitted by init. Retryable cleanup retains
+    // each successful allocation until the corresponding release succeeds.
+    flagcxResult_t cleanup = cleanupUniRunner(comm);
+    if (cleanup != flagcxSuccess)
+      return cleanup;
+  }
+  return result;
 }
 
 flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
@@ -5791,20 +5802,14 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
 
   // Stream work may still reference completion flags and invocation buffers.
   // If a stream cannot be drained, retain all resources for a later retry.
-  if (state->redStream != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->streamSynchronize(state->redStream), &result);
-  if (state->cpyStream != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->streamSynchronize(state->cpyStream), &result);
-  if (state->ipcCommStream != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->streamSynchronize(state->ipcCommStream), &result);
-  if (state->netCommStream != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->streamSynchronize(state->netCommStream), &result);
-  if (result != flagcxSuccess)
-    return result;
+  if (state->redStream != NULL)
+    FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(state->redStream));
+  if (state->cpyStream != NULL)
+    FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(state->cpyStream));
+  if (state->ipcCommStream != NULL)
+    FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(state->ipcCommStream));
+  if (state->netCommStream != NULL)
+    FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(state->netCommStream));
 
   if (state->groupedAgInputReadyEvent != nullptr) {
     flagcxResult_t destroyResult =
@@ -5814,14 +5819,15 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
     state->groupedAgInputReadyEvent = nullptr;
   }
 
-  flagcxRunnerRecordFirstError(cleanupDagScheduler(state), &result);
+  FLAGCXCHECKSTRICT(cleanupDagScheduler(state));
   state->ipcReadySlots = 0;
 
   for (size_t i = 0; i < state->numDagCompletionEvents; ++i) {
     if (state->dagCompletionEvents[i] != nullptr) {
       flagcxResult_t destroyResult =
           deviceAdaptor->eventDestroy(state->dagCompletionEvents[i]);
-      flagcxRunnerRecordFirstError(destroyResult, &result);
+      if (result == flagcxSuccess)
+        result = destroyResult;
       if (destroyResult == flagcxSuccess)
         state->dagCompletionEvents[i] = nullptr;
     }
@@ -5831,8 +5837,7 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
   free(state->dagCompletionEvents);
   state->dagCompletionEvents = nullptr;
   state->numDagCompletionEvents = 0;
-  flagcxRunnerRecordFirstError(releaseUniRunnerIpcRingInvocation(state),
-                               &result);
+  FLAGCXCHECKSTRICT(releaseUniRunnerIpcRingInvocation(state));
   if (result != flagcxSuccess)
     return result;
   state->streamFlagsSize = 0;
@@ -5840,21 +5845,24 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
   if (state->redStream != nullptr) {
     flagcxResult_t destroyResult =
         deviceAdaptor->streamDestroy(state->redStream);
-    flagcxRunnerRecordFirstError(destroyResult, &result);
+    if (result == flagcxSuccess)
+      result = destroyResult;
     if (destroyResult == flagcxSuccess)
       state->redStream = nullptr;
   }
   if (state->cpyStream != nullptr) {
     flagcxResult_t destroyResult =
         deviceAdaptor->streamDestroy(state->cpyStream);
-    flagcxRunnerRecordFirstError(destroyResult, &result);
+    if (result == flagcxSuccess)
+      result = destroyResult;
     if (destroyResult == flagcxSuccess)
       state->cpyStream = nullptr;
   }
   if (state->netCommStream != nullptr) {
     flagcxResult_t destroyResult =
         deviceAdaptor->streamDestroy(state->netCommStream);
-    flagcxRunnerRecordFirstError(destroyResult, &result);
+    if (result == flagcxSuccess)
+      result = destroyResult;
     if (destroyResult == flagcxSuccess)
       state->netCommStream = nullptr;
   }
@@ -5862,7 +5870,8 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
 
   if (state->fifo != nullptr) {
     flagcxResult_t destroyResult = state->fifo->flagcxRedFifoDestroy();
-    flagcxRunnerRecordFirstError(destroyResult, &result);
+    if (result == flagcxSuccess)
+      result = destroyResult;
     if (destroyResult == flagcxSuccess) {
       delete state->fifo;
       state->fifo = nullptr;
@@ -5871,7 +5880,8 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
   hcomm->uniRunnerFifoBuffer = nullptr;
   if (state->ipcFifo != nullptr) {
     flagcxResult_t destroyResult = state->ipcFifo->flagcxIpcFifoDestroy();
-    flagcxRunnerRecordFirstError(destroyResult, &result);
+    if (result == flagcxSuccess)
+      result = destroyResult;
     if (destroyResult == flagcxSuccess) {
       delete state->ipcFifo;
       state->ipcFifo = nullptr;
@@ -5881,7 +5891,8 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
   if (state->ipcParentFlagsDevice != nullptr) {
     flagcxResult_t freeResult = deviceAdaptor->deviceFree(
         state->ipcParentFlagsDevice, flagcxMemDevice, nullptr);
-    flagcxRunnerRecordFirstError(freeResult, &result);
+    if (result == flagcxSuccess)
+      result = freeResult;
     if (freeResult == flagcxSuccess) {
       state->ipcParentFlagsDevice = nullptr;
       state->ipcParentFlagsCount = 0;

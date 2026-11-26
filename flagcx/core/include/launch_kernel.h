@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 struct flagcxSemaphore {
+  flagcxResult_t initResult = flagcxSuccess;
   flagcxSemaphore() = default;
   virtual ~flagcxSemaphore() = default;
 
@@ -64,7 +65,9 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
   flagcxEvent_t getEvent() override {
     events.push_back(nullptr);
     auto &event = events.back();
-    deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
+    initResult = deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
+    if (initResult != flagcxSuccess)
+      return NULL;
     return event;
   }
   void signalStart() override {
@@ -132,8 +135,8 @@ struct flagcxDeviceSemaphoreBufferPool {
 
   flagcxDeviceSemaphoreBufferPool();
   ~flagcxDeviceSemaphoreBufferPool();
-  int getSlotId();
-  void initialize();
+  flagcxResult_t getSlotId(int *id);
+  flagcxResult_t initialize();
   flagcxResult_t clear();
   void setEvent(int id, flagcxEvent_t event);
   int *getHostPtr(int id);
@@ -181,18 +184,25 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   std::vector<flagcxEvent_t> events;
 
   flagcxDeviceSemaphore() {
-    if (deviceSemaphoreBufferPool.capacity == -1) {
-      deviceSemaphoreBufferPool.initialize();
-    }
+    slotId = -1;
+    signals = NULL;
+    dSignals = NULL;
+    headEvent = NULL;
     opOffset = 0;
-    slotId = deviceSemaphoreBufferPool.getSlotId();
+    initResult = deviceSemaphoreBufferPool.initialize();
+    if (initResult != flagcxSuccess)
+      return;
+    initResult = deviceSemaphoreBufferPool.getSlotId(&slotId);
+    if (initResult != flagcxSuccess)
+      return;
     signals = deviceSemaphoreBufferPool.getHostPtr(slotId);
     dSignals = deviceSemaphoreBufferPool.getDevicePtr(slotId);
     headEvent = nullptr;
   }
   ~flagcxDeviceSemaphore() override {
     // Clear event in the pool
-    deviceSemaphoreBufferPool.setEvent(slotId, nullptr);
+    if (slotId >= 0)
+      deviceSemaphoreBufferPool.setEvent(slotId, nullptr);
     for (auto event : events) {
       deviceAdaptor->eventDestroy(event);
     }
@@ -200,7 +210,9 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   flagcxEvent_t getEvent() override {
     events.push_back(nullptr);
     auto &event = events.back();
-    deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
+    initResult = deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
+    if (initResult != flagcxSuccess)
+      return NULL;
     // Set the first event to the pool
     if (events.size() == 1) {
       headEvent = event;
@@ -255,7 +267,6 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
 };
 
 struct flagcxStreamValueSemaphore : public flagcxSemaphore {
-  flagcxResult_t initResult;
   int counter;
   uint64_t *signals;
   void *dSignals;
@@ -274,9 +285,8 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
   std::chrono::steady_clock::time_point traceTime{};
 
   flagcxStreamValueSemaphore()
-      : initResult(flagcxSuccess), counter(0), signals(nullptr),
-        dSignals(nullptr), completionEvent(nullptr), completionState(0),
-        completionUnsafe(false) {
+      : counter(0), signals(nullptr), dSignals(nullptr),
+        completionEvent(nullptr), completionState(0), completionUnsafe(false) {
     initResult = streamValueBufferPool.acquire(&signals, &dSignals);
   }
   ~flagcxStreamValueSemaphore() override {
@@ -304,7 +314,9 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
   flagcxEvent_t getEvent() override {
     events.push_back(nullptr);
     auto &event = events.back();
-    deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
+    initResult = deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
+    if (initResult != flagcxSuccess)
+      return NULL;
     return event;
   }
   void signalStart() override {}

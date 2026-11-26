@@ -70,6 +70,13 @@ flagcxResult_t flagcxCommReleaseBuffer(flagcxComm_t comm, void *pointer,
 flagcxResult_t flagcxCommRetireIpcSlot(flagcxComm_t comm, int slot);
 flagcxResult_t flagcxCommCloseRetiredDevComms(flagcxComm_t comm);
 
+struct flagcxC2cResources {
+  struct flagcxC2cResources *next;
+  void *scratch;
+  flagcxStream_t userStream, privateStream;
+  bool needDrain, userDrained, privateDrained;
+};
+
 struct flagcxCommNativeOwner {
   flagcxInnerComm_t handle;
   bool host, accepted, pending;
@@ -84,6 +91,7 @@ struct flagcxComm {
   struct flagcxCommNativeOwner *nativeOwners;
   unsigned int nativeOwnerCount, nativeFinalizeIndex;
   bool nativeCatalogReady;
+  struct flagcxC2cResources *pendingC2cResources;
 
   bool ipcClosingImports, internalImportsConfirmed;
   flagcxDevComm_t retiredDevComms;

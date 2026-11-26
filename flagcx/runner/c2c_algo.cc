@@ -1,10 +1,47 @@
 #include "c2c_algo.h"
 #include "c2c_ir.h"
 #include "coll_proxy_transport.h"
+#include "runner.h"
 #include "runner_result.h"
 #include <cstdint>
 #include <cstdlib>
 #include <stdlib.h>
+
+// Only failed invocation cleanup is retained here. No completion events or
+// per-operation tracker records are created for ordinary C2C submissions.
+static flagcxResult_t releaseC2cResources(struct flagcxC2cResources *owner) {
+  if (owner->needDrain && !owner->userDrained) {
+    FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(owner->userStream));
+    owner->userDrained = true;
+  }
+  if (owner->needDrain && !owner->privateDrained &&
+      owner->privateStream != NULL) {
+    FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(owner->privateStream));
+    owner->privateDrained = true;
+  }
+  if (owner->scratch != NULL) {
+    FLAGCXCHECKSTRICT(deviceAdaptor->deviceFree(owner->scratch, flagcxMemDevice,
+                                                owner->userStream));
+    owner->scratch = NULL;
+  }
+  if (owner->privateStream != NULL) {
+    FLAGCXCHECKSTRICT(deviceAdaptor->streamDestroy(owner->privateStream));
+    owner->privateStream = NULL;
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxC2cDrainPendingResources(flagcxComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  while (comm->pendingC2cResources != NULL) {
+    struct flagcxC2cResources *owner = comm->pendingC2cResources;
+    FLAGCXCHECKSTRICT(releaseC2cResources(owner));
+    comm->pendingC2cResources = owner->next;
+    free(owner);
+  }
+  return flagcxSuccess;
+}
 
 // GCD using Euclidean algorithm
 inline int gcd(int a, int b) {
@@ -2408,6 +2445,10 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
     strategyFound_ = 1;
   }
 
+  FLAGCXCHECKSTRICT(flagcxC2cDrainPendingResources(comm_));
+  struct flagcxC2cResources *owner = NULL;
+  FLAGCXCHECKSTRICT(flagcxCalloc(&owner, 1));
+  owner->userStream = stream;
   scratchBuffer_ = nullptr;
   flagcxStream_t hetStream = nullptr;
   const int homoRoot = root >= 0 ? comm_->globalRank2HomoRank[root] : -1;
@@ -2631,23 +2672,18 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
     return flagcxSuccess;
   }();
 
-  if (result != flagcxSuccess) {
-    flagcxRunnerRecordFirstError(deviceAdaptor->streamSynchronize(stream),
-                                 &result);
-    if (hetStream != nullptr) {
-      flagcxRunnerRecordFirstError(deviceAdaptor->streamSynchronize(hetStream),
-                                   &result);
-    }
+  owner->scratch = scratchBuffer_;
+  owner->privateStream = hetStream;
+  owner->needDrain = result != flagcxSuccess;
+  flagcxResult_t cleanup = releaseC2cResources(owner);
+  scratchBuffer_ = NULL;
+  if (cleanup != flagcxSuccess) {
+    owner->next = comm_->pendingC2cResources;
+    comm_->pendingC2cResources = owner;
+  } else {
+    free(owner);
   }
-  if (scratchBuffer_ != nullptr) {
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->deviceFree(scratchBuffer_, flagcxMemDevice, stream),
-        &result);
-    scratchBuffer_ = nullptr;
-  }
-  if (hetStream != nullptr) {
-    flagcxRunnerRecordFirstError(deviceAdaptor->streamDestroy(hetStream),
-                                 &result);
-  }
+  if (result == flagcxSuccess)
+    result = cleanup;
   return result;
 }
