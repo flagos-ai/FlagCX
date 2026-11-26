@@ -518,7 +518,7 @@ jobs:
           retention-days: 7
 
   perf-test-mthreads:
-    # Temporarily run only device_api and device_api_unified_ir on MUSA.
+    # Temporarily run only perf-test-experimental (musa) on MUSA.
     if: ${{ false && contains(fromJSON(inputs.platforms), 'mthreads') }}
     name: perf-test (musa)
     needs: load-hardware-container-configs
@@ -569,9 +569,7 @@ jobs:
           retention-days: 7
 
   perf-test-experimental-mthreads:
-    # Temporarily run only device_api and device_api_unified_ir on MUSA.
-    # AllGatherGemm also stalls in PR #738, run 45775159982.
-    if: ${{ false && contains(fromJSON(inputs.platforms), 'mthreads') }}
+    if: contains(fromJSON(inputs.platforms), 'mthreads')
     name: perf-test-experimental (musa)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.mthreads_runs_on) }}
@@ -792,6 +790,6 @@ jobs:
           if python3 -c 'import json, os, sys; sys.exit(0 if "mthreads" in json.loads(os.environ["PLATFORMS"]) else 1)'; then
             [[ "$CONFIG_RESULT" == success ]] || { echo "Mthreads configuration loading ended with: $CONFIG_RESULT" >&2; exit 1; }
             [[ "$MTHREADS_RESULT" == skipped ]] || { echo "Disabled MUSA performance job unexpectedly ended with: $MTHREADS_RESULT" >&2; exit 1; }
-            [[ "$MTHREADS_EXPERIMENTAL_RESULT" == skipped ]] || { echo "Disabled MUSA experimental performance job unexpectedly ended with: $MTHREADS_EXPERIMENTAL_RESULT" >&2; exit 1; }
-            echo "MUSA performance CI is temporarily disabled; only device_api and device_api_unified_ir run."
+            [[ "$MTHREADS_EXPERIMENTAL_RESULT" == success ]] || { echo "MUSA experimental performance job ended with: $MTHREADS_EXPERIMENTAL_RESULT" >&2; exit 1; }
+            echo "MUSA experimental performance CI passed; ordinary perf remains disabled."
           fi

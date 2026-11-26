@@ -40,7 +40,8 @@ docker_options:
 
 set_env: .github/scripts/set_env/mthreads.sh
 
-# Temporarily focus MUSA CI on the two native Device API suites.
+# MUSA unit-test jobs are temporarily disabled in unit_tests_common.yml while
+# CI focuses on perf-test-experimental (musa). Retain this list for restoration.
 unit_test_suites:
   - device_api
   - device_api_unified_ir

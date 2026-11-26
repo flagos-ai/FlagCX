@@ -131,11 +131,12 @@ network still needs runner-side network provisioning. This check establishes
 visibility only; the adaptor Host MR and SendRecv tests verify connectivity.
 
 Mthreads CI uses `mt-8g-cicd-flagcx` and the image configured in
-`.github/configs/mthreads.yml`. MUSA CI currently runs only `device_api` and
-`device_api_unified_ir`, using native kernels on four GPUs with logical 2+2
-inter-node coverage and forced-NET phases. These suites remain required.
-All other MUSA unit suites, ordinary/experimental performance jobs and Torch
-jobs are temporarily disabled. Other platforms retain their existing selection.
+`.github/configs/mthreads.yml`. MUSA hardware CI currently runs only
+`perf-test-experimental (musa)`, using native UniRunner kernels on four GPUs
+with a logical 2+2 split. This job is required to succeed. All MUSA unit-test
+jobs, ordinary performance and Torch are temporarily disabled. The unit suite
+list is retained in the configuration for later restoration; the shared unit
+workflow disables their MUSA job. Other platforms retain their existing selection.
 Build its CI image with
 `docker build -f docker/mthreads-ci.Dockerfile .`.
 
@@ -216,8 +217,8 @@ The Mthreads performance jobs display as `perf-test (musa)` and
 `perf-test-experimental (musa)`. Both select the same `mthreads` configuration
 and runner; the experimental workload adds `COMPILE_KERNEL=1` and runs the
 four-rank UniRunner correctness suite on the pinned MUSA 5.2.0 image.
-Both MUSA performance jobs and the MUSA Torch job are temporarily disabled
-while CI focuses on the two native Device API suites. Their completion gates
-require these disabled jobs to be skipped. Re-enable each job and restore its
-required-success gate together when broadening MUSA coverage.
+The experimental job is enabled and required to succeed while CI focuses on
+MUSA UniRunner support. Ordinary MUSA perf and Torch remain disabled, and their
+completion gates require skipped results. Re-enable each disabled job and
+restore its required-success gate together when broadening MUSA coverage.
 See [MUSA UniRunner kernels](../docs/musa_unirunner.md) for validation details.

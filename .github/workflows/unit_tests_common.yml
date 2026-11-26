@@ -56,7 +56,8 @@ jobs:
   unit_test:
     name: ${{ needs.load_config.outputs.display_name }} / ${{ matrix.suite }}
     needs: load_config
-    if: inputs.platform != 'enflame' && inputs.platform != 'kunlunxin'
+    # MUSA hardware CI currently runs only perf-test-experimental (musa).
+    if: inputs.platform != 'enflame' && inputs.platform != 'kunlunxin' && inputs.platform != 'mthreads'
     timeout-minutes: ${{ inputs.cpp_coverage && 60 || 45 }}
     strategy:
       fail-fast: false

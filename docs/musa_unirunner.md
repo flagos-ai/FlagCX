@@ -41,6 +41,11 @@ execution remain necessary to validate the installed SDK and driver.
 
 ## Device API CI
 
+MUSA unit-test CI is currently disabled while hardware validation focuses on
+`perf-test-experimental (musa)`. The configuration retains the two native Device
+API suites for later restoration. The commands and acceptance below describe
+manual execution of these retained suites.
+
 Both `device_api` and `device_api_unified_ir` build the library and tests with
 `USE_MUSA=1 COMPILE_KERNEL=1` in the existing shared Mthreads image. The
 `device_api_host` suite retains its host-only configuration for manual use but
@@ -76,9 +81,9 @@ for suite in device_api device_api_unified_ir; do
 done
 ```
 
-CI uses exactly four visible GPUs: four intra ranks and two per logical node,
-matching the other platforms. Both native Device API suites are required to
-execute. Native SDK/compiler failures,
+Manual acceptance uses exactly four visible GPUs: four intra ranks and two per
+logical node, matching the other platforms. Both native Device API suites must
+execute for that acceptance. Native SDK/compiler failures,
 missing required test results and unexpected skips fail their jobs.
 
 When run manually, the MUSA host suite requires both communicator isolation
@@ -89,12 +94,12 @@ when cleanup needs a retry.
 
 ## Experimental CI
 
-The MUSA UniRunner experimental job is temporarily disabled after the
-four-rank `AllGatherGemm` stall in PR #738, run 45775159982. MUSA CI currently
-enables only `device_api` and `device_api_unified_ir`; ordinary perf, Torch and
-all other MUSA unit suites are also disabled. The workload and kernel
-implementation are retained for diagnosis; restoring CI also requires restoring its
-required-success completion gate.
+MUSA hardware CI currently enables only `perf-test-experimental (musa)` and
+requires it to succeed. All MUSA unit-test jobs (including the two native
+Device API suites), ordinary perf and Torch are temporarily disabled. The
+experimental job runs the full four-rank workload, including AllGatherGemm;
+the stall previously observed in run 45775159982 still requires hardware
+validation and diagnosis.
 
 The performance jobs are named `perf-test (musa)` and
 `perf-test-experimental (musa)`. Both use the single platform configuration
@@ -145,8 +150,8 @@ The SlicedAR sweep defaults to 64 KiB–64 MiB and can be adjusted through
 `FLAGCX_CI_MUSA_SLICED_AR_MAX_BYTES` when running the workload directly.
 Performance numbers establish a baseline; CI has no bandwidth threshold.
 
-The two selected MUSA Device API suites must succeed. Performance and Torch
-completion gates expect their disabled MUSA jobs to be skipped. Restore the
+The MUSA experimental job must succeed. Ordinary perf and Torch completion
+gates expect their disabled MUSA jobs to be skipped. Restore the
 required-success checks along with the jobs when re-enabling them.
 
 ## Local checks without the SDK
