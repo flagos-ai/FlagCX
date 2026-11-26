@@ -220,4 +220,9 @@ The Mthreads performance jobs display as `perf-test (musa)` and
 `perf-test-experimental (musa)`. Both select the same `mthreads` configuration
 and runner; the experimental workload adds `COMPILE_KERNEL=1` and runs the
 four-rank UniRunner correctness suite on the pinned MUSA 5.2.0 image.
+The MUSA experimental job is temporarily disabled while its four-rank
+`AllGatherGemm` stall is diagnosed (PR #738, run 45775159982). Its completion
+gate requires the disabled job to be skipped; ordinary performance, Torch,
+and Device API jobs remain required. Re-enable the job and restore its
+required-success gate together after fixing the stall.
 See [MUSA UniRunner kernels](../docs/musa_unirunner.md) for validation details.

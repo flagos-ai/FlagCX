@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -179,12 +181,18 @@ run_suite
                 ("metax", True),
                 ("klx", False),
                 ("iluvatar", True),
+                ("musa", False),
             ):
                 with self.subTest(adaptor=adaptor):
                     capture = root / f"{adaptor}.calls"
                     env = dict(
                         os.environ, FLAGCX_ADAPTOR=adaptor, CI_CAPTURE=str(capture)
                     )
+                    if adaptor == "musa":
+                        policy = yaml.safe_load(
+                            (REPO_ROOT / ".github/configs/mthreads.yml").read_text()
+                        )["ignore_test"]
+                        env["FLAGCX_CI_IGNORE_TEST"] = json.dumps(policy)
                     result = subprocess.run(
                         ["bash", str(script)], env=env, capture_output=True, text=True
                     )
@@ -194,7 +202,7 @@ run_suite
                         line for line in calls
                         if "--gtest_filter=SymMemTest." in line
                     ]
-                    untracked = adaptor != 'iluvatar'
+                    untracked = adaptor not in ('iluvatar', 'musa')
                     self.assertEqual(len(dedicated), (2 if multi_segment else 0) + int(untracked))
                     self.assertEqual(
                         sum(
@@ -217,6 +225,12 @@ run_suite
                         ),
                         2 if adaptor == "du" else 0,
                     )
+                    if adaptor == "musa":
+                        self.assertTrue(any("symmem_unit_tests" in line for line in calls))
+                        self.assertTrue(any("HeteroFinalizeMpi.*" in line for line in calls))
+                        self.assertTrue(any("FLAGCX_VMM_ENABLE=0" in line for line in calls))
+                        self.assertFalse(any("FLAGCX_VMM_ENABLE=1" in line for line in calls))
+                        self.assertIn("Skipping symmem VMM-local tests", result.stdout)
 
             generic_capture = root / "generic.calls"
             generic_env = os.environ.copy()

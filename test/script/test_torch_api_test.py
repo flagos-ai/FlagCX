@@ -1,9 +1,11 @@
+import ast
 import json
 import os
 import subprocess
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 import yaml
 from pathlib import Path
@@ -12,6 +14,43 @@ SCRIPT = Path(__file__).with_name("torch_api_test.sh")
 
 
 class TorchApiEnvironmentTest(unittest.TestCase):
+    def test_pair_teardown_allocates_on_the_selected_local_device(self):
+        example = SCRIPT.resolve().parents[2] / "plugin/torch/example/example.py"
+        tree = ast.parse(example.read_text())
+        teardown = next(node for node in tree.body
+                        if isinstance(node, ast.FunctionDef) and node.name == "test_pair_teardown")
+        code = compile(ast.Module(body=[teardown], type_ignores=[]), str(example), "exec")
+        for platform in ("cuda", "musa"):
+            with self.subTest(platform=platform), mock.patch.dict(os.environ, LOCAL_RANK="2"):
+                torch = mock.Mock()
+                torch.device.side_effect = lambda name, index: f"{name}:{index}"
+                torch.testing.assert_close = mock.Mock()
+                expected_device = f"{platform}:2"
+
+                def full(*args, **kwargs):
+                    # CPU reference tensors omit device. Accelerator factories
+                    # must select the local device, as required by torch_musa.
+                    self.assertEqual(kwargs.get("device", expected_device), expected_device)
+                    return mock.Mock()
+
+                torch.full.side_effect = full
+                dist = mock.Mock()
+                work = mock.Mock()
+                dist.batch_isend_irecv.return_value = [work]
+                backend = dist.new_group.return_value._get_backend.return_value
+                backend.barrier.side_effect = RuntimeError("backend has been shut down")
+                backend.allreduce_coalesced.side_effect = RuntimeError("backend has been shut down")
+                flagcx = mock.Mock()
+                namespace = dict(os=os, torch=torch, dist=dist, flagcx=flagcx,
+                                 dev_name=platform, MY_RANK=0, WORLD_SIZE=2)
+                exec(code, namespace)
+                namespace["test_pair_teardown"]()
+                torch.empty.assert_called_once_with(8, device=expected_device)
+                dist.new_group.return_value._get_backend.assert_called_once_with(expected_device)
+                work.wait.assert_called_once_with()
+                self.assertEqual(flagcx.shutdown_backend.call_args_list,
+                                 [mock.call(backend), mock.call(backend)])
+
     def run_script(self, *, skip_hetero=False, hetero_skip_ops="", ignore_config=None):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

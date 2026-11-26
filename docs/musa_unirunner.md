@@ -70,8 +70,8 @@ done
 ```
 
 CI uses exactly four visible GPUs: four intra ranks and two per logical node,
-matching the other platforms. Both native Device API suites and the UniRunner
-experimental workload are required to execute. Native SDK/compiler failures,
+matching the other platforms. Both native Device API suites are required to
+execute. Native SDK/compiler failures,
 missing required test results and unexpected skips fail their jobs.
 
 The MUSA host suite requires both communicator isolation cases to pass in its
@@ -81,6 +81,12 @@ Destroy releases it only after completed finalization, preserving ownership
 when cleanup needs a retry.
 
 ## Experimental CI
+
+The MUSA UniRunner experimental job is temporarily disabled after the
+four-rank `AllGatherGemm` stall in PR #738, run 45775159982. Ordinary perf,
+Torch and Device API CI remain enabled. The workload and kernel implementation
+are retained for diagnosis; restoring CI also requires restoring its
+required-success completion gate.
 
 The performance jobs are named `perf-test (musa)` and
 `perf-test-experimental (musa)`. Both use the single platform configuration
