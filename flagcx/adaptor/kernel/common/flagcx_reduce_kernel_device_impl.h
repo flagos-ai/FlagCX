@@ -1954,12 +1954,16 @@ flagcxResult_t flagcxLaunchCollectiveKernel(
       static_cast<int>(nRedBlocks), static_cast<int>(nIpcBlocks), avgDivisor);
 #if defined(USE_MUSA_ADAPTOR)
   const musaError_t launchResult = musaGetLastError();
+#elif defined(USE_METAX_ADAPTOR)
+  const mcError_t launchResult = mcGetLastError();
 #endif
   INFO(FLAGCX_UNIRUNNER, "UniRunner native launcher=%s threads=%zu", __func__,
        nthreads);
 #if defined(USE_MUSA_ADAPTOR)
   return launchResult == musaSuccess ? flagcxSuccess
                                      : flagcxUnhandledDeviceError;
+#elif defined(USE_METAX_ADAPTOR)
+  return launchResult == mcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 #else
   return flagcxSuccess;
 #endif

@@ -628,7 +628,11 @@ flagcxResult_t macaAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
   mcError_t error = mcStreamWriteValue64(
       stream->base, addr, value,
       mcStreamWriteValue_flags::MC_STREAM_WRITE_VALUE_DEFAULT);
-  return error == mcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+  if (error == mcSuccess)
+    return flagcxSuccess;
+  if (error == mcErrorNotSupported)
+    return flagcxNotSupported;
+  return flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t
