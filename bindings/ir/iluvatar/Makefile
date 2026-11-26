@@ -12,11 +12,11 @@ SYMBOLS_FILE := $(abspath ../public_symbols.txt)
 
 FLAGCX_ROOT := $(abspath ../../..)
 BUILDDIR ?= $(FLAGCX_ROOT)/build
-ILUVATAR_ARCH ?= ivcore11
+BITCODE_LIB_ARCH ?= ivcore11
 SUPPORTED_ARCHES := ivcore11
 
-ifeq ($(filter $(ILUVATAR_ARCH),$(SUPPORTED_ARCHES)),)
-  $(error Unsupported Iluvatar target '$(ILUVATAR_ARCH)'; supported: $(SUPPORTED_ARCHES))
+ifeq ($(filter $(BITCODE_LIB_ARCH),$(SUPPORTED_ARCHES)),)
+  $(error Unsupported Iluvatar target '$(BITCODE_LIB_ARCH)'; supported: $(SUPPORTED_ARCHES))
 endif
 
 OBJDIR := $(BUILDDIR)/obj/llvm_ir
@@ -54,7 +54,7 @@ ADAPTOR_FLAG ?= -DUSE_ILUVATAR_ADAPTOR -DFLAGCX_COMM_TRAITS_DEFAULT
 COMMON_CLANG_FLAGS := \
 	-std=c++17 -x ivcore \
 	--cuda-path=$(DEVICE_HOME) --cuda-device-only \
-	--cuda-gpu-arch=$(ILUVATAR_ARCH) \
+	--cuda-gpu-arch=$(BITCODE_LIB_ARCH) \
 	$(FLAGCX_INCLUDES) \
 	-D__clang_llvm_bitcode_lib__ \
 	$(ADAPTOR_FLAG) \

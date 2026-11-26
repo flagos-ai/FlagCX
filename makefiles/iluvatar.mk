@@ -10,11 +10,11 @@ DEVICE_LIB   := $(DEVICE_HOME)/lib
 DEVICE_INCLUDE := $(DEVICE_HOME)/include
 DEVICE_LINK  := -lcudart -lcuda
 DEVICE_PLATFORM := ILUVATAR
-ILUVATAR_ARCH ?= ivcore11
 COREX_CLANG ?= $(DEVICE_HOME)/bin/clang
 DEVICE_COMPILER := $(COREX_CLANG)
 DEVICE_COMPILE_FLAG := -c -x ivcore --cuda-path=$(DEVICE_HOME) \
-    --cuda-gpu-arch=$(ILUVATAR_ARCH) -std=c++17 -O2 -fPIC -MMD -MP \
+    --cuda-gpu-arch=$(if $(strip $(DEVICE_BITCODE_ARCH)),$(DEVICE_BITCODE_ARCH),ivcore11) \
+    -std=c++17 -O2 -fPIC -MMD -MP \
     -DFLAGCX_ILUVATAR_DEVICE_COMPILE=1
 DEVICE_LINK_FLAG :=
 DEVICE_NEEDS_DLINK := 0

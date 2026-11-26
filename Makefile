@@ -445,14 +445,14 @@ endif
 
 # Resolve the bitcode route from the same platform configuration that sets
 # ADAPTOR_FLAG for libflagcx.so. DEVICE_BITCODE_ARCH is the single public arch
-# input; the Iluvatar Makefile uses a different variable name internally.
+# input and is translated to each bitcode Makefile's internal variable.
 ifeq ($(USE_NVIDIA),1)
   DEVICE_BITCODE_DIR := nvidia
   DEVICE_BITCODE_ARCH_ARG := BITCODE_LIB_ARCH=$(DEVICE_BITCODE_ARCH)
   DEVICE_BITCODE_EXTRA_ARG := BITCODE_CXX_STD=gnu++17
 else ifeq ($(USE_ILUVATAR),1)
   DEVICE_BITCODE_DIR := iluvatar
-  DEVICE_BITCODE_ARCH_ARG := ILUVATAR_ARCH=$(DEVICE_BITCODE_ARCH)
+  DEVICE_BITCODE_ARCH_ARG := BITCODE_LIB_ARCH=$(DEVICE_BITCODE_ARCH)
 else ifeq ($(USE_DU),1)
   DEVICE_BITCODE_DIR := du
   DEVICE_BITCODE_ARCH_ARG := BITCODE_LIB_ARCH=$(DEVICE_BITCODE_ARCH)
