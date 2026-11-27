@@ -73,6 +73,7 @@ struct Comm {
 using flagcxComm_t = Comm *;
 struct View {
   int nLocalRanks, nBarriers, barrierIpcIndex, registeredBarrierShmCount;
+  uint64_t shmGeneration;
   int *localRankToRank;
   uint64_t *localBarrierFlags;
   uint64_t **barrierPeers, **barrierDevPeerPtrsRaw;

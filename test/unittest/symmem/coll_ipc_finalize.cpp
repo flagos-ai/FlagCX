@@ -28,6 +28,7 @@ public:
               flagcxSuccess);
     comm->rank = rank;
     comm->nranks = nranks;
+    comm->magic = handle.magic;
     comm->internalBuffersNeedPeerClose = true;
     if (rank == 0) {
       void *buffer = nullptr;
@@ -194,5 +195,51 @@ TEST_F(IpcFinalizeBootstrapTest,
   expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
   EXPECT_EQ(destroyCalls, rank == 0 ? 4 : 2);
   EXPECT_TRUE(frees.empty());
+  destroyOneRankAtATime();
+}
+
+TEST_F(IpcFinalizeBootstrapTest, HostShmGenerationIsIssuedByRootAndRetained) {
+  setenv("FLAGCX_SIGNAL_HOST_ENABLE", "1", 1);
+  comm->commType = flagcxCommunicatorHybrid;
+  comm->localRanks = nranks;
+  comm->localRank = rank;
+  comm->shmGeneration = rank == 0 ? 3 : 100;
+  comm->localRankToRank = (int *)calloc(nranks, sizeof(int));
+  for (int i = 0; i < nranks; ++i)
+    comm->localRankToRank[i] = i;
+  device.hostRegister = [](void *, size_t) { return flagcxSuccess; };
+  device.hostUnregister = [](void *) { return flagcxSuccess; };
+  device.hostGetDevicePointer = [](void **out, void *ptr) {
+    *out = ptr;
+    return flagcxSuccess;
+  };
+  device.deviceMemcpy = [](void *dst, void *src, size_t bytes,
+                           flagcxMemcpyType_t, flagcxStream_t, void *) {
+    memcpy(dst, src, bytes);
+    return flagcxSuccess;
+  };
+  device.deviceMemset = [](void *ptr, int value, size_t bytes, flagcxMemType_t,
+                           flagcxStream_t) {
+    memset(ptr, value, bytes);
+    return flagcxSuccess;
+  };
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.intraBarrierCount = 1;
+  flagcxDevComm_t first = nullptr, second = nullptr;
+  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &first), flagcxSuccess);
+  EXPECT_EQ(first->shmGeneration, 4u);
+  auto *oldStorage = (uint64_t *)first->localBarrierShmPtr;
+  ASSERT_NE(oldStorage, nullptr);
+  *oldStorage = 0x1234 + rank;
+  MPI_Barrier(MPI_COMM_WORLD);
+  ASSERT_EQ(flagcxDevCommDestroy(comm, first), flagcxSuccess);
+  if (rank == 1)
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &second), flagcxSuccess);
+  EXPECT_EQ(second->shmGeneration, 5u);
+  EXPECT_EQ(*oldStorage, 0x1234u + rank);
+  EXPECT_EQ(*(uint64_t *)second->localBarrierShmPtr, 0u);
+  ASSERT_EQ(flagcxDevCommDestroy(comm, second), flagcxSuccess);
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
   destroyOneRankAtATime();
 }

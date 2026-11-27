@@ -44,6 +44,13 @@ without closing imports or freeing backing. A subsequent generation gets its
 own resources. Ordinary per-call private scratch keeps its existing execution
 cleanup; exported persistent allocations remain owned until Destroy.
 
+With host-mapped signals enabled, SHM provides shared host pages for local
+Barrier and Signal control words. Each name includes the Comm magic, a fresh
+root-issued creation generation, and the owning rank. Collective DevComm
+creation is serialized; root broadcasts the generation before mappings are
+created. Failed creations consume their generation, and retirement never resets
+it. Reusing a live stack ID therefore cannot reopen or zero retained storage.
+
 ```text
 caller completes all user work
     -> Finalize closes submission admission
@@ -142,6 +149,9 @@ They are separate from the removed core
 WorkRecord tracker. Existing platform limitations and CI exclusions remain
 visible; host mocks cannot establish rank-local behavior inside a vendor SDK.
 Ascend SHMEM and MetaX Device API integrations are preserved independently.
+Host runner group entry/exit preserves pending native status before changing
+group depth or copying staged receives. Only a successful outer GroupEnd makes
+those receive buffers available for the existing device-copy step.
 
 Barrier checks allocation, initialization, collective submission and cleanup
 statuses. Its private scratch is released after accepted native submission and

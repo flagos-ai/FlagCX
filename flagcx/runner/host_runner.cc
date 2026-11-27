@@ -612,13 +612,21 @@ flagcxResult_t hostRunnerRecv(void *recvbuff, size_t count,
 }
 
 flagcxResult_t hostRunnerGroupStart() {
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->groupStart());
+  flagcxResult_t result = flagcxSuccess;
+  FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorHost]->groupStart(), result,
+                  exit);
+  if (result == flagcxInProgress)
+    goto exit;
   hostRunnerGroupDepth++;
-  return flagcxSuccess;
+exit:
+  return result;
 }
 
 flagcxResult_t hostRunnerGroupEnd() {
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->groupEnd());
+  flagcxResult_t result = flagcxSuccess;
+  FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorHost]->groupEnd(), result, exit);
+  if (result == flagcxInProgress)
+    goto exit;
   hostRunnerGroupDepth--;
   if (hostRunnerGroupDepth == 0) {
     for (size_t i = 0; i < recvHostBuffers.size(); ++i) {
@@ -630,7 +638,8 @@ flagcxResult_t hostRunnerGroupEnd() {
     recvDeviceBuffers.clear();
     recvBufferSizes.clear();
   }
-  return flagcxSuccess;
+exit:
+  return result;
 }
 
 struct flagcxRunner hostRunner = {

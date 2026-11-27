@@ -1106,7 +1106,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "be6c0304020de5dfbfced600a5f5491c6863d618a18fae7341d976052454f31d",
+      "current_sha256": "d52d2bc21284618d7d1020d9e1bf3585987706f1e2033d9353d5470f2e50f6e1",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "ec534389bd128242d9d68c425cd822a6f73203be50d9c37dbb08616f613198b3"
     },
@@ -1134,7 +1134,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "7b7dd5e75aa657e141f7296ff7b2ffc293db0ca456c194dfa0fd3899157a02ad",
+      "current_sha256": "e6a008983544198c9bb55c4042ce95f6d95ba3b555d509cd1468664e7d9c91be",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -1872,7 +1872,7 @@
           "decision": "preserve-independent-fixes"
         }
       ],
-      "current_sha256": "ee669518fbc038623b2a2ff01a2a433389c7e44029ac57332386bfa1df733ebf",
+      "current_sha256": "69e43767d94bc0b13353be9c6768cbc2b082e6d8e604a26411a5b317d62de69b",
       "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
@@ -2215,7 +2215,7 @@
           "decision": "preserve-independent-fixes"
         }
       ],
-      "current_sha256": "367c5a20ceb0452492443aab138db38fb555a052520fef90bc0ed8fe28cf18f8",
+      "current_sha256": "0dbde2429d6be1a1e86774a98b5d6af37e9f446a3154e43caae1d88c2096613c",
       "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
@@ -3703,7 +3703,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "c37b3eaee89b36dfbe8823ec6d67ab31c89f13da1f53c19c9eaec8d255bfbc50",
+      "current_sha256": "385fdd689731b480d0ab642bc890bf7c1f1c0b612d7ffaf67d741cf852cd7b8c",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -6963,7 +6963,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "25b40402612b80a7194676a8087543fc7ce8f8138047582cb65e165c3d04b140",
+      "current_sha256": "46ae57830a6d4ce95b703d55a3245a9c111ae66093c4b35329ebfd19948c0796",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -9532,7 +9532,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "5b7d6fe7543156cfeba11c63f7ee081b2053f6d5e06dcec0397724fef634ae72",
+      "current_sha256": "90e8b91f5842bdfef27232a8448f94e634cea7ccc5df1327aa1f41fffcb8e4e2",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -9919,7 +9919,7 @@
       "audit_start_sha256": "1ad4de474f0742b8bc3486bcf32e16a0e4f4a8ffafa7982438946d996dfc5ad5",
       "rollback_hunks": [],
       "current_resolution": "existing checks retained; appended partial-owner regression",
-      "current_sha256": "77e4848c89c2caa870c45ef41bdc4a332c7770ec7de5c8450d7c194acdf44433"
+      "current_sha256": "b905854a40aedc5ad9aab8aa8d62d228992f6f13211e13ebbed4ecc6fa3ad7fd"
     }
   ],
   "graph_support": "No public graph capture/instantiate/launch API or end-to-end replay regression found in the baseline. UniRunner DAG templates are separate from runtime graph replay. Capture-mode handling and placeholder structs are not proof of full support.",
@@ -10048,6 +10048,13 @@
         "P1": 2
       },
       "resolution": "Finish earlier native owner progress before next collective close; keep final owner pollable. Restore Barrier checked execution and retryable private scratch. User-directed strict macro removal uses CHECK/GOTO and explicit Progress owner gates. Eleven core regressions and two bootstrap cases added; full force-rebuilt matrices and2/4-rank runs passed."
+    },
+    "round9": {
+      "reviewed_head": "77b6594c",
+      "findings": {
+        "P2": 2
+      },
+      "resolution": "Isolate retained host-mapped SHM epochs with root-issued/broadcast monotonic generation; preserve native pending group status before staged copies/depth changes. Two core, three host-runner and one real-bootstrap cases passed. Full matrices and2/4-rank bootstrap pass."
     }
   },
   "original_feature_reference": "34a81ae38e83ec571152d4a45b9276b44aff48c3",

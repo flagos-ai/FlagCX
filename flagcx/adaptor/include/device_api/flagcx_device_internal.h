@@ -145,7 +145,8 @@ struct flagcxDevCommInternal {
   // ---- Vendor device comm (set if adaptor->devCommCreate succeeds, else NULL)
   // ----
   flagcxInnerDevComm_t devComm; // Typed vendor handle (per-adaptor struct)
-  int devCommId; // 1-based stack ID within the outer communicator
+  int devCommId;          // 1-based stack ID within the outer communicator
+  uint64_t shmGeneration; // shared name epoch, independent of the live stack ID
   struct flagcxDevCommInternal *previousActive;
 
   // ---- Device pointer cache (for Triton integration) ----

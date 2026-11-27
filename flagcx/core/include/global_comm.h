@@ -169,6 +169,8 @@ struct flagcxComm {
   flagcxWindow_t publicWindows; // includes empty reusable public handles
   flagcxDevMem_t activeDevMems;
   int devCommCount; // active device communicators, also the newest ID
+  uint64_t
+      shmGeneration; // root-issued creation sequence, never reused on retire
   flagcxDevComm_t activeDevComms;
 
   // Custom op state (NULL = not enabled)

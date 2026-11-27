@@ -74,11 +74,11 @@
     "native_probe_in_feature_reference": false,
     "IBRC": {
       "core": {
-        "pass": 321,
+        "pass": 323,
         "skip": 5
       },
       "runner": {
-        "pass": 105,
+        "pass": 108,
         "skip": 0
       },
       "rma": {
@@ -100,11 +100,11 @@
     },
     "IBUC": {
       "core": {
-        "pass": 321,
+        "pass": 323,
         "skip": 5
       },
       "runner": {
-        "pass": 105,
+        "pass": 108,
         "skip": 0
       },
       "rma": {
@@ -129,14 +129,14 @@
         2,
         4
       ],
-      "cases_per_rank": 7,
+      "cases_per_rank": 8,
       "builds": [
         "IBRC",
         "IBUC"
       ],
       "result": "all passed on every rank"
     },
-    "kernel_host_syntax": "passed for proxy/group and kernel host sources",
+    "kernel_host_syntax": "passed including proxy/group, kernel-host/reduce, fused and default Device API backend",
     "pending_hardware": [
       "Iluvatar native callback/event probe",
       "heterogeneous AllGather and Device API IPC/isolation",
@@ -155,8 +155,8 @@
     "scripts": {
       "discovered": 341,
       "tool_skips": 8,
-      "result": "CR7 full341 scripts:8 skips and one subsecond diagnostics timing race; unchanged failing method passed isolated retry. Fresh post-CR8 full suite and final native verdict tracked in external reports.",
-      "artifact_log": "/private/tmp/iluvatar-ipc-validation/cr7-scripts.log",
+      "result": "Full341-script suite after CR8 passed with8 tool skips (575.140s); affected7 source-warning tests refreshed after CR9 and passed.",
+      "artifact_log": "/private/tmp/iluvatar-ipc-validation/cr8-scripts.log",
       "torch_source_pass": 7,
       "affected_round3": {
         "methods": 81,
@@ -231,6 +231,18 @@
       "source_warnings_passed": 7,
       "kernel_syntax_log": "/private/tmp/iluvatar-ipc-validation/cr8-kernel-syntax.log",
       "reports": "/Users/chenmo/WORKDIR/.cr/reviews/cr-FlagCX-iluvatar-hang-issue-round*.md"
+    },
+    "native_review_round9": {
+      "added_core_regressions": 2,
+      "added_host_runner_regressions": 3,
+      "added_bootstrap_cases": 1,
+      "scope": "Complete rebuilt matrices passed:665 IBRC/673 IBUC,10/11 capability skips;core323/5 and runner108 each.",
+      "bootstrap": "8 lifecycle cases passed on every rank at2/4 ranks in both builds, including root-issued SHM generation with intentionally different local counters and delayed replacement.",
+      "shm_lifetime": "Root-issued/broadcast monotonic generation names both barrier and signal SHM. Retired and failed creation epochs never reused; overflow rejected. Real mapped storage preserves old values across replacement and failure.",
+      "host_group": "CHECK/GOTO retains pending/failure before depth changes or staged receive copies.",
+      "source_warning_tests_passed": 7,
+      "reports": "/Users/chenmo/WORKDIR/.cr/reviews/cr-FlagCX-iluvatar-hang-issue-round*.md",
+      "kernel_syntax_log": "/private/tmp/iluvatar-ipc-validation/cr9-kernel-syntax.log"
     }
   },
   "historical_pre_repair_validation": {
