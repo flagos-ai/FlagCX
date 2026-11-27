@@ -12,6 +12,7 @@ endif
 # Use `MPI_FLAVOR=mpich` for MPICH/Hydra (`--genv`, no root-only option).
 MPI_FLAVOR ?= openmpi
 MPIRUN ?= mpirun
+MPI_EXTRA_ARGS ?=
 ifeq ($(MPI_FLAVOR),openmpi)
 MPI_ENV_FLAG := -x
 MPI_ROOT_ARGS ?= --allow-run-as-root
@@ -410,18 +411,18 @@ run-mpi-intra: $(filter $(BINDIR)/test_device_ir_intra,$(MPI_TARGETS)) \
 
 ifneq ($(filter $(BINDIR)/test_device_ir_intra,$(MPI_TARGETS)),)
 	@echo "Running intra-node tests..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) -n $(INTRA_NP) $(INTRA_ENV) $(BINDIR)/test_device_ir_intra
+	$(MPIRUN) $(MPI_ROOT_ARGS) $(MPI_EXTRA_ARGS) -n $(INTRA_NP) $(INTRA_ENV) $(BINDIR)/test_device_ir_intra
 endif
 ifneq ($(filter $(BINDIR)/test_device_api_intra,$(MPI_TARGETS)),)
-	$(MPIRUN) $(MPI_ROOT_ARGS) -n $(INTRA_NP) $(INTRA_ENV) $(BINDIR)/test_device_api_intra
+	$(MPIRUN) $(MPI_ROOT_ARGS) $(MPI_EXTRA_ARGS) -n $(INTRA_NP) $(INTRA_ENV) $(BINDIR)/test_device_api_intra
 endif
 ifneq ($(filter $(BINDIR)/test_device_ir_intra_enflame,$(MPI_TARGETS)),)
 	@echo "Running Enflame intra-node IR tests..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) -n $(INTRA_NP) $(BINDIR)/test_device_ir_intra_enflame
+	$(MPIRUN) $(MPI_ROOT_ARGS) $(MPI_EXTRA_ARGS) -n $(INTRA_NP) $(BINDIR)/test_device_ir_intra_enflame
 endif
 ifneq ($(filter $(BINDIR)/test_device_api_intra_enflame,$(MPI_TARGETS)),)
 	@echo "Running Enflame intra-node API tests..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) -n $(INTRA_NP) $(BINDIR)/test_device_api_intra_enflame
+	$(MPIRUN) $(MPI_ROOT_ARGS) $(MPI_EXTRA_ARGS) -n $(INTRA_NP) $(BINDIR)/test_device_api_intra_enflame
 endif
 ifeq ($(filter $(BINDIR)/test_device_ir_intra $(BINDIR)/test_device_api_intra $(BINDIR)/test_device_ir_intra_enflame $(BINDIR)/test_device_api_intra_enflame,$(MPI_TARGETS)),)
 	@echo "Skipped legacy intra Device API/IR tests on $(KERNEL_PLATFORM)"
@@ -438,13 +439,13 @@ run-mpi-inter: $(filter $(BINDIR)/test_device_ir_inter,$(MPI_TARGETS)) \
                $(filter $(BINDIR)/test_device_api_inter_enflame,$(MPI_TARGETS))
 ifneq ($(filter $(BINDIR)/test_device_ir_inter,$(MPI_TARGETS)),)
 	@echo "Running inter-node Device IR tests..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) \
+	$(MPIRUN) $(MPI_ROOT_ARGS) $(MPI_EXTRA_ARGS) \
 		-n $(INTER_NP) $(INTER_ENV) $(INTER_NODE0_ENV) $(BINDIR)/test_device_ir_inter \
 		: -n $(INTER_NP) $(INTER_ENV) $(INTER_NODE1_ENV) $(BINDIR)/test_device_ir_inter
 endif
 ifneq ($(filter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS)),)
 	@echo "Running inter-node Device API tests..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) \
+	$(MPIRUN) $(MPI_ROOT_ARGS) $(MPI_EXTRA_ARGS) \
 		-n $(INTER_NP) $(INTER_ENV) $(INTER_NODE0_ENV) \
 		$(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2 \
 		: -n $(INTER_NP) $(INTER_ENV) $(INTER_NODE1_ENV) \
@@ -452,7 +453,7 @@ ifneq ($(filter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS)),)
 endif
 ifneq ($(filter $(BINDIR)/test_device_ir_inter_enflame,$(MPI_TARGETS)),)
 	@echo "Running Enflame inter-node IR tests..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) \
+	$(MPIRUN) $(MPI_ROOT_ARGS) $(MPI_EXTRA_ARGS) \
 		-n $(INTER_NP) $(INTER_ENV) $(INTER_NODE0_ENV) \
 		$(BINDIR)/test_device_ir_inter_enflame -b 1M -e 4M -f 2 -R 2 \
 		: -n $(INTER_NP) $(INTER_ENV) $(INTER_NODE1_ENV) \
@@ -460,7 +461,7 @@ ifneq ($(filter $(BINDIR)/test_device_ir_inter_enflame,$(MPI_TARGETS)),)
 endif
 ifneq ($(filter $(BINDIR)/test_device_api_inter_enflame,$(MPI_TARGETS)),)
 	@echo "Running Enflame inter-node API tests..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) \
+	$(MPIRUN) $(MPI_ROOT_ARGS) $(MPI_EXTRA_ARGS) \
 		-n $(INTER_NP) $(INTER_ENV) $(INTER_NODE0_ENV) \
 		$(BINDIR)/test_device_api_inter_enflame -b 1M -e 4M -f 2 -R 2 \
 		: -n $(INTER_NP) $(INTER_ENV) $(INTER_NODE1_ENV) \
@@ -473,7 +474,7 @@ endif
 ifneq ($(filter $(BINDIR)/test_device_ir_unified_intra,$(MPI_TARGETS)),)
 run-mpi-unified-intra: $(BINDIR)/test_device_ir_unified_intra
 	@echo "Running unified intra suite tests (INTRA + WORLD, full coop matrices)..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) -n $(UNIFIED_IR_NP) $(UNIFIED_COMMON_ENV) \
+	$(MPIRUN) $(MPI_ROOT_ARGS) $(MPI_EXTRA_ARGS) -n $(UNIFIED_IR_NP) $(UNIFIED_COMMON_ENV) \
 		$(BINDIR)/test_device_ir_unified_intra $(UNIFIED_TEST_ARGS)
 else
 run-mpi-unified-intra:
@@ -483,7 +484,7 @@ endif
 ifneq ($(filter $(BINDIR)/test_device_ir_unified_inter,$(MPI_TARGETS)),)
 run-mpi-unified-inter: $(BINDIR)/test_device_ir_unified_inter
 	@echo "Running unified inter suite tests (INTER + WORLD, full coop matrices)..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) \
+	$(MPIRUN) $(MPI_ROOT_ARGS) $(MPI_EXTRA_ARGS) \
 		-n $(UNIFIED_IR_INTER_NP) $(UNIFIED_COMMON_ENV) $(INTER_NODE0_ENV) \
 		$(BINDIR)/test_device_ir_unified_inter $(UNIFIED_TEST_ARGS) \
 		: -n $(UNIFIED_IR_INTER_NP) $(UNIFIED_COMMON_ENV) $(INTER_NODE1_ENV) \
