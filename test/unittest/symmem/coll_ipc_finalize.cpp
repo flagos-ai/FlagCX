@@ -1,4 +1,5 @@
 #include "comm_lifecycle_check.hpp"
+#include "device_api_test_session.hpp"
 #include "ipc_lifecycle_mock.hpp"
 #include "onesided_types.h"
 #include "reg_pool.h"
@@ -422,4 +423,107 @@ TEST_F(IpcFinalizeBootstrapTest,
     EXPECT_EQ(transportCloses, 1);
   }
   destroyOneRankAtATime();
+}
+
+class DeviceApiSessionMpi : public IpcFinalizeBootstrapTest {};
+
+TEST_F(DeviceApiSessionMpi, RankLocalCreationErrorClosesEveryComm) {
+  addTransport();
+  DeviceApiTestSession resources;
+  resources.comm = comm;
+  resources.initialized = true;
+  flagcxResult_t observed = flagcxSuccess;
+  try {
+    resources.check(rank == 1 ? flagcxNotSupported : flagcxSuccess);
+  } catch (const DeviceApiTestFailure &failure) {
+    observed = failure.status;
+  }
+  EXPECT_EQ(observed, flagcxNotSupported);
+  EXPECT_EQ(resources.comm, comm);
+  EXPECT_EQ(resources.finish(), flagcxSuccess);
+  comm = resources.comm;
+  EXPECT_EQ(comm, nullptr);
+  EXPECT_EQ(transportCloses, 1);
+  EXPECT_EQ(frees.size(), rank == 0 ? 1u : 0u);
+}
+
+TEST_F(DeviceApiSessionMpi, FailedCleanupRetainsOwnerAndCompletedPhases) {
+  DeviceApiTestSession resources;
+  resources.comm = comm;
+  resources.initialized = true;
+  failImport = rank == 1;
+  EXPECT_EQ(resources.finish(), flagcxRemoteError);
+  EXPECT_EQ(resources.phase, 4);
+  EXPECT_EQ(resources.comm, comm);
+  EXPECT_TRUE(frees.empty());
+  failImport = false;
+  EXPECT_EQ(resources.finish(), flagcxSuccess);
+  comm = resources.comm;
+  EXPECT_EQ(comm, nullptr);
+  EXPECT_EQ(resources.finish(), flagcxSuccess);
+  EXPECT_EQ(frees.size(), rank == 0 ? 1u : 0u);
+}
+
+TEST_F(DeviceApiSessionMpi, NativeProgressIsRetriedBeforeBackingRelease) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  comm->nativeCloseNeedsAgreement = true;
+  nativeResult = flagcxInProgress;
+  pendingPolls = rank + 1;
+  DeviceApiTestSession resources;
+  resources.comm = comm;
+  resources.initialized = true;
+  EXPECT_EQ(resources.finish(), flagcxSuccess);
+  comm = resources.comm;
+  EXPECT_EQ(comm, nullptr);
+  EXPECT_EQ(finalizeCalls, 1);
+  EXPECT_EQ(destroyCalls, 1);
+  EXPECT_GT(asyncPolls, 0);
+}
+
+TEST_F(DeviceApiSessionMpi, ViewCleanupFailureKeepsPrivateStorageOnEveryRank) {
+  DeviceApiTestSession resources;
+  resources.comm = comm;
+  resources.initialized = true;
+  ASSERT_EQ(flagcxDeviceHandleInit(&resources.devHandle), flagcxSuccess);
+  resources.devHandle->deviceFree = device.deviceFree;
+  resources.devResults = (int *)malloc(64);
+  auto *view = (flagcxDevMem_t)calloc(1, sizeof(flagcxDevMemInternal));
+  ASSERT_NE(view, nullptr);
+  view->ipcIndex = -1;
+  pthread_mutex_init(&view->cachedPtrMutex, nullptr);
+  comm->activeDevMems = resources.devMem = view;
+  backend.devMemDestroy = [](flagcxComm_t, flagcxDevMem_t) {
+    return active->failTransportFree ? flagcxRemoteError : flagcxSuccess;
+  };
+  failTransportFree = rank == 1;
+  EXPECT_EQ(resources.close(), flagcxRemoteError);
+  EXPECT_EQ(resources.phase, 1);
+  EXPECT_NE(resources.devResults, nullptr);
+  EXPECT_EQ(resources.devMem, rank == 1 ? view : nullptr);
+  EXPECT_TRUE(frees.empty());
+  failTransportFree = false;
+  EXPECT_EQ(resources.finish(), flagcxSuccess);
+  comm = resources.comm;
+  EXPECT_EQ(comm, nullptr);
+  EXPECT_EQ(resources.devHandle, nullptr);
+  EXPECT_EQ(frees.size(), rank == 0 ? 2u : 1u);
+}
+
+TEST_F(DeviceApiSessionMpi, FailedFreeRetainsPointerWithoutDoubleFreeOnRetry) {
+  DeviceApiTestSession resources;
+  resources.comm = comm;
+  resources.initialized = true;
+  ASSERT_EQ(flagcxDeviceHandleInit(&resources.devHandle), flagcxSuccess);
+  resources.devHandle->deviceFree = device.deviceFree;
+  resources.devResults = (int *)malloc(64);
+  failFree = rank == 1;
+  EXPECT_EQ(resources.close(), flagcxRemoteError);
+  EXPECT_EQ(resources.phase, 2);
+  EXPECT_EQ(resources.devResults == nullptr, rank != 1);
+  EXPECT_EQ(resources.comm, comm);
+  failFree = false;
+  EXPECT_EQ(resources.finish(), flagcxSuccess);
+  comm = resources.comm;
+  EXPECT_EQ(comm, nullptr);
+  EXPECT_EQ(frees.size(), rank == 0 ? 2u : 1u);
 }

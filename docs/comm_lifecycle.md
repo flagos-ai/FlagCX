@@ -232,6 +232,18 @@ individual events, so a later cleanup retry never queries an event already freed
 Caller completion before Finalize replaces the removed automatic user-work
 drain guarantee. Its performance and overlap effects need hardware measurement.
 
+## Test process cleanup
+
+The Device API correctness binaries keep test resources in a shared test session.
+An operation failure is agreed before ranks leave the test body. Cleanup first
+drains the user stream, closes views and Window imports on every participant,
+then releases caller buffers while their allocator is alive. Comm Finalize and
+local Destroy precede stream and device-handle release. Cleanup errors retain
+the session's handles and phase; a retry skips successful releases. An exhausted
+or terminal cleanup failure aborts the MPI test rather than allowing SDK process
+shutdown to invalidate storage still used by retained workers. This is test
+process error handling, not a production work tracker or reclamation thread.
+
 ## Graph terminology
 
 No complete public graph capture/instantiate/launch API or end-to-end replay

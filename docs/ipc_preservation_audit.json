@@ -1106,7 +1106,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "04d1b9c23a9587f9077c46e2fe19ca4f90c21368ee1e8b0b63e6d91b1b5f37d6",
+      "current_sha256": "ea1ae3a1ed763c471b335f9e8ee6e411fcc898d44a78e743d98c75504e6aaf85",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "ec534389bd128242d9d68c425cd822a6f73203be50d9c37dbb08616f613198b3"
     },
@@ -1134,7 +1134,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "7207671ffa1834f071067dc1066dea2a3e102126c56e0ba046fd19999bcf7416",
+      "current_sha256": "5b2817f5466d1492af1e8b67a8943c279c1bbb29f5a59b84cced66d886458bb1",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -8923,13 +8923,13 @@
     },
     {
       "path": "test/unittest/device_api/Makefile",
-      "decision": "preserve-exact",
+      "decision": "align-tests-and-contracts",
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "c7f14f0c5b8f015bee46876612b44936aa65fb80f7c24eefbf91f140fcd957cb",
       "audit_start_sha256": "bf627b4cf68a801fed0785be18b4a24dd6a0e79289927189785fbd06fd9e3db5",
       "rollback_hunks": [],
-      "current_sha256": "c7f14f0c5b8f015bee46876612b44936aa65fb80f7c24eefbf91f140fcd957cb",
-      "current_resolution": "exact rebased feature-reference content",
+      "current_sha256": "022c7c151534be439139c060545d10c2e2ebaf2678c7bc76c990bf732951851c",
+      "current_resolution": "PR751 CI follow-up: Retain Device API test resources and converge failures through retryable cleanup",
       "pre_rebase_reference_sha256": "bf627b4cf68a801fed0785be18b4a24dd6a0e79289927189785fbd06fd9e3db5"
     },
     {
@@ -9116,68 +9116,68 @@
     },
     {
       "path": "test/unittest/device_api/test_device_api_inter.cpp",
-      "decision": "preserve-exact",
+      "decision": "align-tests-and-contracts",
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "0bf5a1cd3be28b9650517e1f85b9e044e77ae729814ccf2e1d54c34eb970370d",
       "audit_start_sha256": "2e318a80b3786c6b1071b2f55caa086472fc46daa57b9147b6c34146a496fc2d",
       "rollback_hunks": [],
-      "current_sha256": "0bf5a1cd3be28b9650517e1f85b9e044e77ae729814ccf2e1d54c34eb970370d",
-      "current_resolution": "exact rebased feature-reference content",
+      "current_sha256": "293e1d3ad158ff1d6adc3c7fb052bc0ac5caad8b25b263e827777ce3ad964968",
+      "current_resolution": "PR751 CI follow-up: Retain Device API test resources and converge failures through retryable cleanup",
       "pre_rebase_reference_sha256": "2e318a80b3786c6b1071b2f55caa086472fc46daa57b9147b6c34146a496fc2d"
     },
     {
       "path": "test/unittest/device_api/test_device_api_intra.cpp",
-      "decision": "preserve-exact",
+      "decision": "align-tests-and-contracts",
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "2222e35341a09f23a6058f6a73bf0785abd7fa4b94656e8f92355ba2345a7015",
       "audit_start_sha256": "9d9a3e6e6c7e76507ed244ffcda157882b61ebd6462f840abee279bf4a5ab9dd",
       "rollback_hunks": [],
-      "current_sha256": "2222e35341a09f23a6058f6a73bf0785abd7fa4b94656e8f92355ba2345a7015",
-      "current_resolution": "exact rebased feature-reference content",
+      "current_sha256": "f99d62ca6424b009564df962bb12df4482af350b9190131160957c537d30177b",
+      "current_resolution": "PR751 CI follow-up: Retain Device API test resources and converge failures through retryable cleanup",
       "pre_rebase_reference_sha256": "9d9a3e6e6c7e76507ed244ffcda157882b61ebd6462f840abee279bf4a5ab9dd"
     },
     {
       "path": "test/unittest/device_api/test_device_ir_inter.cpp",
-      "decision": "preserve-exact",
+      "decision": "align-tests-and-contracts",
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "6dc6c46b543e53b5afbef0acd18da7b417804853a9641bbeeddf2fb8714d3ca5",
       "audit_start_sha256": "2287f7a6a2f8e782eb747d7385162f88623f4bd9dc27bc95009242227d4754ea",
       "rollback_hunks": [],
-      "current_sha256": "6dc6c46b543e53b5afbef0acd18da7b417804853a9641bbeeddf2fb8714d3ca5",
-      "current_resolution": "exact rebased feature-reference content",
+      "current_sha256": "d2ceef2aa7af50d6dd8f9e0d46f1a9cbe2c67953cdcf91835d4205ee9fbbcd0a",
+      "current_resolution": "PR751 CI follow-up: Retain Device API test resources and converge failures through retryable cleanup",
       "pre_rebase_reference_sha256": "2287f7a6a2f8e782eb747d7385162f88623f4bd9dc27bc95009242227d4754ea"
     },
     {
       "path": "test/unittest/device_api/test_device_ir_intra.cpp",
-      "decision": "preserve-exact",
+      "decision": "align-tests-and-contracts",
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "953d1796703e2061d2dc31c9c4731d10cb917a5887aee32bbe13ca4e10ecc114",
       "audit_start_sha256": "c41ca7614e782dfbc1d12d61198be26349c6f80daa974be06f2b80c11f6ad063",
       "rollback_hunks": [],
-      "current_sha256": "953d1796703e2061d2dc31c9c4731d10cb917a5887aee32bbe13ca4e10ecc114",
-      "current_resolution": "exact rebased feature-reference content",
+      "current_sha256": "ee2919dfafc44505ef2f7cabb54763b36d0b226fa77498fb274cc41635b729e4",
+      "current_resolution": "PR751 CI follow-up: Retain Device API test resources and converge failures through retryable cleanup",
       "pre_rebase_reference_sha256": "c41ca7614e782dfbc1d12d61198be26349c6f80daa974be06f2b80c11f6ad063"
     },
     {
       "path": "test/unittest/device_api/test_device_ir_unified_inter.cpp",
-      "decision": "preserve-exact",
+      "decision": "align-tests-and-contracts",
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "14379e6fad139eef15e394bb198d29df94983a463dae59debf8dfda920eb7737",
       "audit_start_sha256": "6d41bfa21b62508edf9f08196ae8173df74f727ea61260f52d28095437665987",
       "rollback_hunks": [],
-      "current_sha256": "14379e6fad139eef15e394bb198d29df94983a463dae59debf8dfda920eb7737",
-      "current_resolution": "exact rebased feature-reference content",
+      "current_sha256": "ab7b236e52d9de67da0ceaae6f3ef360f5030e71dee7818733070c7006c8d9fe",
+      "current_resolution": "PR751 CI follow-up: Retain Device API test resources and converge failures through retryable cleanup",
       "pre_rebase_reference_sha256": "6d41bfa21b62508edf9f08196ae8173df74f727ea61260f52d28095437665987"
     },
     {
       "path": "test/unittest/device_api/test_device_ir_unified_intra.cpp",
-      "decision": "preserve-exact",
+      "decision": "align-tests-and-contracts",
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "c533dca79c367c3834e7edec1b96ff5da2f420023bbeba1008cb4d03432d7977",
       "audit_start_sha256": "ac8ee2300e12ce3ece1713863c5644507468b41303e455ce8f85e6a869f3dca6",
       "rollback_hunks": [],
-      "current_sha256": "c533dca79c367c3834e7edec1b96ff5da2f420023bbeba1008cb4d03432d7977",
-      "current_resolution": "exact rebased feature-reference content",
+      "current_sha256": "e4a5e7f7b57323c7a7ad590a2d559d1674817d756148589d8ab2a8b93828f63b",
+      "current_resolution": "PR751 CI follow-up: Retain Device API test resources and converge failures through retryable cleanup",
       "pre_rebase_reference_sha256": "ac8ee2300e12ce3ece1713863c5644507468b41303e455ce8f85e6a869f3dca6"
     },
     {
@@ -9532,7 +9532,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "f65b1cb7c76324acf3d3a86e980d4b68f4fc5084c1fdd2c93e8d058341d1ab2b",
+      "current_sha256": "f1d76d261935703f4ef06580246c542795f9afbc870b168abe465aea1398d267",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {

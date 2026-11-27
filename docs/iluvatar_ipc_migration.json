@@ -402,6 +402,11 @@
       "description": "Retry collective Finalize and rank-local Destroy without discarding pending owners",
       "status": "complete",
       "validation": "Five real-MPI helper regressions added;15 cases pass per rank at2/4 ranks against both transport builds. Runner main compiled through standard make.21 lifecycle/symmem/source script tests passed. Errors reduced separately from Progress; deadlines preserve handles."
+    },
+    "step5": {
+      "description": "Retain Device API test resources and converge failures through retryable cleanup",
+      "status": "complete",
+      "validation": "Six active Device API/IR source files pass host syntax. Five session error/owner tests plus five helper tests and ten lifecycle tests pass per rank at2/4 ranks for IBRC and IBUC (20 each). Forty affected script tests pass,one tool skip. Failed creation/view cleanup/native progress/private free and once-only release covered. Legacy unused test_device_api.cpp preserved."
     }
   }
 }
