@@ -150,7 +150,7 @@ flagcxGetIntraPointerC(const void FLAGCX_IR_GLOBAL_PTR *mem,
 /** @brief Get an intra-node peer pointer for an explicit access intent. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_IR_GLOBAL_RETURN_PTR void *
 flagcxGetIntraPointerWithAccessC(const void FLAGCX_IR_GLOBAL_PTR *mem,
-                                 size_t offset, int peer,
+                                 FLAGCX_IR_OFFSET_TYPE offset, int peer,
                                  flagcxDevPeerAccess_t access);
 /** @brief Get multicast pointer spanning all comm ranks. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_IR_GLOBAL_RETURN_PTR void *

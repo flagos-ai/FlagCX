@@ -33,12 +33,19 @@ ifneq ($(EMIT_LLVM_IR), 0)
 LLVM_SRC := ../flagcx_device_wrapper_impl.h
 SYMBOLS_FILE := $(abspath ../public_symbols.txt)
 KLX_PUBLIC_SYMBOLS := \
+	flagcxDevInit \
 	flagcxDevCommGetIntraRank \
 	flagcxDevCommGetIntraSize \
 	flagcxGetIntraPointerC \
+	flagcxGetIntraPointerWithAccessC \
 	flagcxIntraBarrierArriveS \
 	flagcxIntraBarrierWaitS \
-	flagcxIntraBarrierSyncS
+	flagcxIntraBarrierSyncS \
+	flagcxDevSignalInc \
+	flagcxDevSignalAdd \
+	flagcxDevWaitSignal \
+	flagcxDevWaitSignalMeetShadow \
+	flagcxDevWaitCounter
 
 FLAGCX_ROOT := $(abspath ../../..)
 BUILDDIR ?= $(FLAGCX_ROOT)/build
@@ -151,6 +158,10 @@ check_public_symbols: $(LLVM_IR_FILE)
 	done; \
 	if ! grep -Eq "^[[:space:]]*define .*@flagcxGetIntraPointerC\\(.*i64.*i32" $(LLVM_IR_FILE); then \
 		echo "flagcxGetIntraPointerC offset must be i64"; \
+		missing=1; \
+	fi; \
+	if ! grep -Eq "^[[:space:]]*define (hidden )?ptr addrspace\\(1\\) @flagcxGetIntraPointerWithAccessC\\(ptr addrspace\\(1\\)[^,]*, i64[^,]*, i32[^,]*, i32[^)]*\\)" $(LLVM_IR_FILE); then \
+		echo "Invalid FlagCX Device IR ABI: flagcxGetIntraPointerWithAccessC"; \
 		missing=1; \
 	fi; \
 	test $$missing -eq 0
