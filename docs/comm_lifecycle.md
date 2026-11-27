@@ -51,7 +51,9 @@ without closing imports or freeing backing. A subsequent generation gets its
 own resources. C2C waits for the user and private streams before releasing
 per-call scratch, including after successful native submission, because some
 backends free memory without stream ordering. Failed drains retain the owner and
-completed steps for retry. Calls without scratch keep their existing successful
+completed steps for retry. After the user stream drains, cleanup drops its
+borrowed wrapper and uses the owned private stream for freeing scratch.
+Calls without scratch keep their existing successful
 submission behavior; exported persistent allocations remain owned until Destroy.
 Releasing a buffer already recorded by the Comm retains that allocation even
 before Finalize starts. Only Destroy releases its backing after import closure.
@@ -175,7 +177,8 @@ Barrier checks allocation, initialization, collective submission and cleanup
 statuses. Its private scratch is released after accepted native submission and
 the launch stream complete. A failed drain or free retains the buffer and
 completed cleanup steps; the next Barrier or Finalize retries cleanup. Keep the
-borrowed stream wrapper alive until that cleanup succeeds. This adds no work
+borrowed stream wrapper alive until the stream drain succeeds. Completed drains
+drop that reference, and later free retries use no user stream. This adds no work
 tracker or callback completion event. Cleanup uses the existing CHECK/GOTO
 macros with explicit InProgress branches before consuming an owner.
 

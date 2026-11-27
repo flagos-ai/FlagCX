@@ -22,6 +22,7 @@ static flagcxResult_t releaseC2cResources(struct flagcxC2cResources *owner,
         return cleanupStatus;
     }
     owner->userDrained = true;
+    owner->userStream = NULL;
   }
   if (owner->needDrain && !owner->privateDrained &&
       owner->privateStream != NULL) {
@@ -41,9 +42,11 @@ static flagcxResult_t releaseC2cResources(struct flagcxC2cResources *owner,
       return cleanupStatus;
   }
   if (owner->scratch != NULL) {
+    // The caller may have destroyed its completed stream before this retry.
+    // Keep any stream-ordered free on the private stream owned by this record.
     {
       flagcxResult_t cleanupStatus = (deviceAdaptor->deviceFree(
-          owner->scratch, flagcxMemDevice, owner->userStream));
+          owner->scratch, flagcxMemDevice, owner->privateStream));
       FLAGCXCHECK(cleanupStatus);
       if (cleanupStatus == flagcxInProgress)
         return cleanupStatus;

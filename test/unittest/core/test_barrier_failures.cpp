@@ -157,6 +157,34 @@ TEST_F(BarrierFailureTest, FreeFailureRetainsCompletedDrainProgress) {
   EXPECT_EQ(frees.size(), 1u);
 }
 
+TEST_F(BarrierFailureTest, CompletedStreamMayBeDestroyedBeforeFreeRetry) {
+  auto stream = (flagcxStream_t)calloc(1, 64);
+  device.deviceFree = [](void *buffer, flagcxMemType_t, flagcxStream_t stream) {
+    EXPECT_EQ(stream, nullptr);
+    if (active->failFree)
+      return active->freeError;
+    active->frees.push_back(buffer);
+    free(buffer);
+    return flagcxSuccess;
+  };
+  device.streamDestroy = [](flagcxStream_t stream) {
+    free(stream);
+    return flagcxSuccess;
+  };
+  failFree = true;
+  freeError = flagcxInProgress;
+  EXPECT_EQ(flagcxBarrier(comm, stream), flagcxInProgress);
+  ASSERT_NE(comm->pendingBarrierResources, nullptr);
+  EXPECT_TRUE(comm->pendingBarrierResources->streamDrained);
+  EXPECT_EQ(comm->pendingBarrierResources->stream, nullptr);
+  ASSERT_EQ(device.streamDestroy(stream), flagcxSuccess);
+  failFree = false;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(syncs, 1);
+  EXPECT_EQ(frees.size(), 1u);
+  EXPECT_EQ(comm->pendingBarrierResources, nullptr);
+}
+
 TEST_F(BarrierFailureTest, SuccessfulBarrierDrainsBeforeFreeingScratch) {
   EXPECT_EQ(flagcxBarrier(comm, nullptr), flagcxSuccess);
   EXPECT_EQ(comm->pendingBarrierResources, nullptr);

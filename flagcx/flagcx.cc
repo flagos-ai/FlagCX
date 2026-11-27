@@ -4762,6 +4762,8 @@ static flagcxResult_t flagcxCommDrainBarrierResources(flagcxComm_t comm) {
         if (result == flagcxInProgress)
           goto exit;
         owner->streamDrained = true;
+        // Cleanup retries must not borrow a completed user stream wrapper.
+        owner->stream = NULL;
       }
       FLAGCXCHECKGOTO(flagcxProxyScratchReady(comm->heteroComm), result, exit);
       if (result == flagcxInProgress)

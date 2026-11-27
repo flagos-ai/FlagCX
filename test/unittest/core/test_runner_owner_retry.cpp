@@ -106,6 +106,7 @@ TEST_F(IpcLifecycleMock, C2cFailedDrainRetainsScratchAndBothStreamProgress) {
 class C2cScratchCompletion : public IpcLifecycleMock {
 public:
   bool scratchInUse = false;
+  flagcxStream_t userStream = (flagcxStream_t)0x2000;
 
   void SetUp() override {
     IpcLifecycleMock::SetUp();
@@ -135,16 +136,20 @@ public:
     device.streamSynchronize = [](flagcxStream_t stream) {
       ++active->syncs;
       auto *test = static_cast<C2cScratchCompletion *>(active);
-      if (stream == (flagcxStream_t)0x2000 && test->scratchInUse) {
+      if (stream == test->userStream && test->scratchInUse) {
         if (test->nativeResult != flagcxSuccess)
           return test->nativeResult;
         test->scratchInUse = false;
       }
       return flagcxSuccess;
     };
-    device.deviceFree = [](void *pointer, flagcxMemType_t, flagcxStream_t) {
+    device.deviceFree = [](void *pointer, flagcxMemType_t,
+                           flagcxStream_t stream) {
       EXPECT_FALSE(static_cast<C2cScratchCompletion *>(active)->scratchInUse)
           << "immediate free must wait for the final native scratch reader";
+      EXPECT_EQ(stream, (flagcxStream_t)0x1000);
+      if (active->failFree)
+        return active->freeError;
       active->frees.push_back(pointer);
       free(pointer);
       return flagcxSuccess;
@@ -160,8 +165,7 @@ public:
     int input = 0, output = 0;
     flagcxC2cPlanner planner(1, 1, 0, comm, flagcxCommOpReduceScatter,
                              flagcxMin);
-    return planner.execute(&input, &output, flagcxInt, 0,
-                           (flagcxStream_t)0x2000);
+    return planner.execute(&input, &output, flagcxInt, 0, userStream);
   }
 };
 
@@ -196,6 +200,27 @@ TEST_F(C2cScratchCompletion, SuccessfulSubmissionRetainsFailedDrainForRetry) {
   }
   EXPECT_EQ(backendCleanups,
             2); // Retrying cleanup never resubmits the collective.
+}
+
+TEST_F(C2cScratchCompletion, CompletedUserStreamMayBeDestroyedBeforeFreeRetry) {
+  userStream = (flagcxStream_t)calloc(1, 64);
+  failFree = true;
+  freeError = flagcxInProgress;
+  EXPECT_EQ(execute(), flagcxInProgress);
+  ASSERT_NE(comm->pendingC2cResources, nullptr);
+  EXPECT_TRUE(comm->pendingC2cResources->userDrained);
+  EXPECT_EQ(comm->pendingC2cResources->userStream, nullptr);
+  EXPECT_TRUE(frees.empty());
+  auto completedSyncs = syncs;
+  free(userStream);
+  userStream = nullptr;
+  failFree = false;
+  ASSERT_EQ(flagcxC2cDrainPendingResources(comm), flagcxSuccess);
+  EXPECT_EQ(syncs, completedSyncs);
+  EXPECT_EQ(backendCleanups, 1);
+  EXPECT_EQ(frees.size(), 1u);
+  EXPECT_EQ(destroyCalls, 1);
+  EXPECT_EQ(comm->pendingC2cResources, nullptr);
 }
 
 TEST_F(IpcLifecycleMock, UniRunnerScratchIsRetainedWhenFreeFails) {
