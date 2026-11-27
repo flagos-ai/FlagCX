@@ -307,6 +307,8 @@ flagcxResult_t flagcxDeviceSemaphore::release() {
   FLAGCXCHECKSTRICT(drainNotifications());
   if (!notificationStreams.empty() && !pollEnd())
     return flagcxInProgress;
+  // Preserve completion proof before event destruction can partly succeed.
+  __atomic_store_n(&completionDrained, true, __ATOMIC_RELEASE);
   for (size_t i = 0; i < events.size(); ++i) {
     if (events[i] == NULL)
       continue;
@@ -335,6 +337,9 @@ flagcxResult_t flagcxStreamValueSemaphore::release() {
   if (completionUnsafe)
     return flagcxInProgress;
   if (completionEvent != NULL) {
+    if (!pollEnd())
+      return flagcxInProgress;
+    markCompletionDrained();
     FLAGCXCHECKSTRICT(deviceAdaptor->eventDestroy(completionEvent));
     completionEvent = NULL;
   }

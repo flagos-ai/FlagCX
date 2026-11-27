@@ -314,8 +314,10 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   int pollEnd() override {
     if (!isSealed())
       return 0;
+    if (__atomic_load_n(&completionDrained, __ATOMIC_ACQUIRE))
+      return 1;
     if (isCancelled())
-      return __atomic_load_n(&completionDrained, __ATOMIC_ACQUIRE);
+      return 0;
     if (notificationStreams.empty())
       return 1;
     if (!__atomic_load_n(&completionArmed, __ATOMIC_ACQUIRE))

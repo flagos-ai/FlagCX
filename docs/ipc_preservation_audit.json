@@ -1106,7 +1106,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "6a76bc7cfd286bdae0b1c4ad5e3f51be517a3a7a35fed85f83f4335e77cdeae1",
+      "current_sha256": "1c99bbc4ec0602eabe664d112b3e38f6de5e7d834649214a154405d3efb27356",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "ec534389bd128242d9d68c425cd822a6f73203be50d9c37dbb08616f613198b3"
     },
@@ -1134,7 +1134,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "f15eb4a276c7bb0a7b2dfdda36fcdac96d6f1adaacaedfbe280240bfe82835c6",
+      "current_sha256": "be065b44886b70c7174181c4dfbf50862b05a5dbce461d376603aea10ec925b3",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -3875,7 +3875,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "6300bec2c187dc0bd412d0572019a732149b30fac1808b76d75605b7f388e8b6",
+      "current_sha256": "73f988e55745326fd4d33f966ab7e3a4f9d2ef9b6637d2d5fa5f374260a645a1",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "b2c9c81ff71c6f7b705cab6d968effb5cbf72a45f86a1d0cb5b5288837f7ca97"
     },
@@ -4376,7 +4376,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "c56099b735b3092d787191e3b9b6b90f70ae7a07082e2af077d8c5e7ea54bf92",
+      "current_sha256": "34a944bf278f9a56435a15ad6a1cfba124dac5c9dcab8e4c50ef150891cf29a0",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "b826c48b80278f4968758826b9dcbe7e2a6873fea518e1eb6070cc753ab0ad24"
     },
@@ -6995,7 +6995,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "c5a1a6a08aa4ff262d1d5d0d6f0649a77f754942a8aa372b9be3acab71bfd845",
+      "current_sha256": "460030b70b1e5c3a547e75faa48bff6b69d0fc490341accfe52047b494e56c12",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -7031,7 +7031,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "e855a4cd2a3780eba4d133550195946427979e50b9e7f30b814baf620e61acf1",
+      "current_sha256": "83279e2944c63c8c28209506dba5d3195480eac2ac3f6bf704b532794b8bc068",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -7274,7 +7274,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "61a58f3f0eb37e9cac1d2d9ac60a95548c12ed775f1c0b05c9d53b1ec4bd3ddc",
+      "current_sha256": "52bad143574d77967318040ef8fdf72bb3e7bb45b596391f363585653a4689cd",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "5b3cdfec50be2ce2b245c17ee0bf46e90f4d2c777d2ea08da4f3a06331210b75"
     },
@@ -9991,6 +9991,14 @@
         "P2": 3
       },
       "resolution": "Five findings repaired; five added core regression cases passed in both transport variants. Host-MPI2/4 ranks and performance target validated; full script result and final native verdict tracked in external reports."
+    },
+    "round3": {
+      "reviewed_head": "78f34a76",
+      "findings": {
+        "P1": 1,
+        "P2": 1
+      },
+      "resolution": "Removed fused device-wide cleanup fallback; retained failed preparation stream drain and progress; cached semaphore completion proof before partial event destruction. Four new core cases passed in both builds. See external reports for final native verdict."
     }
   },
   "original_feature_reference": "34a81ae38e83ec571152d4a45b9276b44aff48c3",

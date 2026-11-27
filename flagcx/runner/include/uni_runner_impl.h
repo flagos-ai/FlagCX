@@ -264,6 +264,8 @@ struct flagcxFusedInvocationBuffers {
   void *workspace;
   void *counters;
   bool runnerCleanupPending;
+  bool streamDrainPending;
+  flagcxStream_t pendingStream;
   flagcxFusedInvocationBuffers *next;
 };
 

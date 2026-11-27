@@ -163,6 +163,12 @@ keeps those owners, and a transport-queue count prevents failed runner cleanup
 from freeing their private scratch early. Notification streams are queried on
 failed retirement; an SDK error or InProgress retains the owner for retry.
 This count does not collect public API work or record stream-tail events.
+Fused preparation failures retain their specific stream and drain progress with
+invocation buffers. The caller keeps this borrowed stream alive until cleanup
+succeeds. Cleanup retries that stream before releasing the buffers;
+it cannot replace a failed stream/runner drain with device-wide synchronization.
+Semaphore cleanup saves successful notification completion before destroying
+individual events, so a later cleanup retry never queries an event already freed.
 Caller completion before Finalize replaces the removed automatic user-work
 drain guarantee. Its performance and overlap effects need hardware measurement.
 

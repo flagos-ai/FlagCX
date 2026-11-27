@@ -44,6 +44,8 @@ public:
   bool failAlias = false, failMemoryFree = false;
   bool failEventDestroy = false;
   flagcxResult_t queryResult = flagcxSuccess;
+  int destroyAttempts = 0, failDestroyAttempt = 0;
+  std::set<flagcxEvent_t> destroyedEvents;
 
   void SetUp() override {
     active = this;
@@ -71,9 +73,13 @@ public:
       *device = host;
       return flagcxSuccess;
     };
-    fake.eventQuery = [](flagcxEvent_t) { return active->queryResult; };
+    fake.eventQuery = [](flagcxEvent_t event) {
+      EXPECT_EQ(active->destroyedEvents.count(event), 0u);
+      return active->queryResult;
+    };
     fake.eventCreate = [](flagcxEvent_t *event, flagcxEventType_t) {
       *event = (flagcxEvent_t)calloc(1, 8);
+      active->destroyedEvents.erase(*event);
       return *event ? flagcxSuccess : flagcxSystemError;
     };
     fake.eventRecord = [](flagcxEvent_t, flagcxStream_t stream) {
@@ -82,8 +88,11 @@ public:
       return flagcxSuccess;
     };
     fake.eventDestroy = [](flagcxEvent_t event) {
+      if (++active->destroyAttempts == active->failDestroyAttempt)
+        return flagcxInProgress;
       if (active->failEventDestroy)
         return flagcxRemoteError;
+      active->destroyedEvents.insert(event);
       ++active->eventFrees;
       free(event);
       return flagcxSuccess;
@@ -629,4 +638,46 @@ TEST_P(RemoteGroupNotification, MissingConnectionRollsBackPreparedPrefix) {
 
 INSTANTIATE_TEST_SUITE_P(SendAndRecv, RemoteGroupNotification,
                          ::testing::Bool());
+TEST_F(GroupNotification, DeviceCompletionProofSurvivesPartialEventDestroy) {
+  ASSERT_EQ(deviceSemaphoreBufferPool.clear(), flagcxSuccess);
+  auto derived = std::make_shared<flagcxDeviceSemaphore>();
+  ASSERT_EQ(derived->initResult, flagcxSuccess);
+  ASSERT_NE(derived->getEvent(), nullptr);
+  ASSERT_NE(derived->getEvent(), nullptr);
+  derived->notificationStreams.push_back((flagcxStream_t)&streamTokens[0]);
+  derived->completionArmed = true;
+  std::shared_ptr<flagcxSemaphore> owner = derived;
+  derived.reset();
+  failDestroyAttempt = 2;
+  EXPECT_EQ(flagcxReleaseSemaphore(&owner), flagcxInProgress);
+  ASSERT_NE(owner, nullptr);
+  EXPECT_EQ(eventFrees, 1);
+  EXPECT_TRUE(owner->pollEnd()); // Must not query the destroyed head event.
+  EXPECT_EQ(flagcxReleaseSemaphore(&owner), flagcxSuccess);
+  EXPECT_EQ(owner, nullptr);
+  EXPECT_EQ(eventFrees, 2);
+  EXPECT_EQ(deviceSemaphoreBufferPool.clear(), flagcxSuccess);
+}
+
+TEST_F(GroupNotification, StreamValueCompletionProofSurvivesPartialCleanup) {
+  ASSERT_EQ(streamValueBufferPool.clear(), flagcxSuccess);
+  fake.streamWriteValue64 = fake.streamWaitValue64 =
+      [](flagcxStream_t, void *, uint64_t, int) { return flagcxSuccess; };
+  auto derived = std::make_shared<flagcxStreamValueSemaphore>();
+  ASSERT_EQ(derived->initResult, flagcxSuccess);
+  ASSERT_NE(derived->getEvent(), nullptr);
+  ASSERT_EQ(derived->enqueueCompletion((flagcxStream_t)&streamTokens[0]),
+            flagcxSuccess);
+  std::shared_ptr<flagcxSemaphore> owner = derived;
+  derived.reset();
+  failDestroyAttempt = 2;
+  EXPECT_EQ(flagcxReleaseSemaphore(&owner), flagcxInProgress);
+  ASSERT_NE(owner, nullptr);
+  EXPECT_EQ(eventFrees, 1);
+  EXPECT_TRUE(owner->pollEnd()); // Completion event was already destroyed.
+  EXPECT_EQ(flagcxReleaseSemaphore(&owner), flagcxSuccess);
+  EXPECT_EQ(owner, nullptr);
+  EXPECT_EQ(eventFrees, 2);
+  EXPECT_EQ(streamValueBufferPool.clear(), flagcxSuccess);
+}
 } // namespace

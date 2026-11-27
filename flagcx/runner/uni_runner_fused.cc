@@ -4,6 +4,7 @@
 #include "global_comm.h"
 #include "group.h"
 #include "proxy.h"
+#include "runner.h"
 #include "uni_runner_algorithm.h"
 #include "uni_runner_gemm.h"
 #include "uni_runner_helper.h"
@@ -45,6 +46,11 @@ extern "C" flagcxResult_t flagcxFusedDrainPendingBuffers(flagcxComm_t comm) {
     auto *buffers = *link;
     if (cleanupResult == flagcxSuccess)
       buffers->runnerCleanupPending = false;
+    if (buffers->streamDrainPending) {
+      FLAGCXCHECKSTRICT(
+          deviceAdaptor->streamSynchronize(buffers->pendingStream));
+      buffers->streamDrainPending = false;
+    }
     if (buffers->counters != nullptr) {
       flagcxResult_t freeResult = flagcxCommReleaseBuffer(
           comm, buffers->counters, flagcxInternalBufferDevice);
@@ -544,12 +550,13 @@ static flagcxResult_t validateCommon(const void *input, const void *weight,
 #endif
 }
 
-static flagcxResult_t finishInvocation(flagcxResult_t res, bool initialized,
-                                       flagcxComm_t comm,
-                                       flagcxFusedInvocationBuffers *buffers,
-                                       flagcxStream_t stream = nullptr,
-                                       bool streamWorkMayBePending = false) {
-  if (buffers == nullptr)
+} // namespace
+
+flagcxResult_t flagcxFusedFinishInvocation(
+    flagcxResult_t res, bool initialized, flagcxComm_t comm,
+    flagcxFusedInvocationBuffers *buffers, flagcxStream_t stream,
+    bool streamWorkMayBePending) {
+  if (buffers == NULL)
     return res;
   bool drained = true;
   if (initialized) {
@@ -563,38 +570,34 @@ static flagcxResult_t finishInvocation(flagcxResult_t res, bool initialized,
     if (res == flagcxSuccess)
       res = syncResult;
     drained = syncResult == flagcxSuccess;
+    buffers->pendingStream = stream;
+    buffers->streamDrainPending = !drained;
   }
   if (!drained) {
-    flagcxResult_t syncResult = deviceAdaptor->deviceSynchronize();
-    drained = syncResult == flagcxSuccess;
-    if (res == flagcxSuccess)
-      res = syncResult;
-  }
-  if (!drained) {
-    auto *state = &comm->heteroComm->proxyState->uniRunnerState;
+    flagcxUniRunnerState *state = &comm->heteroComm->proxyState->uniRunnerState;
     buffers->next = state->pendingFusedBuffers;
     state->pendingFusedBuffers = buffers;
     return res;
   }
-  if (buffers->counters != nullptr) {
+  if (buffers->counters != NULL) {
     flagcxResult_t freeRes =
-        deviceAdaptor->deviceFree(buffers->counters, flagcxMemDevice, nullptr);
+        deviceAdaptor->deviceFree(buffers->counters, flagcxMemDevice, NULL);
     if (res == flagcxSuccess)
       res = freeRes;
     if (freeRes == flagcxSuccess)
-      buffers->counters = nullptr;
+      buffers->counters = NULL;
   }
-  if (buffers->workspace != nullptr) {
+  if (buffers->workspace != NULL) {
     flagcxResult_t freeRes =
         deviceAdaptor->deviceFree(buffers->workspace, flagcxMemDevice, NULL);
     if (res == flagcxSuccess)
       res = freeRes;
     if (freeRes == flagcxSuccess)
-      buffers->workspace = nullptr;
+      buffers->workspace = NULL;
   }
-  if (buffers->counters != nullptr || buffers->workspace != nullptr ||
+  if (buffers->counters != NULL || buffers->workspace != NULL ||
       buffers->runnerCleanupPending) {
-    auto *state = &comm->heteroComm->proxyState->uniRunnerState;
+    flagcxUniRunnerState *state = &comm->heteroComm->proxyState->uniRunnerState;
     buffers->next = state->pendingFusedBuffers;
     state->pendingFusedBuffers = buffers;
   } else {
@@ -602,8 +605,6 @@ static flagcxResult_t finishInvocation(flagcxResult_t res, bool initialized,
   }
   return res;
 }
-
-} // namespace
 
 flagcxResult_t resolveUniRunnerDslGemmWorkerCount(uint32_t m, uint32_t n,
                                                   uint64_t maxBlocks,
@@ -692,9 +693,9 @@ flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
   flagcxResult_t agreement =
       flagcxConvergeBootstrapStatus(comm, res, &commonPrepare);
   if (agreement != flagcxSuccess || commonPrepare != flagcxSuccess)
-    return finishInvocation(agreement != flagcxSuccess ? agreement
-                                                       : commonPrepare,
-                            false, comm, buffers, stream, workspaceStreamWork);
+    return flagcxFusedFinishInvocation(
+        agreement != flagcxSuccess ? agreement : commonPrepare, false, comm,
+        buffers, stream, workspaceStreamWork);
 
   void *workspace = buffers->workspace;
   char *counterBase = static_cast<char *>(workspace) + counterOffset;
@@ -737,11 +738,12 @@ flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
   commonPrepare = flagcxSuccess;
   agreement = flagcxConvergeBootstrapStatus(comm, res, &commonPrepare);
   if (agreement != flagcxSuccess || commonPrepare != flagcxSuccess)
-    return finishInvocation(agreement != flagcxSuccess ? agreement
-                                                       : commonPrepare,
-                            initialized, comm, buffers);
+    return flagcxFusedFinishInvocation(
+        agreement != flagcxSuccess ? agreement : commonPrepare, initialized,
+        comm, buffers, NULL, false);
   res = runUniRunner(comm, true);
-  return finishInvocation(res, initialized, comm, buffers);
+  return flagcxFusedFinishInvocation(res, initialized, comm, buffers, NULL,
+                                     false);
 }
 
 flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
@@ -832,9 +834,9 @@ flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
   flagcxResult_t agreement =
       flagcxConvergeBootstrapStatus(comm, res, &commonPrepare);
   if (agreement != flagcxSuccess || commonPrepare != flagcxSuccess)
-    return finishInvocation(agreement != flagcxSuccess ? agreement
-                                                       : commonPrepare,
-                            false, comm, buffers, stream, workspaceStreamWork);
+    return flagcxFusedFinishInvocation(
+        agreement != flagcxSuccess ? agreement : commonPrepare, false, comm,
+        buffers, stream, workspaceStreamWork);
 
   void *workspace = buffers->workspace;
   char *counterBase = static_cast<char *>(workspace) + counterOffset;
@@ -885,9 +887,10 @@ flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
   commonPrepare = flagcxSuccess;
   agreement = flagcxConvergeBootstrapStatus(comm, res, &commonPrepare);
   if (agreement != flagcxSuccess || commonPrepare != flagcxSuccess)
-    return finishInvocation(agreement != flagcxSuccess ? agreement
-                                                       : commonPrepare,
-                            initialized, comm, buffers);
+    return flagcxFusedFinishInvocation(
+        agreement != flagcxSuccess ? agreement : commonPrepare, initialized,
+        comm, buffers, NULL, false);
   res = runUniRunner(comm, true);
-  return finishInvocation(res, initialized, comm, buffers);
+  return flagcxFusedFinishInvocation(res, initialized, comm, buffers, NULL,
+                                     false);
 }

@@ -167,3 +167,71 @@ TEST_F(IpcLifecycleMock, CancelledCopyKeepsC2cScratchUntilTransportRetires) {
   EXPECT_EQ(comm->pendingC2cResources, nullptr);
   EXPECT_EQ(frees.size(), 1u);
 }
+
+TEST_F(IpcLifecycleMock,
+       FusedFinishRetainsWorkspaceUntilAcceptedRequestsRetire) {
+  addTransport();
+  auto &state = comm->heteroComm->proxyState->uniRunnerState;
+  auto *buffers = (flagcxFusedInvocationBuffers *)calloc(
+      1, sizeof(flagcxFusedInvocationBuffers));
+  buffers->workspace = calloc(1, 64);
+  buffers->counters = calloc(1, 64);
+  comm->heteroComm->proxyState->asyncResult = flagcxRemoteError;
+  comm->heteroComm->proxyState->pendingTransportOps = 1;
+  device.deviceSynchronize = [] {
+    ADD_FAILURE() << "device synchronization cannot retire accepted requests";
+    return flagcxSuccess;
+  };
+  EXPECT_EQ(flagcxFusedFinishInvocation(flagcxRemoteError, true, comm, buffers,
+                                        nullptr, false),
+            flagcxRemoteError);
+  ASSERT_EQ(state.pendingFusedBuffers, buffers);
+  EXPECT_TRUE(buffers->runnerCleanupPending);
+  EXPECT_NE(buffers->workspace, nullptr);
+  EXPECT_NE(buffers->counters, nullptr);
+  EXPECT_TRUE(frees.empty());
+  EXPECT_EQ(flagcxFusedDrainPendingBuffers(comm), flagcxInProgress);
+  comm->heteroComm->proxyState->pendingTransportOps = 0;
+  EXPECT_EQ(flagcxFusedDrainPendingBuffers(comm), flagcxSuccess);
+  EXPECT_EQ(state.pendingFusedBuffers, nullptr);
+  EXPECT_EQ(frees.size(), 2u);
+}
+
+TEST_F(IpcLifecycleMock, FusedPreparationRetainsFailedStreamDrainForRetry) {
+  addTransport();
+  auto &state = comm->heteroComm->proxyState->uniRunnerState;
+  auto *buffers = (flagcxFusedInvocationBuffers *)calloc(
+      1, sizeof(flagcxFusedInvocationBuffers));
+  buffers->workspace = calloc(1, 64);
+  device.deviceSynchronize = [] {
+    ADD_FAILURE() << "failure cleanup must not synchronize the entire device";
+    return flagcxSuccess;
+  };
+  device.streamSynchronize = [](flagcxStream_t stream) {
+    EXPECT_EQ(stream, (flagcxStream_t)0x1000);
+    ++active->syncs;
+    return active->nativeResult;
+  };
+  nativeResult = flagcxInProgress;
+  EXPECT_EQ(flagcxFusedFinishInvocation(flagcxRemoteError, false, comm, buffers,
+                                        (flagcxStream_t)0x1000, true),
+            flagcxRemoteError);
+  ASSERT_EQ(state.pendingFusedBuffers, buffers);
+  EXPECT_TRUE(buffers->streamDrainPending);
+  EXPECT_TRUE(frees.empty());
+  nativeResult = flagcxRemoteError;
+  EXPECT_EQ(flagcxFusedDrainPendingBuffers(comm), flagcxRemoteError);
+  EXPECT_TRUE(buffers->streamDrainPending);
+  EXPECT_TRUE(frees.empty());
+  nativeResult = flagcxSuccess;
+  failFree = true;
+  freeError = flagcxInProgress;
+  EXPECT_EQ(flagcxFusedDrainPendingBuffers(comm), flagcxInProgress);
+  EXPECT_FALSE(buffers->streamDrainPending);
+  EXPECT_EQ(syncs, 3);
+  failFree = false;
+  EXPECT_EQ(flagcxFusedDrainPendingBuffers(comm), flagcxSuccess);
+  EXPECT_EQ(syncs, 3); // Do not repeat the completed stream drain.
+  EXPECT_EQ(frees.size(), 1u);
+  EXPECT_EQ(state.pendingFusedBuffers, nullptr);
+}
