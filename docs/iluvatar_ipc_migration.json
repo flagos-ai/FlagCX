@@ -387,6 +387,11 @@
       "description": "Add Device API backend headers to standard test include configuration",
       "status": "complete",
       "validation": "Unmodified FLAGCX_INCLUDES: full core standard-make builds and runs pass336/skip5 against both IBRC and IBUC libraries."
+    },
+    "step2": {
+      "description": "Limit required GTest PASS policy to runtime rather than build and preflight wrappers",
+      "status": "complete",
+      "validation": "Six Ascend CI tests passed, including real-wrapper regression for all six non-runtime phases, inherited policy preservation, empty/skipped runtime rejection and passing GTest acceptance."
     }
   }
 }

@@ -926,13 +926,13 @@
     },
     {
       "path": ".github/scripts/ci/timeouts.sh",
-      "decision": "preserve-exact",
+      "decision": "align-tests-and-contracts",
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "1b1c506e8575d66b45f756dee972a0e15ae01c637ef0dc551b09f84eb346aa5d",
       "audit_start_sha256": "1b1c506e8575d66b45f756dee972a0e15ae01c637ef0dc551b09f84eb346aa5d",
       "rollback_hunks": [],
-      "current_sha256": "1b1c506e8575d66b45f756dee972a0e15ae01c637ef0dc551b09f84eb346aa5d",
-      "current_resolution": "exact feature-reference content"
+      "current_sha256": "568ca82af1e4496e7129e88d55a6d5137053441427bed364fc9f24bc62367fb6",
+      "current_resolution": "PR751 CI follow-up: Limit required GTest PASS policy to runtime rather than build and preflight wrappers"
     },
     {
       "path": ".github/scripts/set_env/ascend.sh",
@@ -1134,7 +1134,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "945c7b18eb650603fdd84bfd1dbbde19e66ccb68937bf035eaed0eb3be7e0d6c",
+      "current_sha256": "c8e07ba3162ff620b19093e5d64bcafc34260e1bd87e2a8ed0fbdae51c75b798",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -8294,13 +8294,13 @@
     },
     {
       "path": "test/script/test_ascend_ci.py",
-      "decision": "preserve-exact",
+      "decision": "align-tests-and-contracts",
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "f7c1b4a29ca58bfaa8119f5104723a2ba9d5411ee0d37e469a41f893567874b1",
       "audit_start_sha256": "f7c1b4a29ca58bfaa8119f5104723a2ba9d5411ee0d37e469a41f893567874b1",
       "rollback_hunks": [],
-      "current_sha256": "f7c1b4a29ca58bfaa8119f5104723a2ba9d5411ee0d37e469a41f893567874b1",
-      "current_resolution": "exact feature-reference content"
+      "current_sha256": "2fd7399cfa3faa5a5b52faafe6f4390364dc6414e3be4ea68b3deef6cafbe868",
+      "current_resolution": "PR751 CI follow-up: Limit required GTest PASS policy to runtime rather than build and preflight wrappers"
     },
     {
       "path": "test/script/test_ci_routing.py",
