@@ -102,6 +102,29 @@ TEST_F(IpcLifecycleMock, AsyncErrorPollingCompletesAcceptedNativeFinalize) {
   destroySuccessfully();
 }
 
+TEST_F(IpcLifecycleMock, EarlierNativeOwnerCompletesBeforeNextFinalize) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  comm->homoInterComm = (flagcxInnerComm_t)0xa000;
+  nativeResult = flagcxInProgress;
+  pendingPolls = 1;
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(finalizeCalls, 2);
+  EXPECT_EQ(asyncPolls, 3);
+}
+
+TEST_F(IpcLifecycleMock, EarlierCompatOwnerCompletesBeforeNextDestroy) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  comm->homoInterComm = (flagcxInnerComm_t)0xa000;
+  comm->nativeDestroyFinalize = true;
+  sdk.commDestroy = [](flagcxInnerComm_t) {
+    return ++active->destroyCalls == 1 ? flagcxInProgress : flagcxSuccess;
+  };
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(destroyCalls, 3);
+  EXPECT_EQ(comm->homoComm, nullptr);
+  EXPECT_EQ(comm->homoInterComm, nullptr);
+}
+
 TEST_F(IpcLifecycleMock, AsyncFinalizeErrorRequiresExplicitRetry) {
   comm->homoComm = (flagcxInnerComm_t)0x9000;
   nativeResult = flagcxInProgress;

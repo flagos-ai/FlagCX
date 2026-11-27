@@ -196,7 +196,13 @@ static flagcxResult_t proxyRetireAccepted(flagcxProxyConnection *connection,
 
 static flagcxResult_t asyncProxyOpDequeue(struct flagcxProxyLocalPeer *peer,
                                           flagcxProxyAsyncOp *op) {
-  FLAGCXCHECKSTRICT(flagcxReleaseSemaphore(&op->args.semaphore));
+  {
+    flagcxResult_t cleanupStatus =
+        (flagcxReleaseSemaphore(&op->args.semaphore));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (peer->asyncOps == op)
     peer->asyncOps = op->next;
   if (op->next)

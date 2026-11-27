@@ -92,8 +92,10 @@ consumes the Comm pointer. Native SDK Destroy can still impose its own waits.
 
 Every distinct native communicator, including tuner aliases and an automatic
 host communicator, is finalized once. Native Finalize returning InProgress is
-submitted once and polled through its asynchronous-error API on subsequent
-Finalize calls. Public GetAsyncError also advances a pending Finalize, so the
+submitted once and polled through its asynchronous-error API. If another native
+owner remains, polling completes the earlier owner before entering the next
+collective close. The final owner can return InProgress for subsequent Finalize
+calls. Public GetAsyncError also advances a pending Finalize, so the
 NCCL wrapper's finalize-once/poll loop can complete. Where close requires peer
 agreement, all ranks must continue polling or retrying in the same order.
 A synchronous Success does not require an asynchronous poller.
@@ -140,6 +142,14 @@ They are separate from the removed core
 WorkRecord tracker. Existing platform limitations and CI exclusions remain
 visible; host mocks cannot establish rank-local behavior inside a vendor SDK.
 Ascend SHMEM and MetaX Device API integrations are preserved independently.
+
+Barrier checks allocation, initialization, collective submission and cleanup
+statuses. Its private scratch is released after accepted native submission and
+the launch stream complete. A failed drain or free retains the buffer and
+completed cleanup steps; the next Barrier or Finalize retries cleanup. Keep the
+borrowed stream wrapper alive until that cleanup succeeds. This adds no work
+tracker or callback completion event. Cleanup uses the existing CHECK/GOTO
+macros with explicit InProgress branches before consuming an owner.
 
 ## Callback and event boundary
 

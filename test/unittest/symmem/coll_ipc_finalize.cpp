@@ -158,3 +158,41 @@ TEST_F(IpcFinalizeBootstrapTest,
   EXPECT_EQ(globalRegPool.deregisterBuffer(nullptr, token), flagcxSuccess);
   destroyOneRankAtATime();
 }
+
+TEST_F(IpcFinalizeBootstrapTest,
+       PendingEarlierNativeOwnerCompletesBeforeNextCollective) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  comm->homoInterComm = (flagcxInnerComm_t)0xa000;
+  comm->nativeCloseNeedsAgreement = true;
+  pendingPolls = rank == 0 ? 2 : 0;
+  sdk.commFinalize = [](flagcxInnerComm_t) {
+    ++active->finalizeCalls;
+    EXPECT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+    return flagcxInProgress;
+  };
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(finalizeCalls, 2);
+  EXPECT_EQ(asyncPolls, rank == 0 ? 4 : 2);
+  EXPECT_TRUE(frees.empty());
+  destroyOneRankAtATime();
+}
+
+TEST_F(IpcFinalizeBootstrapTest,
+       PendingEarlierCompatibilityCloseCompletesBeforeNextCollective) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  comm->homoInterComm = (flagcxInnerComm_t)0xa000;
+  comm->nativeCloseNeedsAgreement = true;
+  comm->nativeDestroyFinalize = true;
+  pendingPolls = rank == 0 ? 2 : 0;
+  sdk.commDestroy = [](flagcxInnerComm_t handle) {
+    ++active->destroyCalls;
+    if (handle == (flagcxInnerComm_t)0x9000 && active->pendingPolls-- > 0)
+      return flagcxInProgress;
+    return MPI_Barrier(MPI_COMM_WORLD) == MPI_SUCCESS ? flagcxSuccess
+                                                      : flagcxSystemError;
+  };
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(destroyCalls, rank == 0 ? 4 : 2);
+  EXPECT_TRUE(frees.empty());
+  destroyOneRankAtATime();
+}

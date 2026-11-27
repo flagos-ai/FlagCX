@@ -82,6 +82,14 @@ struct flagcxCommNativeOwner {
   bool host, accepted, pending, aborted, registrationsReleased;
 };
 
+// Private Barrier scratch retained only while execution or cleanup is pending.
+struct flagcxBarrierResources {
+  struct flagcxBarrierResources *next;
+  void *buffer;
+  flagcxStream_t stream;
+  bool streamDrained, collectivePending;
+};
+
 flagcxResult_t flagcxCommCheckSubmission(flagcxComm_t comm);
 
 struct flagcxComm {
@@ -97,6 +105,7 @@ struct flagcxComm {
   unsigned int nativeOwnerCount, nativeFinalizeIndex;
   bool nativeCatalogReady;
   struct flagcxC2cResources *pendingC2cResources;
+  struct flagcxBarrierResources *pendingBarrierResources;
 
   bool ipcClosingImports, internalImportsConfirmed;
   flagcxDevComm_t retiredDevComms;

@@ -994,15 +994,26 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
         devComm->peerShmHandles[lr] = NULL;
       if (devComm->peerShmHandles[lr] == NULL)
         continue;
-      FLAGCXCHECKSTRICT(flagcxShmClose(devComm->peerShmHandles[lr]));
+      {
+        flagcxResult_t cleanupStatus =
+            (flagcxShmClose(devComm->peerShmHandles[lr]));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
       devComm->peerShmHandles[lr] = NULL;
     }
     free(devComm->peerShmHandles);
     devComm->peerShmHandles = NULL;
   }
   if (devComm->myShmHandle != NULL) {
-    FLAGCXCHECKSTRICT(flagcxCommReleaseBuffer(comm, devComm->myShmHandle,
-                                              flagcxInternalBufferShm));
+    {
+      flagcxResult_t cleanupStatus = (flagcxCommReleaseBuffer(
+          comm, devComm->myShmHandle, flagcxInternalBufferShm));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     devComm->myShmHandle = NULL;
   }
   devComm->localBarrierShmPtr = NULL;
@@ -1030,15 +1041,26 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
         devComm->peerSignalShmHandles[lr] = NULL;
       if (devComm->peerSignalShmHandles[lr] == NULL)
         continue;
-      FLAGCXCHECKSTRICT(flagcxShmClose(devComm->peerSignalShmHandles[lr]));
+      {
+        flagcxResult_t cleanupStatus =
+            (flagcxShmClose(devComm->peerSignalShmHandles[lr]));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
       devComm->peerSignalShmHandles[lr] = NULL;
     }
     free(devComm->peerSignalShmHandles);
     devComm->peerSignalShmHandles = NULL;
   }
   if (devComm->mySignalShmHandle != NULL) {
-    FLAGCXCHECKSTRICT(flagcxCommReleaseBuffer(comm, devComm->mySignalShmHandle,
-                                              flagcxInternalBufferShm));
+    {
+      flagcxResult_t cleanupStatus = (flagcxCommReleaseBuffer(
+          comm, devComm->mySignalShmHandle, flagcxInternalBufferShm));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     devComm->mySignalShmHandle = NULL;
   }
   devComm->signalHostBuffer = NULL;

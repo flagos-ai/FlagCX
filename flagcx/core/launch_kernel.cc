@@ -202,7 +202,13 @@ exit:
 
 flagcxResult_t flagcxSemaphore::releaseDefaultStream() {
   if (ownedDefaultStream != NULL) {
-    FLAGCXCHECKSTRICT(deviceAdaptor->streamFree(ownedDefaultStream));
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceAdaptor->streamFree(ownedDefaultStream));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     ownedDefaultStream = NULL;
   }
   return flagcxSuccess;
@@ -238,7 +244,12 @@ void flagcxHostSemaphore::runCallback() {
 }
 
 flagcxResult_t flagcxHostSemaphore::drainNotifications() {
-  FLAGCXCHECKSTRICT(flagcxSemaphore::drainNotifications());
+  {
+    flagcxResult_t cleanupStatus = (flagcxSemaphore::drainNotifications());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   for (struct flagcxGroupCallback *context = callbackContexts; context != NULL;
        context = context->next) {
     // A rejected launch accepted no callback. Accepted callbacks alone drop
@@ -252,16 +263,31 @@ flagcxResult_t flagcxHostSemaphore::drainNotifications() {
 }
 
 flagcxResult_t flagcxHostSemaphore::release() {
-  FLAGCXCHECKSTRICT(drainNotifications());
+  {
+    flagcxResult_t cleanupStatus = (drainNotifications());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (__atomic_load_n(&callbacks, __ATOMIC_ACQUIRE) != 0)
     return flagcxInProgress;
   for (size_t i = 0; i < events.size(); ++i) {
     if (events[i] == NULL)
       continue;
-    FLAGCXCHECKSTRICT(deviceAdaptor->eventDestroy(events[i]));
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->eventDestroy(events[i]));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     events[i] = NULL;
   }
-  FLAGCXCHECKSTRICT(releaseDefaultStream());
+  {
+    flagcxResult_t cleanupStatus = (releaseDefaultStream());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   while (callbackContexts != NULL) {
     struct flagcxGroupCallback *context = callbackContexts;
     callbackContexts = context->next;
@@ -285,12 +311,23 @@ flagcxDeviceSemaphore::captureCancellationCompletion(flagcxStream_t stream) {
     return flagcxSuccess;
   if (headEvent == NULL || stream == NULL)
     return flagcxInProgress;
-  FLAGCXCHECKSTRICT(deviceAdaptor->eventRecord(headEvent, stream));
+  {
+    flagcxResult_t cleanupStatus =
+        (deviceAdaptor->eventRecord(headEvent, stream));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   __atomic_store_n(&completionArmed, true, __ATOMIC_RELEASE);
   return flagcxSuccess;
 }
 flagcxResult_t flagcxDeviceSemaphore::drainNotifications() {
-  FLAGCXCHECKSTRICT(flagcxSemaphore::drainNotifications());
+  {
+    flagcxResult_t cleanupStatus = (flagcxSemaphore::drainNotifications());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (!isCancelled() || __atomic_load_n(&completionDrained, __ATOMIC_ACQUIRE))
     return flagcxSuccess;
   if (notificationAttempted || completionArmed) {
@@ -305,7 +342,12 @@ flagcxResult_t flagcxDeviceSemaphore::drainNotifications() {
   return flagcxSuccess;
 }
 flagcxResult_t flagcxDeviceSemaphore::release() {
-  FLAGCXCHECKSTRICT(drainNotifications());
+  {
+    flagcxResult_t cleanupStatus = (drainNotifications());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (!notificationStreams.empty() && !pollEnd())
     return flagcxInProgress;
   // Preserve completion proof before event destruction can partly succeed.
@@ -313,12 +355,28 @@ flagcxResult_t flagcxDeviceSemaphore::release() {
   for (size_t i = 0; i < events.size(); ++i) {
     if (events[i] == NULL)
       continue;
-    FLAGCXCHECKSTRICT(deviceAdaptor->eventDestroy(events[i]));
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->eventDestroy(events[i]));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     events[i] = NULL;
   }
-  FLAGCXCHECKSTRICT(releaseDefaultStream());
+  {
+    flagcxResult_t cleanupStatus = (releaseDefaultStream());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (slotId >= 0) {
-    FLAGCXCHECKSTRICT(deviceSemaphoreBufferPool.releaseSlot(slotId));
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceSemaphoreBufferPool.releaseSlot(slotId));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     slotId = -1;
   }
   notificationStreams.clear();
@@ -338,13 +396,24 @@ flagcxResult_t flagcxStreamValueSemaphore::captureCancellationCompletion(
     return flagcxSuccess;
   if (completionEvent == NULL || stream == NULL)
     return flagcxInProgress;
-  FLAGCXCHECKSTRICT(deviceAdaptor->eventRecord(completionEvent, stream));
+  {
+    flagcxResult_t cleanupStatus =
+        (deviceAdaptor->eventRecord(completionEvent, stream));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   __atomic_store_n(&completionState, 1, __ATOMIC_RELEASE);
   __atomic_store_n(&completionUnsafe, false, __ATOMIC_RELEASE);
   return flagcxSuccess;
 }
 flagcxResult_t flagcxStreamValueSemaphore::drainNotifications() {
-  FLAGCXCHECKSTRICT(flagcxSemaphore::drainNotifications());
+  {
+    flagcxResult_t cleanupStatus = (flagcxSemaphore::drainNotifications());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (!isCancelled())
     return flagcxSuccess;
   if (__atomic_load_n(&completionUnsafe, __ATOMIC_ACQUIRE))
@@ -360,23 +429,44 @@ flagcxResult_t flagcxStreamValueSemaphore::drainNotifications() {
   return flagcxSuccess;
 }
 flagcxResult_t flagcxStreamValueSemaphore::release() {
-  FLAGCXCHECKSTRICT(drainNotifications());
+  {
+    flagcxResult_t cleanupStatus = (drainNotifications());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (__atomic_load_n(&completionUnsafe, __ATOMIC_ACQUIRE))
     return flagcxInProgress;
   if (completionEvent != NULL) {
     if (!pollEnd())
       return flagcxInProgress;
     markCompletionDrained();
-    FLAGCXCHECKSTRICT(deviceAdaptor->eventDestroy(completionEvent));
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceAdaptor->eventDestroy(completionEvent));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     completionEvent = NULL;
   }
   for (size_t i = 0; i < events.size(); ++i) {
     if (events[i] == NULL)
       continue;
-    FLAGCXCHECKSTRICT(deviceAdaptor->eventDestroy(events[i]));
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->eventDestroy(events[i]));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     events[i] = NULL;
   }
-  FLAGCXCHECKSTRICT(releaseDefaultStream());
+  {
+    flagcxResult_t cleanupStatus = (releaseDefaultStream());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   streamValueBufferPool.release(signals);
   signals = NULL;
   notificationStreams.clear();
@@ -667,21 +757,41 @@ flagcxStreamValueSemaphore::enqueueCompletion(flagcxStream_t launchStream) {
   flagcxResult_t result =
       deviceAdaptor->eventCreate(&completionEvent, flagcxEventDisableTiming);
   traceCall("event-create-return", result);
-  FLAGCXCHECKSTRICT(result);
+  {
+    flagcxResult_t cleanupStatus = (result);
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   __atomic_store_n(&completionUnsafe, true, __ATOMIC_RELEASE);
   traceCall("start-write-enter", -1);
   result = deviceAdaptor->streamWriteValue64(launchStream, dSignals, 1, 0);
   traceCall("start-write-return", result);
-  FLAGCXCHECKSTRICT(result);
+  {
+    flagcxResult_t cleanupStatus = (result);
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   traceCall("end-wait-enter", -1);
   result = deviceAdaptor->streamWaitValue64(
       launchStream, static_cast<char *>(dSignals) + sizeof(uint64_t), 1, 0);
   traceCall("end-wait-return", result);
-  FLAGCXCHECKSTRICT(result);
+  {
+    flagcxResult_t cleanupStatus = (result);
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   traceCall("event-record-enter", -1);
   result = deviceAdaptor->eventRecord(completionEvent, launchStream);
   traceCall("event-record-return", result);
-  FLAGCXCHECKSTRICT(result);
+  {
+    flagcxResult_t cleanupStatus = (result);
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   // Publish the event handle only after it has captured the stream work.
   __atomic_store_n(&completionState, 1, __ATOMIC_RELEASE);
   __atomic_store_n(&completionUnsafe, false, __ATOMIC_RELEASE);

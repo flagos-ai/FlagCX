@@ -93,14 +93,6 @@
   } while (0);
 
 // Propagate errors up
-// Cleanup consumes an owner only on strict Success, including async SDKs.
-#define FLAGCXCHECKSTRICT(call)                                                \
-  do {                                                                         \
-    flagcxResult_t cleanupStatus = (call);                                     \
-    if (cleanupStatus != flagcxSuccess)                                        \
-      return cleanupStatus;                                                    \
-  } while (0)
-
 #define FLAGCXCHECK(call)                                                      \
   do {                                                                         \
     flagcxResult_t RES = call;                                                 \

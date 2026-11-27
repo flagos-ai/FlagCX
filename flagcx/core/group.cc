@@ -151,8 +151,13 @@ static flagcxResult_t groupReadyStream(flagcxSemaphore *semaphore,
       if (deviceAdaptor->streamCopy == NULL ||
           deviceAdaptor->streamFree == NULL)
         return flagcxNotSupported;
-      FLAGCXCHECKSTRICT(
-          deviceAdaptor->streamCopy(&semaphore->ownedDefaultStream, NULL));
+      {
+        flagcxResult_t cleanupStatus =
+            (deviceAdaptor->streamCopy(&semaphore->ownedDefaultStream, NULL));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
       if (semaphore->ownedDefaultStream == NULL)
         return flagcxSystemError;
     }
@@ -163,13 +168,24 @@ static flagcxResult_t groupReadyStream(flagcxSemaphore *semaphore,
     found |= semaphore->notificationStreams[i] == (*operationStream);
   if (!found)
     semaphore->notificationStreams.push_back((*operationStream));
-  FLAGCXCHECKSTRICT(deviceAdaptor->eventRecord(readyEvent, (*operationStream)));
+  {
+    flagcxResult_t cleanupStatus =
+        (deviceAdaptor->eventRecord(readyEvent, (*operationStream)));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (*launchEvent == NULL) {
     *launchStream = (*operationStream);
     *launchEvent = readyEvent;
   } else {
-    FLAGCXCHECKSTRICT(
-        deviceAdaptor->streamWaitEvent(*launchStream, readyEvent));
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceAdaptor->streamWaitEvent(*launchStream, readyEvent));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
   }
   return flagcxSuccess;
 }
@@ -198,7 +214,7 @@ static flagcxResult_t groupAddCounter(flagcxHeteroComm_t comm,
   if (domain == NULL) {
     if (*count == INT_MAX || (device && *count >= FLAGCX_OPS_PER_SEMAPHORE))
       return flagcxInvalidUsage;
-    FLAGCXCHECKSTRICT(flagcxCalloc(&domain, 1));
+    FLAGCXCHECK(flagcxCalloc(&domain, 1));
     domain->comm = comm;
     domain->original = op->args.opId;
     domain->mapped = (*count)++;

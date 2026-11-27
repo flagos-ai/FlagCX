@@ -1720,7 +1720,12 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   if (!proxy || proxy->stopComplete)
     return flagcxSuccess;
-  FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyQuiesce(comm));
+  {
+    flagcxResult_t cleanupStatus = (flagcxHeteroRmaProxyQuiesce(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (proxy->worker) {
     if (!comm->workerPool)
       return flagcxInternalError;
@@ -1730,23 +1735,43 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
     if (result != flagcxSuccess)
       return result;
   }
-  FLAGCXCHECKSTRICT(flagcxHeteroRmaIpcDestroy(comm));
+  {
+    flagcxResult_t cleanupStatus = (flagcxHeteroRmaIpcDestroy(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (__atomic_load_n(&proxy->callbacks, __ATOMIC_ACQUIRE) != 0)
     return flagcxInProgress;
-  FLAGCXCHECKSTRICT(flagcxRmaCleanupDescs(proxy));
+  {
+    flagcxResult_t cleanupStatus = (flagcxRmaCleanupDescs(proxy));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (proxy->doneSeqsMapped) {
     if (!deviceAdaptor->gdrPtrMunmap)
       return flagcxNotSupported;
-    FLAGCXCHECKSTRICT(deviceAdaptor->gdrPtrMunmap(
-        (void *)proxy->doneSeqsCpu, proxy->nRanks * sizeof(uint64_t)));
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->gdrPtrMunmap(
+          (void *)proxy->doneSeqsCpu, proxy->nRanks * sizeof(uint64_t)));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     proxy->doneSeqsCpu = nullptr;
     proxy->doneSeqsMapped = false;
   }
   if (proxy->readySeqsMapped) {
     if (!deviceAdaptor->gdrPtrMunmap)
       return flagcxNotSupported;
-    FLAGCXCHECKSTRICT(deviceAdaptor->gdrPtrMunmap(
-        (void *)proxy->readySeqsCpu, proxy->nRanks * sizeof(uint64_t)));
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->gdrPtrMunmap(
+          (void *)proxy->readySeqsCpu, proxy->nRanks * sizeof(uint64_t)));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     proxy->readySeqsCpu = nullptr;
     proxy->readySeqsMapped = false;
   }
@@ -1763,11 +1788,23 @@ flagcxResult_t flagcxHeteroRmaProxyRelease(flagcxHeteroComm_t comm) {
   if (!comm->importsClosedConfirmed || !proxy->stopComplete || proxy->worker)
     return flagcxInvalidUsage;
   if (proxy->doneSeqsDev) {
-    FLAGCXCHECKSTRICT(deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, nullptr));
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, nullptr));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     proxy->doneSeqsDev = nullptr;
   }
   if (proxy->readySeqsDev) {
-    FLAGCXCHECKSTRICT(deviceAdaptor->gdrMemFree(proxy->readySeqsDev, nullptr));
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceAdaptor->gdrMemFree(proxy->readySeqsDev, nullptr));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     proxy->readySeqsDev = nullptr;
   }
   while (proxy->destroyedPeerMutexes < proxy->nRanks) {

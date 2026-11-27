@@ -1106,7 +1106,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "bfdde87edaca014bdc1ebdc032a52b3ca31a742e3bc1e22b6e947a7557328349",
+      "current_sha256": "be6c0304020de5dfbfced600a5f5491c6863d618a18fae7341d976052454f31d",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "ec534389bd128242d9d68c425cd822a6f73203be50d9c37dbb08616f613198b3"
     },
@@ -1134,7 +1134,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "b2413657692746e2b32b56453e82a118064046f8906a7915d904418a7e5b3745",
+      "current_sha256": "7b7dd5e75aa657e141f7296ff7b2ffc293db0ca456c194dfa0fd3899157a02ad",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -1872,7 +1872,7 @@
           "decision": "preserve-independent-fixes"
         }
       ],
-      "current_sha256": "68745ceba8b0729ce075bf876e7940edda2d8445a4fb7b3f684ad331e01bbdb6",
+      "current_sha256": "ee669518fbc038623b2a2ff01a2a433389c7e44029ac57332386bfa1df733ebf",
       "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
@@ -2103,7 +2103,7 @@
           "decision": "preserve-independent-fixes"
         }
       ],
-      "current_sha256": "6ba34aa4fe17141eed2cee08fe95e8a2737a27f1112bd97955d754425f3ac317",
+      "current_sha256": "068691a6a0686b3abb619ae1355257708559f2e5d6184a0e0d0c5e4752328b79",
       "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
@@ -3219,7 +3219,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "f17509ebab2aa73d0c1ff573cbbd638fe67a05bb8edc517c4854461021412fd9",
+      "current_sha256": "321687dee37b97ed950c73e75992f8c6e4ab76ca1ab6184dfde9979e71fe042c",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -3497,7 +3497,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "60b5ec31937770b7179ddbc8798646ddc3ca93866b5acbdbbec00d1fef23216b",
+      "current_sha256": "e88f7806c050f40ffb3073f7bf987b87968a080a269c4c987ab27b796ab3bc66",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -3703,7 +3703,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "77021242ed1eb9ea1ab1fc843a6210771ad61775819687e1f6eb6f90bf833b1d",
+      "current_sha256": "c37b3eaee89b36dfbe8823ec6d67ab31c89f13da1f53c19c9eaec8d255bfbc50",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -3875,7 +3875,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "a65697008b0e3f53710fdced7557cef53474750aca8bce38fe2d549c2e5c3784",
+      "current_sha256": "bdd25bf5a0c5de8c3d169ba095f22d746bf75a4c2f39092fac9573305f928ac7",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "b2c9c81ff71c6f7b705cab6d968effb5cbf72a45f86a1d0cb5b5288837f7ca97"
     },
@@ -4245,7 +4245,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "981be7425728ffce34939ba7157054397d95b47d86a75d7e85e41753a6b1d184",
+      "current_sha256": "9a2471efdbaf751ba275ae663a52f6171fc1ea8289c2cf00a7e66313d0da53d1",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -4376,7 +4376,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "1097a9c6cf4e80babce989e7b9bc3ff10609a08d4d20a8dab969dd10e642180a",
+      "current_sha256": "3d8bead97df7f7bddf4082e3a0640519854fbd0d2bf94f4341ab0e19b8dd5a6c",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "b826c48b80278f4968758826b9dcbe7e2a6873fea518e1eb6070cc753ab0ad24"
     },
@@ -5226,7 +5226,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "a7bc66f728e368809300a3106f9ce70bcaef24c2c10212722967fd67ba0c4237",
+      "current_sha256": "5c868ce8dafe53ceec13b2467ee1020cbb25eb8441361798c2d330355175b6cd",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "99d07eae0c1b2ea7f95ca47e6a61b6c686a89de254f9abc3039fc6e7c233b09f"
     },
@@ -5584,7 +5584,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "51baac028170b55b6afbe343fb8f84ade74c52a4544e28230104db8f8fa2fd0a",
+      "current_sha256": "4fc30a558e0cfff194f2206edfc90d24623ab7de63987ca6d62f6d38bd6bbc13",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -6596,7 +6596,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "858f4912c6ea5a2b51f715eb963317cc82dce83c0e1d2b4382622a9f87a8407a",
+      "current_sha256": "f5fc40ada3de83f2140c68c114632902da724b7a1148121b6e6a15b300d065ed",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "da9c4bea234b45842a806e8b04fcc92a8559662335a932dd24c184c9853b9b96"
     },
@@ -6776,7 +6776,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "5ac6e4514625b281da57b5c2a5dcfa6f7d1177e03c4990be185f90c1f4e7106b",
+      "current_sha256": "92965f0534fadf63dc64729cb0b0c3e408b211f5dd43b98f72eb0aa051d01c79",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -7274,7 +7274,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "52bad143574d77967318040ef8fdf72bb3e7bb45b596391f363585653a4689cd",
+      "current_sha256": "f10e0debc1e4bdf5f700f1c2d95e0ba4f90cb032065cc99db6c02d143ef595ac",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "5b3cdfec50be2ce2b245c17ee0bf46e90f4d2c777d2ea08da4f3a06331210b75"
     },
@@ -7441,7 +7441,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "0b8e84244b9daa6722fc8e17111025ec497cb0b509ad2fef6345e05a7b35ad67",
+      "current_sha256": "99a1ee7498b62b921a409608d250ff023bc830dbf974e74f25b36eed10d27888",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "7ce74b09d041c5b4439905b292992a20c3c98a0baf83344dd9b7ecc177bdc187"
     },
@@ -7505,7 +7505,7 @@
           "decision": "preserve-independent-fixes"
         }
       ],
-      "current_sha256": "d5082aaffbaf9dc44d5c21e769b1c89d746f9b8c6b97ab07ce72f31b41055b42",
+      "current_sha256": "2df9680d98394227c84ccc00ca35d583e7eb8fba8bcdfb45fd40d24056f0daff",
       "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
@@ -8729,7 +8729,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "aaeae867f823bb851baf9f993fcd55d5e7a9ec59c535004de88a9ffa48c2bdfc",
+      "current_sha256": "8e68e40f1911b07b9c9b9fdcc8d0609048d09ea2a4a16363a58a40ef6817c98d",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -9532,7 +9532,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "cd35b6bebc98b4735bd65e8fe5bdc87e1e707338c8fb340c8ea814e9d8713ab5",
+      "current_sha256": "5b7d6fe7543156cfeba11c63f7ee081b2053f6d5e06dcec0397724fef634ae72",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -10041,6 +10041,13 @@
         "P2": 1
       },
       "resolution": "Advance pending Finalize through public async-error polling so the unchanged NCCL wrapper can finish. Preserve cached device ordinal for active SDKs without device queries. Four core regressions pass in both builds; all2/4-rank bootstrap lifecycle cases pass."
+    },
+    "round8": {
+      "reviewed_head": "0a45cca2",
+      "findings": {
+        "P1": 2
+      },
+      "resolution": "Finish earlier native owner progress before next collective close; keep final owner pollable. Restore Barrier checked execution and retryable private scratch. User-directed strict macro removal uses CHECK/GOTO and explicit Progress owner gates. Eleven core regressions and two bootstrap cases added; full force-rebuilt matrices and2/4-rank runs passed."
     }
   },
   "original_feature_reference": "34a81ae38e83ec571152d4a45b9276b44aff48c3",

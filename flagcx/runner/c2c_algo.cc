@@ -13,22 +13,50 @@
 static flagcxResult_t releaseC2cResources(struct flagcxC2cResources *owner,
                                           flagcxComm_t comm) {
   if (owner->needDrain && !owner->userDrained) {
-    FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(owner->userStream));
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceAdaptor->streamSynchronize(owner->userStream));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     owner->userDrained = true;
   }
   if (owner->needDrain && !owner->privateDrained &&
       owner->privateStream != NULL) {
-    FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(owner->privateStream));
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceAdaptor->streamSynchronize(owner->privateStream));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     owner->privateDrained = true;
   }
-  FLAGCXCHECKSTRICT(flagcxProxyScratchReady(comm->heteroComm));
+  {
+    flagcxResult_t cleanupStatus = (flagcxProxyScratchReady(comm->heteroComm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (owner->scratch != NULL) {
-    FLAGCXCHECKSTRICT(deviceAdaptor->deviceFree(owner->scratch, flagcxMemDevice,
-                                                owner->userStream));
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->deviceFree(
+          owner->scratch, flagcxMemDevice, owner->userStream));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     owner->scratch = NULL;
   }
   if (owner->privateStream != NULL) {
-    FLAGCXCHECKSTRICT(deviceAdaptor->streamDestroy(owner->privateStream));
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceAdaptor->streamDestroy(owner->privateStream));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     owner->privateStream = NULL;
   }
   return flagcxSuccess;
@@ -39,7 +67,12 @@ flagcxResult_t flagcxC2cDrainPendingResources(flagcxComm_t comm) {
     return flagcxInvalidArgument;
   while (comm->pendingC2cResources != NULL) {
     struct flagcxC2cResources *owner = comm->pendingC2cResources;
-    FLAGCXCHECKSTRICT(releaseC2cResources(owner, comm));
+    {
+      flagcxResult_t cleanupStatus = (releaseC2cResources(owner, comm));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     comm->pendingC2cResources = owner->next;
     free(owner);
   }
@@ -2448,9 +2481,14 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
     strategyFound_ = 1;
   }
 
-  FLAGCXCHECKSTRICT(flagcxC2cDrainPendingResources(comm_));
+  {
+    flagcxResult_t cleanupStatus = (flagcxC2cDrainPendingResources(comm_));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   struct flagcxC2cResources *owner = NULL;
-  FLAGCXCHECKSTRICT(flagcxCalloc(&owner, 1));
+  FLAGCXCHECK(flagcxCalloc(&owner, 1));
   owner->userStream = stream;
   scratchBuffer_ = nullptr;
   flagcxStream_t hetStream = nullptr;

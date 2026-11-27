@@ -175,7 +175,12 @@ static flagcxResult_t releaseOrphanUniRunnerIpcWindow(flagcxComm_t comm,
     if (entry.basePtr == buffer && !entry.ownerHeld) {
       if (entry.refCount != 0)
         return flagcxInvalidUsage;
-      FLAGCXCHECKSTRICT(flagcxCommRetireIpcSlot(comm, slot));
+      {
+        flagcxResult_t cleanupStatus = (flagcxCommRetireIpcSlot(comm, slot));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
     }
   }
   return flagcxSuccess;
@@ -1386,8 +1391,13 @@ destroyRedCompletionCounterPool(flagcxUniRunnerState *runnerState) {
     return flagcxSuccess;
   }
   if (runnerState->redCompletionCountersPool != NULL) {
-    FLAGCXCHECKSTRICT(deviceAdaptor->deviceFree(
-        runnerState->redCompletionCountersPool, flagcxMemDevice, NULL));
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->deviceFree(
+          runnerState->redCompletionCountersPool, flagcxMemDevice, NULL));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     runnerState->redCompletionCountersPool = NULL;
   }
   runnerState->redCompletionCountersCapacity = 0;
@@ -1447,8 +1457,13 @@ destroyStreamFlagQueue(flagcxUniRunnerState *runnerState) {
   }
 
   if (runnerState->streamFlagsPool != NULL) {
-    FLAGCXCHECKSTRICT(deviceAdaptor->deviceFree(runnerState->streamFlagsPool,
-                                                flagcxMemDevice, NULL));
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->deviceFree(
+          runnerState->streamFlagsPool, flagcxMemDevice, NULL));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     runnerState->streamFlagsPool = NULL;
   }
 
@@ -5360,11 +5375,22 @@ static flagcxResult_t
 closeUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
                               flagcxComm_t comm) {
   if (runnerState->ipcReadyMem != NULL) {
-    FLAGCXCHECKSTRICT(flagcxDevMemDestroy(comm, runnerState->ipcReadyMem));
+    {
+      flagcxResult_t cleanupStatus =
+          (flagcxDevMemDestroy(comm, runnerState->ipcReadyMem));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     runnerState->ipcReadyMem = NULL;
   }
-  FLAGCXCHECKSTRICT(
-      releaseOrphanUniRunnerIpcWindow(comm, runnerState->ipcReadyBuffer));
+  {
+    flagcxResult_t cleanupStatus =
+        (releaseOrphanUniRunnerIpcWindow(comm, runnerState->ipcReadyBuffer));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   runnerState->ipcReadyBuffer = NULL;
   runnerState->ipcReadyCapacity = 0;
   runnerState->ipcReadyCleanupPending = false;
@@ -5802,16 +5828,41 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
 
   // Stream work may still reference completion flags and invocation buffers.
   // If a stream cannot be drained, retain all resources for a later retry.
-  if (state->redStream != NULL)
-    FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(state->redStream));
-  if (state->cpyStream != NULL)
-    FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(state->cpyStream));
-  if (state->ipcCommStream != NULL)
-    FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(state->ipcCommStream));
-  if (state->netCommStream != NULL)
-    FLAGCXCHECKSTRICT(deviceAdaptor->streamSynchronize(state->netCommStream));
+  if (state->redStream != NULL) {
+    flagcxResult_t cleanupStatus =
+        (deviceAdaptor->streamSynchronize(state->redStream));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  if (state->cpyStream != NULL) {
+    flagcxResult_t cleanupStatus =
+        (deviceAdaptor->streamSynchronize(state->cpyStream));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  if (state->ipcCommStream != NULL) {
+    flagcxResult_t cleanupStatus =
+        (deviceAdaptor->streamSynchronize(state->ipcCommStream));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  if (state->netCommStream != NULL) {
+    flagcxResult_t cleanupStatus =
+        (deviceAdaptor->streamSynchronize(state->netCommStream));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
 
-  FLAGCXCHECKSTRICT(flagcxProxyScratchReady(hcomm));
+  {
+    flagcxResult_t cleanupStatus = (flagcxProxyScratchReady(hcomm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
 
   if (state->groupedAgInputReadyEvent != nullptr) {
     flagcxResult_t destroyResult =
@@ -5821,7 +5872,12 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
     state->groupedAgInputReadyEvent = nullptr;
   }
 
-  FLAGCXCHECKSTRICT(cleanupDagScheduler(state));
+  {
+    flagcxResult_t cleanupStatus = (cleanupDagScheduler(state));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   state->ipcReadySlots = 0;
 
   for (size_t i = 0; i < state->numDagCompletionEvents; ++i) {
@@ -5839,7 +5895,12 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
   free(state->dagCompletionEvents);
   state->dagCompletionEvents = nullptr;
   state->numDagCompletionEvents = 0;
-  FLAGCXCHECKSTRICT(releaseUniRunnerIpcRingInvocation(state));
+  {
+    flagcxResult_t cleanupStatus = (releaseUniRunnerIpcRingInvocation(state));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (result != flagcxSuccess)
     return result;
   state->streamFlagsSize = 0;
@@ -7349,23 +7410,61 @@ flagcxResult_t runUniRunner(flagcxComm_t comm, bool convergeHostPreparation) {
 flagcxResult_t cleanupUniRunnerIpcImports(flagcxUniRunnerState *state) {
   if (!state)
     return flagcxSuccess;
-  FLAGCXCHECKSTRICT(destroyUniRunnerIpcDataViews(state));
-  FLAGCXCHECKSTRICT(closeUniRunnerIpcReadyStorage(state, state->ipcOwner));
+  {
+    flagcxResult_t cleanupStatus = (destroyUniRunnerIpcDataViews(state));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus =
+        (closeUniRunnerIpcReadyStorage(state, state->ipcOwner));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   return closeUniRunnerIpcRingResources(state, state->ipcOwner);
 }
 
 flagcxResult_t
 cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
-  FLAGCXCHECKSTRICT(cleanupDagScheduler(runnerState));
-  FLAGCXCHECKSTRICT(destroyStreamFlagQueue(runnerState));
-  FLAGCXCHECKSTRICT(destroyRedCompletionCounterPool(runnerState));
+  {
+    flagcxResult_t cleanupStatus = (cleanupDagScheduler(runnerState));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus = (destroyStreamFlagQueue(runnerState));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus =
+        (destroyRedCompletionCounterPool(runnerState));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (runnerState == NULL)
     return flagcxSuccess;
-  FLAGCXCHECKSTRICT(releaseUniRunnerIpcRingInvocation(runnerState));
+  {
+    flagcxResult_t cleanupStatus =
+        (releaseUniRunnerIpcRingInvocation(runnerState));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
 
   if (runnerState->groupedArScratch != NULL) {
-    FLAGCXCHECKSTRICT(deviceAdaptor->deviceFree(runnerState->groupedArScratch,
-                                                flagcxMemDevice, NULL));
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->deviceFree(
+          runnerState->groupedArScratch, flagcxMemDevice, NULL));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     runnerState->groupedArScratch = NULL;
     runnerState->groupedArScratchCapacity = 0;
   }
@@ -7379,11 +7478,28 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
        runnerState->ipcRingScratchBuffer != NULL ||
        runnerState->ipcRingProgressBuffer != NULL))
     return flagcxInternalError;
-  FLAGCXCHECKSTRICT(destroyUniRunnerIpcDataViews(runnerState));
-  FLAGCXCHECKSTRICT(closeUniRunnerIpcReadyStorage(runnerState, comm));
+  {
+    flagcxResult_t cleanupStatus = (destroyUniRunnerIpcDataViews(runnerState));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus =
+        (closeUniRunnerIpcReadyStorage(runnerState, comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   runnerState->ipcReadySlots = 0;
   // Only close imports here; Comm frees exporters after peer acknowledgment.
-  FLAGCXCHECKSTRICT(closeUniRunnerIpcRingResources(runnerState, comm));
+  {
+    flagcxResult_t cleanupStatus =
+        (closeUniRunnerIpcRingResources(runnerState, comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   runnerState->ipcRingChannels = 0;
   runnerState->ipcRingSimpleBufferBytes = 0;
   runnerState->ipcRingDatatype = flagcxInt8;
@@ -7391,8 +7507,13 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
   runnerState->ipcRingResourcesDirty = false;
   runnerState->ipcOwner = NULL;
   if (runnerState->ipcParentFlagsDevice != NULL) {
-    FLAGCXCHECKSTRICT(deviceAdaptor->deviceFree(
-        runnerState->ipcParentFlagsDevice, flagcxMemDevice, NULL));
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->deviceFree(
+          runnerState->ipcParentFlagsDevice, flagcxMemDevice, NULL));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
   }
   runnerState->ipcParentFlagsDevice = NULL;
   runnerState->ipcParentFlagsCount = 0;

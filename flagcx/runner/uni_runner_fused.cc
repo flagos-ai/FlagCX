@@ -27,9 +27,20 @@ extern "C" flagcxResult_t flagcxFusedDrainPendingBuffers(flagcxComm_t comm) {
   auto *state = &comm->heteroComm->proxyState->uniRunnerState;
   if (state->pendingFusedBuffers == nullptr)
     return flagcxSuccess;
-  FLAGCXCHECKSTRICT(deviceAdaptor->setDevice(comm->heteroComm->cudaDev));
+  {
+    flagcxResult_t cleanupStatus =
+        (deviceAdaptor->setDevice(comm->heteroComm->cudaDev));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
 
-  FLAGCXCHECKSTRICT(flagcxProxyScratchReady(comm->heteroComm));
+  {
+    flagcxResult_t cleanupStatus = (flagcxProxyScratchReady(comm->heteroComm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
 
   bool needsRunnerCleanup = false;
   for (auto *node = state->pendingFusedBuffers; node != nullptr;
@@ -47,8 +58,13 @@ extern "C" flagcxResult_t flagcxFusedDrainPendingBuffers(flagcxComm_t comm) {
     if (cleanupResult == flagcxSuccess)
       buffers->runnerCleanupPending = false;
     if (buffers->streamDrainPending) {
-      FLAGCXCHECKSTRICT(
-          deviceAdaptor->streamSynchronize(buffers->pendingStream));
+      {
+        flagcxResult_t cleanupStatus =
+            (deviceAdaptor->streamSynchronize(buffers->pendingStream));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
       buffers->streamDrainPending = false;
     }
     if (buffers->counters != nullptr) {
@@ -618,7 +634,7 @@ flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
                                    void *output, size_t mPerRank, size_t n,
                                    size_t k, flagcxDataType_t datatype,
                                    flagcxComm_t comm, flagcxStream_t stream) {
-  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
+  FLAGCXCHECK(flagcxCommCheckSubmission(comm));
   flagcxResult_t res = validateCommon(input, weight, output, mPerRank, n, k,
                                       datatype, comm, stream);
   if (comm == nullptr) {
@@ -752,7 +768,7 @@ flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
                                        flagcxDataType_t datatype,
                                        flagcxRedOp_t op, flagcxComm_t comm,
                                        flagcxStream_t stream) {
-  FLAGCXCHECKSTRICT(flagcxCommCheckSubmission(comm));
+  FLAGCXCHECK(flagcxCommCheckSubmission(comm));
   flagcxResult_t res = validateCommon(input, weight, output, m, n, kPerRank,
                                       datatype, comm, stream);
   if (comm == nullptr) {

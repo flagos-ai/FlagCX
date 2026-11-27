@@ -553,22 +553,78 @@ flagcxResult_t flagcxHeteroCommCloseRegistrations(flagcxHeteroComm_t comm) {
     return flagcxInvalidArgument;
   if (comm->registrationsClosed)
     return flagcxSuccess;
-  FLAGCXCHECKSTRICT(flagcxProxyTransportReady(comm));
-  FLAGCXCHECKSTRICT(flagcxSymRetryPendingCleanup(comm, flagcxSymCleanupLocal));
+  {
+    flagcxResult_t cleanupStatus = (flagcxProxyTransportReady(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus =
+        (flagcxSymRetryPendingCleanup(comm, flagcxSymCleanupLocal));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   while (comm->symWindows != NULL) {
     if (comm->symWindows->owner == NULL)
       return flagcxInvalidUsage;
-    FLAGCXCHECKSTRICT(flagcxSymWindowDeregister(comm, comm->symWindows->owner,
-                                                flagcxSymCleanupLocal));
+    {
+      flagcxResult_t cleanupStatus = (flagcxSymWindowDeregister(
+          comm, comm->symWindows->owner, flagcxSymCleanupLocal));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
   }
-  FLAGCXCHECKSTRICT(flagcxSymLsaDestroy(comm));
-  FLAGCXCHECKSTRICT(flagcxGroupDrainRejected(comm));
-  FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyStop(comm));
-  FLAGCXCHECKSTRICT(flagcxGroupDrainRejected(comm));
-  FLAGCXCHECKSTRICT(globalRegPool.releaseOwner(comm));
-  FLAGCXCHECKSTRICT(globalRegPool.removeAllP2pHandles(comm));
-  FLAGCXCHECKSTRICT(globalRegPool.removeAllNetHandles(comm));
-  FLAGCXCHECKSTRICT(flagcxProxyCloseRelayImports(comm));
+  {
+    flagcxResult_t cleanupStatus = (flagcxSymLsaDestroy(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus = (flagcxGroupDrainRejected(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus = (flagcxHeteroRmaProxyStop(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus = (flagcxGroupDrainRejected(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus = (globalRegPool.releaseOwner(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus = (globalRegPool.removeAllP2pHandles(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus = (globalRegPool.removeAllNetHandles(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus = (flagcxProxyCloseRelayImports(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   comm->registrationsClosed = true;
   return flagcxSuccess;
 }
@@ -576,13 +632,38 @@ flagcxResult_t flagcxHeteroCommCloseRegistrations(flagcxHeteroComm_t comm) {
 flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm) {
   if (!comm || !comm->proxyState)
     return flagcxInvalidArgument;
-  FLAGCXCHECKSTRICT(deviceAdaptor->setDevice(comm->cudaDev));
-  FLAGCXCHECKSTRICT(flagcxHeteroCommCloseRegistrations(comm));
+  {
+    flagcxResult_t cleanupStatus = (deviceAdaptor->setDevice(comm->cudaDev));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus = (flagcxHeteroCommCloseRegistrations(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (!comm->destroyProxyComplete) {
-    FLAGCXCHECKSTRICT(flagcxProxyStop(comm));
-    FLAGCXCHECKSTRICT(flagcxProxyFinalize(comm));
+    {
+      flagcxResult_t cleanupStatus = (flagcxProxyStop(comm));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    {
+      flagcxResult_t cleanupStatus = (flagcxProxyFinalize(comm));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
 #ifdef USE_IBUC
-    FLAGCXCHECKSTRICT(flagcxIbucDrainDeferredCleanup());
+    {
+      flagcxResult_t cleanupStatus = (flagcxIbucDrainDeferredCleanup());
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
 #endif
     comm->destroyProxyComplete = true;
     // Retirement can complete safely while reporting an earlier worker error.
@@ -605,7 +686,13 @@ static flagcxResult_t flagcxHeteroCommAgreeIpcClose(flagcxHeteroComm_t comm,
   domain.nranks = comm->nRanks;
   domain.bootstrap = comm->bootstrap;
   flagcxResult_t common = local;
-  FLAGCXCHECKSTRICT(flagcxConvergeBootstrapStatus(&domain, local, &common));
+  {
+    flagcxResult_t cleanupStatus =
+        (flagcxConvergeBootstrapStatus(&domain, local, &common));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   return common;
 }
 
@@ -616,7 +703,13 @@ flagcxHeteroCommFinalizeInternal(flagcxHeteroComm_t comm) {
   __atomic_store_n(&comm->closeStarted, true, __ATOMIC_RELEASE);
   while (comm->closePhase < 4) {
     flagcxResult_t local = deviceAdaptor->setDevice(comm->cudaDev);
-    FLAGCXCHECKSTRICT(flagcxHeteroCommAgreeIpcClose(comm, local));
+    {
+      flagcxResult_t cleanupStatus =
+          (flagcxHeteroCommAgreeIpcClose(comm, local));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     if (!comm->closeLocalDone) {
       if (comm->closePhase == 0) {
         local = flagcxGroupDrainRejected(comm);
@@ -635,7 +728,13 @@ flagcxHeteroCommFinalizeInternal(flagcxHeteroComm_t comm) {
       if (local == flagcxSuccess)
         comm->closeLocalDone = true;
     }
-    FLAGCXCHECKSTRICT(flagcxHeteroCommAgreeIpcClose(comm, local));
+    {
+      flagcxResult_t cleanupStatus =
+          (flagcxHeteroCommAgreeIpcClose(comm, local));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     ++comm->closePhase;
     comm->closeLocalDone = false;
   }
@@ -663,24 +762,64 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   if (comm == NULL)
     return flagcxSuccess;
   if (comm->initRollbackPending) {
-    FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyQuiesce(comm));
-    FLAGCXCHECKSTRICT(flagcxHeteroCommPrepareDestroy(comm));
+    {
+      flagcxResult_t cleanupStatus = (flagcxHeteroRmaProxyQuiesce(comm));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    {
+      flagcxResult_t cleanupStatus = (flagcxHeteroCommPrepareDestroy(comm));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     // Initializers have not admitted application operations or published a
     // Device API exporter. Local rollback may release these private owners.
     comm->importsClosedConfirmed = true;
   } else {
-    FLAGCXCHECKSTRICT(flagcxHeteroCommFinalize(comm));
+    {
+      flagcxResult_t cleanupStatus = (flagcxHeteroCommFinalize(comm));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
   }
-  FLAGCXCHECKSTRICT(flagcxProxyDestroy(comm));
-  FLAGCXCHECKSTRICT(
-      cleanupUniRunnerPersistentState(&comm->proxyState->uniRunnerState));
-  FLAGCXCHECKSTRICT(flagcxHeteroRmaProxyRelease(comm));
+  {
+    flagcxResult_t cleanupStatus = (flagcxProxyDestroy(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus =
+        (cleanupUniRunnerPersistentState(&comm->proxyState->uniRunnerState));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  {
+    flagcxResult_t cleanupStatus = (flagcxHeteroRmaProxyRelease(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (comm->bootstrap) {
-    FLAGCXCHECKSTRICT(bootstrapClose(comm->bootstrap));
+    {
+      flagcxResult_t cleanupStatus = (bootstrapClose(comm->bootstrap));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     comm->bootstrap = nullptr;
   }
   if (comm->netPluginHeld) {
-    FLAGCXCHECKSTRICT(flagcxNetAdaptorPluginFinalize());
+    {
+      flagcxResult_t cleanupStatus = (flagcxNetAdaptorPluginFinalize());
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     comm->netPluginHeld = false;
   }
   delete comm->workerPool;
@@ -743,7 +882,12 @@ flagcxResult_t flagcxHeteroCommRollbackInit(flagcxHeteroComm_t *owner) {
   if (owner == NULL || *owner == NULL)
     return flagcxSuccess;
   (*owner)->initRollbackPending = true;
-  FLAGCXCHECKSTRICT(flagcxHeteroCommDestroy(*owner));
+  {
+    flagcxResult_t cleanupStatus = (flagcxHeteroCommDestroy(*owner));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   *owner = NULL;
   return flagcxSuccess;
 }

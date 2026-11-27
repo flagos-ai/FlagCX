@@ -1146,7 +1146,13 @@ static flagcxResult_t flagcxSymCleanupUnpublished(flagcxHeteroComm_t comm,
   }
   flagcxResult_t common = flagcxSuccess;
   if (mode == flagcxSymCleanupCollective) {
-    FLAGCXCHECKSTRICT(flagcxSymGlobalConverge(comm, local, &common));
+    {
+      flagcxResult_t cleanupStatus =
+          (flagcxSymGlobalConverge(comm, local, &common));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
   } else {
     common = local;
   }
@@ -1174,7 +1180,13 @@ static flagcxResult_t flagcxSymCleanupUnpublished(flagcxHeteroComm_t comm,
   }
   if (mode == flagcxSymCleanupCollective) {
     // A rank with no local token still participates in the cleanup round.
-    FLAGCXCHECKSTRICT(flagcxSymGlobalConverge(comm, local, &common));
+    {
+      flagcxResult_t cleanupStatus =
+          (flagcxSymGlobalConverge(comm, local, &common));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
   } else {
     common = local;
   }
@@ -1207,8 +1219,19 @@ flagcxResult_t flagcxSymRetryPendingCleanup(flagcxHeteroComm_t comm,
   if (mode == flagcxSymCleanupLocal) {
     while (comm->pendingSymCleanup != nullptr) {
       flagcxSymWindow_t d = comm->pendingSymCleanup;
-      FLAGCXCHECKSTRICT(flagcxSymCleanupUnpublished(comm, d, mode));
-      FLAGCXCHECKSTRICT(flagcxSymReleaseAllocationLease(d));
+      {
+        flagcxResult_t cleanupStatus =
+            (flagcxSymCleanupUnpublished(comm, d, mode));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
+      {
+        flagcxResult_t cleanupStatus = (flagcxSymReleaseAllocationLease(d));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
       comm->pendingSymCleanup = d->cleanupNext;
       flagcxSymFinishPendingCleanup(d);
     }
@@ -1220,16 +1243,33 @@ flagcxResult_t flagcxSymRetryPendingCleanup(flagcxHeteroComm_t comm,
   // so MR and local-mapping status convergence cannot deadlock.
   while (true) {
     int anyPending = 0;
-    FLAGCXCHECKSTRICT(flagcxSymGlobalConvergeScalar(
-        comm, comm->pendingSymCleanup != nullptr ? 1 : 0, kSymPendingGatherTag,
-        kSymPendingBroadcastTag, flagcxSymLogicalOr, &anyPending));
+    {
+      flagcxResult_t cleanupStatus = (flagcxSymGlobalConvergeScalar(
+          comm, comm->pendingSymCleanup != nullptr ? 1 : 0,
+          kSymPendingGatherTag, kSymPendingBroadcastTag, flagcxSymLogicalOr,
+          &anyPending));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     if (!anyPending)
       break;
 
     flagcxSymWindow_t d = comm->pendingSymCleanup;
-    FLAGCXCHECKSTRICT(flagcxSymCleanupUnpublished(comm, d, mode));
+    {
+      flagcxResult_t cleanupStatus =
+          (flagcxSymCleanupUnpublished(comm, d, mode));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     if (d != nullptr) {
-      FLAGCXCHECKSTRICT(flagcxSymReleaseAllocationLease(d));
+      {
+        flagcxResult_t cleanupStatus = (flagcxSymReleaseAllocationLease(d));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
       comm->pendingSymCleanup = d->cleanupNext;
       flagcxSymFinishPendingCleanup(d);
     }
@@ -2716,8 +2756,13 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
     }
     flagcxResult_t lease = flagcxSymReleaseAllocationLease(d);
     flagcxResult_t commonLease = lease;
-    if (mode == flagcxSymCleanupCollective)
-      FLAGCXCHECKSTRICT(flagcxSymConvergeStatus(comm, lease, &commonLease));
+    if (mode == flagcxSymCleanupCollective) {
+      flagcxResult_t cleanupStatus =
+          (flagcxSymConvergeStatus(comm, lease, &commonLease));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     if (commonLease != flagcxSuccess) {
       WARN("flagcxSymWindowDeregister: allocation lease release failed "
            "rank=%d resourcePath=%d result=%d",

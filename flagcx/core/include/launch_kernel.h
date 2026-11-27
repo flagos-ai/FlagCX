@@ -52,7 +52,12 @@ struct flagcxSemaphore {
     return flagcxSuccess;
   }
   virtual flagcxResult_t release() {
-    FLAGCXCHECKSTRICT(drainNotifications());
+    {
+      flagcxResult_t cleanupStatus = (drainNotifications());
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     return releaseDefaultStream();
   }
   flagcxResult_t releaseDefaultStream();
