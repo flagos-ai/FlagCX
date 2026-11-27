@@ -52,10 +52,9 @@ TEST(HostMpiCleanup, AutomaticFallbackOwnerDestroysWhilePeersWait) {
   ASSERT_EQ(
       mpiAdaptor.commInitRank(&comm->hostComm, size, nullptr, rank, nullptr),
       flagcxSuccess);
-  comm->finalizeState.commonPhase = flagcxFinalizeComplete;
-  comm->finalizeState.lifecycle = flagcxCommFinalized;
   comm->ipcTable = comm->ipcTableInline;
   comm->ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
   MPI_Barrier(MPI_COMM_WORLD);
   int released = 1;
   if (rank != 0)

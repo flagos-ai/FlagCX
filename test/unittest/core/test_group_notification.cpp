@@ -2,6 +2,7 @@
 #include "group.h"
 #include "launch_kernel.h"
 #include "proxy.h"
+#include "transport.h"
 #include <atomic>
 #include <chrono>
 #include <climits>
@@ -22,9 +23,11 @@ public:
   flagcxLaunchFunc_t savedKernel;
   flagcxHeteroComm comms[2] = {};
   flagcxProxyState states[2] = {};
-  flagcxTasks::Peer peers[2][1] = {};
+  flagcxTasks::Peer peers[2][2] = {};
   flagcxChannelPeer channelPeers[2] = {};
-  flagcxChannelPeer *channelArrays[2][1] = {};
+  flagcxChannelPeer *channelArrays[2][2] = {};
+  flagcxHeteroComm::P2pSchedulePair schedules[2][2] = {};
+  flagcxTransportComm transport = {};
   flagcxProxyConnection connections[2] = {};
   int input[2] = {11, 22}, output[2] = {};
   int streamTokens[2] = {};
@@ -204,10 +207,12 @@ public:
         flagcxProxyFailProgressQueue(&states[i], &queue(i), flagcxRemoteError);
       }
       EXPECT_EQ(flagcxGroupDrainRejected(&comms[i]), flagcxSuccess);
-      while (!flagcxIntruQueueEmpty(&peers[i][0].sendQueue))
-        free(flagcxIntruQueueDequeue(&peers[i][0].sendQueue));
-      while (!flagcxIntruQueueEmpty(&peers[i][0].recvQueue))
-        free(flagcxIntruQueueDequeue(&peers[i][0].recvQueue));
+      for (int peer = 0; peer < 2; ++peer) {
+        while (!flagcxIntruQueueEmpty(&peers[i][peer].sendQueue))
+          free(flagcxIntruQueueDequeue(&peers[i][peer].sendQueue));
+        while (!flagcxIntruQueueEmpty(&peers[i][peer].recvQueue))
+          free(flagcxIntruQueueDequeue(&peers[i][peer].recvQueue));
+      }
       pthread_cond_destroy(&states[i].cond);
       pthread_mutex_destroy(&states[i].mutex);
     }
@@ -552,4 +557,76 @@ TEST_F(GroupNotification,
   EXPECT_EQ(flagcxProxyScratchReady(&comms[0]), flagcxSuccess);
   free(copyEvent);
 }
+class RemoteGroupNotification : public GroupNotification,
+                                public ::testing::WithParamInterface<bool> {
+public:
+  void SetUp() override {
+    GroupNotification::SetUp();
+    comms[0].nRanks = 2;
+    comms[0].p2pSchedule = schedules[0];
+    schedules[0][1] = {1, 1};
+    channelArrays[0][1] = &channelPeers[0];
+    channelPeers[0].recv[0].proxyConn.connection = &connections[0];
+    transport.prepareProxyOp = [](flagcxHeteroComm *, flagcxProxyOp *, void *,
+                                  size_t, int,
+                                  flagcxDataType_t) { return flagcxSuccess; };
+    connections[0].tcomm = &transport;
+    pair(0, (flagcxStream_t)&streamTokens[0], (flagcxStream_t)&streamTokens[0]);
+    auto *task = (flagcxTaskP2p *)calloc(1, sizeof(flagcxTaskP2p));
+    task->buff = &input[0];
+    task->bytes = sizeof(int);
+    task->dtype = flagcxInt;
+    task->opId = INT_MAX;
+    task->step = -1;
+    task->stream = (flagcxStream_t)&streamTokens[0];
+    if (GetParam())
+      flagcxIntruQueueEnqueue(&peers[0][1].sendQueue, task);
+    else
+      flagcxIntruQueueEnqueue(&peers[0][1].recvQueue, task);
+    ++comms[0].tasks.nTasksP2p;
+    flagcxGroupCommHead = &comms[0];
+  }
+};
+
+TEST_P(RemoteGroupNotification, EventCreationFailureKeepsBothRollbackOwners) {
+  fake.eventCreate = [](flagcxEvent_t *event, flagcxEventType_t) {
+    if (!active->trace.empty())
+      return flagcxRemoteError; // Self-copy readiness was already recorded.
+    *event = (flagcxEvent_t)calloc(1, 8);
+    return flagcxSuccess;
+  };
+  failEventDestroy = true;
+  EXPECT_EQ(flagcxGroupEndInternal(), flagcxRemoteError);
+  ASSERT_NE(comms[0].rejectedGroupOps, nullptr);
+  ASSERT_NE(comms[0].rejectedGroupOps->next, nullptr);
+  EXPECT_EQ(flagcxGroupDrainRejected(&comms[0]), flagcxRemoteError);
+  EXPECT_EQ(comms[0].tasks.nTasksP2p, 0);
+  EXPECT_TRUE(flagcxIntruQueueEmpty(&peers[0][1].sendQueue));
+  EXPECT_TRUE(flagcxIntruQueueEmpty(&peers[0][1].recvQueue));
+  EXPECT_EQ(launchCalls, 0);
+  failEventDestroy = false;
+  EXPECT_EQ(flagcxGroupDrainRejected(&comms[0]), flagcxSuccess);
+  EXPECT_EQ(comms[0].rejectedGroupOps, nullptr);
+  EXPECT_EQ(eventFrees, 1);
+}
+
+TEST_P(RemoteGroupNotification, MissingConnectionRollsBackPreparedPrefix) {
+  if (GetParam())
+    channelPeers[0].send[0].proxyConn.connection = nullptr;
+  else
+    channelPeers[0].recv[0].proxyConn.connection = nullptr;
+  EXPECT_EQ(flagcxGroupEndInternal(), flagcxInternalError);
+  ASSERT_NE(comms[0].rejectedGroupOps, nullptr);
+  ASSERT_NE(comms[0].rejectedGroupOps->next, nullptr);
+  EXPECT_EQ(comms[0].tasks.nTasksP2p, 0);
+  EXPECT_TRUE(flagcxIntruQueueEmpty(&peers[0][1].sendQueue));
+  EXPECT_TRUE(flagcxIntruQueueEmpty(&peers[0][1].recvQueue));
+  EXPECT_EQ(launchCalls, 0);
+  EXPECT_EQ(flagcxGroupDrainRejected(&comms[0]), flagcxSuccess);
+  EXPECT_EQ(comms[0].rejectedGroupOps, nullptr);
+  EXPECT_EQ(eventFrees, 1);
+}
+
+INSTANTIATE_TEST_SUITE_P(SendAndRecv, RemoteGroupNotification,
+                         ::testing::Bool());
 } // namespace

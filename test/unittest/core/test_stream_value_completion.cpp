@@ -157,7 +157,34 @@ TEST_F(StreamValueCompletionTest, EachPollUsesOneQueryWithoutReleasingOnError) {
   }
 }
 
-TEST_F(StreamValueCompletionTest, PrepareKeepsPersistentBackingUntilLocalRelease) {
+TEST_F(StreamValueCompletionTest,
+       CancelledUnpublishedStepsNeedSuccessfulDrain) {
+  flagcxStreamValueSemaphore semaphore;
+  ASSERT_EQ(semaphore.initResult, flagcxSuccess);
+  semaphore.addCounter(1);
+  semaphore.addCounter(2); // This operation was rejected before publication.
+  semaphore.subCounter(1);
+  ASSERT_EQ(semaphore.getCounter(), 1);
+  semaphore.prepareNotifications();
+  semaphore.notificationStreams.push_back((flagcxStream_t)0x1000);
+  semaphore.sealNotifications();
+  semaphore.cancelNotifications();
+  fakeAdaptor.streamQuery = [](flagcxStream_t) { return eventQueryResult; };
+  eventQueryResult = flagcxInProgress;
+  EXPECT_EQ(semaphore.drainNotifications(), flagcxInProgress);
+  EXPECT_EQ(semaphore.pollEnd(), 0);
+  eventQueryResult = flagcxRemoteError;
+  EXPECT_EQ(semaphore.drainNotifications(), flagcxRemoteError);
+  EXPECT_EQ(semaphore.pollEnd(), 0);
+  eventQueryResult = flagcxSuccess;
+  EXPECT_EQ(semaphore.drainNotifications(), flagcxSuccess);
+  EXPECT_EQ(semaphore.getCounter(), 1);
+  EXPECT_EQ(semaphore.pollEnd(), 1);
+  EXPECT_EQ(eventQueries, 0);
+}
+
+TEST_F(StreamValueCompletionTest,
+       PrepareKeepsPersistentBackingUntilLocalRelease) {
   flagcxHeteroComm comm = {};
   flagcxProxyState proxy = {};
   comm.proxyState = &proxy;

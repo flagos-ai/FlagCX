@@ -502,7 +502,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                      "%d "
                      "peer %d channel %d",
                      comm->rank, peer, op->channelId);
-                return flagcxInternalError;
+                ret = flagcxInternalError;
+                goto fail;
               }
               FLAGCXCHECKGOTO(flagcxTransportPrepareProxyOp(comm, op, p2p->buff,
                                                             p2p->bytes, peer,
@@ -524,7 +525,6 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 ret = semaphore->initResult == flagcxSuccess
                           ? flagcxSystemError
                           : semaphore->initResult;
-                delete op;
                 goto fail;
               }
               FLAGCXCHECKGOTO(groupAddCounter(comm, op, semaphore.get(),
@@ -578,7 +578,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                      "%d "
                      "peer %d channel %d",
                      comm->rank, peer, op->channelId);
-                return flagcxInternalError;
+                ret = flagcxInternalError;
+                goto fail;
               }
               FLAGCXCHECKGOTO(flagcxTransportPrepareProxyOp(comm, op, p2p->buff,
                                                             p2p->bytes, peer,
@@ -600,7 +601,6 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 ret = semaphore->initResult == flagcxSuccess
                           ? flagcxSystemError
                           : semaphore->initResult;
-                delete op;
                 goto fail;
               }
               FLAGCXCHECKGOTO(groupAddCounter(comm, op, semaphore.get(),

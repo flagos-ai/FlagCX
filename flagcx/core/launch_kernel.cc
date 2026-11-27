@@ -727,6 +727,14 @@ int flagcxStreamValueSemaphore::pollEnd() {
     return 0;
   const int remaining = __atomic_load_n(&counter, __ATOMIC_ACQUIRE);
   const int state = __atomic_load_n(&completionState, __ATOMIC_ACQUIRE);
+  // Cancellation can include operations that were never published to a proxy.
+  // Their counters cannot retire, but a successful stream drain proves that
+  // no notification still uses the semaphore.
+  if (isCancelled() && state == 2) {
+    traceCompletion("cancelled_drained", remaining, state, false,
+                    flagcxSuccess);
+    return 1;
+  }
   if (remaining != 0) {
     traceCompletion("counter_pending", remaining, state, false, flagcxSuccess);
     return 0;
