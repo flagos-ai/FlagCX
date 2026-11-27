@@ -3,6 +3,7 @@
 // for the coll_*.cpp test files.
 
 #include "comm.h"
+#include "comm_lifecycle_check.hpp"
 #include "global_comm.h"
 #include "runner_fixtures.hpp"
 #include "transport.h"
@@ -235,14 +236,19 @@ void FlagCXCollTest::TearDown() {
   // Collective work is asynchronous with respect to the host.  Drain the
   // stream before communicator teardown so no runtime callback can retain an
   // IPC mapping after the communicator starts releasing transport resources.
-  if (devHandle != nullptr && stream != nullptr) {
-    EXPECT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
-  }
+  flagcxResult_t completed = flagcxSuccess;
+  if (devHandle != nullptr && stream != nullptr)
+    completed = devHandle->streamSynchronize(stream);
+  completed = flagcxTestAgreeLifecycleStatus(completed, MPI_COMM_WORLD);
+  EXPECT_EQ(completed, flagcxSuccess);
+  if (completed != flagcxSuccess)
+    return; // Retain buffers and their Comm until stream completion is known.
 
-  if (comm != nullptr) {
-    EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
-    comm = nullptr;
-  }
+  flagcxResult_t destroyed =
+      flagcxTestFinalizeAndDestroyRankLocally(&comm, rank, nranks);
+  EXPECT_EQ(destroyed, flagcxSuccess);
+  if (destroyed != flagcxSuccess)
+    return;
 
   if (devHandle != nullptr) {
     if (stream != nullptr) {

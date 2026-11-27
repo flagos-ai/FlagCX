@@ -6,6 +6,101 @@
 #include <cstring>
 #include <thread>
 
+class LifecycleHelperMpi : public ::testing::Test {
+public:
+  inline static LifecycleHelperMpi *active;
+  int rank = 0, nranks = 0, finalizePending = 0, destroyPending = 0;
+  int finalizes = 0, destroys = 0, releases = 0;
+  bool finalized = false;
+  int token = 0;
+  flagcxComm_t owner = nullptr;
+  flagcxResult_t finalizeError = flagcxSuccess, destroyError = flagcxSuccess;
+  static flagcxResult_t finalize(flagcxComm_t comm) {
+    auto &test = *active;
+    EXPECT_EQ(comm, test.owner);
+    ++test.finalizes;
+    if (test.finalizeError != flagcxSuccess)
+      return test.finalizeError;
+    if (test.finalizePending-- > 0)
+      return flagcxInProgress;
+    test.finalized = true;
+    return flagcxSuccess;
+  }
+  static flagcxResult_t destroy(flagcxComm_t comm) {
+    auto &test = *active;
+    EXPECT_EQ(comm, test.owner);
+    EXPECT_TRUE(test.finalized);
+    ++test.destroys;
+    if (test.destroyError != flagcxSuccess)
+      return test.destroyError;
+    if (test.destroyPending-- > 0)
+      return flagcxInProgress;
+    ++test.releases;
+    return flagcxSuccess;
+  }
+  flagcxResult_t close(double seconds = 5.0) {
+    flagcxTestLifecycleCalls calls{finalize, destroy};
+    return flagcxTestFinalizeAndDestroyRankLocally(
+        &owner, rank, nranks, MPI_COMM_WORLD, calls, seconds);
+  }
+  void SetUp() override {
+    active = this;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &nranks);
+    if (nranks < 2)
+      GTEST_SKIP();
+    owner = (flagcxComm_t)&token;
+  }
+};
+
+TEST_F(LifecycleHelperMpi, AsymmetricProgressFinishesBeforeLocalDestroy) {
+  finalizePending = rank + 1;
+  destroyPending = 2;
+  ASSERT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(finalizes, rank + 2);
+  EXPECT_EQ(destroys, 3);
+  EXPECT_EQ(releases, 1);
+  EXPECT_EQ(owner, nullptr);
+}
+
+TEST_F(LifecycleHelperMpi, ErrorBeatsProgressAndOwnerCanBeRetried) {
+  finalizeError = rank == 0 ? flagcxSystemError : flagcxSuccess;
+  finalizePending = 2;
+  EXPECT_EQ(close(), flagcxSystemError);
+  EXPECT_EQ(owner, (flagcxComm_t)&token);
+  EXPECT_EQ(destroys, 0);
+  finalizeError = flagcxSuccess;
+  EXPECT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(owner, nullptr);
+  EXPECT_EQ(releases, 1);
+}
+
+TEST_F(LifecycleHelperMpi, PartialDestroyFailureRetainsRemainingOwners) {
+  destroyError = rank == 1 ? flagcxRemoteError : flagcxSuccess;
+  EXPECT_EQ(close(), flagcxRemoteError);
+  EXPECT_EQ(owner, rank == 0 ? nullptr : (flagcxComm_t)&token);
+  destroyError = flagcxSuccess;
+  EXPECT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(owner, nullptr);
+  EXPECT_EQ(releases, 1);
+}
+
+TEST_F(LifecycleHelperMpi, FinalizeDeadlineRetainsOwner) {
+  finalizePending = 1;
+  EXPECT_EQ(close(0.0), flagcxSystemError);
+  EXPECT_EQ(owner, (flagcxComm_t)&token);
+  EXPECT_EQ(destroys, 0);
+  EXPECT_EQ(close(), flagcxSuccess);
+}
+
+TEST_F(LifecycleHelperMpi, DestroyDeadlineRetainsOwner) {
+  destroyPending = rank == 0 ? 1 : 0;
+  EXPECT_EQ(close(0.0), flagcxSystemError);
+  EXPECT_EQ(owner, (flagcxComm_t)&token);
+  EXPECT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(releases, 1);
+}
+
 // Real bootstrap coordination with deterministic local device failures. Ranks
 // without an import/export must still take part in the same close protocol.
 class IpcFinalizeBootstrapTest : public IpcLifecycleMock {

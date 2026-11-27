@@ -1134,7 +1134,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "323442447ecf8c6a47a88d6fafcc9b3b175dab87ed806828a7b3bf2700c0d7cb",
+      "current_sha256": "7207671ffa1834f071067dc1066dea2a3e102126c56e0ba046fd19999bcf7416",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -8069,7 +8069,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "cce479ef289598318098b73451d73c743cc46513b685010aa302d710c27117bf",
+      "current_sha256": "f9b2362be9b6f19e489f564722563b56ed80520c918c8247f227f1aa8dcab6fd",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -9532,7 +9532,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "2c1bac3c50a8b8943b4a18a9ff37032c353d7f6627a7af16e43134169af32585",
+      "current_sha256": "f65b1cb7c76324acf3d3a86e980d4b68f4fc5084c1fdd2c93e8d058341d1ab2b",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -9903,13 +9903,13 @@
     },
     {
       "path": "test/unittest/runner/main_mpi.cpp",
-      "decision": "preserve-exact",
+      "decision": "align-tests-and-contracts",
       "reason": "MUSA/main rebase addition; retained with execution/IPC adaptation where required.",
       "reference_sha256": "dee76c92d7a8932b18349d9a5a295742d92f4883a33d8e399eca030bd9ce8ce4",
       "audit_start_sha256": null,
       "rollback_hunks": [],
-      "current_sha256": "dee76c92d7a8932b18349d9a5a295742d92f4883a33d8e399eca030bd9ce8ce4",
-      "current_resolution": "exact rebased feature-reference content"
+      "current_sha256": "710dbe05981d183e236d44a459665c622fb432ab37145e99c4004dd69e32368c",
+      "current_resolution": "PR751 CI follow-up: Retry collective Finalize and rank-local Destroy without discarding pending owners"
     },
     {
       "path": "test/script/test_source_warnings.py",
