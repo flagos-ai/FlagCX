@@ -1106,7 +1106,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "4719619832cba0c452a1d1fbc840de1e5115c93e7cd90e7e7cefa9ff00950b0c",
+      "current_sha256": "5aa177e8d6790e1d142c5cdc9f2a23c0cd7e8b6db681be3235de49c77521513a",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "ec534389bd128242d9d68c425cd822a6f73203be50d9c37dbb08616f613198b3"
     },
@@ -1134,7 +1134,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "11d2879d020be07293c57bf5944f448a3c74893f372d54d6dcd08ae38813dad5",
+      "current_sha256": "35a881e0879b8fbda4dfbeb383bf4cd6e09b689e2122786943d69ee42ab23966",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -3219,7 +3219,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "7f768dc4932d2fb15dccfa0c9f09d7752a72825c7d44d85ab5d536a6622d4a46",
+      "current_sha256": "f17509ebab2aa73d0c1ff573cbbd638fe67a05bb8edc517c4854461021412fd9",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -3549,7 +3549,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "3e5312fcb16a5470d3e68cd017c2e8178c1d8da6d7d0a996803bd63c65ba5050",
+      "current_sha256": "db69bc98e0f1874cb8970deb2f42f0812284b9a258018387112b7684a32ec96a",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -3703,7 +3703,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "98742bcfce4c911ecfc84a402f4e31e1cf8c358b9d8c7bcba52064c097f62994",
+      "current_sha256": "77021242ed1eb9ea1ab1fc843a6210771ad61775819687e1f6eb6f90bf833b1d",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -4245,7 +4245,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "141459a60aefcefabc1e8602de67a3d976acb30d1644ee01256043ff2326f3cf",
+      "current_sha256": "981be7425728ffce34939ba7157054397d95b47d86a75d7e85e41753a6b1d184",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -6596,7 +6596,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "7a1f6216c17156ee073b6433471cc9b883b5aece5034b44fdcbea7faf341c633",
+      "current_sha256": "3ac8aea17f9ed73ae9c149d682b93f07757a53d5aa7c0749655a0a57fd14599b",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "da9c4bea234b45842a806e8b04fcc92a8559662335a932dd24c184c9853b9b96"
     },
@@ -8729,7 +8729,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "6ec2865ae1e8aaa6e7766c35f0f4bb5b32aae6d4935949c0e9204ef560d73096",
+      "current_sha256": "488a54cade00991752aed32c671b1bb0fcf568e454554fd6b520b79b2b508a2d",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -9532,7 +9532,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "b5b07ae1348fba8e2bb99fb4fa59051211f9499790538e40cb30ed3775cac60d",
+      "current_sha256": "cd35b6bebc98b4735bd65e8fe5bdc87e1e707338c8fb340c8ea814e9d8713ab5",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -10025,6 +10025,14 @@
         "P2": 1
       },
       "resolution": "Transport retirement gates Finalize/public deregistration. Callback references and existing owned events replace asynchronous borrowed stream queries. Failure-only GPU prefix proof is captured while the launch stream is valid; no host tail event. Six new core cases pass per build; full rebuilt matrices pass."
+    },
+    "round6": {
+      "reviewed_head": "54ea2f9d",
+      "findings": {
+        "P1": 1,
+        "P2": 1
+      },
+      "resolution": "Converge native catalog/registration preparation before SDK collective close; save per-owner preparation. Drain rejected standalone group owners before readiness; keep standalone data admission closed across retry, preserving Get event ownership. Three core and one real-bootstrap cases added; all rebuilt host matrices and2/4-rank runs passed."
     }
   },
   "original_feature_reference": "34a81ae38e83ec571152d4a45b9276b44aff48c3",

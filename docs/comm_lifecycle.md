@@ -53,6 +53,7 @@ caller completes all user work
     -> complete relay release ACKs on all ranks
     -> stop/join proxy services and close their imports
     -> close residual IPC-table imports
+    -> prepare native-owner catalog and registrations; agree on local results
     -> native SDK Finalize
     -> all phases successful: remember import-closure permission
     -> Destroy: release local backing and remaining owners
@@ -78,7 +79,9 @@ that succeeds locally retains backing while another rank reports failure. All
 ranks retry unfinished Finalize in the same order. A failed or InProgress call
 keeps the communicator closed to new submissions and preserves remaining owners.
 Bootstrap failures can prevent collective recovery; ownership is retained rather
-than treating an unconfirmed close as permission to free.
+than treating an unconfirmed close as permission to free. Standalone hetero
+Finalize drains rejected group owners before checking transport readiness and
+keeps new data submissions closed across failed or InProgress retries.
 
 After successful Finalize, repeated Finalize is a local no-op. Destroy adds no
 FlagCX bootstrap exchange, relay RPC or SHM peer-close wait. A local free failure
@@ -92,6 +95,11 @@ host communicator, is finalized once. Native Finalize returning InProgress is
 submitted once and polled through its asynchronous-error API on subsequent
 Finalize calls. A synchronous Success does not require an asynchronous poller.
 Errors, unsupported operations and missing progress support preserve the owner.
+Catalog allocation, local registration release and capability checks complete in
+an earlier status-converged phase. A rank-local preparation failure therefore
+keeps every participant outside native collective close. Completed preparation
+is saved; unrelated registration readers cannot force repeated preparation
+inside the subsequent SDK close.
 The existing built-in SDK compatibility policy is retained: HCCL, CNCL,
 ECCL, PCCL and XCCL use their supported native Destroy operation
 at the Finalize boundary. Selection uses the actual built-in adaptor identity;

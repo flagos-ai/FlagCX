@@ -79,7 +79,7 @@ struct flagcxC2cResources {
 
 struct flagcxCommNativeOwner {
   flagcxInnerComm_t handle;
-  bool host, accepted, pending, aborted;
+  bool host, accepted, pending, aborted, registrationsReleased;
 };
 
 flagcxResult_t flagcxCommCheckSubmission(flagcxComm_t comm);

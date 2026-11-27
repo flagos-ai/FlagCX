@@ -1,4 +1,6 @@
 #include "ipc_lifecycle_mock.hpp"
+#include "launch_kernel.h"
+#include "reg_pool.h"
 #include "sym_heap.h"
 
 TEST_F(IpcLifecycleMock, FinalizeClosesImportsAndDestroyAloneFreesBacking) {
@@ -196,4 +198,72 @@ TEST_F(IpcLifecycleMock,
   EXPECT_EQ(backendCleanups, 0);
   EXPECT_TRUE(closes.empty());
   state->pendingTransportOps = 0;
+}
+
+TEST_F(IpcLifecycleMock, NativeRegistrationPreparationPrecedesSdkClose) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  comm->nativeDestroyFinalize = true;
+  void *data = (void *)0x98765000;
+  ASSERT_EQ(globalRegPool.registerBuffer(nullptr, data, 64), flagcxSuccess);
+  auto *token = globalRegPool.getItem(nullptr, data);
+  std::unique_ptr<flagcxRegItem, void (*)(flagcxRegItem *)> reader(
+      globalRegPool.acquireItem(nullptr, data),
+      [](flagcxRegItem *item) { globalRegPool.releaseItem(item); });
+  ASSERT_NE(reader, nullptr);
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxInProgress);
+  EXPECT_EQ(comm->finalizePhase, 6);
+  EXPECT_TRUE(comm->nativeCatalogReady);
+  EXPECT_FALSE(comm->nativeOwners[0].registrationsReleased);
+  EXPECT_EQ(finalizeCalls, 0);
+  EXPECT_EQ(destroyCalls, 0);
+  reader.reset();
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(destroyCalls, 1);
+  EXPECT_EQ(comm->homoComm, nullptr);
+  EXPECT_EQ(globalRegPool.deregisterBuffer(nullptr, token), flagcxSuccess);
+  destroySuccessfully();
+}
+
+TEST_F(IpcLifecycleMock,
+       StandaloneFinalizeDrainsRejectedOwnersBeforeReadiness) {
+  addTransport();
+  auto *child = comm->heteroComm;
+  child->ownerComm = nullptr;
+  auto *op = new flagcxProxyOp{};
+  op->args.semaphore = std::make_shared<flagcxHostSemaphore>();
+  op->args.semaphore->cancelNotifications();
+  child->rejectedGroupOps = op;
+  EXPECT_EQ(flagcxHeteroCommFinalize(child), flagcxSuccess);
+  EXPECT_EQ(child->rejectedGroupOps, nullptr);
+  EXPECT_TRUE(child->importsClosedConfirmed);
+  EXPECT_TRUE(child->closeStarted);
+  EXPECT_EQ(flagcxHeteroCommFinalize(child), flagcxSuccess);
+}
+
+TEST_F(IpcLifecycleMock, StandalonePartialFinalizeRejectsNewP2pSubmissions) {
+  addTransport();
+  auto *child = comm->heteroComm;
+  child->ownerComm = nullptr;
+  child->proxyState->pendingTransportOps = 1;
+  ASSERT_EQ(flagcxHeteroCommFinalize(child), flagcxInProgress);
+  EXPECT_TRUE(child->closeStarted);
+  int buffer = 0;
+  EXPECT_EQ(flagcxHeteroSend(&buffer, 1, flagcxInt, 0, child, nullptr),
+            flagcxInvalidUsage);
+  EXPECT_EQ(flagcxHeteroRecv(&buffer, 1, flagcxInt, 0, child, nullptr),
+            flagcxInvalidUsage);
+  EXPECT_EQ(flagcxGetGroupDepth(), 0);
+  EXPECT_EQ(flagcxHeteroPut(child, 0, 0, 0, 1, 0, 0), flagcxInvalidUsage);
+  EXPECT_EQ(flagcxHeteroGet(child, 0, 0, 0, 1, 0, 0), flagcxInvalidUsage);
+  device.eventDestroy = [](flagcxEvent_t event) {
+    EXPECT_EQ(event, (flagcxEvent_t)0x3000);
+    ++active->backendCleanups;
+    return flagcxSuccess;
+  };
+  EXPECT_EQ(
+      flagcxHeteroGet(child, 0, 0, 0, 1, 0, 0, 0, false, (flagcxEvent_t)0x3000),
+      flagcxInvalidUsage);
+  EXPECT_EQ(backendCleanups, 1); // Rejected Get still consumes its event owner.
+  child->proxyState->pendingTransportOps = 0;
+  child->ownerComm = comm;
 }

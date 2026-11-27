@@ -4377,12 +4377,40 @@ static flagcxResult_t flagcxCommCatalogNativeOwners(flagcxComm_t comm) {
   return flagcxSuccess;
 }
 
+// This phase is status-converged before any SDK collective close. Allocation,
+// local registration readers and unsupported capabilities cannot strand peers
+// inside native Finalize/Destroy while this rank waits at the outer agreement.
+static flagcxResult_t flagcxCommPrepareNativeOwners(flagcxComm_t comm) {
+  FLAGCXCHECKSTRICT(flagcxCommCatalogNativeOwners(comm));
+  for (unsigned int i = 0; i < comm->nativeOwnerCount; ++i) {
+    struct flagcxCommNativeOwner *owner = &comm->nativeOwners[i];
+    if (owner->handle == NULL || owner->aborted)
+      continue;
+    struct flagcxCCLAdaptor *adaptor =
+        cclAdaptors[owner->host ? flagcxCCLAdaptorHost
+                                : flagcxCCLAdaptorDevice];
+    if (!owner->host && comm->abortStarted)
+      return flagcxInProgress;
+    if (adaptor == NULL || (!owner->host && comm->nativeDestroyFinalize
+                                ? adaptor->commDestroy == NULL
+                                : adaptor->commFinalize == NULL))
+      return flagcxNotSupported;
+    if (!owner->registrationsReleased) {
+      FLAGCXCHECKSTRICT(
+          globalRegPool.releaseOwner(owner->handle, owner->handle));
+      owner->registrationsReleased = true;
+    }
+  }
+  return flagcxSuccess;
+}
+
 static void flagcxCommClearNativeAliases(flagcxComm_t comm,
                                          flagcxInnerComm_t inner);
 
 static flagcxResult_t flagcxCommFinalizeNativeOwners(flagcxComm_t comm) {
   flagcxResult_t result = flagcxSuccess;
-  FLAGCXCHECKSTRICT(flagcxCommCatalogNativeOwners(comm));
+  if (!comm->nativeCatalogReady)
+    return flagcxInvalidUsage;
   while (comm->nativeFinalizeIndex < comm->nativeOwnerCount) {
     struct flagcxCommNativeOwner *owner =
         &comm->nativeOwners[comm->nativeFinalizeIndex];
@@ -4393,11 +4421,9 @@ static flagcxResult_t flagcxCommFinalizeNativeOwners(flagcxComm_t comm) {
       ++comm->nativeFinalizeIndex;
       continue;
     }
-    if (!owner->host && comm->abortStarted && !owner->aborted)
-      return flagcxInProgress;
+    if (!owner->registrationsReleased)
+      return flagcxInvalidUsage;
     if (!owner->host && comm->nativeDestroyFinalize) {
-      FLAGCXCHECKSTRICT(
-          globalRegPool.releaseOwner(owner->handle, owner->handle));
       FLAGCXCHECKSTRICT(adaptor->commDestroy(owner->handle));
       flagcxCommClearNativeAliases(comm, owner->handle);
       owner->handle = NULL;
@@ -4407,8 +4433,6 @@ static flagcxResult_t flagcxCommFinalizeNativeOwners(flagcxComm_t comm) {
     if (!adaptor || !adaptor->commFinalize)
       return flagcxNotSupported;
     if (!owner->accepted) {
-      FLAGCXCHECKSTRICT(
-          globalRegPool.releaseOwner(owner->handle, owner->handle));
       FLAGCXCHECKGOTO(adaptor->commFinalize(owner->handle), result, fail);
       owner->accepted = true;
       owner->pending = result == flagcxInProgress;
@@ -4532,6 +4556,8 @@ static flagcxResult_t flagcxCommFinalizePhase(flagcxComm_t comm, int phase) {
     case 5:
       return flagcxCommCleanupIpcTable(comm);
     case 6:
+      return flagcxCommPrepareNativeOwners(comm);
+    case 7:
       return flagcxCommFinalizeNativeOwners(comm);
     default:
       return flagcxInternalError;
@@ -4547,7 +4573,7 @@ static flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
   comm->ipcClosingImports = true;
   // All user streams/kernels must already be complete. Only internal
   // producers and owned mappings are drained here; no tail events are added.
-  while (comm->finalizePhase < 7) {
+  while (comm->finalizePhase < 8) {
     flagcxResult_t local = flagcxSuccess;
     if (comm->deviceOrdinalValid)
       local = deviceAdaptor->setDevice(comm->deviceOrdinal);

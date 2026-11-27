@@ -1961,6 +1961,18 @@ flagcxResult_t flagcxHeteroWaitCounter(flagcxHeteroComm_t comm,
              : flagcxSuccess;
 }
 
+static flagcxResult_t flagcxHeteroCheckSubmission(flagcxHeteroComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  // Parent-owned admission is enforced by the outer public API. Its accepted
+  // internal producers can still drain before the parent closes registrations.
+  if (comm->importsClosedConfirmed || comm->registrationsClosed ||
+      comm->initRollbackPending ||
+      __atomic_load_n(&comm->closeStarted, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxHeteroComm_t comm, flagcxStream_t stream,
@@ -1974,6 +1986,7 @@ flagcxResult_t flagcxHeteroSendOnChannel(const void *sendbuff, size_t count,
                                          flagcxHeteroComm_t comm,
                                          flagcxStream_t stream, int channelId,
                                          int opId, int step) {
+  FLAGCXCHECK(flagcxHeteroCheckSubmission(comm));
   if (comm == NULL || peer < 0 || peer >= comm->nRanks || channelId < 0 ||
       channelId >= MAXCHANNELS)
     return flagcxInvalidArgument;
@@ -2016,6 +2029,7 @@ flagcxResult_t flagcxHeteroRecvOnChannel(void *recvbuff, size_t count,
                                          flagcxHeteroComm_t comm,
                                          flagcxStream_t stream, int channelId,
                                          int opId, int step) {
+  FLAGCXCHECK(flagcxHeteroCheckSubmission(comm));
   if (comm == NULL || peer < 0 || peer >= comm->nRanks || channelId < 0 ||
       channelId >= MAXCHANNELS)
     return flagcxInvalidArgument;
@@ -2056,6 +2070,7 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
                                int srcMrIdx, int dstMrIdx, bool streamSyncReady,
                                uint64_t *assignedSeq, uint64_t orderingKey,
                                bool independent) {
+  FLAGCXCHECK(flagcxHeteroCheckSubmission(comm));
   if (comm == NULL)
     return flagcxInvalidArgument;
   if (comm->netAdaptor == NULL || comm->netAdaptor->iput == NULL)
@@ -2098,6 +2113,7 @@ flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
                                     const int *dstMrIdxs, size_t count) {
   if (count == 0)
     return flagcxSuccess;
+  FLAGCXCHECK(flagcxHeteroCheckSubmission(comm));
   if (comm == NULL || srcOffsets == NULL || dstOffsets == NULL ||
       sizes == NULL || srcMrIdxs == NULL || dstMrIdxs == NULL)
     return flagcxInvalidArgument;
@@ -2174,6 +2190,7 @@ flagcxResult_t flagcxHeteroBatchPutSignal(
     const uint8_t *independent, size_t count, size_t signalOffset,
     uint64_t signalValue, uint64_t releaseOrderingKey, bool releaseIndependent,
     uint64_t *assignedSeq) {
+  FLAGCXCHECK(flagcxHeteroCheckSubmission(comm));
   if (comm == NULL || count == 0 || srcOffsets == NULL || dstOffsets == NULL ||
       sizes == NULL || srcMrIdxs == NULL || dstMrIdxs == NULL ||
       orderingKeys == NULL || independent == NULL)
@@ -2274,6 +2291,9 @@ flagcxHeteroGetImpl(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
                     flagcxEvent_t streamEvent, uint64_t *assignedSeq,
                     struct flagcxRmaDesc *preparedDesc = NULL) {
   // Ownership of a non-null event transfers here, including on failure.
+  flagcxResult_t admission = flagcxHeteroCheckSubmission(comm);
+  if (admission != flagcxSuccess)
+    return flagcxHeteroRejectGet(comm, streamEvent, preparedDesc, admission);
   if (comm == NULL)
     return flagcxHeteroRejectGet(comm, streamEvent, preparedDesc,
                                  flagcxInvalidArgument);
@@ -2335,6 +2355,7 @@ flagcxResult_t flagcxHeteroGetStream(flagcxHeteroComm_t comm, int peer,
                                      flagcxSymWindow_t srcWindow,
                                      flagcxSymWindow_t dstWindow,
                                      flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxHeteroCheckSubmission(comm));
   if (comm == NULL || stream == NULL || peer < 0 || peer >= comm->nRanks)
     return flagcxInvalidArgument;
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
@@ -2445,6 +2466,7 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
                                      uint64_t signalValue, bool streamSyncReady,
                                      uint64_t *assignedSeq,
                                      uint64_t orderingKey, bool independent) {
+  FLAGCXCHECK(flagcxHeteroCheckSubmission(comm));
   if (comm == NULL)
     return flagcxInvalidArgument;
   if (comm->netAdaptor == NULL || comm->netAdaptor->iputSignal == NULL ||
@@ -2560,6 +2582,7 @@ flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
   (void)peer;
   if (comm == NULL || comm->rmaSignalBase == NULL)
     return flagcxNotSupported;
+  FLAGCXCHECK(flagcxHeteroCheckSubmission(comm));
   if (signalOffset > comm->rmaSignalSize ||
       sizeof(uint64_t) > comm->rmaSignalSize - signalOffset)
     return flagcxInvalidArgument;
@@ -2604,6 +2627,7 @@ flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
 flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,
                                     uint64_t value, size_t dstOffset,
                                     int dstMrIdx) {
+  FLAGCXCHECK(flagcxHeteroCheckSubmission(comm));
   if (comm->netAdaptor == NULL || comm->netAdaptor->iput == NULL)
     return flagcxNotSupported;
   if (peer < 0 || peer >= comm->nRanks) {
@@ -2733,6 +2757,7 @@ flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
                                      flagcxSymWindow_t srcWindow,
                                      flagcxSymWindow_t dstWindow,
                                      flagcxStream_t stream, uint64_t *opSeq) {
+  FLAGCXCHECK(flagcxHeteroCheckSubmission(comm));
   if (comm == NULL || peer < 0 || peer >= comm->nRanks)
     return flagcxInvalidArgument;
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
@@ -2810,6 +2835,7 @@ flagcxResult_t flagcxHeteroPutSignalStream(
     size_t size, size_t signalOffset, int srcMrIdx, int dstMrIdx,
     uint64_t signalValue, flagcxSymWindow_t srcWindow,
     flagcxSymWindow_t dstWindow, flagcxStream_t stream, uint64_t *opSeq) {
+  FLAGCXCHECK(flagcxHeteroCheckSubmission(comm));
   if (comm == NULL || peer < 0 || peer >= comm->nRanks)
     return flagcxInvalidArgument;
   if (comm->rmaSignalBase == NULL)

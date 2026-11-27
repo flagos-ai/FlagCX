@@ -74,7 +74,7 @@
     "native_probe_in_feature_reference": false,
     "IBRC": {
       "core": {
-        "pass": 303,
+        "pass": 306,
         "skip": 5
       },
       "runner": {
@@ -100,7 +100,7 @@
     },
     "IBUC": {
       "core": {
-        "pass": 303,
+        "pass": 306,
         "skip": 5
       },
       "runner": {
@@ -129,7 +129,7 @@
         2,
         4
       ],
-      "cases_per_rank": 4,
+      "cases_per_rank": 5,
       "builds": [
         "IBRC",
         "IBUC"
@@ -153,10 +153,10 @@
       "torch_details": "Real shutdown/wait methods compiled with SDK mocks for normal, FlagOS Ascend and Enflame configurations; failed stream synchronization retains owner before native destruction."
     },
     "scripts": {
-      "discovered": 340,
+      "discovered": 341,
       "tool_skips": 8,
-      "result": "Full suite passed after rebase/CR2. CR3 affected-source checks and load-related timeout retries recorded in external reports.",
-      "artifact_log": "/private/tmp/iluvatar-ipc-validation/cr2-scripts.log",
+      "result": "Full341-script suite after CR5 passed with8 tool skips; current CR6 full-script and kernel syntax results tracked in external reports.",
+      "artifact_log": "/private/tmp/iluvatar-ipc-validation/cr5-scripts.log",
       "torch_source_pass": 7,
       "affected_round3": {
         "methods": 81,
@@ -193,6 +193,15 @@
       "kernel_syntax_log": "/private/tmp/iluvatar-ipc-validation/cr5-kernel-syntax.log",
       "reports": "/Users/chenmo/WORKDIR/.cr/reviews/cr-FlagCX-iluvatar-hang-issue-round*.md",
       "note": "Current full-script and final independent review results are recorded in external reports."
+    },
+    "native_review_round6": {
+      "added_core_regressions": 3,
+      "added_bootstrap_cases": 1,
+      "bootstrap": "5 cases passed per rank at2/4 ranks, both builds; a rank-local reader prevents all native close entry and retry can finish with another unrelated reader after preparation.",
+      "scope": "All host/mock suites rebuilt, Device API and bootstrap rerun.",
+      "full_script_log": "/private/tmp/iluvatar-ipc-validation/cr6-scripts.log",
+      "kernel_syntax_log": "/private/tmp/iluvatar-ipc-validation/cr6-kernel-syntax.log",
+      "reports": "/Users/chenmo/WORKDIR/.cr/reviews/cr-FlagCX-iluvatar-hang-issue-round*.md"
     }
   },
   "historical_pre_repair_validation": {

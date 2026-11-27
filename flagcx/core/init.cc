@@ -613,12 +613,15 @@ static flagcxResult_t
 flagcxHeteroCommFinalizeInternal(flagcxHeteroComm_t comm) {
   if (flagcxGetGroupDepth() != 0)
     return flagcxInvalidUsage;
+  __atomic_store_n(&comm->closeStarted, true, __ATOMIC_RELEASE);
   while (comm->closePhase < 4) {
     flagcxResult_t local = deviceAdaptor->setDevice(comm->cudaDev);
     FLAGCXCHECKSTRICT(flagcxHeteroCommAgreeIpcClose(comm, local));
     if (!comm->closeLocalDone) {
       if (comm->closePhase == 0) {
-        local = flagcxHeteroRmaProxyQuiesce(comm);
+        local = flagcxGroupDrainRejected(comm);
+        if (local == flagcxSuccess)
+          local = flagcxHeteroRmaProxyQuiesce(comm);
         if (local == flagcxSuccess)
           local = flagcxProxyTransportReady(comm);
       } else if (comm->closePhase == 1)

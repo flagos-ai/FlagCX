@@ -1,5 +1,6 @@
 #include "comm_lifecycle_check.hpp"
 #include "ipc_lifecycle_mock.hpp"
+#include "reg_pool.h"
 #include <chrono>
 #include <cstring>
 #include <thread>
@@ -116,4 +117,44 @@ TEST_F(IpcFinalizeBootstrapTest,
       destroySuccessfully();
     MPI_Barrier(MPI_COMM_WORLD);
   }
+}
+
+TEST_F(IpcFinalizeBootstrapTest,
+       NativePreparationConvergesBeforeEnteringCollectiveDestroy) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  comm->nativeDestroyFinalize = true;
+  comm->nativeCloseNeedsAgreement = true;
+  // This mimics a collective compatibility close. Premature first entry
+  // returns an error instead of hanging the negative regression forever.
+  sdk.commDestroy = [](flagcxInnerComm_t) {
+    ++active->destroyCalls;
+    if (active->pendingPolls == 0)
+      return flagcxRemoteError;
+    return MPI_Barrier(MPI_COMM_WORLD) == MPI_SUCCESS ? flagcxSuccess
+                                                      : flagcxSystemError;
+  };
+  void *data = (void *)0x67890000;
+  ASSERT_EQ(globalRegPool.registerBuffer(nullptr, data, 64), flagcxSuccess);
+  auto *token = globalRegPool.getItem(nullptr, data);
+  std::unique_ptr<flagcxRegItem, void (*)(flagcxRegItem *)> reader(
+      nullptr, [](flagcxRegItem *item) { globalRegPool.releaseItem(item); });
+  if (rank == 0)
+    reader.reset(globalRegPool.acquireItem(nullptr, data));
+  expectCommon(flagcxCommFinalize(comm), flagcxInProgress);
+  EXPECT_EQ(comm->finalizePhase, 6);
+  EXPECT_EQ(destroyCalls, 0);
+  EXPECT_FALSE(comm->internalImportsConfirmed);
+  EXPECT_TRUE(frees.empty());
+  reader.reset();
+  // A rank that already prepared its owners must not repeat rank-local
+  // registration work inside collective native close on the next attempt.
+  if (rank == 1)
+    reader.reset(globalRegPool.acquireItem(nullptr, data));
+  pendingPolls = 1;
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(destroyCalls, 1);
+  EXPECT_EQ(comm->homoComm, nullptr);
+  reader.reset();
+  EXPECT_EQ(globalRegPool.deregisterBuffer(nullptr, token), flagcxSuccess);
+  destroyOneRankAtATime();
 }

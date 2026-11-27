@@ -174,7 +174,8 @@ class flagcxWorkerPool;
 
 struct flagcxHeteroComm {
   struct flagcxComm *ownerComm;
-  bool importsClosedConfirmed, registrationsClosed, closeLocalDone;
+  bool importsClosedConfirmed, registrationsClosed, closeLocalDone,
+      closeStarted;
   bool netPluginHeld;
   bool initRollbackPending;
   struct flagcxProxyOp *rejectedGroupOps;
