@@ -47,6 +47,8 @@ Destroying a Default Device API view can retire its IPC generation to the Comm
 without closing imports or freeing backing. A subsequent generation gets its
 own resources. Ordinary per-call private scratch keeps its existing execution
 cleanup; exported persistent allocations remain owned until Destroy.
+Releasing a buffer already recorded by the Comm retains that allocation even
+before Finalize starts. Only Destroy releases its backing after import closure.
 
 With host-mapped signals enabled, SHM provides shared host pages for local
 Barrier and Signal control words. Each name includes the Comm magic, a fresh
@@ -214,6 +216,13 @@ for unpublished operations.
 This count does not collect public API work or record generic stream-tail events.
 Finalize and public deregistration wait for concrete transport owners before
 closing registrations or mappings, even after user streams finish.
+Explicit Flush retains each accepted native request before checking posting or
+polling errors. A per-Comm pthread mutex serializes access; cleanup reports
+InProgress while another poll owns that mutex. An incomplete request remains
+owned for retry. A provider's completion flag retires the request even when it
+also reports an error, because the provider may already have freed the request.
+MR and connection cleanup wait for these requests; Destroy releases the empty
+state before unloading the transport plugin. This state creates no GPU events.
 Fused preparation failures retain their specific stream and drain progress with
 invocation buffers. The caller keeps this borrowed stream alive until cleanup
 succeeds. Cleanup retries that stream before releasing the buffers;

@@ -360,3 +360,24 @@ TEST_F(IpcLifecycleMock, StandalonePartialFinalizeRejectsNewP2pSubmissions) {
   child->proxyState->pendingTransportOps = 0;
   child->ownerComm = comm;
 }
+
+TEST_F(IpcLifecycleMock, TrackedBackingReleaseBeforeFinalizeRemainsCommOwned) {
+  void *buffer = nullptr;
+  ASSERT_EQ(flagcxCommAllocInternalBuffer(comm, &buffer, 64,
+                                          flagcxInternalBufferDevice),
+            flagcxSuccess);
+  EXPECT_EQ(flagcxCommReleaseBuffer(comm, buffer, flagcxInternalBufferDevice),
+            flagcxSuccess);
+  EXPECT_TRUE(frees.empty());
+  ASSERT_NE(comm->internalBuffers, nullptr);
+  EXPECT_EQ(comm->internalBuffers->pointer, buffer);
+  EXPECT_EQ(comm->internalBuffers->next, nullptr);
+  EXPECT_EQ(flagcxCommReleaseBuffer(comm, buffer, flagcxInternalBufferGdr),
+            flagcxInvalidUsage);
+  EXPECT_TRUE(frees.empty());
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_TRUE(frees.empty());
+  destroySuccessfully();
+  ASSERT_EQ(frees.size(), 1u);
+  EXPECT_EQ(frees[0], buffer);
+}

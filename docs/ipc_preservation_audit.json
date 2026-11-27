@@ -1106,7 +1106,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "755aa47db6eb22bcca26d4a3b7d5fcb0c5ffd083b14c7b17f34859b36ce584f7",
+      "current_sha256": "04d1b9c23a9587f9077c46e2fe19ca4f90c21368ee1e8b0b63e6d91b1b5f37d6",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "ec534389bd128242d9d68c425cd822a6f73203be50d9c37dbb08616f613198b3"
     },
@@ -1134,7 +1134,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "10d4f9019ea79a2ae97ee4c7ee93ed9a529ffe7b899feade4efb756fd3e6389a",
+      "current_sha256": "bb7af89a694a0f2113cc51bae63273cff8727f690cdacbddb2d1e961e25ed050",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -2103,7 +2103,7 @@
           "decision": "preserve-independent-fixes"
         }
       ],
-      "current_sha256": "068691a6a0686b3abb619ae1355257708559f2e5d6184a0e0d0c5e4752328b79",
+      "current_sha256": "74904b540d754ddd5ebce8e5277f8dd692b999269573f7a3eb9396e9b35e50c9",
       "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
@@ -3219,7 +3219,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "321687dee37b97ed950c73e75992f8c6e4ab76ca1ab6184dfde9979e71fe042c",
+      "current_sha256": "0d44680ab975c2c0271370287a246699e5f93f0ac772c479badff93bffd443fc",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -3549,7 +3549,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "db69bc98e0f1874cb8970deb2f42f0812284b9a258018387112b7684a32ec96a",
+      "current_sha256": "929376726c74e33e9358269ad2cfbfeb3f0ef0936c32c6c91c089365f42611fd",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -3621,7 +3621,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "27627c24aecb75c3211beb0154be062a118d8a142dd2432c69cd217f08e05a09",
+      "current_sha256": "bbbc1958c978392cded5ed30acff9fb9be2e67219b1983221fdb5311810f4c17",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -4245,7 +4245,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "9a2471efdbaf751ba275ae663a52f6171fc1ea8289c2cf00a7e66313d0da53d1",
+      "current_sha256": "2e6556c7b593a2a70c2f820942fa2dd78e21c33fbd02e87296e1cc8a4cd52950",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -5226,7 +5226,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "5c868ce8dafe53ceec13b2467ee1020cbb25eb8441361798c2d330355175b6cd",
+      "current_sha256": "97c508e27e6b12b7ce7194f47ed47017652035e83474f317c67cc66300939a34",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "99d07eae0c1b2ea7f95ca47e6a61b6c686a89de254f9abc3039fc6e7c233b09f"
     },
@@ -6596,7 +6596,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "0dd22ad7b66a98c2c96e33420f2dd294e97b7f4a0762709c1f6b9313b2e747ed",
+      "current_sha256": "be526000057d5794946006c6f2e4f7bffb6336fc0fa0fdc9a6c0a58e3bbfb490",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "da9c4bea234b45842a806e8b04fcc92a8559662335a932dd24c184c9853b9b96"
     },
@@ -8729,7 +8729,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "8e68e40f1911b07b9c9b9fdcc8d0609048d09ea2a4a16363a58a40ef6817c98d",
+      "current_sha256": "d1648dbab6e7af40c7b3015aaf88656cbd6f18423d04a26668cbb9faefdf5df3",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -9532,7 +9532,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "812dea9eb27a1bf4bd223e1a9b55cece7d80d77ec212322862ada100e68e7763",
+      "current_sha256": "2c1bac3c50a8b8943b4a18a9ff37032c353d7f6627a7af16e43134169af32585",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -9658,7 +9658,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "bdf12b4929d27325d8a9d18acfe03750894acc03e3992af291593a599c65e747",
+      "current_sha256": "00bb9b141f93ccc19516d41258d88ed4b0402dd11598cf775ec5489e242b3b36",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -10062,6 +10062,13 @@
         "P1": 2
       },
       "resolution": "Use common barrier/signal requirements for SHM generation; counter-only skips on all traits. Restore native nesting independently of work tracking; reuse hetero depth. Four core, one native-status and one bootstrap case pass. Real32/64 mixed-trait host test passes2/4 ranks; original backends fail the same case."
+    },
+    "round11": {
+      "reviewed_head": "0e6e9863",
+      "findings": {
+        "P2": 3
+      },
+      "resolution": "Retain explicit accepted flush request ownership until physical completion and drain before MR/connection cleanup. Replace unreachable synchronization injection, migrate stale cleanup fixtures and run actual Window rollback MPI tests. Also preserve already-recorded internal backing before Finalize. Nine core regressions and one bootstrap case added; full host matrices679/687 pass; lifecycle10 and rollback28 cases per rank at2/4 ranks in both builds."
     }
   },
   "original_feature_reference": "34a81ae38e83ec571152d4a45b9276b44aff48c3",

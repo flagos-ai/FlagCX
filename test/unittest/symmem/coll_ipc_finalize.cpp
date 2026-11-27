@@ -1,5 +1,6 @@
 #include "comm_lifecycle_check.hpp"
 #include "ipc_lifecycle_mock.hpp"
+#include "onesided_types.h"
 #include "reg_pool.h"
 #include <chrono>
 #include <cstring>
@@ -288,5 +289,42 @@ TEST_F(IpcFinalizeBootstrapTest,
   EXPECT_NE(view->localBarrierShmPtr, nullptr);
   ASSERT_EQ(flagcxDevCommDestroy(comm, view), flagcxSuccess);
   expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  destroyOneRankAtATime();
+}
+
+TEST_F(IpcFinalizeBootstrapTest,
+       PendingExplicitFlushKeepsEveryExporterUntilRetry) {
+  flagcxNetAdaptor net = {};
+  flagcxOneSideHandleInfo handle = {};
+  if (rank == 0) {
+    addTransport();
+    comm->heteroComm->netAdaptor = &net;
+    handle.localRecvComm = (void *)0x100;
+    handle.localMrHandle = (void *)0x200;
+    net.iflush = [](void *, int, void **, int *, void **, void **request) {
+      *request = (void *)0x300;
+      return flagcxSuccess;
+    };
+    net.test = [](void *, int *done, int *) {
+      ++active->asyncPolls;
+      *done = active->pendingPolls == 0;
+      return active->nativeResult;
+    };
+    pendingPolls = 1;
+    nativeResult = flagcxRemoteError;
+    ASSERT_EQ(flagcxHeteroFlush(comm->heteroComm, (void *)0x400, 8, &handle),
+              flagcxRemoteError);
+    nativeResult = flagcxSuccess;
+  }
+  expectCommon(flagcxCommFinalize(comm), flagcxInProgress);
+  EXPECT_TRUE(frees.empty());
+  EXPECT_TRUE(closes.empty());
+  EXPECT_EQ(transportCloses, 0);
+  pendingPolls = 0;
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  if (rank == 0) {
+    EXPECT_EQ(asyncPolls, 3);
+    EXPECT_EQ(transportCloses, 1);
+  }
   destroyOneRankAtATime();
 }

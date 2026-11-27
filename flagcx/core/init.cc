@@ -804,6 +804,12 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
     if (cleanupStatus == flagcxInProgress)
       return cleanupStatus;
   }
+  {
+    flagcxResult_t pending = flagcxHeteroReleaseFlushState(comm);
+    FLAGCXCHECK(pending);
+    if (pending == flagcxInProgress)
+      return pending;
+  }
   if (comm->bootstrap) {
     {
       flagcxResult_t cleanupStatus = (bootstrapClose(comm->bootstrap));

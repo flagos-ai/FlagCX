@@ -74,7 +74,7 @@
     "native_probe_in_feature_reference": false,
     "IBRC": {
       "core": {
-        "pass": 327,
+        "pass": 336,
         "skip": 5
       },
       "runner": {
@@ -100,7 +100,7 @@
     },
     "IBUC": {
       "core": {
-        "pass": 327,
+        "pass": 336,
         "skip": 5
       },
       "runner": {
@@ -129,7 +129,7 @@
         2,
         4
       ],
-      "cases_per_rank": 9,
+      "cases_per_rank": 10,
       "builds": [
         "IBRC",
         "IBUC"
@@ -155,7 +155,7 @@
     "scripts": {
       "discovered": 341,
       "tool_skips": 8,
-      "result": "Full341-script suite after CR8 passed with8 tool skips (575.140s); affected7 source-warning tests refreshed after CR9 and passed.",
+      "result": "Full 341-script suite after CR8 passed with 8 tool skips (575.140s); affected 8 source-warning/traits checks refreshed after CR11 and passed.",
       "artifact_log": "/private/tmp/iluvatar-ipc-validation/cr8-scripts.log",
       "torch_source_pass": 7,
       "affected_round3": {
@@ -257,6 +257,38 @@
       "kernel_syntax_log": "/private/tmp/iluvatar-ipc-validation/cr10-stable-kernel-syntax.log",
       "mixed_script": "/private/tmp/iluvatar-ipc-validation/cr10_mixed.sh",
       "negative_script": "/private/tmp/iluvatar-ipc-validation/cr10_mixed_negative.sh",
+      "reports": "/Users/chenmo/WORKDIR/.cr/reviews/cr-FlagCX-iluvatar-hang-issue-round*.md"
+    },
+    "native_review_round11": {
+      "findings": {
+        "P2": 3
+      },
+      "added_core_regressions": 9,
+      "added_bootstrap_cases": 1,
+      "scope": "Both libraries and all host/mock suites rebuilt for private Comm layout changes:679 IBRC/687 IBUC passes,10/11 capability skips. Core336/5,runner109 per transport;Device API45/3 each.",
+      "flush_ownership": "Concrete accepted explicit flush requests survive posting/poll errors. Provider done flag retires ownership even on error. pthread mutex; MR/connection and Finalize readiness drain first; empty state released at child Destroy. Proxy async error interrupts blocking poll. No generic work records or GPU events.",
+      "internal_backing": "An allocation already recorded in Comm internalBuffers remains retained even before Finalize. Wrong release kind is rejected; backing freed once at Destroy.",
+      "bootstrap": "10 lifecycle cases pass on every rank at2/4 ranks in both builds, including a rank-local accepted explicit flush that prevents all exporters from closing imports until physical retirement.",
+      "window_rollback_mpi": {
+        "cases_per_rank": 28,
+        "ranks2": {
+          "pass": 22,
+          "skip": 6
+        },
+        "ranks4": {
+          "pass": 26,
+          "skip": 2
+        },
+        "builds": [
+          "IBRC",
+          "IBUC"
+        ],
+        "result": "all passed; two VMM capability skips plus four >=3-rank cases at2 ranks"
+      },
+      "fixture_migration": "Replace unreachable deviceSynchronize injection with caller-completion assertions. Close retired DevComms and IPC table, agree closure, then permit backing release. Focus minimal stack owner fixture on real Finalize phase2 rather than obsolete Destroy phases.",
+      "mixed_completion": "Real32/64 default backend host/mock MPI positive case recompiled after layout change and passed2/4 ranks.",
+      "source_checks_passed": 8,
+      "kernel_syntax_log": "/private/tmp/iluvatar-ipc-validation/cr11-kernel-syntax.log",
       "reports": "/Users/chenmo/WORKDIR/.cr/reviews/cr-FlagCX-iluvatar-hang-issue-round*.md"
     }
   },

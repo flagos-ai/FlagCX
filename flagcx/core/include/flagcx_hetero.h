@@ -316,6 +316,8 @@ flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
 
 flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
                                  size_t size, void *gHandleInfo);
+flagcxResult_t flagcxHeteroDrainFlushRequests(flagcxHeteroComm_t comm);
+flagcxResult_t flagcxHeteroReleaseFlushState(flagcxHeteroComm_t comm);
 
 // Async RMA proxy lifecycle.
 flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm);

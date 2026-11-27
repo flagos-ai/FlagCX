@@ -384,6 +384,7 @@ struct flagcxHeteroComm {
   flagcxWorkerPool *workerPool;
   // Async RMA proxy state (one-sided Put/Get offload worker).
   struct flagcxRmaProxyState *rmaProxy;
+  struct flagcxFlushState *flushState; // accepted explicit transport flushes
 
   // One-sided signal / staging handle
   struct flagcxOneSideHandleInfo *signalHandle;

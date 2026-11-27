@@ -12,6 +12,7 @@
 #include "type.h"
 
 #include <climits>
+#include <errno.h>
 #include <new>
 #include <pthread.h>
 #include <sched.h>
@@ -2582,8 +2583,101 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
   return res;
 }
 
+struct flagcxFlushRequest {
+  struct flagcxFlushRequest *next;
+  struct flagcxNetAdaptor *adaptor;
+  void *request;
+};
+
+struct flagcxFlushState {
+  pthread_mutex_t mutex;
+  struct flagcxFlushRequest *requests;
+};
+
+static flagcxResult_t
+flagcxHeteroGetFlushState(flagcxHeteroComm_t comm,
+                          struct flagcxFlushState **output) {
+  struct flagcxFlushState *state =
+      __atomic_load_n(&comm->flushState, __ATOMIC_ACQUIRE);
+  if (state == NULL) {
+    struct flagcxFlushState *candidate = NULL;
+    FLAGCXCHECK(flagcxCalloc(&candidate, 1));
+    if (pthread_mutex_init(&candidate->mutex, NULL) != 0) {
+      free(candidate);
+      return flagcxSystemError;
+    }
+    if (__atomic_compare_exchange_n(&comm->flushState, &state, candidate, false,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+      state = candidate;
+    } else {
+      pthread_mutex_destroy(&candidate->mutex);
+      free(candidate);
+    }
+  }
+  *output = state;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHeteroDrainFlushRequests(flagcxHeteroComm_t comm) {
+  if (comm == NULL)
+    return flagcxSuccess;
+  struct flagcxFlushState *state =
+      __atomic_load_n(&comm->flushState, __ATOMIC_ACQUIRE);
+  if (state == NULL)
+    return flagcxSuccess;
+  int locked = pthread_mutex_trylock(&state->mutex);
+  if (locked != 0)
+    return locked == EBUSY ? flagcxInProgress : flagcxSystemError;
+  flagcxResult_t result = flagcxSuccess;
+  while (state->requests != NULL) {
+    struct flagcxFlushRequest *owner = state->requests;
+    int done = 0;
+    if (owner->adaptor->test == NULL) {
+      result = flagcxNotSupported;
+      goto exit;
+    }
+    result = owner->adaptor->test(owner->request, &done, NULL);
+    if (done) {
+      // A completion flag retires the request even when completion reports
+      // an error. Never poll a pointer the provider may already have freed.
+      state->requests = owner->next;
+      free(owner);
+    }
+    FLAGCXCHECKGOTO(result, result, exit);
+    if (!done || result == flagcxInProgress) {
+      result = flagcxInProgress;
+      goto exit;
+    }
+  }
+exit:
+  pthread_mutex_unlock(&state->mutex);
+  return result;
+}
+
+flagcxResult_t flagcxHeteroReleaseFlushState(flagcxHeteroComm_t comm) {
+  flagcxResult_t result = flagcxSuccess;
+  struct flagcxFlushState *state = NULL;
+  FLAGCXCHECKGOTO(flagcxHeteroDrainFlushRequests(comm), result, exit);
+  if (result == flagcxInProgress || comm == NULL)
+    goto exit;
+  state = __atomic_load_n(&comm->flushState, __ATOMIC_ACQUIRE);
+  if (state == NULL)
+    goto exit;
+  // Communicator destruction has stopped submission and joined its workers.
+  if (pthread_mutex_destroy(&state->mutex) != 0) {
+    result = flagcxInProgress;
+    goto exit;
+  }
+  __atomic_store_n(&comm->flushState, NULL, __ATOMIC_RELEASE);
+  free(state);
+exit:
+  return result;
+}
+
 flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
                                  size_t size, void *gHandleInfo) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
   struct flagcxOneSideHandleInfo *info =
       (struct flagcxOneSideHandleInfo *)gHandleInfo;
   if (info == NULL || info->localRecvComm == NULL ||
@@ -2592,23 +2686,66 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
   if (comm->netAdaptor == NULL || comm->netAdaptor->iflush == NULL)
     return flagcxNotSupported;
 
+  flagcxResult_t result = flagcxSuccess;
+  struct flagcxFlushState *state = NULL;
+  struct flagcxFlushRequest *owner = NULL;
+  bool locked = false, retained = false;
+  FLAGCXCHECKGOTO(flagcxHeteroCheckSubmission(comm), result, exit);
+  FLAGCXCHECKGOTO(flagcxHeteroDrainFlushRequests(comm), result, exit);
+  if (result == flagcxInProgress)
+    goto exit;
+  FLAGCXCHECKGOTO(flagcxHeteroGetFlushState(comm, &state), result, exit);
+  FLAGCXCHECKGOTO(flagcxCalloc(&owner, 1), result, exit);
+  if (pthread_mutex_lock(&state->mutex) != 0) {
+    result = flagcxSystemError;
+    goto exit;
+  }
+  locked = true;
+  owner->adaptor = comm->netAdaptor;
   // Preserve the explicit flush API's legacy behavior, including BAREX's
   // transitional no-op. Correctness-sensitive automatic paths separately
   // validate gdrFlushCaps before treating a callback as a visibility boundary.
 
-  void *data_arr[1] = {gpuAddr};
-  int sizes_arr[1] = {flagcxRmaVisibilityFlushSize(size)};
-  void *mh_arr[1] = {info->localMrHandle};
-  void *request = NULL;
-  FLAGCXCHECK(comm->netAdaptor->iflush(info->localRecvComm, 1, data_arr,
-                                       sizes_arr, mh_arr, &request));
-  if (request != NULL) {
-    int done = 0;
-    while (!done) {
-      FLAGCXCHECK(comm->netAdaptor->test(request, &done, NULL));
+  {
+    void *data_arr[1] = {gpuAddr};
+    int sizes_arr[1] = {flagcxRmaVisibilityFlushSize(size)};
+    void *mh_arr[1] = {info->localMrHandle};
+    result = comm->netAdaptor->iflush(info->localRecvComm, 1, data_arr,
+                                      sizes_arr, mh_arr, &owner->request);
+    if (owner->request != NULL) {
+      owner->next = state->requests;
+      state->requests = owner;
+      retained = true;
+    }
+    FLAGCXCHECKGOTO(result, result, exit);
+    while (retained) {
+      int done = 0;
+      if (owner->adaptor->test == NULL) {
+        result = flagcxNotSupported;
+        goto exit;
+      }
+      result = owner->adaptor->test(owner->request, &done, NULL);
+      if (done) {
+        state->requests = owner->next;
+        retained = false;
+      }
+      FLAGCXCHECKGOTO(result, result, exit);
+      if (!done) {
+        if (comm->proxyState != NULL) {
+          flagcxResult_t async =
+              __atomic_load_n(&comm->proxyState->asyncResult, __ATOMIC_ACQUIRE);
+          FLAGCXCHECKGOTO(async, result, exit);
+        }
+        sched_yield();
+      }
     }
   }
-  return flagcxSuccess;
+exit:
+  if (locked)
+    pthread_mutex_unlock(&state->mutex);
+  if (!retained)
+    free(owner);
+  return result;
 }
 
 static inline bool flagcxIsIntraNode(flagcxHeteroComm_t comm, int peer);

@@ -65,10 +65,12 @@ flagcxResult_t flagcxCommReleaseBuffer(flagcxComm_t comm, void *pointer,
                                        flagcxInternalBufferKind kind) {
   if (pointer == nullptr)
     return flagcxSuccess;
-  if (comm != nullptr && comm->ipcClosingImports) {
+  if (comm != nullptr) {
     for (auto *node = comm->internalBuffers; node; node = node->next)
       if (node->pointer == pointer)
         return node->kind == kind ? flagcxSuccess : flagcxInvalidUsage;
+  }
+  if (comm != nullptr && comm->ipcClosingImports) {
     auto *node = (flagcxInternalBuffer *)malloc(sizeof(flagcxInternalBuffer));
     if (!node)
       return flagcxSystemError;

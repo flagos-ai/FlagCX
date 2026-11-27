@@ -98,6 +98,10 @@ static flagcxResult_t asyncProxyOpEnqueue(struct flagcxProxyLocalPeer *peer,
 flagcxResult_t flagcxProxyTransportReady(struct flagcxHeteroComm *comm) {
   if (comm == NULL)
     return flagcxSuccess;
+  flagcxResult_t result = flagcxHeteroDrainFlushRequests(comm);
+  FLAGCXCHECK(result);
+  if (result == flagcxInProgress)
+    return result;
   if (__atomic_load_n(&comm->rejectedGroupOps, __ATOMIC_ACQUIRE) != NULL)
     return flagcxInProgress;
   if (comm->proxyState != NULL &&
@@ -112,6 +116,10 @@ flagcxResult_t flagcxProxyTransportReady(struct flagcxHeteroComm *comm) {
 flagcxResult_t flagcxProxyScratchReady(struct flagcxHeteroComm *comm) {
   if (comm == NULL)
     return flagcxSuccess;
+  flagcxResult_t result = flagcxHeteroDrainFlushRequests(comm);
+  FLAGCXCHECK(result);
+  if (result == flagcxInProgress)
+    return result;
   if (__atomic_load_n(&comm->rejectedGroupOps, __ATOMIC_ACQUIRE) != NULL)
     return flagcxInProgress;
   if (comm->proxyState == NULL)

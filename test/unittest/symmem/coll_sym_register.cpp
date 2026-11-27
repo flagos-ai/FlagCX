@@ -3662,54 +3662,22 @@ protected:
   }
 };
 
-TEST_F(SymWindowRollback, RankLocalSynchronizeFailureConvergesAndRetries) {
-  rollbackSyncFailureArmed = rank == 1;
-  if (rank == 0)
-    adaptor.mock.deviceSynchronize =
-        nullptr; // A no-op rank still participates.
-
+TEST_F(SymWindowRollback, WindowRollbackUsesCallerCompletionWithoutDeviceSync) {
+  rollbackSyncFailureArmed = true;
   flagcxWindow_t window = nullptr;
   flagcxResult_t result = flagcxCommWindowRegister(
       &testComm, resources.buffer, 64, &window, FLAGCX_WIN_ASYMMETRIC);
   int minimum = 0, maximum = 0;
   allRankResultRange(result, &minimum, &maximum);
-  EXPECT_EQ(minimum, static_cast<int>(flagcxRemoteError));
-  EXPECT_EQ(maximum, static_cast<int>(flagcxRemoteError));
-  EXPECT_EQ(rollbackSyncCalls, rank == 0 ? 0 : 1);
-  ASSERT_TRUE(
-      allRanksSucceeded(window != nullptr && window->defaultBase != nullptr
-                            ? flagcxSuccess
-                            : flagcxInternalError));
-  EXPECT_EQ(window->defaultBase->state, flagcxSymWindowCleanupRequired);
-  EXPECT_TRUE(window->defaultBase->hasAllocationLease);
-  EXPECT_NE(hetero.pendingSymCleanup, nullptr);
-  EXPECT_EQ(hetero.symWindows, nullptr);
-  EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxInvalidUsage);
-  EXPECT_EQ(rollbackBufferFrees, 0);
-
-  // Only rank zero retries a failing public deregistration; peers do not join.
-  adaptor.mock.deviceSynchronize = rollbackSyncForTest;
-  rollbackSyncFailureArmed = rank == 0;
-  result =
-      rank == 0 ? flagcxCommWindowDeregister(&testComm, window) : flagcxSuccess;
-  EXPECT_EQ(result, rank == 0 ? flagcxRemoteError : flagcxSuccess);
-  rollbackSyncFailureArmed = false;
-  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(&testComm, window)));
-  EXPECT_EQ(window->defaultBase, nullptr);
-  EXPECT_EQ(hetero.pendingSymCleanup, nullptr);
-
-  // The deliberate lack of IPC/NET routes still rejects registration, but
-  // recovered synchronization now lets every rank finish rollback normally.
-  result = flagcxCommWindowRegister(&testComm, resources.buffer, 64, &window,
-                                    FLAGCX_WIN_ASYMMETRIC);
-  allRankResultRange(result, &minimum, &maximum);
   EXPECT_EQ(minimum, static_cast<int>(flagcxNotSupported));
   EXPECT_EQ(maximum, static_cast<int>(flagcxNotSupported));
-  EXPECT_EQ(window->defaultBase, nullptr);
+  EXPECT_EQ(rollbackSyncCalls, 0);
+  EXPECT_EQ(window, nullptr);
   EXPECT_EQ(hetero.pendingSymCleanup, nullptr);
-  EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxSuccess);
+  ASSERT_EQ(flagcxMemFree(resources.buffer), flagcxSuccess);
   resources.buffer = nullptr;
   EXPECT_EQ(rollbackBufferFrees, 1);
+  EXPECT_EQ(rollbackSyncCalls, 0);
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
@@ -4113,9 +4081,11 @@ TEST_F(SymWindowRollback, PartialDevCommBarrierBuildRetriesCollectively) {
   ASSERT_EQ(flagcxDevCommCreate(&testComm, &reqs, &view), flagcxSuccess);
   ASSERT_NE(view, nullptr);
   ASSERT_EQ(flagcxDevCommDestroy(&testComm, view), flagcxSuccess);
+  testComm.ipcClosingImports = true;
+  ASSERT_EQ(flagcxCommCloseRetiredDevComms(&testComm), flagcxSuccess);
   ASSERT_EQ(flagcxCommCleanupIpcTable(&testComm), flagcxSuccess);
   MPI_Barrier(MPI_COMM_WORLD);
-  testComm.destroyPhase = 7;
+  testComm.internalImportsConfirmed = true;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&testComm), flagcxSuccess);
 }
 
@@ -4135,18 +4105,32 @@ TEST_F(SymWindowRollback, PartialDevCommSignalBuildRetainsFailedRegistration) {
   rollbackFailCopy = rollbackFailArrayFree = rank == 1;
   EXPECT_EQ(flagcxDevCommCreate(&testComm, &reqs, &view), flagcxRemoteError);
   EXPECT_EQ(view, nullptr);
-  ASSERT_EQ(testComm.pendingDevCommCleanup != nullptr, rank == 1);
-  if (rank == 1) {
-    EXPECT_NE(testComm.pendingDevCommCleanup->ownedSignalBuffer, nullptr);
-    EXPECT_EQ(testComm.pendingDevCommCleanup->ownedSignalBuffer,
-              hetero.rmaSignalBase);
+  EXPECT_EQ(testComm.pendingDevCommCleanup, nullptr);
+  EXPECT_EQ(hetero.rmaSignalBase, nullptr);
+  EXPECT_EQ(rollbackBufferFrees, 0);
+  bool retainedBacking = false, retainedImports = false;
+  for (auto *node = testComm.internalBuffers; node; node = node->next) {
+    if (node->kind != flagcxInternalBufferGdr)
+      continue;
+    retainedBacking = true;
+    for (int i = 0; i < testComm.ipcTableCapacity; ++i) {
+      const auto &entry = testComm.ipcTable[i];
+      retainedImports |= entry.ownerHeld && entry.basePtr == node->pointer;
+    }
   }
+  // Successful ranks already closed their imports. The failing rank retains
+  // its dirty slot, and all exporters remain owned by Comm until Destroy.
+  ASSERT_TRUE(allRanksSucceeded(
+      retainedBacking && (rank != 1 || retainedImports) ? flagcxSuccess
+                                                        : flagcxInternalError));
   EXPECT_EQ(flagcxDevCommCreate(&testComm, &reqs, &view), flagcxRemoteError);
   rollbackFailCopy = rollbackFailArrayFree = false;
   ASSERT_EQ(flagcxDevCommRetryPendingCleanup(&testComm), flagcxSuccess);
+  testComm.ipcClosingImports = true;
+  ASSERT_EQ(flagcxCommCloseRetiredDevComms(&testComm), flagcxSuccess);
   ASSERT_EQ(flagcxCommCleanupIpcTable(&testComm), flagcxSuccess);
   MPI_Barrier(MPI_COMM_WORLD);
-  testComm.destroyPhase = 7;
+  testComm.internalImportsConfirmed = true;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&testComm), flagcxSuccess);
 }
 
@@ -4169,7 +4153,7 @@ TEST_F(SymWindowRollback, PendingWindowCollectiveArrayFreeRetainsLease) {
   CheckPendingIpcLease(flagcxSymCleanupCollective, true);
 }
 
-TEST_F(SymWindowRollback, CommDestroyPendingWindowKeepsLeaseUntilImportsClose) {
+TEST_F(SymWindowRollback, FinalizeLocalOwnerStageRetriesPendingWindow) {
   EnableIpc();
   rollbackFailCopy = rollbackFailClose = rank == 1;
   flagcxWindow_t window = nullptr;
@@ -4178,30 +4162,24 @@ TEST_F(SymWindowRollback, CommDestroyPendingWindowKeepsLeaseUntilImportsClose) {
             flagcxRemoteError);
   ASSERT_EQ(window != nullptr, rank == 1);
   if (rank == 1) {
-    // Enter the real local-owner cleanup stage. The test retains its stack
-    // Comm and bootstrap by forcing a later vendor-destroy failure.
-    ScopedRollbackBackend backend;
-    backend.provider.commDestroy = [](flagcxInnerComm_t) {
-      return flagcxRemoteError;
-    };
-    testComm.destroyPhase = 2;
-    testComm.homoComm = reinterpret_cast<flagcxInnerComm_t>(0x1234);
-    testComm.localRankToRank = nullptr; // The fixture owns the vector storage.
+    // Focus this minimal stack fixture on the real local-owner phase. It
+    // deliberately has no proxyState, so a successful local retry stops at
+    // the next registration phase without destroying fixture-owned storage.
+    testComm.finalizePhase = 2;
     hetero.rmaSignalIpcSlot = -1;
-    ASSERT_EQ(flagcxCommDestroy(&testComm), flagcxRemoteError);
-    EXPECT_EQ(testComm.destroyPhase, 2);
+    ASSERT_EQ(flagcxCommFinalize(&testComm), flagcxRemoteError);
+    EXPECT_EQ(testComm.finalizePhase, 2);
     ASSERT_NE(window->defaultBase, nullptr);
     EXPECT_TRUE(window->defaultBase->hasAllocationLease);
     EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxInvalidUsage);
 
     rollbackFailCopy = rollbackFailClose = false;
-    ASSERT_EQ(flagcxCommDestroy(&testComm), flagcxRemoteError);
-    EXPECT_EQ(testComm.destroyPhase, 3); // Failed after pending IPC closed.
+    ASSERT_EQ(flagcxCommFinalize(&testComm), flagcxInvalidArgument);
+    EXPECT_EQ(testComm.finalizePhase, 3); // Local IPC closure completed.
     EXPECT_EQ(window->defaultBase, nullptr);
     EXPECT_EQ(hetero.pendingSymCleanup, nullptr);
     EXPECT_EQ(rollbackClosedImports, nranks - 1);
     EXPECT_EQ(rollbackFreedArrays, 1);
-    testComm.homoComm = nullptr;
   }
   MPI_Barrier(MPI_COMM_WORLD);
   EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxSuccess);

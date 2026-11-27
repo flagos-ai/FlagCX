@@ -1001,6 +1001,10 @@ flagcxOneSideCleanupHandle(struct flagcxHeteroComm *heteroComm,
                            bool closeConnections) {
   if (info == NULL)
     return flagcxSuccess;
+  flagcxResult_t pending = flagcxHeteroDrainFlushRequests(heteroComm);
+  FLAGCXCHECK(pending);
+  if (pending == flagcxInProgress)
+    return pending;
   if (info->localMrHandle != NULL) {
     if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
         heteroComm->netAdaptor->deregMr == NULL || info->localRecvComm == NULL)
@@ -1903,6 +1907,10 @@ flagcxOneSideDeregisterInternal(struct flagcxHeteroComm *heteroComm,
   struct flagcxOneSideHandleInfo *info = heteroComm->oneSideHandles[index];
   if (info == NULL || info->windowRefs == 0)
     return flagcxInvalidUsage;
+  flagcxResult_t pending = flagcxHeteroDrainFlushRequests(heteroComm);
+  FLAGCXCHECK(pending);
+  if (pending == flagcxInProgress)
+    return pending;
   if (info->windowRefs > 1) {
     info->windowRefs--;
     return flagcxSuccess;
