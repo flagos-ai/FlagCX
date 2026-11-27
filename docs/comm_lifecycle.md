@@ -172,6 +172,11 @@ They are separate from the removed core
 WorkRecord tracker. Existing platform limitations and CI exclusions remain
 visible; host mocks cannot establish rank-local behavior inside a vendor SDK.
 Ascend SHMEM and MetaX Device API integrations are preserved independently.
+The CUDA NCCL wrapper owns stable stream wrappers and completion events for its
+asynchronous API contract. It waits for them before core Finalize/Destroy and
+retains them across failures. These plugin events do not enter Iluvatar paths.
+UniRunner drops its borrowed IPC stream immediately after a successful cleanup
+drain, before later fallible cleanup; retries retain only unfinished resources.
 Host runner group entry/exit preserves pending native status before changing
 group depth or copying staged receives. Only a successful outer GroupEnd makes
 those receive buffers available for the existing device-copy step.

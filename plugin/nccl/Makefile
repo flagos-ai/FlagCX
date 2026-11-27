@@ -17,12 +17,12 @@ OBJS := $(SRCS:src/%.cc=$(OBJDIR)/%.o)
 
 # Compiler flags
 CXX      := g++
-CXXFLAGS := -fPIC -fvisibility=default -std=c++11 -Wall -Wno-sign-compare -O2 -g \
+CXXFLAGS := -fPIC -fvisibility=default -std=c++11 -Wall -Wno-sign-compare -O2 -g -pthread \
             -DREAL_NCCL_PATH=\"$(REAL_NCCL_LIB)\"
 INCLUDES := -I$(NCCL_HOME)/include \
             -I$(FLAGCX_HOME)/flagcx/include \
             -I$(CUDA_HOME)/include
-LDFLAGS  := -shared \
+LDFLAGS  := -shared -pthread \
             -L$(FLAGCX_HOME)/build/lib -lflagcx \
             -L$(CUDA_HOME)/lib64 -lcudart \
             -ldl \

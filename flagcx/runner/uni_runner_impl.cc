@@ -5848,6 +5848,7 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
     FLAGCXCHECK(cleanupStatus);
     if (cleanupStatus == flagcxInProgress)
       return cleanupStatus;
+    state->ipcCommStream = NULL;
   }
   if (state->netCommStream != NULL) {
     flagcxResult_t cleanupStatus =

@@ -8,6 +8,14 @@ The wrapper exports public NCCL symbols matching the version of the system-insta
 
 Because FlagCX's internal NCCL adaptor itself calls back into `nccl*` functions, the wrapper uses a **thread-local recursive guard** to prevent infinite recursion. On the first call, the wrapper delegates to FlagCX. If FlagCX re-enters an `nccl*` symbol on the same thread, the wrapper forwards the call to the **real** NCCL library (loaded via `dlopen` at runtime).
 
+The CUDA wrapper owns stable stream wrappers and a completion event for each
+submitted CUDA stream. Ordinary calls remain asynchronous. Events are recorded
+after native submission and the outermost group end; Finalize and Destroy wait
+for them before entering FlagCX teardown. Failed waits and releases retain their
+owners and completed cleanup steps for retry. This plugin-specific completion
+boundary is separate from the removed core work tracker and adds no events to
+Iluvatar execution. Application-managed graph replays must finish before teardown.
+
 ```
 Application
     |

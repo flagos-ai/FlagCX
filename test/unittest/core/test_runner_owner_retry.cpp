@@ -339,6 +339,34 @@ TEST_F(IpcLifecycleMock, UniRunnerPartialStreamCreationRetainsFirstOwner) {
   EXPECT_EQ(state.redStream, nullptr);
 }
 
+TEST_F(IpcLifecycleMock, UniRunnerCleanupDetachesCompletedBorrowedStream) {
+  addTransport();
+  auto &state = comm->heteroComm->proxyState->uniRunnerState;
+  state.ipcCommStream = (flagcxStream_t)calloc(1, 64);
+  auto borrowed = state.ipcCommStream;
+  state.groupedAgInputReadyEvent = (flagcxEvent_t)0x1000;
+  device.streamSynchronize = [](flagcxStream_t stream) {
+    EXPECT_NE(stream, nullptr);
+    ++active->syncs;
+    return active->nativeResult;
+  };
+  device.eventDestroy = [](flagcxEvent_t) {
+    return active->failDevice ? flagcxRemoteError : flagcxSuccess;
+  };
+  nativeResult = flagcxInProgress;
+  EXPECT_EQ(cleanupUniRunner(comm), flagcxInProgress);
+  EXPECT_EQ(state.ipcCommStream, borrowed);
+  nativeResult = flagcxSuccess;
+  failDevice = true;
+  EXPECT_EQ(cleanupUniRunner(comm), flagcxRemoteError);
+  EXPECT_EQ(state.ipcCommStream, nullptr);
+  free(borrowed);
+  failDevice = false;
+  ASSERT_EQ(cleanupUniRunner(comm), flagcxSuccess);
+  EXPECT_EQ(syncs, 2);
+  EXPECT_EQ(state.groupedAgInputReadyEvent, nullptr);
+}
+
 TEST_F(IpcLifecycleMock,
        CancelledCopyKeepsRunnerWorkspaceUntilTransportRetires) {
   addTransport();

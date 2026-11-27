@@ -6,6 +6,7 @@
  * without code modifications.
  ************************************************************************/
 
+#include "comm_completion.h"
 #include "flagcx.h"
 #include "nccl.h"
 #include <cstdio>
@@ -170,35 +171,7 @@ struct ncclComm {
   int rank;
   int nranks;
   flagcxResult_t asyncError;
-};
-
-/* ──────────────────────────────────────────────────────────────────────
- * Helper: wrap a cudaStream_t into a temporary flagcxStream_t
- *
- * FlagCX wraps CUDA streams in `struct flagcxStream { cudaStream_t base; }`.
- * The struct definition lives in the adaptor headers (not public), so we
- * define a layout-compatible version here for stream wrapping.
- * We allocate a temporary wrapper, call the FlagCX API, then free it.
- * ────────────────────────────────────────────────────────────────────── */
-
-struct flagcxStream {
-  cudaStream_t base;
-};
-
-struct FlagcxStreamWrapper {
-  flagcxStream_t stream;
-
-  FlagcxStreamWrapper(cudaStream_t cudaStream) {
-    stream = (flagcxStream_t)malloc(sizeof(struct flagcxStream));
-    if (stream) {
-      stream->base = cudaStream;
-    }
-  }
-
-  ~FlagcxStreamWrapper() { free(stream); }
-
-  FlagcxStreamWrapper(const FlagcxStreamWrapper &) = delete;
-  FlagcxStreamWrapper &operator=(const FlagcxStreamWrapper &) = delete;
+  struct flagcxNcclCompletion completion;
 };
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -380,13 +353,20 @@ ncclResult_t ncclCommInitRank(ncclComm_t *comm, int nranks, ncclUniqueId commId,
   if (c == nullptr)
     return ncclSystemError;
 
+  if (pthread_mutex_init(&c->completion.mutex, NULL) != 0) {
+    free(c);
+    return ncclSystemError;
+  }
+
   /* Init FlagCX device handle */
   flagcxResult_t res = flagcxDeviceHandleInit(&c->devHandle);
   if (res != flagcxSuccess) {
     if (c->devHandle != nullptr)
       *comm = c; // The failed Init retained a cleanup owner.
-    else
+    else {
+      pthread_mutex_destroy(&c->completion.mutex);
       free(c);
+    }
     return toNcclResult(res);
   }
 
@@ -408,6 +388,7 @@ ncclResult_t ncclCommInitRank(ncclComm_t *comm, int nranks, ncclUniqueId commId,
       *comm = c;
       return toNcclResult(cleanup);
     }
+    pthread_mutex_destroy(&c->completion.mutex);
     free(c);
     return toNcclResult(res);
   }
@@ -436,6 +417,9 @@ ncclResult_t ncclCommFinalize(ncclComm_t comm) {
   recursionGuard guard(inWrapper);
   if (comm == nullptr)
     return ncclInvalidArgument;
+  flagcxResult_t result = flagcxNcclDrain(&comm->completion);
+  if (result != flagcxSuccess)
+    return toNcclResult(result);
   return toNcclResult(flagcxCommFinalize(comm->comm));
 }
 
@@ -447,15 +431,23 @@ ncclResult_t ncclCommDestroy(ncclComm_t comm) {
   if (comm == nullptr)
     return ncclInvalidArgument;
   if (comm->comm != nullptr) {
-    flagcxResult_t result = flagcxCommDestroy(comm->comm);
+    flagcxResult_t result = flagcxNcclDrain(&comm->completion);
+    if (result != flagcxSuccess)
+      return toNcclResult(result);
+    result = flagcxCommDestroy(comm->comm);
     if (result != flagcxSuccess)
       return toNcclResult(result);
     comm->comm = nullptr;
   }
-  flagcxResult_t result = flagcxDeviceHandleFree(comm->devHandle);
+  flagcxResult_t result = flagcxNcclRelease(&comm->completion);
+  if (result != flagcxSuccess)
+    return toNcclResult(result);
+  result = flagcxDeviceHandleFree(comm->devHandle);
   if (result != flagcxSuccess)
     return toNcclResult(result);
   comm->devHandle = nullptr;
+  if (pthread_mutex_destroy(&comm->completion.mutex) != 0)
+    return ncclSystemError;
   free(comm);
   return ncclSuccess;
 }
@@ -473,10 +465,15 @@ ncclResult_t ncclCommAbort(ncclComm_t comm) {
       return toNcclResult(result);
     comm->comm = nullptr;
   }
-  flagcxResult_t result = flagcxDeviceHandleFree(comm->devHandle);
+  flagcxResult_t result = flagcxNcclRelease(&comm->completion);
+  if (result != flagcxSuccess)
+    return toNcclResult(result);
+  result = flagcxDeviceHandleFree(comm->devHandle);
   if (result != flagcxSuccess)
     return toNcclResult(result);
   comm->devHandle = nullptr;
+  if (pthread_mutex_destroy(&comm->completion.mutex) != 0)
+    return ncclSystemError;
   free(comm);
   return ncclSuccess;
 }
@@ -520,12 +517,21 @@ ncclResult_t ncclCommGetAsyncError(ncclComm_t comm, ncclResult_t *asyncError) {
     return getRealNccl().ncclCommGetAsyncError(comm, asyncError);
   }
   recursionGuard guard(inWrapper);
-  if (comm == nullptr)
+  if (comm == nullptr || asyncError == nullptr)
     return ncclInvalidArgument;
   flagcxResult_t flagcxAsync;
   flagcxResult_t res = flagcxCommGetAsyncError(comm->comm, &flagcxAsync);
   if (res != flagcxSuccess)
     return toNcclResult(res);
+  if (flagcxAsync == flagcxSuccess && flagcxNcclGroupDepth == 0) {
+    if (pthread_mutex_lock(&comm->completion.mutex) != 0)
+      return ncclSystemError;
+    comm->completion.nativePending = false;
+    res = flagcxNcclRecordPending(&comm->completion);
+    pthread_mutex_unlock(&comm->completion.mutex);
+    if (res != flagcxSuccess)
+      return toNcclResult(res);
+  }
   *asyncError = toNcclResult(flagcxAsync);
   return ncclSuccess;
 }
@@ -610,7 +616,12 @@ ncclResult_t ncclGroupStart() {
     return getRealNccl().ncclGroupStart();
   }
   recursionGuard guard(inWrapper);
-  return toNcclResult(flagcxGroupStart(nullptr));
+  if (flagcxNcclGroupDepth == INT_MAX)
+    return ncclInvalidUsage;
+  flagcxResult_t result = flagcxGroupStart(nullptr);
+  if (result == flagcxSuccess || result == flagcxInProgress)
+    ++flagcxNcclGroupDepth;
+  return toNcclResult(result);
 }
 
 ncclResult_t ncclGroupEnd() {
@@ -618,7 +629,13 @@ ncclResult_t ncclGroupEnd() {
     return getRealNccl().ncclGroupEnd();
   }
   recursionGuard guard(inWrapper);
-  return toNcclResult(flagcxGroupEnd(nullptr));
+  if (flagcxNcclGroupDepth == 0)
+    return ncclInvalidUsage;
+  flagcxResult_t result = flagcxGroupEnd(nullptr);
+  --flagcxNcclGroupDepth;
+  if (flagcxNcclGroupDepth == 0)
+    result = flagcxNcclGroupComplete(result);
+  return toNcclResult(result);
 }
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -642,9 +659,14 @@ ncclResult_t ncclAllReduce(const void *sendbuff, void *recvbuff, size_t count,
     return r;
   if ((r = toFlagcxRedOp(op, &fOp)) != ncclSuccess)
     return r;
-  FlagcxStreamWrapper sw(stream);
-  return toNcclResult(flagcxAllReduce(sendbuff, recvbuff, count, fType, fOp,
-                                      comm->comm, sw.stream));
+  struct flagcxNcclStream *entry = NULL;
+  flagcxResult_t acquired = flagcxNcclBegin(
+      &comm->completion, comm->comm, comm->devHandle, (void *)stream, &entry);
+  if (acquired != flagcxSuccess)
+    return toNcclResult(acquired);
+  return toNcclResult(flagcxNcclEnd(
+      &comm->completion, flagcxAllReduce(sendbuff, recvbuff, count, fType, fOp,
+                                         comm->comm, entry->wrapper)));
 }
 
 ncclResult_t ncclBroadcast(const void *sendbuff, void *recvbuff, size_t count,
@@ -661,9 +683,14 @@ ncclResult_t ncclBroadcast(const void *sendbuff, void *recvbuff, size_t count,
   ncclResult_t r;
   if ((r = toFlagcxDataType(datatype, &fType)) != ncclSuccess)
     return r;
-  FlagcxStreamWrapper sw(stream);
-  return toNcclResult(flagcxBroadcast(sendbuff, recvbuff, count, fType, root,
-                                      comm->comm, sw.stream));
+  struct flagcxNcclStream *entry = NULL;
+  flagcxResult_t acquired = flagcxNcclBegin(
+      &comm->completion, comm->comm, comm->devHandle, (void *)stream, &entry);
+  if (acquired != flagcxSuccess)
+    return toNcclResult(acquired);
+  return toNcclResult(flagcxNcclEnd(
+      &comm->completion, flagcxBroadcast(sendbuff, recvbuff, count, fType, root,
+                                         comm->comm, entry->wrapper)));
 }
 
 ncclResult_t ncclReduce(const void *sendbuff, void *recvbuff, size_t count,
@@ -683,9 +710,14 @@ ncclResult_t ncclReduce(const void *sendbuff, void *recvbuff, size_t count,
     return r;
   if ((r = toFlagcxRedOp(op, &fOp)) != ncclSuccess)
     return r;
-  FlagcxStreamWrapper sw(stream);
-  return toNcclResult(flagcxReduce(sendbuff, recvbuff, count, fType, fOp, root,
-                                   comm->comm, sw.stream));
+  struct flagcxNcclStream *entry = NULL;
+  flagcxResult_t acquired = flagcxNcclBegin(
+      &comm->completion, comm->comm, comm->devHandle, (void *)stream, &entry);
+  if (acquired != flagcxSuccess)
+    return toNcclResult(acquired);
+  return toNcclResult(flagcxNcclEnd(
+      &comm->completion, flagcxReduce(sendbuff, recvbuff, count, fType, fOp,
+                                      root, comm->comm, entry->wrapper)));
 }
 
 ncclResult_t ncclAllGather(const void *sendbuff, void *recvbuff,
@@ -702,9 +734,14 @@ ncclResult_t ncclAllGather(const void *sendbuff, void *recvbuff,
   ncclResult_t r;
   if ((r = toFlagcxDataType(datatype, &fType)) != ncclSuccess)
     return r;
-  FlagcxStreamWrapper sw(stream);
-  return toNcclResult(flagcxAllGather(sendbuff, recvbuff, sendcount, fType,
-                                      comm->comm, sw.stream));
+  struct flagcxNcclStream *entry = NULL;
+  flagcxResult_t acquired = flagcxNcclBegin(
+      &comm->completion, comm->comm, comm->devHandle, (void *)stream, &entry);
+  if (acquired != flagcxSuccess)
+    return toNcclResult(acquired);
+  return toNcclResult(flagcxNcclEnd(
+      &comm->completion, flagcxAllGather(sendbuff, recvbuff, sendcount, fType,
+                                         comm->comm, entry->wrapper)));
 }
 
 ncclResult_t ncclReduceScatter(const void *sendbuff, void *recvbuff,
@@ -725,9 +762,15 @@ ncclResult_t ncclReduceScatter(const void *sendbuff, void *recvbuff,
     return r;
   if ((r = toFlagcxRedOp(op, &fOp)) != ncclSuccess)
     return r;
-  FlagcxStreamWrapper sw(stream);
-  return toNcclResult(flagcxReduceScatter(sendbuff, recvbuff, recvcount, fType,
-                                          fOp, comm->comm, sw.stream));
+  struct flagcxNcclStream *entry = NULL;
+  flagcxResult_t acquired = flagcxNcclBegin(
+      &comm->completion, comm->comm, comm->devHandle, (void *)stream, &entry);
+  if (acquired != flagcxSuccess)
+    return toNcclResult(acquired);
+  return toNcclResult(
+      flagcxNcclEnd(&comm->completion,
+                    flagcxReduceScatter(sendbuff, recvbuff, recvcount, fType,
+                                        fOp, comm->comm, entry->wrapper)));
 }
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -748,9 +791,14 @@ ncclResult_t ncclSend(const void *sendbuff, size_t count,
   ncclResult_t r;
   if ((r = toFlagcxDataType(datatype, &fType)) != ncclSuccess)
     return r;
-  FlagcxStreamWrapper sw(stream);
+  struct flagcxNcclStream *entry = NULL;
+  flagcxResult_t acquired = flagcxNcclBegin(
+      &comm->completion, comm->comm, comm->devHandle, (void *)stream, &entry);
+  if (acquired != flagcxSuccess)
+    return toNcclResult(acquired);
   return toNcclResult(
-      flagcxSend(sendbuff, count, fType, peer, comm->comm, sw.stream));
+      flagcxNcclEnd(&comm->completion, flagcxSend(sendbuff, count, fType, peer,
+                                                  comm->comm, entry->wrapper)));
 }
 
 ncclResult_t ncclRecv(void *recvbuff, size_t count, ncclDataType_t datatype,
@@ -766,9 +814,14 @@ ncclResult_t ncclRecv(void *recvbuff, size_t count, ncclDataType_t datatype,
   ncclResult_t r;
   if ((r = toFlagcxDataType(datatype, &fType)) != ncclSuccess)
     return r;
-  FlagcxStreamWrapper sw(stream);
+  struct flagcxNcclStream *entry = NULL;
+  flagcxResult_t acquired = flagcxNcclBegin(
+      &comm->completion, comm->comm, comm->devHandle, (void *)stream, &entry);
+  if (acquired != flagcxSuccess)
+    return toNcclResult(acquired);
   return toNcclResult(
-      flagcxRecv(recvbuff, count, fType, peer, comm->comm, sw.stream));
+      flagcxNcclEnd(&comm->completion, flagcxRecv(recvbuff, count, fType, peer,
+                                                  comm->comm, entry->wrapper)));
 }
 
 /* ──────────────────────────────────────────────────────────────────────
