@@ -1,3 +1,4 @@
+#include "c2c_algo.h"
 #include "flagcx_tuner.h"
 #include "ipc_lifecycle_mock.hpp"
 #include "runner.h"
@@ -234,4 +235,37 @@ TEST_F(IpcLifecycleMock, FusedPreparationRetainsFailedStreamDrainForRetry) {
   EXPECT_EQ(syncs, 3); // Do not repeat the completed stream drain.
   EXPECT_EQ(frees.size(), 1u);
   EXPECT_EQ(state.pendingFusedBuffers, nullptr);
+}
+
+TEST_F(IpcLifecycleMock,
+       C2cCreationFailureRetainsReturnedStreamUntilDestroyRetry) {
+  comm->nclusters = comm->homoRanks = comm->homoInterRanks = 1;
+  comm->clusterIds = (int *)calloc(1, sizeof(int));
+  comm->clusterSizes = (int *)calloc(1, sizeof(int));
+  comm->clusterSizes[0] = 1;
+  comm->globalRank2HomoRank = (int *)calloc(1, sizeof(int));
+  comm->clusterInterRankList = {{0}};
+  device.streamCreate = [](flagcxStream_t *stream) {
+    *stream = (flagcxStream_t)0x1000;
+    return flagcxRemoteError;
+  };
+  device.streamSynchronize = [](flagcxStream_t) { return flagcxSuccess; };
+  device.streamDestroy = [](flagcxStream_t stream) {
+    EXPECT_EQ(stream, (flagcxStream_t)0x1000);
+    ++active->backendCleanups;
+    return active->nativeResult;
+  };
+  nativeResult = flagcxInProgress;
+  int input = 0, output = 0;
+  flagcxC2cPlanner planner(1, 1, 0, comm, flagcxCommOpAllGather, flagcxRedNoOp);
+  EXPECT_EQ(
+      planner.execute(&input, &output, flagcxInt, 0, (flagcxStream_t)0x2000),
+      flagcxRemoteError);
+  ASSERT_NE(comm->pendingC2cResources, nullptr);
+  EXPECT_EQ(comm->pendingC2cResources->privateStream, (flagcxStream_t)0x1000);
+  EXPECT_EQ(backendCleanups, 1);
+  nativeResult = flagcxSuccess;
+  EXPECT_EQ(flagcxC2cDrainPendingResources(comm), flagcxSuccess);
+  EXPECT_EQ(comm->pendingC2cResources, nullptr);
+  EXPECT_EQ(backendCleanups, 2);
 }

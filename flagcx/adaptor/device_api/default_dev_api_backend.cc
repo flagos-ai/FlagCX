@@ -264,13 +264,10 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
         snprintf(peerPath, sizeof(peerPath),
                  "/dev/shm/flagcx_barrier_%016llx_%d",
                  (unsigned long long)comm->magic, globalR);
-        void *peerPtr = nullptr;
-        flagcxShmHandle_t peerHandle = nullptr;
         FLAGCXCHECKGOTO(flagcxShmOpen(peerPath, sizeof(peerPath), barrierSize,
-                                      &peerPtr, nullptr, -1, &peerHandle),
+                                      &peerCpuPtrs[lr], NULL, -1,
+                                      &peerShmHandles[lr]),
                         res, fail_peer_shm);
-        peerCpuPtrs[lr] = peerPtr;
-        peerShmHandles[lr] = peerHandle;
       }
     }
 

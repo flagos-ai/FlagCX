@@ -2491,9 +2491,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
             ? const_cast<void *>(sendbuff)
             : recvTmpBuff;
 
-    flagcxStream_t createdStream = nullptr;
-    FLAGCXCHECK(deviceAdaptor->streamCreate(&createdStream));
-    hetStream = createdStream;
+    FLAGCXCHECK(deviceAdaptor->streamCreate(&hetStream));
 
     // execute sequential preHomoFunc steps
     FLAGCXCHECK(flagcxRunnerRunGroup(

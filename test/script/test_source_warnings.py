@@ -44,6 +44,85 @@ class SourceWarningTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             subprocess.run([str(tmp / "test")], check=True)
 
+    def test_failed_barrier_attachment_retains_partial_owner_outputs(self):
+        source = (ROOT / "flagcx/adaptor/device_api/default_dev_api_backend.cc").read_text()
+        body = function(source, "setupIpcBarriers")
+        harness = r"""
+#include <cassert>
+#include <cstdint>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+using flagcxResult_t = int;
+using flagcxShmHandle_t = void *;
+constexpr int flagcxSuccess=0, flagcxSystemError=1, flagcxRemoteError=2;
+constexpr int flagcxMemDevice=0, flagcxInternalBufferDevice=0;
+constexpr int flagcxMemcpyHostToDevice=0, FLAGCX_DEVICE_CTA_COUNT=1;
+constexpr int SHM_PATH_MAX=128;
+#define FLAGCX_INIT 0
+#define INFO(...) ((void)0)
+#define FLAGCXCHECK(call) do { int result=(call); if(result) return result; } while(0)
+#define FLAGCXCHECKGOTO(call, result, label) do { result=(call); if(result) goto label; } while(0)
+struct Comm {
+  int localRanks, nranks, rank, localRank;
+  int *localRankToRank;
+  void *bootstrap;
+  uint64_t magic;
+  struct { void *devPeerPtrs; } ipcTable[1];
+};
+using flagcxComm_t = Comm *;
+struct View {
+  int nLocalRanks, nBarriers, barrierIpcIndex, registeredBarrierShmCount;
+  int *localRankToRank;
+  uint64_t *localBarrierFlags;
+  uint64_t **barrierPeers, **barrierDevPeerPtrsRaw;
+  bool localBarrierFlagsDeviceAllocated;
+  void *localBarrierShmPtr;
+  void **peerBarrierShmPtrs;
+  size_t barrierShmSize;
+  flagcxShmHandle_t myShmHandle, *peerShmHandles;
+};
+using flagcxDevComm_t = View *;
+struct Adaptor {
+  int (*deviceMemset)(void *, int, size_t, int, void *);
+  int (*deviceMalloc)(void **, size_t, int, void *);
+  int (*deviceMemcpy)(void *, void *, size_t, int, void *, void *);
+  int (*hostGetDevicePointer)(void **, void *);
+} adaptor;
+Adaptor *deviceAdaptor = &adaptor;
+int flagcxParamSignalHostEnable() { return 1; }
+template<class... A> int flagcxCommAllocInternalBuffer(A...) { return flagcxSystemError; }
+template<class... A> int flagcxConvergeBootstrapStatus(A...) { return flagcxSystemError; }
+struct Ipc { int slot; int result() { return flagcxSystemError; } };
+template<class... A> Ipc flagcxCommWindowRegisterIpcInternal(A...) { return {0}; }
+template<class... A> int bootstrapCollBarrier(A...) { return flagcxSuccess; }
+int shmHostRegister(void *, size_t) { return flagcxSuccess; }
+int ownStorage, partialStorage, opens=0;
+int flagcxShmOpen(char *, size_t, size_t, void **mapping, void **,
+                 int references, flagcxShmHandle_t *owner) {
+  ++opens;
+  *mapping = references>0 ? &ownStorage : &partialStorage;
+  *owner = reinterpret_cast<void *>(references>0 ? 0x11 : 0x22);
+  // Attachment failed and its own rollback could not close this output.
+  return references>0 ? flagcxSuccess : flagcxRemoteError;
+}
+"""
+        self.compile_run(harness + body + r"""
+int main() {
+  int ranks[] = {0,1};
+  Comm comm = {}; comm.localRanks=comm.nranks=2; comm.localRankToRank=ranks;
+  View view = {};
+  assert(setupIpcBarriers(&comm, &view)==flagcxRemoteError);
+  assert(opens==2 && view.nLocalRanks==2);
+  assert(view.myShmHandle==reinterpret_cast<void *>(0x11));
+  assert(view.peerShmHandles[1]==reinterpret_cast<void *>(0x22));
+  assert(view.peerBarrierShmPtrs[1]==&partialStorage);
+  assert(view.registeredBarrierShmCount==0);
+  free(view.peerShmHandles); free(view.peerBarrierShmPtrs);
+  free(view.localRankToRank);
+}
+""")
+
     def test_unified_net_forwarding_preserves_context_coop_and_flush_guards(self):
         source = (ROOT / "bindings/ir/flagcx_device_unified_ir_impl.h").read_text()
         utils = (ROOT / "flagcx/adaptor/include/device_utils.h").read_text()

@@ -1134,7 +1134,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "be065b44886b70c7174181c4dfbf50862b05a5dbce461d376603aea10ec925b3",
+      "current_sha256": "e390b22af1fdcbe5c29a5a196f915da5263e4df7251de306d5446475ed07dc7d",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -1872,7 +1872,7 @@
           "decision": "preserve-independent-fixes"
         }
       ],
-      "current_sha256": "5310735e3f6698cfa9f9ff30551aa9dddea84997043036623bf1ef5ce7fc654e",
+      "current_sha256": "68745ceba8b0729ce075bf876e7940edda2d8445a4fb7b3f684ad331e01bbdb6",
       "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
@@ -6776,7 +6776,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "69bcae5d6dd31a74f3b4797dd0efcbad71eb39cc741f6a7cd1ea2f6e29bea9e3",
+      "current_sha256": "5ac6e4514625b281da57b5c2a5dcfa6f7d1177e03c4990be185f90c1f4e7106b",
       "current_resolution": "execution/IPC integration adapted without tracker events; independent functionality preserved and host regression checked"
     },
     {
@@ -9910,6 +9910,16 @@
       "rollback_hunks": [],
       "current_sha256": "dee76c92d7a8932b18349d9a5a295742d92f4883a33d8e399eca030bd9ce8ce4",
       "current_resolution": "exact rebased feature-reference content"
+    },
+    {
+      "path": "test/script/test_source_warnings.py",
+      "decision": "align-tests-and-contracts",
+      "reason": "Append real SHM setup-body regression for a failed attachment returning cleanup owners; existing source checks retained.",
+      "reference_sha256": "1ad4de474f0742b8bc3486bcf32e16a0e4f4a8ffafa7982438946d996dfc5ad5",
+      "audit_start_sha256": "1ad4de474f0742b8bc3486bcf32e16a0e4f4a8ffafa7982438946d996dfc5ad5",
+      "rollback_hunks": [],
+      "current_resolution": "existing checks retained; appended partial-owner regression",
+      "current_sha256": "77e4848c89c2caa870c45ef41bdc4a332c7770ec7de5c8450d7c194acdf44433"
     }
   ],
   "graph_support": "No public graph capture/instantiate/launch API or end-to-end replay regression found in the baseline. UniRunner DAG templates are separate from runtime graph replay. Capture-mode handling and placeholder structs are not proof of full support.",
@@ -9999,6 +10009,14 @@
         "P2": 1
       },
       "resolution": "Removed fused device-wide cleanup fallback; retained failed preparation stream drain and progress; cached semaphore completion proof before partial event destruction. Four new core cases passed in both builds. See external reports for final native verdict."
+    },
+    "round4": {
+      "reviewed_head": "effb7f95",
+      "findings": {
+        "P2": 1,
+        "P3": 1
+      },
+      "resolution": "C2C stream creation and SHM attachment outputs written into retained owners before checking status. Actual C2C planner retry regression and real setupIpcBarriers body under partial-output failure both pass."
     }
   },
   "original_feature_reference": "34a81ae38e83ec571152d4a45b9276b44aff48c3",
