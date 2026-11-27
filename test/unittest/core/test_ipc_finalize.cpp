@@ -79,6 +79,76 @@ TEST_F(IpcLifecycleMock, AcceptedNativeFinalizeIsPolledWithoutResubmission) {
   EXPECT_EQ(asyncPolls, 2);
 }
 
+TEST_F(IpcLifecycleMock, AsyncErrorPollingCompletesAcceptedNativeFinalize) {
+  addBackingAndImport();
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  nativeResult = flagcxInProgress;
+  pendingPolls = 2;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxInProgress);
+  flagcxResult_t result = flagcxSuccess;
+  ASSERT_EQ(flagcxCommGetAsyncError(comm, &result), flagcxSuccess);
+  EXPECT_EQ(result, flagcxInProgress);
+  EXPECT_FALSE(comm->finalized);
+  ASSERT_EQ(flagcxCommGetAsyncError(comm, &result), flagcxSuccess);
+  EXPECT_EQ(result, flagcxSuccess);
+  EXPECT_TRUE(comm->finalized);
+  EXPECT_EQ(finalizeCalls, 1);
+  EXPECT_EQ(asyncPolls, 3);
+  EXPECT_TRUE(frees.empty());
+  // Once complete, polling uses cached state instead of the SDK handle.
+  ASSERT_EQ(flagcxCommGetAsyncError(comm, &result), flagcxSuccess);
+  EXPECT_EQ(result, flagcxSuccess);
+  EXPECT_EQ(asyncPolls, 3);
+  destroySuccessfully();
+}
+
+TEST_F(IpcLifecycleMock, AsyncFinalizeErrorRequiresExplicitRetry) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  nativeResult = flagcxInProgress;
+  pendingPolls = 1;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxInProgress);
+  asyncResult = flagcxRemoteError;
+  flagcxResult_t result = flagcxSuccess;
+  ASSERT_EQ(flagcxCommGetAsyncError(comm, &result), flagcxSuccess);
+  EXPECT_EQ(result, flagcxRemoteError);
+  EXPECT_FALSE(comm->finalized);
+  asyncResult = flagcxSuccess;
+  ASSERT_EQ(flagcxCommGetAsyncError(comm, &result), flagcxSuccess);
+  EXPECT_EQ(result, flagcxRemoteError);
+  EXPECT_EQ(asyncPolls, 2);
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(finalizeCalls, 1);
+}
+
+TEST_F(IpcLifecycleMock,
+       AsyncErrorPollingDoesNotConvertPendingAbortToFinalize) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  comm->closing = comm->abortStarted = true;
+  comm->lastResult = flagcxInProgress;
+  flagcxResult_t result = flagcxSuccess;
+  ASSERT_EQ(flagcxCommGetAsyncError(comm, &result), flagcxSuccess);
+  EXPECT_EQ(result, flagcxInProgress);
+  EXPECT_EQ(finalizeCalls, 0);
+  EXPECT_EQ(asyncPolls, 0);
+  comm->abortStarted = false; // Restore the fixture for explicit teardown.
+}
+
+TEST_F(IpcLifecycleMock, DeviceQueryUsesCachedOrdinalBeforeAndAfterFinalize) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  comm->deviceOrdinal = 7;
+  sdk.commGetDeviceNumber = [](flagcxInnerComm_t, int *) {
+    ADD_FAILURE() << "cached ordinal bypassed for an unsupported SDK query";
+    return flagcxNotSupported;
+  };
+  int ordinal = -1;
+  EXPECT_EQ(flagcxCommGetDeviceNumber(comm, &ordinal), flagcxSuccess);
+  EXPECT_EQ(ordinal, 7);
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  ordinal = -1;
+  EXPECT_EQ(flagcxCommGetDeviceNumber(comm, &ordinal), flagcxSuccess);
+  EXPECT_EQ(ordinal, 7);
+}
+
 TEST_F(IpcLifecycleMock, SynchronousNativeFinalizeDoesNotRequireAsyncPoller) {
   comm->hostComm = (flagcxInnerComm_t)0x9000;
   host.commGetAsyncError = nullptr;

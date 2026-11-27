@@ -4803,12 +4803,12 @@ flagcxResult_t flagcxCommCount(const flagcxComm_t comm, int *count) {
 flagcxResult_t flagcxCommGetDeviceNumber(const flagcxComm_t comm, int *device) {
   if (comm == NULL || device == NULL)
     return flagcxInvalidArgument;
-  if (comm->closing) {
-    if (!comm->deviceOrdinalValid)
-      return flagcxInvalidUsage;
+  if (comm->deviceOrdinalValid) {
     *device = comm->deviceOrdinal;
     return flagcxSuccess;
   }
+  if (comm->closing)
+    return flagcxInvalidUsage;
   return cclAdaptors[flagcxCCLAdaptorDevice]->commGetDeviceNumber(
       comm->homoComm, device);
 }
@@ -4863,6 +4863,15 @@ flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
   if (comm == NULL || asyncError == nullptr)
     return flagcxInvalidArgument;
   if (comm->closing || comm->initRollbackPending || comm->pluginRollbackOnly) {
+    // NCCL callers finalize once, then poll this entry for completion. Resume
+    // only a pending Finalize; errors, Abort and init rollback keep their
+    // explicit retry paths and must not query retired native handles.
+    if (!comm->initRollbackPending && !comm->pluginRollbackOnly &&
+        !comm->abortStarted && !comm->finalized &&
+        comm->lastResult == flagcxInProgress) {
+      *asyncError = flagcxCommFinalize(comm);
+      return flagcxSuccess;
+    }
     *asyncError = comm->lastResult;
     return flagcxSuccess;
   }

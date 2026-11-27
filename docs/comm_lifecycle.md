@@ -93,7 +93,10 @@ consumes the Comm pointer. Native SDK Destroy can still impose its own waits.
 Every distinct native communicator, including tuner aliases and an automatic
 host communicator, is finalized once. Native Finalize returning InProgress is
 submitted once and polled through its asynchronous-error API on subsequent
-Finalize calls. A synchronous Success does not require an asynchronous poller.
+Finalize calls. Public GetAsyncError also advances a pending Finalize, so the
+NCCL wrapper's finalize-once/poll loop can complete. Where close requires peer
+agreement, all ranks must continue polling or retrying in the same order.
+A synchronous Success does not require an asynchronous poller.
 Errors, unsupported operations and missing progress support preserve the owner.
 Catalog allocation, local registration release and capability checks complete in
 an earlier status-converged phase. A rank-local preparation failure therefore
@@ -125,8 +128,10 @@ before native Finalize can complete. Successful native Abort keeps its wrapper
 until local destruction. Abort does not enter a hidden peer rendezvous or imply
 permission to free exported backing; when agreement is still required it returns
 InProgress, and participants must explicitly Finalize together. Diagnostics on a
-closed owner use saved status or cached metadata, without querying retired SDK
-state.
+closed owner use saved status or cached metadata. Only pending Finalize progress
+queries the retained native owner; completed, failed, Abort and rollback paths
+do not query retired SDK state. Device-number queries use the cached ordinal
+whenever it is valid, including before shutdown on SDKs without that query.
 
 Torch's asynchronous Work objects, completion handling, and explicit
 shutdown/retry APIs are retained. Shutdown completes backend communication

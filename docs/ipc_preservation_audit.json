@@ -1106,7 +1106,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "5aa177e8d6790e1d142c5cdc9f2a23c0cd7e8b6db681be3235de49c77521513a",
+      "current_sha256": "bfdde87edaca014bdc1ebdc032a52b3ca31a742e3bc1e22b6e947a7557328349",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "ec534389bd128242d9d68c425cd822a6f73203be50d9c37dbb08616f613198b3"
     },
@@ -1134,7 +1134,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "35a881e0879b8fbda4dfbeb383bf4cd6e09b689e2122786943d69ee42ab23966",
+      "current_sha256": "b2413657692746e2b32b56453e82a118064046f8906a7915d904418a7e5b3745",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -6596,7 +6596,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "3ac8aea17f9ed73ae9c149d682b93f07757a53d5aa7c0749655a0a57fd14599b",
+      "current_sha256": "858f4912c6ea5a2b51f715eb963317cc82dce83c0e1d2b4382622a9f87a8407a",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "da9c4bea234b45842a806e8b04fcc92a8559662335a932dd24c184c9853b9b96"
     },
@@ -8729,7 +8729,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "488a54cade00991752aed32c671b1bb0fcf568e454554fd6b520b79b2b508a2d",
+      "current_sha256": "aaeae867f823bb851baf9f993fcd55d5e7a9ec59c535004de88a9ffa48c2bdfc",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -10033,6 +10033,14 @@
         "P2": 1
       },
       "resolution": "Converge native catalog/registration preparation before SDK collective close; save per-owner preparation. Drain rejected standalone group owners before readiness; keep standalone data admission closed across retry, preserving Get event ownership. Three core and one real-bootstrap cases added; all rebuilt host matrices and2/4-rank runs passed."
+    },
+    "round7": {
+      "reviewed_head": "9185df6c",
+      "findings": {
+        "P1": 1,
+        "P2": 1
+      },
+      "resolution": "Advance pending Finalize through public async-error polling so the unchanged NCCL wrapper can finish. Preserve cached device ordinal for active SDKs without device queries. Four core regressions pass in both builds; all2/4-rank bootstrap lifecycle cases pass."
     }
   },
   "original_feature_reference": "34a81ae38e83ec571152d4a45b9276b44aff48c3",

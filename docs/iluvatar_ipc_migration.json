@@ -74,7 +74,7 @@
     "native_probe_in_feature_reference": false,
     "IBRC": {
       "core": {
-        "pass": 306,
+        "pass": 310,
         "skip": 5
       },
       "runner": {
@@ -100,7 +100,7 @@
     },
     "IBUC": {
       "core": {
-        "pass": 306,
+        "pass": 310,
         "skip": 5
       },
       "runner": {
@@ -155,14 +155,15 @@
     "scripts": {
       "discovered": 341,
       "tool_skips": 8,
-      "result": "Full341-script suite after CR5 passed with8 tool skips; current CR6 full-script and kernel syntax results tracked in external reports.",
-      "artifact_log": "/private/tmp/iluvatar-ipc-validation/cr5-scripts.log",
+      "result": "Full341-script suite after CR6:8 tool skips and one emulated MUSA fixture timeout; unchanged isolated method passed. Fresh CR7 full-script result tracked in external reports.",
+      "artifact_log": "/private/tmp/iluvatar-ipc-validation/cr6-scripts.log",
       "torch_source_pass": 7,
       "affected_round3": {
         "methods": 81,
         "initial_errors": "Two platform-CI methods (six subcases) exceeded10s while both builds compiled in parallel.",
         "retry": "Both methods passed when rerun after compilation,8.222s total; no timeout changes. Remaining79 methods passed in the first run."
-      }
+      },
+      "round6_retry_log": "/private/tmp/iluvatar-ipc-validation/cr6-scripts-retry.log"
     },
     "native_review_round2": {
       "added_core_regressions": 5,
@@ -201,6 +202,15 @@
       "scope": "All host/mock suites rebuilt, Device API and bootstrap rerun.",
       "full_script_log": "/private/tmp/iluvatar-ipc-validation/cr6-scripts.log",
       "kernel_syntax_log": "/private/tmp/iluvatar-ipc-validation/cr6-kernel-syntax.log",
+      "reports": "/Users/chenmo/WORKDIR/.cr/reviews/cr-FlagCX-iluvatar-hang-issue-round*.md"
+    },
+    "native_review_round7": {
+      "added_core_regressions": 4,
+      "scope": "Both libraries/core suites rebuilt:310 core passes and5 capability skips per transport. Unchanged runner/RMA/service/adaptor/Device API results retained.",
+      "bootstrap": "5 lifecycle cases passed per rank at2/4 ranks in both builds.",
+      "polling_contract": "Pending Finalize advances via GetAsyncError for NCCL finalize-once/poll callers; errors require explicit retry. Abort/rollback/completed paths keep cached diagnostics.",
+      "kernel_syntax_log": "/private/tmp/iluvatar-ipc-validation/cr6-kernel-syntax.log",
+      "full_script_log": "/private/tmp/iluvatar-ipc-validation/cr7-scripts.log",
       "reports": "/Users/chenmo/WORKDIR/.cr/reviews/cr-FlagCX-iluvatar-hang-issue-round*.md"
     }
   },
