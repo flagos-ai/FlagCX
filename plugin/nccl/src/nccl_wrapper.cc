@@ -172,7 +172,30 @@ struct ncclComm {
   int nranks;
   flagcxResult_t asyncError;
   struct flagcxNcclCompletion completion;
+  bool finalizeRequested, finalizeComplete;
 };
+
+static flagcxResult_t advanceNcclFinalize(ncclComm_t comm) {
+  if (pthread_mutex_lock(&comm->completion.mutex) != 0)
+    return flagcxSystemError;
+  bool complete = comm->finalizeComplete;
+  pthread_mutex_unlock(&comm->completion.mutex);
+  if (complete)
+    return flagcxSuccess;
+  if (flagcxNcclGroupDepth != 0)
+    return flagcxInProgress;
+  flagcxResult_t result = flagcxNcclDrain(&comm->completion);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxCommFinalize(comm->comm);
+  if (result == flagcxSuccess) {
+    if (pthread_mutex_lock(&comm->completion.mutex) != 0)
+      return flagcxSystemError;
+    comm->finalizeComplete = true;
+    pthread_mutex_unlock(&comm->completion.mutex);
+  }
+  return result;
+}
 
 /* ──────────────────────────────────────────────────────────────────────
  * Helper: ncclDataType_t -> flagcxDataType_t
@@ -417,10 +440,19 @@ ncclResult_t ncclCommFinalize(ncclComm_t comm) {
   recursionGuard guard(inWrapper);
   if (comm == nullptr)
     return ncclInvalidArgument;
-  flagcxResult_t result = flagcxNcclDrain(&comm->completion);
-  if (result != flagcxSuccess)
-    return toNcclResult(result);
-  return toNcclResult(flagcxCommFinalize(comm->comm));
+  if (pthread_mutex_lock(&comm->completion.mutex) != 0)
+    return ncclSystemError;
+  if (comm->finalizeComplete) {
+    pthread_mutex_unlock(&comm->completion.mutex);
+    return ncclSuccess;
+  }
+  if (flagcxNcclGroupDepth != 0) {
+    pthread_mutex_unlock(&comm->completion.mutex);
+    return ncclInvalidUsage;
+  }
+  comm->finalizeRequested = true;
+  pthread_mutex_unlock(&comm->completion.mutex);
+  return toNcclResult(advanceNcclFinalize(comm));
 }
 
 ncclResult_t ncclCommDestroy(ncclComm_t comm) {
@@ -519,6 +551,14 @@ ncclResult_t ncclCommGetAsyncError(ncclComm_t comm, ncclResult_t *asyncError) {
   recursionGuard guard(inWrapper);
   if (comm == nullptr || asyncError == nullptr)
     return ncclInvalidArgument;
+  if (pthread_mutex_lock(&comm->completion.mutex) != 0)
+    return ncclSystemError;
+  bool finalizeRequested = comm->finalizeRequested;
+  pthread_mutex_unlock(&comm->completion.mutex);
+  if (finalizeRequested) {
+    *asyncError = toNcclResult(advanceNcclFinalize(comm));
+    return ncclSuccess;
+  }
   flagcxResult_t flagcxAsync;
   flagcxResult_t res = flagcxCommGetAsyncError(comm->comm, &flagcxAsync);
   if (res != flagcxSuccess)

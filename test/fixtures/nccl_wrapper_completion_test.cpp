@@ -26,6 +26,7 @@ static flagcxResult_t waitResult = flagcxSuccess;
 static flagcxResult_t recordResult = flagcxSuccess;
 static flagcxResult_t destroyResult = flagcxSuccess;
 static flagcxResult_t releaseResult = flagcxSuccess;
+static flagcxResult_t finalizeResult = flagcxSuccess;
 static flagcxDeviceHandle device;
 
 flagcxResult_t flagcxDeviceHandleInit(flagcxDeviceHandle_t *out) {
@@ -60,7 +61,7 @@ static void checkCompleted(flagcxComm_t comm) {
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
   checkCompleted(comm);
   ++finalized;
-  return flagcxSuccess;
+  return finalizeResult;
 }
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   checkCompleted(comm);
@@ -277,4 +278,47 @@ int main() {
   recordResult = flagcxSuccess;
   assert(ncclCommDestroy(comm) == ncclSuccess);
   assert(eventFrees == streamFrees);
+
+  // Finalize once, then poll: submission, events and core Finalize must all
+  // complete before GetAsyncError can report success to a rank-local destroyer.
+  comm = create();
+  submitResult = flagcxInProgress;
+  asyncResult = flagcxInProgress;
+  auto beforeFinalize = finalized;
+  assert(ncclAllReduce(nullptr, nullptr, 1, ncclFloat32, ncclSum, comm,
+                       nullptr) == ncclInProgress);
+  assert(ncclCommFinalize(comm) == ncclInProgress);
+  assert(ncclCommGetAsyncError(comm, &async) == ncclSuccess &&
+         async == ncclInProgress);
+  assert(finalized == beforeFinalize);
+  asyncResult = flagcxSuccess;
+  waitResult = flagcxInProgress;
+  assert(ncclCommGetAsyncError(comm, &async) == ncclSuccess &&
+         async == ncclInProgress);
+  assert(finalized == beforeFinalize);
+  waitResult = flagcxSuccess;
+  finalizeResult = flagcxInProgress;
+  assert(ncclCommGetAsyncError(comm, &async) == ncclSuccess &&
+         async == ncclInProgress);
+  assert(finalized == beforeFinalize + 1);
+  finalizeResult = flagcxRemoteError;
+  assert(ncclCommGetAsyncError(comm, &async) == ncclSuccess &&
+         async == ncclRemoteError);
+  assert(finalized == beforeFinalize + 2);
+  finalizeResult = flagcxSuccess;
+  assert(ncclCommGetAsyncError(comm, &async) == ncclSuccess &&
+         async == ncclSuccess);
+  assert(finalized == beforeFinalize + 3);
+  assert(ncclCommGetAsyncError(comm, &async) == ncclSuccess &&
+         async == ncclSuccess);
+  assert(ncclCommFinalize(comm) == ncclSuccess &&
+         finalized == beforeFinalize + 3);
+  assert(ncclGroupStart() == ncclSuccess);
+  assert(ncclCommGetAsyncError(comm, &async) == ncclSuccess &&
+         async == ncclSuccess);
+  assert(ncclCommFinalize(comm) == ncclSuccess &&
+         finalized == beforeFinalize + 3);
+  assert(ncclGroupEnd() == ncclSuccess);
+  assert(ncclCommDestroy(comm) == ncclSuccess);
+  assert(finalized == beforeFinalize + 3);
 }

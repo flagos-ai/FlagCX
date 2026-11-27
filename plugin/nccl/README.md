@@ -13,7 +13,9 @@ submitted CUDA stream. Ordinary calls remain asynchronous. Events are recorded
 after native submission and the outermost group end; Finalize and Destroy wait
 for them before entering FlagCX teardown. Failed waits and releases retain their
 owners and completed cleanup steps for retry. This plugin-specific completion
-boundary is separate from the removed core work tracker and adds no events to
+state also resumes a requested Finalize from `ncclCommGetAsyncError`: polling
+reports success only after both event waits and core Finalize have succeeded.
+This boundary is separate from the removed core work tracker and adds no events to
 Iluvatar execution. Application-managed graph replays must finish before teardown.
 
 ```
