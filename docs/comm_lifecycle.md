@@ -16,6 +16,9 @@ Heterogeneous execution keeps its existing group depth. Native SDK groups have
 a separate thread-local nesting count; Barrier and unfinished Finalize reject
 an open group before releasing resources. These counters record nesting only,
 without per-operation work records or completion events.
+C2C planners reject an outer group before allocating scratch, including native
+groups opened with a null or different Comm. Their existing staged execution
+requires submission before its stream drains.
 Finalize drains internal producers and transport owners; it does not discover
 all previously accepted user work or synchronize the entire device. This is an
 explicit change from the removed work-tracking contract.
@@ -151,6 +154,8 @@ closed owner use saved status or cached metadata. Only pending Finalize progress
 queries the retained native owner; completed, failed, Abort and rollback paths
 do not query retired SDK state. Device-number queries use the cached ordinal
 whenever it is valid, including before shutdown on SDKs without that query.
+Standalone heterogeneous Destroy also selects its saved device on every retry,
+including after a cached successful Finalize and partial proxy release.
 
 Torch's asynchronous Work objects, completion handling, and explicit
 shutdown/retry APIs are retained. Shutdown completes backend communication

@@ -26,6 +26,13 @@ TEST_F(FlagCXCollTest, HybridPlannerRejectsOuterGroup) {
                            comm, stream),
               flagcxInvalidUsage);
     EXPECT_EQ(flagcxGroupEnd(comm), flagcxSuccess);
+    // A native SDK group also defers planner stages, even though it does not
+    // increment the heterogeneous group depth.
+    ASSERT_EQ(flagcxGroupStart(nullptr), flagcxSuccess);
+    EXPECT_EQ(flagcxReduce(sendbuff, recvbuff, 1, flagcxFloat, flagcxSum, 0,
+                           comm, stream),
+              flagcxInvalidUsage);
+    EXPECT_EQ(flagcxGroupEnd(nullptr), flagcxSuccess);
   }
   EXPECT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
 }

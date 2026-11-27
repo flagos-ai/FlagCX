@@ -4,6 +4,30 @@
 #include "runner.h"
 #include "uni_runner_impl.h"
 
+TEST_F(IpcLifecycleMock, C2cPlannerRejectsNativeOuterGroupBeforePreparation) {
+  sdk.groupStart = sdk.groupEnd = [] { return flagcxSuccess; };
+  device.deviceMalloc = [](void **, size_t, flagcxMemType_t, flagcxStream_t) {
+    ++active->syncs;
+    return flagcxRemoteError;
+  };
+  flagcxC2cPlanner planner{};
+  flagcxC2cPlanner cached = planner;
+  ASSERT_EQ(flagcxGroupStart(NULL), flagcxSuccess);
+  ASSERT_EQ(flagcxGroupStart(comm), flagcxSuccess);
+  EXPECT_EQ(flagcxGetGroupDepth(), 0);
+  EXPECT_TRUE(flagcxGroupIsOpen());
+  EXPECT_EQ(planner.execute(nullptr, nullptr, flagcxFloat, -1, nullptr),
+            flagcxInvalidUsage);
+  ASSERT_EQ(flagcxGroupEnd(comm), flagcxSuccess);
+  EXPECT_EQ(cached.execute(nullptr, nullptr, flagcxFloat, -1, nullptr),
+            flagcxInvalidUsage);
+  EXPECT_EQ(comm->pendingC2cResources, nullptr);
+  EXPECT_EQ(syncs, 0);
+  EXPECT_TRUE(frees.empty());
+  ASSERT_EQ(flagcxGroupEnd(NULL), flagcxSuccess);
+  EXPECT_FALSE(flagcxGroupIsOpen());
+}
+
 TEST_F(IpcLifecycleMock, TunerReleaseRetainsAliasesUntilStrictSuccess) {
   auto inner = (flagcxInnerComm_t)0x9000;
   comm->homoComm = comm->homoInterComm = comm->tunerInnerComm = inner;

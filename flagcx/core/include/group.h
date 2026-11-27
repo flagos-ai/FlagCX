@@ -61,6 +61,7 @@ flagcxResult_t flagcxGroupStartInternal();
 flagcxResult_t flagcxGroupEndInternal(bool useStreamValue = false);
 // Group nesting belongs to the calling thread.
 int flagcxGetGroupDepth();
+bool flagcxGroupIsOpen();
 flagcxResult_t flagcxGroupDrainRejected(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxAsyncJobComplete(struct flagcxAsyncJob *job);
 

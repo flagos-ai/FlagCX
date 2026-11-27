@@ -761,6 +761,10 @@ flagcxResult_t flagcxHeteroCommFinalize(flagcxHeteroComm_t comm) {
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   if (comm == NULL)
     return flagcxSuccess;
+  flagcxResult_t deviceResult = deviceAdaptor->setDevice(comm->cudaDev);
+  FLAGCXCHECK(deviceResult);
+  if (deviceResult == flagcxInProgress)
+    return deviceResult;
   if (comm->initRollbackPending) {
     {
       flagcxResult_t cleanupStatus = (flagcxHeteroRmaProxyQuiesce(comm));

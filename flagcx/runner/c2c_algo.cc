@@ -2404,7 +2404,9 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
                                          size_t *recvCounts, size_t *rDispls) {
   // Planner stages synchronize before continuing, but an outer group defers
   // their Hetero work until after execute returns.
-  if (flagcxGetGroupDepth() > 0)
+  // C2C planners do not support an outer group. A native group opened with
+  // NULL or another Comm also postpones the SDK's nested submissions.
+  if (flagcxGroupIsOpen())
     return flagcxInvalidUsage;
 
   // redOp validation

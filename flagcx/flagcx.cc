@@ -42,6 +42,10 @@ flagcxRegPool globalRegPool;
 // Only nesting is tracked here; no work records or completion events are owned.
 static __thread int flagcxNativeGroupDepth = 0;
 
+bool flagcxGroupIsOpen() {
+  return flagcxNativeGroupDepth != 0 || flagcxGetGroupDepth() != 0;
+}
+
 flagcxResult_t flagcxValidateGdrFlushCapability(uint32_t requirements,
                                                 uint32_t capabilities,
                                                 uint32_t direction) {
@@ -4861,7 +4865,7 @@ static flagcxResult_t flagcxCommFinalizePhase(flagcxComm_t comm, int phase) {
 static flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
   if (comm->finalized)
     return flagcxSuccess;
-  if (flagcxNativeGroupDepth != 0 || flagcxGetGroupDepth() != 0)
+  if (flagcxGroupIsOpen())
     return flagcxInvalidUsage;
   __atomic_store_n(&comm->closing, true, __ATOMIC_RELEASE);
   comm->ipcClosingImports = true;
@@ -5321,7 +5325,7 @@ flagcxResult_t flagcxBarrier(flagcxComm_t comm, flagcxStream_t stream) {
   struct flagcxBarrierResources *owner = NULL;
   FLAGCXCHECKGOTO(flagcxCommCheckSubmission(comm), result, exit);
   FLAGCXCHECKGOTO(flagcxEnsureCommReady(comm), result, exit);
-  if (flagcxNativeGroupDepth != 0 || flagcxGetGroupDepth() != 0) {
+  if (flagcxGroupIsOpen()) {
     result = flagcxInvalidUsage;
     goto exit;
   }
