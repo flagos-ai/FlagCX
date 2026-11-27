@@ -1134,7 +1134,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "c8e07ba3162ff620b19093e5d64bcafc34260e1bd87e2a8ed0fbdae51c75b798",
+      "current_sha256": "323442447ecf8c6a47a88d6fafcc9b3b175dab87ed806828a7b3bf2700c0d7cb",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -8206,13 +8206,13 @@
     },
     {
       "path": "test/script/symmem_test.sh",
-      "decision": "preserve-exact",
+      "decision": "align-tests-and-contracts",
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "8fed8092faf7f63deaac2b7e4c60f157af0cdcdea33ca7006c348103e0bf0d65",
       "audit_start_sha256": "1b773940e517f80a5d688a3b50cf2fb637c9a7d303a1be565e5ac74a78e53e54",
       "rollback_hunks": [],
-      "current_sha256": "8fed8092faf7f63deaac2b7e4c60f157af0cdcdea33ca7006c348103e0bf0d65",
-      "current_resolution": "exact rebased feature-reference content",
+      "current_sha256": "3faa7857184a4e50eefdc3805074e9f18a5de9fb0716a28c61f0b2e6ad41878e",
+      "current_resolution": "PR751 CI follow-up: Migrate lifecycle filters and required rank XML cases to current MPI suite",
       "pre_rebase_reference_sha256": "1b773940e517f80a5d688a3b50cf2fb637c9a7d303a1be565e5ac74a78e53e54"
     },
     {
@@ -8441,13 +8441,13 @@
     },
     {
       "path": "test/script/test_symmem_ci.py",
-      "decision": "preserve-exact",
+      "decision": "align-tests-and-contracts",
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "f1d7d4f8d7cb6338defb4b9b996e9f4c611f44d2ec8b0b4c92e74e95f11c0e5a",
       "audit_start_sha256": "69e718ae5ae6216f8cd9777cc229a4504881844e61f674a0b298793d5b33a611",
       "rollback_hunks": [],
-      "current_sha256": "f1d7d4f8d7cb6338defb4b9b996e9f4c611f44d2ec8b0b4c92e74e95f11c0e5a",
-      "current_resolution": "exact rebased feature-reference content",
+      "current_sha256": "74c38a504ba27ecb56110413ac1a169ce390427f8570ba54e530a7b9e5f0bbaa",
+      "current_resolution": "PR751 CI follow-up: Migrate lifecycle filters and required rank XML cases to current MPI suite",
       "pre_rebase_reference_sha256": "69e718ae5ae6216f8cd9777cc229a4504881844e61f674a0b298793d5b33a611"
     },
     {

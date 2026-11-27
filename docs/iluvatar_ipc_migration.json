@@ -392,6 +392,11 @@
       "description": "Limit required GTest PASS policy to runtime rather than build and preflight wrappers",
       "status": "complete",
       "validation": "Six Ascend CI tests passed, including real-wrapper regression for all six non-runtime phases, inherited policy preservation, empty/skipped runtime rejection and passing GTest acceptance."
+    },
+    "step3": {
+      "description": "Migrate lifecycle filters and required rank XML cases to current MPI suite",
+      "status": "complete",
+      "validation": "Six symmem/checker script tests passed. Real lifecycle block extracted unchanged from formal script ran current MPI binary at4 ranks:all10 cases passed per rank and required-case checker passed all4 XML files. Existing2/4-rank transport matrix retained."
     }
   }
 }

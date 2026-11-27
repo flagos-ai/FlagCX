@@ -83,7 +83,7 @@ trap publish_lifecycle_xml EXIT
 FLAGCX_CI_MPI_LABEL="symmem bootstrap lifetime" \
   "$MPI_RUNNER" -np 4 --allow-run-as-root \
     bash "$PROJECT_ROOT/.github/scripts/ci/run_gtest_rank_xml.sh" "$lifecycle_xml" \
-    "$BUILD_BIN/symmem_mpi_tests" --gtest_filter=HeteroFinalizeMpi.* || test_status=$?
+    "$BUILD_BIN/symmem_mpi_tests" --gtest_filter=IpcFinalizeBootstrapTest.* || test_status=$?
 reports=("$lifecycle_xml"/rank-*.xml)
 if [[ ! -f "${reports[0]}" || ${#reports[@]} -ne 4 ]]; then
   echo "Missing per-rank IPC lifetime reports in $lifecycle_xml" >&2
@@ -91,15 +91,16 @@ if [[ ! -f "${reports[0]}" || ${#reports[@]} -ne 4 ]]; then
 else
   lifecycle_check_status=0
   python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
-    --case HeteroFinalizeMpi.DelayedImportAndEmptyRanksConfirmBeforeLocalDestroy \
-    --case HeteroFinalizeMpi.FailedImportRetainsExporterUntilCollectiveRetry \
-    --case HeteroFinalizeMpi.DeviceSelectionFailureConvergesBeforeImportClosure \
-    --case HeteroFinalizeMpi.SparseNodeClosureDoesNotWaitForAnotherNode \
-    --case HeteroFinalizeMpi.InitializationDeclaresIpcAndNativeScopeOnEmptyRanks \
-    --case HeteroFinalizeMpi.CollectiveCreationDeclaresClosureBeforePublication \
-    --case HeteroFinalizeMpi.OuterFinalizeRetriesClosureThenEveryRankDestroysLocally \
-    --case HeteroFinalizeMpi.CrossNodeRelayDrainFailureConvergesBeforeCleanup \
-    --case HeteroFinalizeMpi.CrossNodeRelayDeviceFailureConvergesBeforeCleanup \
+    --case IpcFinalizeBootstrapTest.EmptyRanksAndDelayedImporterJoinBeforeRelease \
+    --case IpcFinalizeBootstrapTest.FailedImporterKeepsAllExportersUntilCommonRetry \
+    --case IpcFinalizeBootstrapTest.DeviceSelectionFailureIsAgreedBeforeAnyClose \
+    --case IpcFinalizeBootstrapTest.BackingReleaseFailureRetriesWhilePeersStayOutsideFlagcx \
+    --case IpcFinalizeBootstrapTest.NativePreparationConvergesBeforeEnteringCollectiveDestroy \
+    --case IpcFinalizeBootstrapTest.PendingEarlierNativeOwnerCompletesBeforeNextCollective \
+    --case IpcFinalizeBootstrapTest.PendingEarlierCompatibilityCloseCompletesBeforeNextCollective \
+    --case IpcFinalizeBootstrapTest.HostShmGenerationIsIssuedByRootAndRetained \
+    --case IpcFinalizeBootstrapTest.CounterOnlyCreationLeavesNextShmGenerationAligned \
+    --case IpcFinalizeBootstrapTest.PendingExplicitFlushKeepsEveryExporterUntilRetry \
     "${reports[@]}" || lifecycle_check_status=$?
   if ((test_status == 0)); then test_status=$lifecycle_check_status; fi
 fi
@@ -113,7 +114,7 @@ FLAGCX_CI_MPI_LABEL="symmem IPC local" \
     -x FLAGCX_VMM_ENABLE=0 \
     -x FLAGCX_IB_DISABLE=1 \
     "$BUILD_BIN/symmem_mpi_tests" \
-    --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:HeteroFinalizeMpi.*:CoverageSupplemental.* || test_status=$?
+    --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:IpcFinalizeBootstrapTest.*:CoverageSupplemental.* || test_status=$?
 
 echo ""
 vmm_skip_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
@@ -134,7 +135,7 @@ if [[ -z "$vmm_skip_reason" ]]; then
       -x FLAGCX_CI_REQUIRE_VMM=1 \
       "${vmm_provider_env[@]+"${vmm_provider_env[@]}"}" \
       "$BUILD_BIN/symmem_mpi_tests" \
-      --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:HeteroFinalizeMpi.*:CoverageSupplemental.* || test_status=$?
+      --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:IpcFinalizeBootstrapTest.*:CoverageSupplemental.* || test_status=$?
 else
   echo "Skipping symmem VMM-local tests: $vmm_skip_reason"
 fi
