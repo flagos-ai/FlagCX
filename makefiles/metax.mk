@@ -26,5 +26,6 @@ CCL_LINK    := -lmccl
 ADAPTOR_FLAG := -DUSE_METAX_ADAPTOR -DFLAGCX_COMM_TRAITS_DEFAULT
 
 PLATFORM_KERNEL_DIR  := flagcx/adaptor/kernel/metax
-PLATFORM_KERNEL_SRCS := $(PLATFORM_KERNEL_DIR)/device_api_host_helpers.cu
+PLATFORM_KERNEL_SRCS := $(PLATFORM_KERNEL_DIR)/device_api_host_helpers.cu \
+                        $(PLATFORM_KERNEL_DIR)/flagcx_reduce_kernel_device.cu
 PLATFORM_EXTRA_SRCS  := flagcx/adaptor/device_api/default_dev_api_backend.cc

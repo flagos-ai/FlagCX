@@ -3666,9 +3666,11 @@ struct flagcxUniRunnerRankCapability {
   int result;
   int supported;
   int kernelSupported;
+  int deviceControlSupported;
 };
 
-static flagcxResult_t initUniRunnerCapabilities(flagcxComm_t comm) {
+static flagcxResult_t initUniRunnerCapabilities(flagcxComm_t comm,
+                                                bool prepareControl = false) {
   flagcxUniRunnerRankCapability *capabilities = nullptr;
   flagcxResult_t allocationResult =
       flagcxCalloc(&capabilities, static_cast<size_t>(comm->nranks));
@@ -3681,21 +3683,37 @@ static flagcxResult_t initUniRunnerCapabilities(flagcxComm_t comm) {
   }
 
   bool localSupported = false;
+  bool deviceControlSupported = false;
   int kernelSupported = 0;
   flagcxResult_t probeResult = flagcxSuccess;
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
-     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR))
+     defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                  \
+     defined(USE_METAX_ADAPTOR))
   kernelSupported = 1;
-  probeResult = flagcxStreamValueSupported(&localSupported);
+  if (prepareControl) {
+    probeResult =
+        flagcxUniRunnerDeviceControlSupported(&deviceControlSupported);
+    if (probeResult == flagcxSuccess)
+      probeResult = flagcxStreamValueSupported(&localSupported);
+  }
+#if !defined(USE_METAX_ADAPTOR)
+  else {
+    // Preserve existing platform initialization. MetaX's optional probes run
+    // only when UniRunner is selected, never during ordinary CommInit.
+    probeResult = flagcxStreamValueSupported(&localSupported);
+  }
+#endif
 #endif
   capabilities[comm->rank] = {static_cast<int>(probeResult),
-                              localSupported ? 1 : 0, kernelSupported};
+                              localSupported ? 1 : 0, kernelSupported,
+                              deviceControlSupported ? 1 : 0};
   result = bootstrapCollAllGather(comm->bootstrap, capabilities,
                                   sizeof(flagcxUniRunnerRankCapability));
   if (result == flagcxSuccess) {
     bool allSupported = true;
     bool allKernelsSupported = true;
+    bool allDeviceControlSupported = true;
     for (int rank = 0; rank < comm->nranks; ++rank) {
       if (capabilities[rank].result != static_cast<int>(flagcxSuccess)) {
         result = static_cast<flagcxResult_t>(capabilities[rank].result);
@@ -3704,14 +3722,32 @@ static flagcxResult_t initUniRunnerCapabilities(flagcxComm_t comm) {
       allSupported = allSupported && capabilities[rank].supported != 0;
       allKernelsSupported =
           allKernelsSupported && capabilities[rank].kernelSupported != 0;
+      allDeviceControlSupported =
+          allDeviceControlSupported &&
+          capabilities[rank].deviceControlSupported != 0;
     }
     if (result == flagcxSuccess) {
       comm->streamValueSupported = allSupported;
       comm->uniRunnerKernelSupported = allKernelsSupported;
+      if (prepareControl) {
+        comm->uniRunnerDeviceControlSupported = allDeviceControlSupported;
+        comm->uniRunnerCapabilitiesPrepared = true;
+      }
     }
   }
   free(capabilities);
   return result;
+}
+
+flagcxResult_t flagcxPrepareUniRunnerCapabilities(flagcxComm_t comm) {
+  if (comm == nullptr)
+    return flagcxInvalidArgument;
+  if (!comm->uniRunnerKernelSupported)
+    return flagcxNotSupported;
+  if (!comm->uniRunnerCapabilitiesPrepared)
+    FLAGCXCHECK(initUniRunnerCapabilities(comm, true));
+  return comm->uniRunnerDeviceControlSupported ? flagcxSuccess
+                                               : flagcxNotSupported;
 }
 
 static flagcxResult_t flagcxCommInitRankInternal(flagcxComm_t *comm, int nranks,

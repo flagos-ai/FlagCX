@@ -32,6 +32,7 @@ TEST(DeviceAdaptorCompatibilityTest, V1UpgradePreservesSignalAcquire) {
 
   flagcxDeviceAdaptorUpgradeV1(&v1, &latest);
 
+  EXPECT_EQ(latest.deviceMallocWithFlags, nullptr);
   EXPECT_EQ(latest.getPointerType, nullptr);
   EXPECT_EQ(latest.getAddressRange, nullptr);
   EXPECT_EQ(latest.symMulticastImport, nullptr);

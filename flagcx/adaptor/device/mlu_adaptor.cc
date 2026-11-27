@@ -344,6 +344,15 @@ flagcxResult_t mluAdaptorSymMulticastTeardown(void *, size_t) {
 }
 flagcxResult_t mluAdaptorSymMulticastFree(void *) { return flagcxNotSupported; }
 
+static flagcxResult_t mluAdaptorDeviceMallocWithFlags(void **ptr, size_t size,
+                                                      flagcxMemType_t type,
+                                                      flagcxStream_t stream,
+                                                      unsigned int flags) {
+  if (ptr == NULL || (flags & ~FLAGCX_DEVICE_ALLOC_UNIRUNNER) != 0)
+    return flagcxInvalidArgument;
+  return mluAdaptorDeviceMalloc(ptr, size, type, stream);
+}
+
 struct flagcxDeviceAdaptor mluAdaptor {
   "MLU",
       // Basic functions
@@ -410,7 +419,9 @@ struct flagcxDeviceAdaptor mluAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL, NULL, NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_UNKNOWN, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, mluAdaptorDeviceMallocWithFlags,
 };
 
 #endif // USE_CAMBRICON_ADAPTOR

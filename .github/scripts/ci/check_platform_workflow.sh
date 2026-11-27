@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -ne 8 && $# -ne 9 && $# -ne 10 ]]; then
-  echo "Usage: ILUVATAR_RESULT=<result> $0 <platforms-json> <config> <cuda-first> <cuda-second> <hygon> [hygon-experimental] <metax> <ppu> [ppu-experimental] <ascend>" >&2
+  echo "Usage: METAX_EXPERIMENTAL_RESULT=<result> ILUVATAR_RESULT=<result> $0 <platforms-json> <config> <cuda-first> <cuda-second> <hygon> [hygon-experimental] <metax> <ppu> [ppu-experimental] <ascend>" >&2
   exit 2
 fi
 
@@ -69,6 +69,11 @@ if selected hygon; then
 fi
 if selected metax; then
   require_success "MetaX workload" "$metax"
+  # Extended argument layouts identify performance workflows. Torch uses
+  # the original layout and has no experimental job.
+  if [[ "$require_hygon_experimental" == 1 ]]; then
+    require_success "MetaX experimental workload" "${METAX_EXPERIMENTAL_RESULT:-skipped}"
+  fi
 fi
 if selected ppu; then
   require_success "PPU workload" "$ppu"

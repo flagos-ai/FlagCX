@@ -417,6 +417,56 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  perf-test-experimental-metax:
+    if: contains(fromJSON(inputs.platforms), 'metax')
+    name: perf-test-experimental (metax)
+    needs: load-hardware-container-configs
+    runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.metax_runs_on) }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Check Docker
+        shell: bash
+        run: docker version
+
+      - name: Run perf-test-experimental (metax) in configured container
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-metax-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.metax_docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.metax_ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.metax_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.metax_ignore_test }}
+        run: >-
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
+          metax perf-test-experimental
+
+      - name: Cleanup perf-test-experimental (metax) container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-metax-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-perf-test-experimental-metax-${{ github.run_attempt }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
   perf-test-ppu:
     if: contains(fromJSON(inputs.platforms), 'ppu')
     name: perf-test (ppu)
@@ -730,6 +780,7 @@ jobs:
       - perf-test-experimental-hygon
       - perf-test-cuda
       - perf-test-metax
+      - perf-test-experimental-metax
       - perf-test-ppu
       - perf-test-experimental-ppu
       - perf-test-ascend
@@ -746,6 +797,7 @@ jobs:
       HYGON_RESULT: ${{ needs['perf-test-hygon'].result }}
       HYGON_EXPERIMENTAL_RESULT: ${{ needs['perf-test-experimental-hygon'].result }}
       METAX_RESULT: ${{ needs['perf-test-metax'].result }}
+      METAX_EXPERIMENTAL_RESULT: ${{ needs['perf-test-experimental-metax'].result }}
       PPU_RESULT: ${{ needs['perf-test-ppu'].result }}
       PPU_EXPERIMENTAL_RESULT: ${{ needs['perf-test-experimental-ppu'].result }}
       KUNLUNXIN_RESULT: ${{ needs['perf-test-kunlunxin'].result }}

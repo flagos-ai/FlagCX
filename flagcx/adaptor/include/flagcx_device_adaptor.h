@@ -46,6 +46,13 @@ typedef enum {
   FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES = 1 << 0,
 } flagcxStreamWaitValueFlags_t;
 
+// Allocation purposes, not vendor flags or capability guarantees. UNIRUNNER
+// selects storage for local executor control words, never shared IPC buffers.
+typedef enum {
+  FLAGCX_DEVICE_ALLOC_DEFAULT = 0,
+  FLAGCX_DEVICE_ALLOC_UNIRUNNER = 1u << 0,
+} flagcxDeviceAllocFlags_t;
+
 // Candidate routes for registering a VMM-backed allocation. The common layer
 // intersects these device capabilities with the selected net adaptor and its
 // runtime probes, preferring DMA-BUF over a provider-validated VA route.
@@ -445,9 +452,31 @@ struct flagcxDeviceAdaptor_latest {
                                         const void *source, size_t size);
   flagcxResult_t (*symLsaMulticastUnbind)(void *mcHandle, size_t offset,
                                           size_t size);
+
+  // Optional latest-only allocation policy. Missing callbacks retain the
+  // original deviceMalloc behavior through flagcxDeviceAllocWithFlags.
+  flagcxResult_t (*deviceMallocWithFlags)(void **ptr, size_t size,
+                                          flagcxMemType_t type,
+                                          flagcxStream_t stream,
+                                          unsigned int flags);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest
+
+static inline flagcxResult_t
+flagcxDeviceAllocWithFlags(const struct flagcxDeviceAdaptor_latest *adaptor,
+                           void **ptr, size_t size, flagcxMemType_t type,
+                           flagcxStream_t stream, unsigned int flags) {
+  if (adaptor == NULL || ptr == NULL ||
+      (flags & ~((unsigned int)FLAGCX_DEVICE_ALLOC_UNIRUNNER)) != 0)
+    return flagcxInvalidArgument;
+  if (flags != FLAGCX_DEVICE_ALLOC_DEFAULT &&
+      adaptor->deviceMallocWithFlags != NULL)
+    return adaptor->deviceMallocWithFlags(ptr, size, type, stream, flags);
+  if (adaptor->deviceMalloc == NULL)
+    return flagcxNotSupported;
+  return adaptor->deviceMalloc(ptr, size, type, stream);
+}
 
 static inline bool flagcxDeviceAdaptorNativeAllocIsVmm(
     const struct flagcxDeviceAdaptor_latest *adaptor, bool vmmEnabled) {

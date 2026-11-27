@@ -73,6 +73,7 @@ PRELUDE = r"""
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -80,6 +81,8 @@ PRELUDE = r"""
 #define FLAGCX_STEPS 8
 #define FLAGCX_SIMPLE_MAX_NTHREADS 512
 #define TRACE(...) ((void)0)
+// Evaluate the real log arguments, including format types and variable scope.
+#define INFO(flags, ...) std::printf(__VA_ARGS__)
 struct flagcxStream { musaStream_t base; };
 struct flagcxDevMemInternal {};
 using flagcxDevMem_t = flagcxDevMemInternal *;

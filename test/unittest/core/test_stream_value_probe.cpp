@@ -22,6 +22,8 @@ struct FakeDeviceState {
   int writes = 0;
   int waits = 0;
   int synchronizations = 0;
+  int policyAllocations = 0;
+  int hostAliases = 0;
   flagcxResult_t writeResult = flagcxSuccess;
   flagcxResult_t waitResult = flagcxSuccess;
 };
@@ -44,6 +46,22 @@ flagcxResult_t fakeDeviceMalloc(void **ptr, size_t size, flagcxMemType_t,
   return flagcxSuccess;
 }
 
+flagcxResult_t fakeDeviceMallocWithFlags(void **ptr, size_t size,
+                                         flagcxMemType_t type,
+                                         flagcxStream_t stream,
+                                         unsigned int flags) {
+  EXPECT_EQ(type, flagcxMemDevice);
+  EXPECT_EQ(flags, FLAGCX_DEVICE_ALLOC_UNIRUNNER);
+  ++fakeState->policyAllocations;
+  return fakeDeviceMalloc(ptr, size, type, stream);
+}
+
+flagcxResult_t fakeDeviceMemcpy(void *dst, void *src, size_t size,
+                                flagcxMemcpyType_t, flagcxStream_t, void *) {
+  std::memcpy(dst, src, size);
+  return flagcxSuccess;
+}
+
 flagcxResult_t fakeDeviceFree(void *ptr, flagcxMemType_t, flagcxStream_t) {
   ++fakeState->frees;
   std::free(ptr);
@@ -51,6 +69,7 @@ flagcxResult_t fakeDeviceFree(void *ptr, flagcxMemType_t, flagcxStream_t) {
 }
 
 flagcxResult_t fakeHostGetDevicePointer(void **devicePtr, void *hostPtr) {
+  ++fakeState->hostAliases;
   *devicePtr = hostPtr;
   return flagcxSuccess;
 }
@@ -96,6 +115,8 @@ protected:
     flagcxClearStreamValueProbeCache();
     std::strncpy(fakeAdaptor.name, "probe-test", sizeof(fakeAdaptor.name) - 1);
     fakeAdaptor.deviceMalloc = fakeDeviceMalloc;
+    fakeAdaptor.deviceMallocWithFlags = fakeDeviceMallocWithFlags;
+    fakeAdaptor.deviceMemcpy = fakeDeviceMemcpy;
     fakeAdaptor.deviceFree = fakeDeviceFree;
     fakeAdaptor.deviceSynchronize = []() { return flagcxSuccess; };
     fakeAdaptor.getDevice = fakeGetDevice;
@@ -116,6 +137,45 @@ protected:
     fakeState = nullptr;
   }
 };
+
+TEST_F(StreamValueProbeTest, DeviceControlUsesPolicyAndIndependentCache) {
+  bool supported = false;
+  ASSERT_EQ(flagcxStreamValueSupported(&supported), flagcxSuccess);
+  ASSERT_TRUE(supported);
+  ASSERT_EQ(flagcxUniRunnerDeviceControlSupported(&supported), flagcxSuccess);
+  ASSERT_TRUE(supported);
+  EXPECT_EQ(state.policyAllocations, 1);
+  EXPECT_EQ(state.hostAliases, 1);
+  EXPECT_EQ(state.writes, 2);
+  EXPECT_EQ(state.waits, 2);
+  EXPECT_EQ(state.allocations, state.frees);
+  ASSERT_EQ(flagcxUniRunnerDeviceControlSupported(&supported), flagcxSuccess);
+  EXPECT_EQ(state.policyAllocations, 1);
+  EXPECT_EQ(state.writes, 2);
+}
+
+TEST_F(StreamValueProbeTest, DeviceInvalidArgumentIsNotClassifiedUnsupported) {
+  state.writeResult = flagcxInvalidArgument;
+  bool supported = true;
+  EXPECT_EQ(flagcxUniRunnerDeviceControlSupported(&supported),
+            flagcxInvalidArgument);
+  EXPECT_FALSE(supported);
+  state.writeResult = flagcxSuccess;
+  ASSERT_EQ(flagcxUniRunnerDeviceControlSupported(&supported), flagcxSuccess);
+  EXPECT_TRUE(supported);
+  EXPECT_EQ(state.policyAllocations, 2);
+}
+
+TEST_F(StreamValueProbeTest, LegacyDeviceControlDoesNotRequireHostAlias) {
+  fakeAdaptor.deviceMallocWithFlags = nullptr;
+  fakeAdaptor.hostGetDevicePointer = nullptr;
+  bool supported = false;
+  ASSERT_EQ(flagcxUniRunnerDeviceControlSupported(&supported), flagcxSuccess);
+  EXPECT_TRUE(supported);
+  EXPECT_EQ(state.hostAliases, 0);
+  EXPECT_EQ(state.policyAllocations, 0);
+  EXPECT_EQ(state.allocations, state.frees);
+}
 
 TEST_F(StreamValueProbeTest, UnsupportedWaitFallsBackAfterDrainingWrite) {
   state.waitResult = flagcxNotSupported;

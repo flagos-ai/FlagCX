@@ -95,8 +95,10 @@ struct flagcxComm {
   int *globalRank2HomoRank;
   int *clusterInterRanks;
   struct bootstrapState *bootstrap;
-  bool streamValueSupported;
+  bool streamValueSupported; // host-mapped semaphore operations
   bool uniRunnerKernelSupported;
+  bool uniRunnerDeviceControlSupported;
+  bool uniRunnerCapabilitiesPrepared;
   int localRank;        // intra-node rank index (computed from hostHash)
   int localRanks;       // number of ranks on this node
   int *localRankToRank; // mapping: local index -> global rank

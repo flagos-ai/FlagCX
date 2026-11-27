@@ -206,6 +206,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 ".github/scripts/ci/run_metax_workload.sh",
                 enabled_platform_or_matrix("metax"),
             ),
+            (
+                ".github/scripts/ci/run_metax_perf_experimental.sh",
+                enabled_platform_or_matrix("metax"),
+            ),
         ):
             with self.subTest(path=path):
                 outputs, _ = self.resolve(
@@ -867,6 +871,35 @@ class PlatformWorkflowCompletionTest(unittest.TestCase):
         args[7] = "success"
         passed = subprocess.run(args, capture_output=True, text=True)
         self.assertEqual(passed.returncode, 0, passed.stderr)
+
+    def test_metax_experimental_perf_is_required(self):
+        script = str(REPO_ROOT / ".github/scripts/ci/check_platform_workflow.sh")
+        args = ["bash", script, '["metax"]', "success", "skipped",
+                "skipped", "skipped", "skipped", "success", "skipped",
+                "skipped", "skipped"]
+        for result in (None, "", "success", "failure", "cancelled", "skipped"):
+            with self.subTest(result=result):
+                env = os.environ.copy()
+                env.pop("METAX_EXPERIMENTAL_RESULT", None)
+                if result is not None:
+                    env["METAX_EXPERIMENTAL_RESULT"] = result
+                checked = subprocess.run(args, env=env, capture_output=True, text=True)
+                self.assertEqual(checked.returncode == 0, result == "success")
+                if result != "success":
+                    self.assertIn("MetaX experimental workload", checked.stderr)
+        args[2] = '[]'
+        env.pop("METAX_EXPERIMENTAL_RESULT", None)
+        checked = subprocess.run(args, env=env, capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_metax_torch_does_not_require_experimental_perf(self):
+        env = os.environ.copy()
+        env.pop("METAX_EXPERIMENTAL_RESULT", None)
+        args = ["bash", str(REPO_ROOT / ".github/scripts/ci/check_platform_workflow.sh"),
+                '["metax"]', "success", "skipped", "skipped", "skipped",
+                "success", "skipped", "skipped"]
+        checked = subprocess.run(args, env=env, capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
 
     def test_ppu_experimental_perf_is_required(self):
         script = str(REPO_ROOT / ".github/scripts/ci/check_platform_workflow.sh")

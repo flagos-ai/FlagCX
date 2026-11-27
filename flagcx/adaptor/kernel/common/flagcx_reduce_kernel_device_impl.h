@@ -26,6 +26,20 @@
 #define cudaLaunchKernel hipLaunchKernel
 #define cudaError_t hipError_t
 #define cudaSuccess hipSuccess
+#elif defined(USE_METAX_ADAPTOR)
+#include <mcr/mc_runtime.h>
+#define cudaGetDevice mcGetDevice
+#define cudaDeviceGetAttribute mcDeviceGetAttribute
+#define cudaDevAttrCooperativeLaunch mcDeviceAttributeCooperativeLaunch
+#define cudaDevAttrConcurrentKernels mcDeviceAttributeConcurrentKernels
+#define cudaDevAttrMultiProcessorCount mcDeviceAttributeMultiProcessorCount
+#define cudaDevAttrMaxThreadsPerBlock mcDeviceAttributeMaxThreadsPerBlock
+#define cudaOccupancyMaxActiveBlocksPerMultiprocessor                          \
+  mcOccupancyMaxActiveBlocksPerMultiprocessor
+#define cudaLaunchCooperativeKernel mcLaunchCooperativeKernel
+#define cudaLaunchKernel mcLaunchKernel
+#define cudaError_t mcError_t
+#define cudaSuccess mcSuccess
 #elif defined(USE_MUSA_ADAPTOR)
 #include <musa_runtime.h>
 
@@ -1939,8 +1953,17 @@ flagcxResult_t flagcxLaunchCollectiveKernel(
       redFifoBuffer, ipcFifoBuffer, input, output, ready, ipcParentFlags,
       static_cast<int>(nRedBlocks), static_cast<int>(nIpcBlocks), avgDivisor);
 #if defined(USE_MUSA_ADAPTOR)
-  return musaGetLastError() == musaSuccess ? flagcxSuccess
-                                           : flagcxUnhandledDeviceError;
+  const musaError_t launchResult = musaGetLastError();
+#elif defined(USE_METAX_ADAPTOR)
+  const mcError_t launchResult = mcGetLastError();
+#endif
+  INFO(FLAGCX_UNIRUNNER, "UniRunner native launcher=%s threads=%zu", __func__,
+       nthreads);
+#if defined(USE_MUSA_ADAPTOR)
+  return launchResult == musaSuccess ? flagcxSuccess
+                                     : flagcxUnhandledDeviceError;
+#elif defined(USE_METAX_ADAPTOR)
+  return launchResult == mcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 #else
   return flagcxSuccess;
 #endif
@@ -1959,7 +1982,8 @@ getStaticKernelMaxExecutorBlocks(const void *kernel, const char *kernelName,
   }
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
-    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR)
+    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                   \
+    defined(USE_METAX_ADAPTOR)
   int device = -1;
   int cooperativeLaunch = 0;
   int concurrentKernels = 0;
@@ -1996,11 +2020,11 @@ getStaticKernelMaxExecutorBlocks(const void *kernel, const char *kernelName,
       cooperativeLaunch != 0, concurrentKernels != 0,
       static_cast<size_t>(smCount), static_cast<size_t>(activeBlocksPerSm),
       static_cast<size_t>(maxThreadsPerBlock), nthreads, maxExecutorBlocks);
-  TRACE(FLAGCX_UNIRUNNER,
-        "static %s residency: device=%d cooperative=%d concurrent=%d "
-        "sms=%d active_per_sm=%d nthreads=%zu budget=%zu result=%d",
-        kernelName, device, cooperativeLaunch, concurrentKernels, smCount,
-        activeBlocksPerSm, nthreads, *maxExecutorBlocks, result);
+  INFO(FLAGCX_UNIRUNNER,
+       "static %s residency: device=%d cooperative=%d concurrent=%d "
+       "sms=%d active_per_sm=%d nthreads=%zu budget=%zu result=%d",
+       kernelName, device, cooperativeLaunch, concurrentKernels, smCount,
+       activeBlocksPerSm, nthreads, *maxExecutorBlocks, result);
   return result;
 #else
   return flagcxNotSupported;
@@ -2057,7 +2081,8 @@ flagcxResult_t flagcxLaunchStaticReduceKernel(
   }
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
-    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR)
+    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                   \
+    defined(USE_METAX_ADAPTOR)
   uint64_t *words = static_cast<uint64_t *>(redFifoDeviceBuffer);
   flagcxReduceTrigger *triggers =
       reinterpret_cast<flagcxReduceTrigger *>(words + flagcxFifoIdxData);
@@ -2072,6 +2097,8 @@ flagcxResult_t flagcxLaunchStaticReduceKernel(
       dim3(static_cast<unsigned int>(nRedBlocks)),
       dim3(static_cast<unsigned int>(nthreads)), args, 0,
       *(FLAGCX_DEVICE_STREAM_PTR)stream);
+  INFO(FLAGCX_UNIRUNNER, "UniRunner native launcher=%s threads=%zu result=%d",
+       __func__, nthreads, static_cast<int>(launchResult));
   return launchResult == cudaSuccess ? flagcxSuccess
                                      : flagcxUnhandledDeviceError;
 #else
@@ -2125,7 +2152,8 @@ flagcxResult_t flagcxLaunchStaticCollectiveKernel(
   }
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
-    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR)
+    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                   \
+    defined(USE_METAX_ADAPTOR)
   uint64_t *redWords = static_cast<uint64_t *>(redFifoDeviceBuffer);
   uint64_t *ipcWords = static_cast<uint64_t *>(ipcFifoDeviceBuffer);
   flagcxReduceTrigger *redTriggers =
@@ -2175,6 +2203,8 @@ flagcxResult_t flagcxLaunchStaticCollectiveKernel(
       dim3(static_cast<unsigned int>(nblocks)),
       dim3(static_cast<unsigned int>(nthreads)), args, 0,
       *(FLAGCX_DEVICE_STREAM_PTR)stream);
+  INFO(FLAGCX_UNIRUNNER, "UniRunner native launcher=%s threads=%zu result=%d",
+       __func__, nthreads, static_cast<int>(launchResult));
   return launchResult == cudaSuccess ? flagcxSuccess
                                      : flagcxUnhandledDeviceError;
 #else
@@ -2211,7 +2241,8 @@ flagcxResult_t flagcxLaunchStaticRingDagKernel(
     return flagcxInvalidArgument;
   }
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
-    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR)
+    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                   \
+    defined(USE_METAX_ADAPTOR)
   flagcxDevMem scratch(*scratchMem);
   flagcxDevMem progress(*progressMem);
   flagcxDevMem ready(*readyMem);
@@ -2231,6 +2262,8 @@ flagcxResult_t flagcxLaunchStaticRingDagKernel(
       dim3(static_cast<unsigned int>(numLanes)),
       dim3(static_cast<unsigned int>(nthreads)), args, 0,
       *(FLAGCX_DEVICE_STREAM_PTR)stream);
+  INFO(FLAGCX_UNIRUNNER, "UniRunner native launcher=%s threads=%zu result=%d",
+       __func__, nthreads, static_cast<int>(launchResult));
   return launchResult == cudaSuccess ? flagcxSuccess
                                      : flagcxUnhandledDeviceError;
 #else
@@ -2253,13 +2286,16 @@ flagcxLaunchStaticIpcRecoveryKernel(flagcxDevMem_t readyMem,
   }
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
-    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR)
+    defined(USE_PPU_ADAPTOR) || defined(USE_MUSA_ADAPTOR) ||                   \
+    defined(USE_METAX_ADAPTOR)
   flagcxDevMem ready(*readyMem);
   flagcxStaticIpcControl control = *ipcControl;
   void *args[] = {&ready, &control};
   cudaError_t launchResult = cudaLaunchKernel(
       reinterpret_cast<const void *>(flagcxStaticIpcRecoveryKernel), dim3(1),
       dim3(1), args, 0, *(FLAGCX_DEVICE_STREAM_PTR)stream);
+  INFO(FLAGCX_UNIRUNNER, "UniRunner native launcher=%s threads=%zu result=%d",
+       __func__, size_t{1}, static_cast<int>(launchResult));
   return launchResult == cudaSuccess ? flagcxSuccess
                                      : flagcxUnhandledDeviceError;
 #else

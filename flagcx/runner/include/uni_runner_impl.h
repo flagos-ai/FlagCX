@@ -13,6 +13,7 @@
 #include "net.h"
 #include "reg_pool.h"
 #include "socket.h"
+#include "uni_runner_stream_flags.h"
 #include "utils.h"
 #include "work.h"
 #include <memory>
@@ -319,10 +320,8 @@ typedef struct {
 
   // Stream completion flags backed by a reusable contiguous device pool. The
   // host-side queue stores per-node addresses within that pool.
-  void *streamFlagsPool;
-  void **streamFlags;
+  flagcxUniRunnerStreamFlagPool streamFlagPool{};
   size_t streamFlagsSize;
-  size_t streamFlagsCapacity;
 
   // Reused receive workspace for hierarchical AllReduce. At most one local
   // chunk slice is live; cleanupUniRunner drains it before the next call.
@@ -428,6 +427,9 @@ size_t getUniRunnerDagPatternHash(const uniRunnerDagCacheKey &key);
 uint64_t getUniRunnerDagAlgorithmHash(
     uniRunnerDagAlgoType algoType,
     const uniRunnerDagAlgorithmConfig &algorithmConfig);
+// Collective and lazy: called before submitting any UniRunner dependencies.
+flagcxResult_t flagcxPrepareUniRunnerCapabilities(flagcxComm_t comm);
+
 flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream);
 
 // Validate executor launch parameters before allocating per-invocation

@@ -446,6 +446,15 @@ flagcxResult_t topsAdaptorSymMulticastFree(void *) {
   return flagcxNotSupported;
 }
 
+static flagcxResult_t topsAdaptorDeviceMallocWithFlags(void **ptr, size_t size,
+                                                       flagcxMemType_t type,
+                                                       flagcxStream_t stream,
+                                                       unsigned int flags) {
+  if (ptr == NULL || (flags & ~FLAGCX_DEVICE_ALLOC_UNIRUNNER) != 0)
+    return flagcxInvalidArgument;
+  return topsAdaptorDeviceMalloc(ptr, size, type, stream);
+}
+
 struct flagcxDeviceAdaptor topsAdaptor {
   "TOPS",
       // Basic functions
@@ -519,7 +528,9 @@ struct flagcxDeviceAdaptor topsAdaptor {
       NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_UNKNOWN, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, topsAdaptorDeviceMallocWithFlags,
 };
 
 #endif // USE_ENFLAME_ADAPTOR

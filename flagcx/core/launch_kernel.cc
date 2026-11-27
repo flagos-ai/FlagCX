@@ -4,6 +4,7 @@
 #include <map>
 #include <new>
 #include <stdio.h>
+#include <utility>
 
 flagcxLaunchFunc_t deviceAsyncKernel = NULL;
 
@@ -184,7 +185,7 @@ flagcxResult_t flagcxStreamValueBufferPool::clear() {
 namespace {
 
 std::mutex streamValueProbeMutex;
-std::map<const flagcxDeviceAdaptor *, std::map<int, bool>>
+std::map<const flagcxDeviceAdaptor *, std::map<std::pair<int, bool>, bool>>
     streamValueProbeCache;
 
 struct flagcxStreamValueProbeResources {
@@ -192,7 +193,8 @@ struct flagcxStreamValueProbeResources {
   flagcxDeviceAdaptor *adaptor;
   int device;
   flagcxStream_t stream;
-  uint64_t *hostValue;
+  uint64_t *value;
+  flagcxMemType_t memoryType;
   bool writeQueued;
 };
 flagcxStreamValueProbeResources *pendingProbes;
@@ -204,12 +206,12 @@ static flagcxResult_t releaseProbe(flagcxStreamValueProbeResources *probe) {
       return result;
     probe->writeQueued = false;
   }
-  if (probe->hostValue != NULL) {
+  if (probe->value != NULL) {
     flagcxResult_t result =
-        probe->adaptor->deviceFree(probe->hostValue, flagcxMemHost, NULL);
+        probe->adaptor->deviceFree(probe->value, probe->memoryType, NULL);
     if (result != flagcxSuccess)
       return result;
-    probe->hostValue = NULL;
+    probe->value = NULL;
   }
   if (probe->stream != NULL) {
     flagcxResult_t result = probe->adaptor->streamDestroy(probe->stream);
@@ -238,7 +240,9 @@ static flagcxResult_t retryProbes(flagcxDeviceAdaptor *adaptor, int device) {
 
 // The stream is private to this probe. A failed drain retains its owner and
 // prevents plugin unload; no device-wide fallback can wait for unrelated work.
-flagcxResult_t probeStreamValueOps(flagcxDeviceAdaptor *adaptor, int device) {
+flagcxResult_t probeStreamValueOps(flagcxDeviceAdaptor *adaptor, int device,
+                                   bool deviceControl, bool *unavailable) {
+  *unavailable = false;
   flagcxResult_t result = retryProbes(adaptor, device);
   if (result != flagcxSuccess)
     return result;
@@ -248,65 +252,100 @@ flagcxResult_t probeStreamValueOps(flagcxDeviceAdaptor *adaptor, int device) {
     return flagcxSystemError;
   probe->adaptor = adaptor;
   probe->device = device;
+  probe->memoryType = deviceControl ? flagcxMemDevice : flagcxMemHost;
   probe->next = pendingProbes;
   pendingProbes = probe;
   result = adaptor->streamCreate(&probe->stream);
   if (result == flagcxSuccess && probe->stream == NULL)
     result = flagcxSystemError;
   if (result == flagcxSuccess)
-    result = adaptor->deviceMalloc((void **)&probe->hostValue, sizeof(uint64_t),
-                                   flagcxMemHost, NULL);
-  if (result == flagcxSuccess && probe->hostValue == NULL)
+    result =
+        flagcxDeviceAllocWithFlags(adaptor, (void **)&probe->value,
+                                   sizeof(uint64_t), probe->memoryType, NULL,
+                                   deviceControl ? FLAGCX_DEVICE_ALLOC_UNIRUNNER
+                                                 : FLAGCX_DEVICE_ALLOC_DEFAULT);
+  if (result == flagcxSuccess && probe->value == NULL)
     result = flagcxSystemError;
-  void *deviceValue = NULL;
-  if (result == flagcxSuccess) {
-    *probe->hostValue = 0;
-    result = adaptor->hostGetDevicePointer(&deviceValue, probe->hostValue);
+  void *deviceValue = probe->value;
+  if (result == flagcxSuccess && !deviceControl) {
+    *probe->value = 0;
+    result = adaptor->hostGetDevicePointer(&deviceValue, probe->value);
     if (result == flagcxSuccess && deviceValue == NULL)
       result = flagcxSystemError;
   }
+  const uint64_t expected = deviceControl ? UINT64_C(0xfedcba9876543210) : 1;
   if (result == flagcxSuccess) {
-    result = adaptor->streamWriteValue64(probe->stream, deviceValue, 1, 0);
+    result =
+        adaptor->streamWriteValue64(probe->stream, deviceValue, expected, 0);
     probe->writeQueued = result == flagcxSuccess;
   }
   if (result == flagcxSuccess)
-    result = adaptor->streamWaitValue64(probe->stream, deviceValue, 1, 0);
+    result =
+        adaptor->streamWaitValue64(probe->stream, deviceValue, expected, 0);
+  if (result == flagcxSuccess && deviceControl) {
+    result = adaptor->streamSynchronize(probe->stream);
+    if (result == flagcxSuccess) {
+      probe->writeQueued = false;
+      uint64_t observed = 0;
+      result = adaptor->deviceMemcpy(&observed, deviceValue, sizeof(observed),
+                                     flagcxMemcpyDeviceToHost, NULL, NULL);
+      if (result == flagcxSuccess && observed != expected)
+        result = flagcxInternalError;
+    }
+  }
   flagcxResult_t cleanup = retryProbes(adaptor, device);
+  *unavailable = cleanup == flagcxSuccess && result == flagcxNotSupported;
   return cleanup == flagcxSuccess ? result : cleanup;
 }
 
 } // namespace
 
-flagcxResult_t flagcxStreamValueSupported(bool *supported) {
+static flagcxResult_t streamValueSupported(bool *supported,
+                                           bool deviceControl) {
   if (supported == nullptr)
     return flagcxInvalidArgument;
   *supported = false;
   flagcxDeviceAdaptor *adaptor = deviceAdaptor;
   if (adaptor == nullptr || adaptor->streamWaitValue64 == nullptr ||
-      adaptor->streamWriteValue64 == nullptr ||
-      adaptor->hostGetDevicePointer == nullptr)
+      adaptor->streamWriteValue64 == nullptr || adaptor->getDevice == nullptr ||
+      adaptor->streamCreate == nullptr ||
+      adaptor->streamSynchronize == nullptr ||
+      adaptor->streamDestroy == nullptr || adaptor->deviceFree == nullptr ||
+      (!deviceControl && adaptor->hostGetDevicePointer == nullptr) ||
+      (deviceControl && adaptor->deviceMemcpy == nullptr))
     return flagcxSuccess;
 
   int device = -1;
   FLAGCXCHECK(adaptor->getDevice(&device));
   std::lock_guard<std::mutex> lock(streamValueProbeMutex);
   auto &devices = streamValueProbeCache[adaptor];
-  auto found = devices.find(device);
+  const auto key = std::make_pair(device, deviceControl);
+  auto found = devices.find(key);
   if (found != devices.end()) {
     *supported = found->second;
     return flagcxSuccess;
   }
 
-  flagcxResult_t result = probeStreamValueOps(adaptor, device);
-  if (result == flagcxNotSupported) {
-    devices[device] = false;
+  bool unavailable = false;
+  flagcxResult_t result =
+      probeStreamValueOps(adaptor, device, deviceControl, &unavailable);
+  if (unavailable) {
+    devices[key] = false;
     return flagcxSuccess;
   }
   if (result != flagcxSuccess)
     return result;
-  devices[device] = true;
+  devices[key] = true;
   *supported = true;
   return flagcxSuccess;
+}
+
+flagcxResult_t flagcxStreamValueSupported(bool *supported) {
+  return streamValueSupported(supported, false);
+}
+
+flagcxResult_t flagcxUniRunnerDeviceControlSupported(bool *supported) {
+  return streamValueSupported(supported, true);
 }
 
 flagcxResult_t flagcxStreamValueProbeCleanup() {

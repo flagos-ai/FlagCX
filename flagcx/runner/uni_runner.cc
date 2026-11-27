@@ -75,7 +75,7 @@ static int resolveUniRunnerHierarchicalSlicedARGroupSize(flagcxComm_t comm) {
 static flagcxResult_t
 ensureUniRunnerReduceTypeSupported(flagcxDataType_t datatype) {
 #if defined(USE_DU_ADAPTOR) || defined(USE_PPU_ADAPTOR) ||                     \
-    defined(USE_MUSA_ADAPTOR)
+    defined(USE_MUSA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   // These static executors have no half or bfloat16 reduction specialization.
   if (datatype == flagcxFloat16 || datatype == flagcxBfloat16)
     return flagcxNotSupported;
@@ -262,6 +262,8 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
     }
   }
   FLAGCXCHECK(selectionResult);
+  INFO(FLAGCX_UNIRUNNER, "UniRunner actual algorithm=%d",
+       static_cast<int>(algorithm));
   res = initUniRunner(comm, stream);
   if (res != flagcxSuccess)
     return res;
@@ -431,15 +433,35 @@ flagcxResult_t uniRunnerAllGather(const void *sendbuff, void *recvbuff,
     localResult = checkedUniRunnerTypeBytes(
         sendcount, static_cast<size_t>(comm->nranks), datatype, &totalSize);
 
+  if (algorithm == uniRunnerAlgorithmGroupedAG) {
+    flagcxResult_t common = flagcxSuccess;
+    FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, localResult, &common));
+    FLAGCXCHECK(common);
+    const flagcxResult_t capability = flagcxPrepareUniRunnerCapabilities(comm);
+    if (capability != flagcxSuccess) {
+      int64_t configured = -1;
+      FLAGCXCHECK(flagcxReadUniRunnerAlgorithm(&configured));
+      // Explicit GroupedAG must not pass by silently executing P2pAG.
+      const bool unavailable = !comm->uniRunnerKernelSupported ||
+                               (comm->uniRunnerCapabilitiesPrepared &&
+                                !comm->uniRunnerDeviceControlSupported);
+      if (capability != flagcxNotSupported || configured != -1 || !unavailable)
+        return capability;
+    }
+  }
+
   const bool useGroupedAg = algorithm == uniRunnerAlgorithmGroupedAG &&
                             comm->uniRunnerKernelSupported &&
-                            comm->streamValueSupported;
+                            comm->uniRunnerDeviceControlSupported;
   if (localResult == flagcxSuccess && useGroupedAg)
     localResult = validateUniRunnerLaunchConfig(flagcxCommOpAllGather);
   FLAGCXCHECK(localResult);
-  if (!useGroupedAg)
+  if (!useGroupedAg) {
+    INFO(FLAGCX_UNIRUNNER, "UniRunner actual algorithm=8 (P2pAG)");
     return submitUniRunnerP2pAllGather(sendbuff, recvbuff, sendcount, datatype,
                                        comm, stream, size);
+  }
+  INFO(FLAGCX_UNIRUNNER, "UniRunner actual algorithm=7 (GroupedAG)");
 
   const int groupSize = resolveUniRunnerGroupedAGGroupSize(comm);
   (void)totalSize;
