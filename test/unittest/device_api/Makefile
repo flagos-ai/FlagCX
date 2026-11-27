@@ -392,6 +392,8 @@ INTER_NODE0_ENV := $(MPI_ENV_FLAG) FLAGCX_HOSTID=node0 \
 INTER_NODE1_ENV := $(MPI_ENV_FLAG) FLAGCX_HOSTID=node1 \
                    $(MPI_ENV_FLAG) NCCL_HOSTID=node1
 UNIFIED_TEST_ARGS := -b 1K -e 16M -f 2
+# Intra-node rank count (default 4).
+INTRA_NP ?= 4
 # Unified-intra world size.  Platforms whose device-side cross-rank
 # rendezvous is not a supported hardware capability narrow this to 1
 # (see set_env/ascend.sh); everywhere else keeps the historical -n 4.
@@ -408,18 +410,18 @@ run-mpi-intra: $(filter $(BINDIR)/test_device_ir_intra,$(MPI_TARGETS)) \
 
 ifneq ($(filter $(BINDIR)/test_device_ir_intra,$(MPI_TARGETS)),)
 	@echo "Running intra-node tests..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) -n 4 $(INTRA_ENV) $(BINDIR)/test_device_ir_intra
+	$(MPIRUN) $(MPI_ROOT_ARGS) -n $(INTRA_NP) $(INTRA_ENV) $(BINDIR)/test_device_ir_intra
 endif
 ifneq ($(filter $(BINDIR)/test_device_api_intra,$(MPI_TARGETS)),)
-	$(MPIRUN) $(MPI_ROOT_ARGS) -n 4 $(INTRA_ENV) $(BINDIR)/test_device_api_intra
+	$(MPIRUN) $(MPI_ROOT_ARGS) -n $(INTRA_NP) $(INTRA_ENV) $(BINDIR)/test_device_api_intra
 endif
 ifneq ($(filter $(BINDIR)/test_device_ir_intra_enflame,$(MPI_TARGETS)),)
 	@echo "Running Enflame intra-node IR tests..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) -n 4 $(BINDIR)/test_device_ir_intra_enflame
+	$(MPIRUN) $(MPI_ROOT_ARGS) -n $(INTRA_NP) $(BINDIR)/test_device_ir_intra_enflame
 endif
 ifneq ($(filter $(BINDIR)/test_device_api_intra_enflame,$(MPI_TARGETS)),)
 	@echo "Running Enflame intra-node API tests..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) -n 4 $(BINDIR)/test_device_api_intra_enflame
+	$(MPIRUN) $(MPI_ROOT_ARGS) -n $(INTRA_NP) $(BINDIR)/test_device_api_intra_enflame
 endif
 ifeq ($(filter $(BINDIR)/test_device_ir_intra $(BINDIR)/test_device_api_intra $(BINDIR)/test_device_ir_intra_enflame $(BINDIR)/test_device_api_intra_enflame,$(MPI_TARGETS)),)
 	@echo "Skipped legacy intra Device API/IR tests on $(KERNEL_PLATFORM)"
@@ -451,8 +453,10 @@ endif
 ifneq ($(filter $(BINDIR)/test_device_ir_inter_enflame,$(MPI_TARGETS)),)
 	@echo "Running Enflame inter-node IR tests..."
 	$(MPIRUN) $(MPI_ROOT_ARGS) \
-		-n $(INTER_NP) $(INTER_ENV) $(INTER_NODE0_ENV) $(BINDIR)/test_device_ir_inter_enflame \
-		: -n $(INTER_NP) $(INTER_ENV) $(INTER_NODE1_ENV) $(BINDIR)/test_device_ir_inter_enflame
+		-n $(INTER_NP) $(INTER_ENV) $(INTER_NODE0_ENV) \
+		$(BINDIR)/test_device_ir_inter_enflame -b 1M -e 4M -f 2 -R 2 \
+		: -n $(INTER_NP) $(INTER_ENV) $(INTER_NODE1_ENV) \
+		$(BINDIR)/test_device_ir_inter_enflame -b 1M -e 4M -f 2 -R 2
 endif
 ifneq ($(filter $(BINDIR)/test_device_api_inter_enflame,$(MPI_TARGETS)),)
 	@echo "Running Enflame inter-node API tests..."
