@@ -1,4 +1,5 @@
 #include "ipc_lifecycle_mock.hpp"
+#include "sym_heap.h"
 
 TEST_F(IpcLifecycleMock, FinalizeClosesImportsAndDestroyAloneFreesBacking) {
   addBackingAndImport();
@@ -142,4 +143,57 @@ TEST_F(IpcLifecycleMock, PendingPrivateScratchFreeKeepsChildForLocalRetry) {
   destroySuccessfully();
   EXPECT_EQ(frees.size(), 1u);
   EXPECT_EQ(transportFrees, 1);
+}
+
+TEST_F(IpcLifecycleMock, CancelledTransportRetiresBeforeAnyImportsClose) {
+  addBackingAndImport();
+  addTransport();
+  auto *state = comm->heteroComm->proxyState;
+  auto backing = comm->ipcTable[0].basePtr;
+  state->asyncResult = flagcxRemoteError;
+  state->pendingTransportOps = 1; // Includes deferred collective retirement.
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxInProgress);
+  EXPECT_EQ(comm->finalizePhase, 0);
+  EXPECT_FALSE(comm->finalized);
+  EXPECT_EQ(backendCleanups, 0);
+  EXPECT_EQ(transportCloses, 0);
+  EXPECT_TRUE(closes.empty());
+  EXPECT_TRUE(frees.empty());
+  state->pendingTransportOps = 0;
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(closes.size(), 1u);
+  for (auto pointer : frees)
+    EXPECT_NE(pointer, backing);
+  destroySuccessfully();
+  EXPECT_EQ(transportFrees, 1);
+}
+
+TEST_F(IpcLifecycleMock, HealthyTransportAlsoRetiresBeforeRegistrationCleanup) {
+  addTransport();
+  comm->heteroComm->proxyState->pendingTransportOps = 1;
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxInProgress);
+  EXPECT_EQ(backendCleanups, 0);
+  EXPECT_EQ(transportCloses, 0);
+  comm->heteroComm->proxyState->pendingTransportOps = 0;
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+}
+
+TEST_F(IpcLifecycleMock,
+       PublicDeregistrationRetainsOwnersDuringTransportDrain) {
+  addTransport();
+  flagcxWindow window = {};
+  window.ownerComm = comm;
+  window.vendorBase = (flagcxInnerWindow_t)0x1000;
+  auto *state = comm->heteroComm->proxyState;
+  state->asyncResult = flagcxRemoteError;
+  state->pendingTransportOps = 1;
+  EXPECT_EQ(flagcxCommWindowDeregister(comm, &window, flagcxMemCCL),
+            flagcxInProgress);
+  EXPECT_EQ(window.vendorBase, (flagcxInnerWindow_t)0x1000);
+  EXPECT_TRUE(window.cleanupStarted);
+  EXPECT_EQ(flagcxCommDeregister(comm, (void *)0x2000, flagcxMemCCL),
+            flagcxInProgress);
+  EXPECT_EQ(backendCleanups, 0);
+  EXPECT_TRUE(closes.empty());
+  state->pendingTransportOps = 0;
 }

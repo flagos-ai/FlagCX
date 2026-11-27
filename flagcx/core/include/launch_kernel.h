@@ -33,8 +33,8 @@ struct flagcxSemaphore {
   bool notificationSealed = true, notificationCancelled = false;
   flagcxResult_t notificationError = flagcxSuccess;
   pthread_mutex_t notificationMutex = PTHREAD_MUTEX_INITIALIZER;
-  bool notificationNeedsDrain = false;
   flagcxStream_t ownedDefaultStream = NULL;
+  // Borrowed only by the builder; retirement never dereferences these wrappers.
   std::vector<flagcxStream_t> notificationStreams;
   void prepareNotifications() { notificationSealed = false; }
   void sealNotifications() {
@@ -48,6 +48,9 @@ struct flagcxSemaphore {
   }
   virtual void cancelNotifications(flagcxResult_t error = flagcxRemoteError);
   virtual flagcxResult_t drainNotifications();
+  virtual flagcxResult_t captureCancellationCompletion(flagcxStream_t) {
+    return flagcxSuccess;
+  }
   virtual flagcxResult_t release() {
     FLAGCXCHECKSTRICT(drainNotifications());
     return releaseDefaultStream();
@@ -236,6 +239,7 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   std::vector<flagcxEvent_t> events;
 
   bool completionArmed = false, completionDrained = false;
+  bool notificationAttempted = false;
   pthread_mutex_t signalMutex = PTHREAD_MUTEX_INITIALIZER;
   flagcxDeviceSemaphore() {
     slotId = -1;
@@ -258,6 +262,7 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   flagcxResult_t release() override;
   void cancelNotifications(flagcxResult_t error = flagcxRemoteError) override;
   flagcxResult_t drainNotifications() override;
+  flagcxResult_t captureCancellationCompletion(flagcxStream_t stream) override;
   flagcxEvent_t getEvent() override {
     events.push_back(NULL);
     flagcxEvent_t &event = events.back();
@@ -359,11 +364,14 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
   ~flagcxStreamValueSemaphore() override { (void)release(); }
   flagcxResult_t release() override;
   flagcxResult_t drainNotifications() override;
+  void cancelNotifications(flagcxResult_t error = flagcxRemoteError) override;
+  flagcxResult_t captureCancellationCompletion(flagcxStream_t stream) override;
 
   flagcxResult_t enqueueCompletion(flagcxStream_t launchStream);
   void traceCompletion(const char *reason, int remaining, int state,
                        bool queried, flagcxResult_t queryResult);
   void markCompletionDrained() {
+    __atomic_store_n(&completionUnsafe, false, __ATOMIC_RELEASE);
     __atomic_store_n(&completionState, 2, __ATOMIC_RELEASE);
   }
   void markCompletionUnsafe() { completionUnsafe = true; }

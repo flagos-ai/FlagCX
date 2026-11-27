@@ -74,7 +74,7 @@
     "native_probe_in_feature_reference": false,
     "IBRC": {
       "core": {
-        "pass": 297,
+        "pass": 303,
         "skip": 5
       },
       "runner": {
@@ -100,7 +100,7 @@
     },
     "IBUC": {
       "core": {
-        "pass": 297,
+        "pass": 303,
         "skip": 5
       },
       "runner": {
@@ -142,7 +142,7 @@
       "heterogeneous AllGather and Device API IPC/isolation",
       "SDK-specific native Finalize/Destroy behavior and performance/overlap measurements"
     ],
-    "caller_contract": "Caller completes user streams and directly launched kernels before lifecycle calls. Core generic work tracking removed; specific retryable cleanup owners and proxy copy completion events retained. Existing builtin SDK native-close compatibility policy retained. Torch shutdown explicitly drains its communication streams.",
+    "caller_contract": "Caller completes streams/kernels before lifecycle. Actual per-Comm transport retirement precedes registrations/import closure, including cancellation. Notification cleanup uses callback references or owned GPU events and never queries borrowed stream wrappers. No generic API work records or host-callback tracker tail events.",
     "native_review_round1": "20 added core regressions passed in both transport builds. Native kernel-host syntax passed. 77 affected source-warning/platform CI tests passed. See external CR reports for the final independent verdict.",
     "previous_scripts_validation": {
       "discovered": 294,
@@ -184,6 +184,15 @@
       "bootstrap": "4 cases on2/4 ranks per transport passed",
       "scope": "Core/runner, Device API and bootstrap rerun; unchanged RMA/service/adaptor results retained.",
       "reports": "/Users/chenmo/WORKDIR/.cr/reviews/cr-FlagCX-iluvatar-hang-issue-round*.md"
+    },
+    "native_review_round5": {
+      "added_core_regressions": 6,
+      "strengthened_cases": "Accepted copy retirement now frees caller stream wrappers before retry; stream-value cancellation needs its owned event, not streamQuery.",
+      "scope": "All host/mock suites rebuilt for notification layout changes; Device API and bootstrap2/4 ranks pass in both builds.",
+      "full_script_log": "/private/tmp/iluvatar-ipc-validation/cr5-scripts.log",
+      "kernel_syntax_log": "/private/tmp/iluvatar-ipc-validation/cr5-kernel-syntax.log",
+      "reports": "/Users/chenmo/WORKDIR/.cr/reviews/cr-FlagCX-iluvatar-hang-issue-round*.md",
+      "note": "Current full-script and final independent review results are recorded in external reports."
     }
   },
   "historical_pre_repair_validation": {

@@ -214,33 +214,13 @@ void flagcxSemaphore::cancelNotifications(flagcxResult_t error) {
     recordNotificationError(error == flagcxSuccess || error == flagcxInProgress
                                 ? flagcxUnhandledDeviceError
                                 : error);
-    __atomic_store_n(&notificationNeedsDrain, true, __ATOMIC_RELEASE);
     __atomic_store_n(&notificationCancelled, true, __ATOMIC_RELEASE);
   }
   pthread_mutex_unlock(&notificationMutex);
 }
 
 flagcxResult_t flagcxSemaphore::drainNotifications() {
-  if (!isSealed())
-    return flagcxInProgress;
-  flagcxResult_t result = flagcxSuccess;
-  PTHREADCHECKGOTO(pthread_mutex_lock(&notificationMutex), "pthread_mutex_lock",
-                   result, exit);
-  if (__atomic_load_n(&notificationNeedsDrain, __ATOMIC_ACQUIRE)) {
-    for (size_t i = 0; i < notificationStreams.size(); ++i) {
-      // Query is a nonblocking SDK completion proof. No tail event or device
-      // synchronization is introduced; an uncertain owner stays retryable.
-      FLAGCXCHECKGOTO(deviceAdaptor->streamQuery(notificationStreams[i]),
-                      result, unlock);
-      if (result != flagcxSuccess)
-        goto unlock;
-    }
-    __atomic_store_n(&notificationNeedsDrain, false, __ATOMIC_RELEASE);
-  }
-unlock:
-  pthread_mutex_unlock(&notificationMutex);
-exit:
-  return result;
+  return isSealed() ? flagcxSuccess : flagcxInProgress;
 }
 
 void flagcxHostSemaphore::runCallback() {
@@ -259,14 +239,16 @@ void flagcxHostSemaphore::runCallback() {
 
 flagcxResult_t flagcxHostSemaphore::drainNotifications() {
   FLAGCXCHECKSTRICT(flagcxSemaphore::drainNotifications());
-  if (isCancelled()) {
-    for (struct flagcxGroupCallback *context = callbackContexts;
-         context != NULL; context = context->next) {
-      if (__atomic_exchange_n(&context->finished, 1, __ATOMIC_ACQ_REL) == 0)
-        __atomic_fetch_sub(&callbacks, 1, __ATOMIC_RELEASE);
-    }
+  for (struct flagcxGroupCallback *context = callbackContexts; context != NULL;
+       context = context->next) {
+    // A rejected launch accepted no callback. Accepted callbacks alone drop
+    // their own reference at their final access, independently of the stream.
+    if (!context->submitted &&
+        __atomic_exchange_n(&context->finished, 1, __ATOMIC_ACQ_REL) == 0)
+      __atomic_fetch_sub(&callbacks, 1, __ATOMIC_RELEASE);
   }
-  return flagcxSuccess;
+  return __atomic_load_n(&callbacks, __ATOMIC_ACQUIRE) == 0 ? flagcxSuccess
+                                                            : flagcxInProgress;
 }
 
 flagcxResult_t flagcxHostSemaphore::release() {
@@ -297,10 +279,29 @@ void flagcxDeviceSemaphore::cancelNotifications(flagcxResult_t error) {
                      __ATOMIC_RELEASE);
   pthread_mutex_unlock(&signalMutex);
 }
+flagcxResult_t
+flagcxDeviceSemaphore::captureCancellationCompletion(flagcxStream_t stream) {
+  if (!notificationAttempted || completionArmed)
+    return flagcxSuccess;
+  if (headEvent == NULL || stream == NULL)
+    return flagcxInProgress;
+  FLAGCXCHECKSTRICT(deviceAdaptor->eventRecord(headEvent, stream));
+  __atomic_store_n(&completionArmed, true, __ATOMIC_RELEASE);
+  return flagcxSuccess;
+}
 flagcxResult_t flagcxDeviceSemaphore::drainNotifications() {
   FLAGCXCHECKSTRICT(flagcxSemaphore::drainNotifications());
-  if (isCancelled())
-    __atomic_store_n(&completionDrained, true, __ATOMIC_RELEASE);
+  if (!isCancelled() || __atomic_load_n(&completionDrained, __ATOMIC_ACQUIRE))
+    return flagcxSuccess;
+  if (notificationAttempted || completionArmed) {
+    if (!__atomic_load_n(&completionArmed, __ATOMIC_ACQUIRE))
+      return flagcxInProgress;
+    flagcxResult_t result = deviceAdaptor->eventQuery(headEvent);
+    recordNotificationError(result);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  __atomic_store_n(&completionDrained, true, __ATOMIC_RELEASE);
   return flagcxSuccess;
 }
 flagcxResult_t flagcxDeviceSemaphore::release() {
@@ -324,17 +325,43 @@ flagcxResult_t flagcxDeviceSemaphore::release() {
   headEvent = NULL;
   return flagcxSuccess;
 }
+void flagcxStreamValueSemaphore::cancelNotifications(flagcxResult_t error) {
+  flagcxSemaphore::cancelNotifications(error);
+  // Rejected operations cannot decrement their counters. Release an accepted
+  // device wait explicitly, retaining its storage until the event completes.
+  if (signals != NULL)
+    __atomic_store_n(signals + 1, uint64_t(1), __ATOMIC_RELEASE);
+}
+flagcxResult_t flagcxStreamValueSemaphore::captureCancellationCompletion(
+    flagcxStream_t stream) {
+  if (!__atomic_load_n(&completionUnsafe, __ATOMIC_ACQUIRE))
+    return flagcxSuccess;
+  if (completionEvent == NULL || stream == NULL)
+    return flagcxInProgress;
+  FLAGCXCHECKSTRICT(deviceAdaptor->eventRecord(completionEvent, stream));
+  __atomic_store_n(&completionState, 1, __ATOMIC_RELEASE);
+  __atomic_store_n(&completionUnsafe, false, __ATOMIC_RELEASE);
+  return flagcxSuccess;
+}
 flagcxResult_t flagcxStreamValueSemaphore::drainNotifications() {
   FLAGCXCHECKSTRICT(flagcxSemaphore::drainNotifications());
-  if (isCancelled()) {
-    markCompletionDrained();
-    completionUnsafe = false;
+  if (!isCancelled())
+    return flagcxSuccess;
+  if (__atomic_load_n(&completionUnsafe, __ATOMIC_ACQUIRE))
+    return flagcxInProgress;
+  const int state = __atomic_load_n(&completionState, __ATOMIC_ACQUIRE);
+  if (state == 1) {
+    flagcxResult_t result = deviceAdaptor->eventQuery(completionEvent);
+    recordNotificationError(result);
+    if (result != flagcxSuccess)
+      return result;
   }
+  markCompletionDrained();
   return flagcxSuccess;
 }
 flagcxResult_t flagcxStreamValueSemaphore::release() {
   FLAGCXCHECKSTRICT(drainNotifications());
-  if (completionUnsafe)
+  if (__atomic_load_n(&completionUnsafe, __ATOMIC_ACQUIRE))
     return flagcxInProgress;
   if (completionEvent != NULL) {
     if (!pollEnd())
@@ -640,22 +667,24 @@ flagcxStreamValueSemaphore::enqueueCompletion(flagcxStream_t launchStream) {
   flagcxResult_t result =
       deviceAdaptor->eventCreate(&completionEvent, flagcxEventDisableTiming);
   traceCall("event-create-return", result);
-  FLAGCXCHECK(result);
+  FLAGCXCHECKSTRICT(result);
+  __atomic_store_n(&completionUnsafe, true, __ATOMIC_RELEASE);
   traceCall("start-write-enter", -1);
   result = deviceAdaptor->streamWriteValue64(launchStream, dSignals, 1, 0);
   traceCall("start-write-return", result);
-  FLAGCXCHECK(result);
+  FLAGCXCHECKSTRICT(result);
   traceCall("end-wait-enter", -1);
   result = deviceAdaptor->streamWaitValue64(
       launchStream, static_cast<char *>(dSignals) + sizeof(uint64_t), 1, 0);
   traceCall("end-wait-return", result);
-  FLAGCXCHECK(result);
+  FLAGCXCHECKSTRICT(result);
   traceCall("event-record-enter", -1);
   result = deviceAdaptor->eventRecord(completionEvent, launchStream);
   traceCall("event-record-return", result);
-  FLAGCXCHECK(result);
+  FLAGCXCHECKSTRICT(result);
   // Publish the event handle only after it has captured the stream work.
   __atomic_store_n(&completionState, 1, __ATOMIC_RELEASE);
+  __atomic_store_n(&completionUnsafe, false, __ATOMIC_RELEASE);
   traceCall("event-published", flagcxSuccess);
   return flagcxSuccess;
 }

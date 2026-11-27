@@ -93,6 +93,20 @@ static flagcxResult_t asyncProxyOpEnqueue(struct flagcxProxyLocalPeer *peer,
   return flagcxSuccess;
 }
 
+// Counts concrete queued transport owners, including deferred retirement.
+// Stream completion alone cannot retire accepted requests after cancellation.
+flagcxResult_t flagcxProxyTransportReady(struct flagcxHeteroComm *comm) {
+  if (comm == NULL)
+    return flagcxSuccess;
+  if (__atomic_load_n(&comm->rejectedGroupOps, __ATOMIC_ACQUIRE) != NULL)
+    return flagcxInProgress;
+  if (comm->proxyState != NULL &&
+      __atomic_load_n(&comm->proxyState->pendingTransportOps,
+                      __ATOMIC_ACQUIRE) != 0)
+    return flagcxInProgress;
+  return flagcxSuccess;
+}
+
 // Private scratch may outlive a cancelled callback while its accepted copy or
 // network requests are still retiring. This counts only the transport queue.
 flagcxResult_t flagcxProxyScratchReady(struct flagcxHeteroComm *comm) {

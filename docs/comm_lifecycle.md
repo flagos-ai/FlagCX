@@ -48,6 +48,7 @@ cleanup; exported persistent allocations remain owned until Destroy.
 caller completes all user work
     -> Finalize closes submission admission
     -> drain internal producers and pending runner cleanup
+    -> retire this Comm's collective queue, including accepted deferred requests
     -> close local views, Windows and registrations
     -> complete relay release ACKs on all ranks
     -> stop/join proxy services and close their imports
@@ -160,9 +161,18 @@ A partial notification failure cancels the posted prefix, retains rejected
 proxy owners and discards unsubmitted tasks. Cancellation can release a callback
 before accepted copy/network requests finish: existing transport retirement
 keeps those owners, and a transport-queue count prevents failed runner cleanup
-from freeing their private scratch early. Notification streams are queried on
-failed retirement; an SDK error or InProgress retains the owner for retry.
-This count does not collect public API work or record stream-tail events.
+from freeing their private scratch early. Cancelled callbacks retain their own
+references until their final access;
+proxy retirement does not query borrowed stream wrappers. Device-kernel and
+stream-value notifications use their existing owned completion events. If a GPU
+notification fails before that event is recorded, the builder tries to record
+that same event while the launch stream is still valid. This failure-only proof
+is never appended to a host callback. Missing or failed proof retains the owner.
+Stream-value cancellation releases its device wait without relying on counters
+for unpublished operations.
+This count does not collect public API work or record generic stream-tail events.
+Finalize and public deregistration wait for concrete transport owners before
+closing registrations or mappings, even after user streams finish.
 Fused preparation failures retain their specific stream and drain progress with
 invocation buffers. The caller keeps this borrowed stream alive until cleanup
 succeeds. Cleanup retries that stream before releasing the buffers;

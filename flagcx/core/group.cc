@@ -686,6 +686,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
         if (ret != flagcxSuccess)
           goto fail;
       } else if (deviceAsyncKernel) {
+        ((flagcxDeviceSemaphore *)semaphore.get())->notificationAttempted =
+            true;
         FLAGCXCHECKGOTO(
             deviceAdaptor->launchDeviceFunc(launchStream, deviceAsyncKernel,
                                             semaphore->getSignals()),
@@ -711,11 +713,10 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
             ((flagcxHostSemaphore *)semaphore.get())->callbackContexts;
         for (size_t i = 0; i < semaphore->notificationStreams.size();
              ++i, context = context->next) {
-          context->submitted = 1;
-          FLAGCXCHECKGOTO(
-              deviceAdaptor->launchHostFunc(semaphore->notificationStreams[i],
-                                            cpuAsyncKernel, context),
-              ret, fail);
+          ret = deviceAdaptor->launchHostFunc(semaphore->notificationStreams[i],
+                                              cpuAsyncKernel, context);
+          context->submitted = ret == flagcxSuccess || ret == flagcxInProgress;
+          FLAGCXCHECKGOTO(ret, ret, fail);
           if (ret != flagcxSuccess)
             goto fail;
         }
@@ -757,6 +758,10 @@ exit:
   return ret;
 fail:
   semaphore->cancelNotifications(ret);
+  // Capture any accepted GPU prefix while the borrowed launch wrapper is still
+  // valid. Host callbacks use their references and never append a tail event.
+  semaphore->recordNotificationError(
+      semaphore->captureCancellationCompletion(launchStream));
   if (published) {
     for (struct flagcxHeteroComm *comm = groupCommHeadMain; comm != NULL;
          comm = comm->groupNext)

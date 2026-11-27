@@ -543,13 +543,22 @@ TEST_F(GroupNotification, StepProgressIsScopedToEachComm) {
 
 TEST_F(GroupNotification,
        AcceptedCopyEventPinsTransportOwnerAfterCallbackCancellation) {
-  pair(0, (flagcxStream_t)&streamTokens[0], (flagcxStream_t)&streamTokens[1]);
+  auto firstStream = (flagcxStream_t)calloc(1, 8);
+  auto secondStream = (flagcxStream_t)calloc(1, 8);
+  pair(0, firstStream, secondStream);
   flagcxGroupCommHead = &comms[0];
   failLaunch = 2;
   ASSERT_EQ(flagcxGroupEndInternal(), flagcxRemoteError);
   auto *op = flagcxIntruQueueHead(&queue(0));
   ASSERT_NE(op, nullptr);
   ASSERT_EQ(states[0].pendingTransportOps, 1u);
+  runCallback(0); // Caller stream synchronization completed the callback.
+  free(firstStream);
+  free(secondStream); // Caller may now destroy both stream wrappers.
+  fake.streamQuery = [](flagcxStream_t) {
+    ADD_FAILURE() << "borrowed stream wrapper has already been destroyed";
+    return flagcxRemoteError;
+  };
   auto copyEvent = (flagcxEvent_t)calloc(1, 8);
   op->args.pendingCopyEvents[0] = copyEvent;
   fake.eventQuery = [](flagcxEvent_t) { return flagcxInProgress; };
@@ -679,5 +688,87 @@ TEST_F(GroupNotification, StreamValueCompletionProofSurvivesPartialCleanup) {
   EXPECT_EQ(owner, nullptr);
   EXPECT_EQ(eventFrees, 2);
   EXPECT_EQ(streamValueBufferPool.clear(), flagcxSuccess);
+}
+TEST_F(GroupNotification, CancelledDeviceProofOutlivesBorrowedStreamWrapper) {
+  ASSERT_EQ(deviceSemaphoreBufferPool.clear(), flagcxSuccess);
+  flagcxDeviceSemaphore semaphore;
+  ASSERT_EQ(semaphore.initResult, flagcxSuccess);
+  ASSERT_NE(semaphore.getEvent(), nullptr);
+  auto stream = (flagcxStream_t)calloc(1, 8);
+  semaphore.notificationStreams.push_back(stream);
+  semaphore.notificationAttempted = semaphore.completionArmed = true;
+  semaphore.cancelNotifications();
+  free(stream);
+  fake.streamQuery = [](flagcxStream_t) {
+    ADD_FAILURE() << "cancel cleanup must use the owned event";
+    return flagcxRemoteError;
+  };
+  queryResult = flagcxInProgress;
+  EXPECT_EQ(semaphore.drainNotifications(), flagcxInProgress);
+  EXPECT_EQ(deviceSemaphoreBufferPool.clear(), flagcxInProgress);
+  queryResult = flagcxSuccess;
+  EXPECT_EQ(semaphore.drainNotifications(), flagcxSuccess);
+  EXPECT_TRUE(semaphore.pollEnd());
+  EXPECT_EQ(semaphore.release(), flagcxSuccess);
+  EXPECT_EQ(deviceSemaphoreBufferPool.clear(), flagcxSuccess);
+}
+
+TEST_F(GroupNotification, CancelledValueWaitUsesOwnedEventAfterStreamDestroy) {
+  ASSERT_EQ(streamValueBufferPool.clear(), flagcxSuccess);
+  fake.streamWriteValue64 = fake.streamWaitValue64 =
+      [](flagcxStream_t, void *, uint64_t, int) { return flagcxSuccess; };
+  flagcxStreamValueSemaphore semaphore;
+  ASSERT_EQ(semaphore.initResult, flagcxSuccess);
+  semaphore.addCounter(0);
+  auto stream = (flagcxStream_t)calloc(1, 8);
+  semaphore.notificationStreams.push_back(stream);
+  ASSERT_EQ(semaphore.enqueueCompletion(stream), flagcxSuccess);
+  semaphore.cancelNotifications();
+  EXPECT_EQ(semaphore.signals[1], 1u);
+  free(stream);
+  fake.streamQuery = [](flagcxStream_t) {
+    ADD_FAILURE() << "cancel cleanup must use the owned event";
+    return flagcxRemoteError;
+  };
+  queryResult = flagcxInProgress;
+  EXPECT_EQ(semaphore.drainNotifications(), flagcxInProgress);
+  queryResult = flagcxSuccess;
+  EXPECT_EQ(semaphore.drainNotifications(), flagcxSuccess);
+  EXPECT_EQ(semaphore.getCounter(), 1);
+  EXPECT_TRUE(semaphore.pollEnd());
+  EXPECT_EQ(semaphore.release(), flagcxSuccess);
+  EXPECT_EQ(streamValueBufferPool.clear(), flagcxSuccess);
+}
+
+TEST_F(GroupNotification,
+       FailedDeviceLaunchCapturesOwnedCompletionBeforeReturn) {
+  ASSERT_EQ(deviceSemaphoreBufferPool.clear(), flagcxSuccess);
+  deviceAsyncKernel = (flagcxLaunchFunc_t)0x1000;
+  fake.launchDeviceFunc = [](flagcxStream_t, flagcxLaunchFunc_t, void *) {
+    return flagcxRemoteError;
+  };
+  pair(0, (flagcxStream_t)&streamTokens[0], (flagcxStream_t)&streamTokens[0]);
+  flagcxGroupCommHead = &comms[0];
+  ASSERT_EQ(flagcxGroupEndInternal(), flagcxRemoteError);
+  auto *op = flagcxIntruQueueHead(&queue(0));
+  ASSERT_NE(op, nullptr);
+  auto *semaphore = (flagcxDeviceSemaphore *)op->args.semaphore.get();
+  EXPECT_TRUE(semaphore->completionArmed);
+  fake.streamQuery = [](flagcxStream_t) {
+    ADD_FAILURE()
+        << "failed launch must retain an independent completion owner";
+    return flagcxRemoteError;
+  };
+  queryResult = flagcxInProgress;
+  flagcxProxyFailProgressQueue(&states[0], &queue(0), flagcxRemoteError);
+  EXPECT_EQ(states[0].deferredRelayOps, op);
+  EXPECT_EQ(states[0].pendingTransportOps, 1u);
+  queryResult = flagcxSuccess;
+  states[0].deferredRelayOps = nullptr;
+  flagcxIntruQueueEnqueue(&queue(0), op);
+  flagcxProxyFailProgressQueue(&states[0], &queue(0), flagcxRemoteError);
+  EXPECT_EQ(states[0].deferredRelayOps, nullptr);
+  EXPECT_EQ(states[0].pendingTransportOps, 0u);
+  EXPECT_EQ(deviceSemaphoreBufferPool.clear(), flagcxSuccess);
 }
 } // namespace

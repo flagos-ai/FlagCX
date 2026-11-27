@@ -2595,6 +2595,8 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle,
     return globalRegPool.deregisterBuffer(NULL, handle);
   }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  FLAGCXCHECKSTRICT(flagcxGroupDrainRejected(comm->heteroComm));
+  FLAGCXCHECKSTRICT(flagcxProxyTransportReady(comm->heteroComm));
   void *key = comm->heteroComm != NULL ? (void *)comm->heteroComm
                                        : (void *)comm->homoComm;
   return globalRegPool.deregisterBuffer(key, handle, (void *)comm->homoComm);
@@ -3086,6 +3088,11 @@ flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm, flagcxWindow_t win,
     return flagcxInvalidArgument;
   if (win->vendorBase == nullptr && win->defaultBase == nullptr)
     return flagcxInvalidUsage;
+  if (win->devMemRefs != 0)
+    return flagcxInvalidUsage;
+  win->cleanupStarted = true;
+  FLAGCXCHECKSTRICT(flagcxGroupDrainRejected(comm->heteroComm));
+  FLAGCXCHECKSTRICT(flagcxProxyTransportReady(comm->heteroComm));
   return flagcxCommWindowDeregisterInternal(comm, win, allocator,
                                             flagcxSymCleanupLocal);
 }
@@ -4252,6 +4259,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
 }
 
 static flagcxResult_t flagcxCommCloseLocalOwners(flagcxComm_t comm) {
+  FLAGCXCHECKSTRICT(flagcxProxyTransportReady(comm->heteroComm));
 
   FLAGCXCHECKSTRICT(flagcxCommCloseRetiredDevComms(comm));
   if (comm->heteroComm != NULL)
@@ -4505,6 +4513,7 @@ static flagcxResult_t flagcxCommFinalizePhase(flagcxComm_t comm, int phase) {
       }
       if (comm->heteroComm)
         FLAGCXCHECKSTRICT(flagcxCommQuiesce(comm));
+      FLAGCXCHECKSTRICT(flagcxProxyTransportReady(comm->heteroComm));
       return flagcxFusedDrainPendingBuffers(comm);
     case 1:
       return comm->heteroComm ? flagcxCommCleanup(comm) : flagcxSuccess;

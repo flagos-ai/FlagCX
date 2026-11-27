@@ -167,9 +167,15 @@ TEST_F(StreamValueCompletionTest,
   ASSERT_EQ(semaphore.getCounter(), 1);
   semaphore.prepareNotifications();
   semaphore.notificationStreams.push_back((flagcxStream_t)0x1000);
+  recordingSemaphore = &semaphore;
+  ASSERT_EQ(semaphore.enqueueCompletion((flagcxStream_t)0x1000), flagcxSuccess);
   semaphore.sealNotifications();
   semaphore.cancelNotifications();
-  fakeAdaptor.streamQuery = [](flagcxStream_t) { return eventQueryResult; };
+  EXPECT_EQ(semaphore.signals[1], 1u);
+  fakeAdaptor.streamQuery = [](flagcxStream_t) {
+    ADD_FAILURE() << "retirement must not query borrowed stream wrappers";
+    return flagcxRemoteError;
+  };
   eventQueryResult = flagcxInProgress;
   EXPECT_EQ(semaphore.drainNotifications(), flagcxInProgress);
   EXPECT_EQ(semaphore.pollEnd(), 0);
@@ -180,7 +186,7 @@ TEST_F(StreamValueCompletionTest,
   EXPECT_EQ(semaphore.drainNotifications(), flagcxSuccess);
   EXPECT_EQ(semaphore.getCounter(), 1);
   EXPECT_EQ(semaphore.pollEnd(), 1);
-  EXPECT_EQ(eventQueries, 0);
+  EXPECT_EQ(eventQueries, 3);
 }
 
 TEST_F(StreamValueCompletionTest,

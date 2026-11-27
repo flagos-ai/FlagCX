@@ -553,6 +553,7 @@ flagcxResult_t flagcxHeteroCommCloseRegistrations(flagcxHeteroComm_t comm) {
     return flagcxInvalidArgument;
   if (comm->registrationsClosed)
     return flagcxSuccess;
+  FLAGCXCHECKSTRICT(flagcxProxyTransportReady(comm));
   FLAGCXCHECKSTRICT(flagcxSymRetryPendingCleanup(comm, flagcxSymCleanupLocal));
   while (comm->symWindows != NULL) {
     if (comm->symWindows->owner == NULL)
@@ -616,9 +617,11 @@ flagcxHeteroCommFinalizeInternal(flagcxHeteroComm_t comm) {
     flagcxResult_t local = deviceAdaptor->setDevice(comm->cudaDev);
     FLAGCXCHECKSTRICT(flagcxHeteroCommAgreeIpcClose(comm, local));
     if (!comm->closeLocalDone) {
-      if (comm->closePhase == 0)
+      if (comm->closePhase == 0) {
         local = flagcxHeteroRmaProxyQuiesce(comm);
-      else if (comm->closePhase == 1)
+        if (local == flagcxSuccess)
+          local = flagcxProxyTransportReady(comm);
+      } else if (comm->closePhase == 1)
         local = flagcxHeteroCommCloseRegistrations(comm);
       else if (comm->closePhase == 2)
         local = flagcxHeteroCommPrepareDestroy(comm);

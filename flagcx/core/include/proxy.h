@@ -507,6 +507,7 @@ flagcxResult_t flagcxProxySaveOp(struct flagcxHeteroComm *comm,
                                  struct flagcxProxyOp *proxyOp,
                                  bool *justInquire = NULL);
 flagcxResult_t flagcxProxyScratchReady(struct flagcxHeteroComm *comm);
+flagcxResult_t flagcxProxyTransportReady(struct flagcxHeteroComm *comm);
 
 flagcxResult_t flagcxProxyRecordCopy(struct flagcxProxyArgs *args,
                                      flagcxEvent_t event,
