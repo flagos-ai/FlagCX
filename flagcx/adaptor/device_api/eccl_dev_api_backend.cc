@@ -286,6 +286,7 @@ static struct flagcxDevApiBackend ecclBackend = {
     .devMemGetDevicePtr = ecclDevApiMemGetDevicePtr,
     .devMemFreeDevicePtr = ecclDevApiMemFreeDevicePtr,
     .commCleanup = ecclCommCleanup,
+    .kind = flagcxDevApiVendor,
 };
 
 struct flagcxDevApiBackend *devApiBackend = &ecclBackend;

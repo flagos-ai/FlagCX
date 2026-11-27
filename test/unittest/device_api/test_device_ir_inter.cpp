@@ -478,8 +478,12 @@ int main(int argc, char *argv[]) {
       int hostRes[1] = {0};
       FLAGCXCHECK(devHandle->deviceMemcpy(hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
+      bool s12Ok = (hostRes[0] == 1);
       printf("[rank %d] S12 InterBarrier: %s\n", proc,
              hostRes[0] == 1 ? "PASS" : (hostRes[0] == -1 ? "SKIP" : "FAIL"));
+      if (hostRes[0] != -1) {  // SKIP does not affect verdict
+        allInterPass &= s12Ok;
+      }
       fflush(stdout);
       MPI_Barrier(MPI_COMM_WORLD);
     }
