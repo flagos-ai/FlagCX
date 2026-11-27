@@ -264,6 +264,5 @@ removing work events alone is not evidence of their measured completion.
 
 The standalone native callback/copy probe was on origin/fix-ci-issues, not in
 the original 34a81ae3 main snapshot; this change did not remove it from main.
-The separate ipc_vmm_repro diagnostic remains. Full path/hunk decisions and
-preservation hashes are recorded in ipc_preservation_audit.json. Hardware
-acceptance is separate from the host/mock review verdict.
+The separate ipc_vmm_repro diagnostic remains. Hardware acceptance is separate
+from the host/mock review verdict.
