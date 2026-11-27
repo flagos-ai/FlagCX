@@ -48,8 +48,11 @@ are saved and new views of that handle are rejected.
 Exported internal allocations have an explicit Comm or transport owner.
 Destroying a Default Device API view can retire its IPC generation to the Comm
 without closing imports or freeing backing. A subsequent generation gets its
-own resources. Ordinary per-call private scratch keeps its existing execution
-cleanup; exported persistent allocations remain owned until Destroy.
+own resources. C2C waits for the user and private streams before releasing
+per-call scratch, including after successful native submission, because some
+backends free memory without stream ordering. Failed drains retain the owner and
+completed steps for retry. Calls without scratch keep their existing successful
+submission behavior; exported persistent allocations remain owned until Destroy.
 Releasing a buffer already recorded by the Comm retains that allocation even
 before Finalize starts. Only Destroy releases its backing after import closure.
 

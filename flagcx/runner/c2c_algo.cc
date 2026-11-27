@@ -8,8 +8,9 @@
 #include <cstdlib>
 #include <stdlib.h>
 
-// Only failed invocation cleanup is retained here. No completion events or
-// per-operation tracker records are created for ordinary C2C submissions.
+// Private scratch must outlive its users even when native submission succeeds:
+// deviceFree is not stream ordered on every backend. Failed cleanup retains
+// this concrete owner without completion events or work tracker records.
 static flagcxResult_t releaseC2cResources(struct flagcxC2cResources *owner,
                                           flagcxComm_t comm) {
   if (owner->needDrain && !owner->userDrained) {
@@ -2715,7 +2716,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
 
   owner->scratch = scratchBuffer_;
   owner->privateStream = hetStream;
-  owner->needDrain = result != flagcxSuccess;
+  owner->needDrain = result != flagcxSuccess || owner->scratch != NULL;
   flagcxResult_t cleanup = releaseC2cResources(owner, comm_);
   scratchBuffer_ = NULL;
   if (cleanup != flagcxSuccess) {
