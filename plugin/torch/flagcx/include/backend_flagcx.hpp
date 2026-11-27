@@ -163,6 +163,8 @@ public:
   ~flagcxBackend() override;
   void shutdown();
 
+  std::optional<std::string> getHcclCommName(int device);
+
   void startCoalescing() override;
 
   c10::intrusive_ptr<Work> endCoalescing() override;

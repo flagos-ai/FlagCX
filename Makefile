@@ -302,6 +302,7 @@ JSON_INCLUDE_DIR ?= $(abspath third-party/json/single_include)
 # Public headers exported alongside libflagcx.so
 PUBLIC_HEADERS := \
 	flagcx/include/flagcx.h \
+	flagcx/include/flagcx_ascend.h \
 	flagcx/include/flagcx_device_api.h \
 	flagcx/include/flagcx_kernel.h \
 	flagcx/include/flagcx_kernel_core.h \

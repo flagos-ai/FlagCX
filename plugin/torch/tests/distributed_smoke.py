@@ -48,6 +48,11 @@ def parse_args():
         action="store_true",
         help="keep a backend reference alive through interpreter shutdown",
     )
+    parser.add_argument(
+        "--hccl-comm-name",
+        action="store_true",
+        help="check HCCL communicator-name interoperation on Ascend vendor",
+    )
     return parser.parse_args()
 
 
@@ -181,6 +186,76 @@ def check_work_completion(rank, device):
         dist.destroy_process_group(control)
 
 
+def check_hccl_comm_name(device, device_module):
+    import flagcx
+    from torch_npu import npu_all_gather_base_mm
+
+    def check_group(group):
+        backend = group._get_backend(device)
+        name = flagcx.get_hccl_comm_name(backend, device.index)
+        assert name and len(name.encode()) < 128
+        assert name == flagcx.get_hccl_comm_name(backend, device.index)
+        stream = device_module.Stream()
+        stream.wait_stream(device_module.current_stream())
+        with device_module.stream(stream):
+            size, rank = dist.get_world_size(group), dist.get_rank(group)
+            weight = torch.eye(256, device=device, dtype=torch.bfloat16)
+            # Encode unique group ranks using only BF16-exact values 1 and 2.
+            rank_bits = torch.arange(32)
+            for _ in range(3):
+                x = torch.full(
+                    (256, 256), int(rank == 0), device=device, dtype=weight.dtype
+                )
+                dist.all_reduce(x, group=group)
+                x.add_(((rank >> rank_bits) & 1).repeat(8).to(device))
+                output, _ = npu_all_gather_base_mm(x, weight, name, size)
+                output = output.float()
+                values = (
+                    (torch.arange(size)[:, None] >> rank_bits) & 1
+                ) + 1
+                expected = (
+                    values.float().to(device).repeat(1, 8).repeat_interleave(256, dim=0)
+                )
+                dist.all_reduce(output, group=group)
+                assert_tensor_equal(output, expected * size)
+        device_module.current_stream().wait_stream(stream)
+        device_module.synchronize()
+
+    backend = dist.group.WORLD._get_backend(device)
+    size = dist.get_world_size()
+    cluster_splits = os.environ.get("FLAGCX_CLUSTER_SPLIT_LIST", "")
+    if any(
+        int(os.environ.get(setting, "0")) == 1
+        for setting in ("FLAGCX_USE_HETERO_COMM", "FLAGCX_USE_TUNER")
+    ) or (cluster_splits and sum(map(int, cluster_splits.split(","))) > 1):
+        value = torch.tensor([dist.get_rank() + 1], device=device)
+        dist.all_reduce(value)
+        assert_tensor_equal(value, torch.tensor([size * (size + 1) // 2]))
+        assert flagcx.get_hccl_comm_name(backend, device.index) is None
+        if dist.get_rank() == 0:
+            print(f"PASS: initialized unsupported HCCL-name route; ranks={size}")
+        return
+    # Query before the first collective to exercise lazy initialization.
+    check_group(dist.group.WORLD)
+    ranks = (
+        [list(range(size))]
+        if size < 4
+        else [list(range(parity, size, 2)) for parity in (0, 1)]
+    )
+    groups = [dist.new_group(members, backend="flagcx") for members in ranks]
+    group = groups[dist.get_rank() % len(groups)]
+    try:
+        check_group(group)
+    finally:
+        dist.destroy_process_group(group)
+
+    if dist.get_rank() == 0:
+        print(
+            f"PASS: HCCL communicator name, world/subgroups, stream interop, "
+            f"ranks={size}"
+        )
+
+
 def main():
     args = parse_args()
     device_type = resolve_device_type(args.adaptor)
@@ -190,8 +265,15 @@ def main():
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
     local_rank = int(os.environ["LOCAL_RANK"])
-    if world_size != 2:
+    if world_size != 2 and not args.hccl_comm_name:
         raise RuntimeError("This smoke test requires exactly two ranks")
+    if args.hccl_comm_name and (
+        args.adaptor != "ascend"
+        or os.environ.get("FLAGCX_TORCH_BACKEND", "vendor").strip().lower() != "vendor"
+    ):
+        raise ValueError("--hccl-comm-name requires the Ascend vendor backend")
+    if args.hccl_comm_name and world_size < 2:
+        raise ValueError("--hccl-comm-name requires at least two ranks")
 
     device_module = getattr(torch, device_type)
     device_module.set_device(local_rank)
@@ -206,6 +288,9 @@ def main():
         _retained_groups.append(dist.distributed_c10d._get_default_group())
 
     try:
+        if args.hccl_comm_name:
+            check_hccl_comm_name(device, device_module)
+            return
         value = torch.tensor([rank + 1], dtype=torch.float32, device=device)
         work = dist.all_reduce(value, async_op=True)
         work.wait()
