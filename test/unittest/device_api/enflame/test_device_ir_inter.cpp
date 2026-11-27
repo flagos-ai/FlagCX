@@ -23,28 +23,17 @@
  * Requirements:
  *   - Multi-node, OR single-node with FLAGCX_P2P_DISABLE=1
  *   - FLAGCX_USE_HETERO_COMM=1 (for DevComm with inter context)
+ *   - -R 2 (Window registration prepares IPC or symmetric mappings)
  *
  * Usage: mpirun -np N ./test_device_ir_inter [options]
  *   -b <minbytes>  -e <maxbytes>  -f <stepfactor>
- *
- * TEMPORARY bring-up aid: the FLAGCX_TEST_MAX_S environment variable limits how
- * many of the S tests are executed (0 = initialization only, 1 = S1,
- * 2 = S1..S2, ... 15 = all). See readMaxS() below. It exists to bisect a
- * bring-up failure without recompiling, and should be removed once the Enflame
- * kernels are implemented.
- *
- * The DEFAULT IS 0, so an unset variable runs no test at all: the process only
- * initializes and tears down, then reports success. That makes a bare run safe
- * while the kernels are still stubs, but it also means a run that never sets
- * the variable cannot fail on a kernel bug. Pass it to every rank explicitly:
- *   mpirun -x FLAGCX_TEST_MAX_S=3 ...
  ************************************************************************/
 
 #include "check.h"
+#include "device_api_window.h"
 #include "device_ir.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
-#include "tools.h"
 
 #include <cassert>
 #include <cmath>
@@ -52,63 +41,15 @@
 #include <iostream>
 #include <vector>
 
-// ---------------------------------------------------------------------------
-// Temporary test stagger control
-// ---------------------------------------------------------------------------
-// FLAGCX_TEST_MAX_S selects how many of the S tests run, so a bring-up
-// failure can be bisected without recompiling:
-//
-//   0   initialization (and teardown) only -- no kernel is launched
-//   1   S1
-//   2   S1..S2
-//   ...
-//   15  S1..S15
-//
-// 0 is the DEFAULT: an unset, empty, or unparsable variable selects no test.
-// A bare run therefore passes without exercising anything, which keeps it safe
-// while the kernels are still stubs -- but it also cannot fail on a kernel bug,
-// so the variable has to be passed explicitly to test anything.
-//
-// S8 is skipped (get unsupported), S10/S15 are commented out, so values
-// that span them select the same set as the next active test.
-// Values above 15 are clamped.
-//
-// The tests are selected with a jump rather than a wrapper -- see the guard
-// comment on the test loop below. Because that jump leaves the size loop, any
-// value below 15 runs the selected tests once, at the first size only.
-//
-// Every rank must use the same value: a rank that stops earlier skips barriers
-// the others still execute, so a mismatch would hang rather than fail.
-static int readMaxS() {
-  const char *env = getenv("FLAGCX_TEST_MAX_S");
-  if (env == nullptr) {
-    printf("[info] FLAGCX_TEST_MAX_S is not set; running initialization "
-           "only (0)\n");
-    return 0;
-  }
-  if (env[0] == '\0')
-    return 0;
-
-  char *end = nullptr;
-  long v = strtol(env, &end, 10);
-  if (end == env || *end != '\0') {
-    printf("[warn] FLAGCX_TEST_MAX_S='%s' is not an integer; running "
-           "initialization only (0)\n",
-           env);
-    return 0;
-  }
-  if (v < 0)
-    v = 0;
-  if (v > 15)
-    v = 15;
-  return (int)v;
-}
-
 // ===========================================================================
 // Main test driver
 // ===========================================================================
 
 int main(int argc, char *argv[]) {
+  parser args(argc, argv);
+  int winFlags;
+  if (!deviceApiWindowMode(args, &winFlags))
+    return 1;
   flagcxDeviceHandle_t devHandle;
   FLAGCXCHECK(flagcxDeviceHandleInit(&devHandle));
   flagcxComm_t comm;
@@ -122,11 +63,9 @@ int main(int argc, char *argv[]) {
   initMpiEnv(argc, argv, worldRank, worldSize, proc, totalProcs, color,
              splitComm, splitMask);
 
-  parser args(argc, argv);
   size_t minBytes = args.getMinBytes();
   size_t maxBytes = args.getMaxBytes();
   int stepFactor = args.getStepFactor();
-  const int maxS = readMaxS();
 
   if (stepFactor <= 1) {
     if (proc == 0)
@@ -181,14 +120,12 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxMemAlloc(&sendBuff, sendBufSize, memAllocator));
   FLAGCXCHECK(flagcxMemAlloc(&recvBuff, bufSize, memAllocator));
 
-  // Register symmetric windows
+  // Window registration prepares the selected IPC or symmetric mappings.
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
   FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, sendBufSize, &sendWin,
-                                       FLAGCX_WIN_COLL_SYMMETRIC,
-                                       memAllocator));
+                                       winFlags, memAllocator));
   FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, bufSize, &recvWin,
-                                       FLAGCX_WIN_COLL_SYMMETRIC,
-                                       memAllocator));
+                                       winFlags, memAllocator));
 
   // Create DevMem handles
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
@@ -211,64 +148,15 @@ int main(int argc, char *argv[]) {
   // Host scratch
   float *hostBuf = new float[maxBytes / sizeof(float)];
 
-  // Declare all variables before any goto to avoid crossing initializations
-  int hostS1[4] = {0};
-  bool s1Pass = true; // default true: no-test-run = not-fail
-  bool s1Skip = false;
-  int intraSize = totalProcs;
-  int intraBase = proc - (proc % intraSize);
-  int hostS2[4] = {0};
-  bool s2Pass = true; // default true: no-test-run = not-fail
-  bool s2Skip = false;
-  bool allInterPass = true;
-
-  // Helper lambda: init sendBuff with alltoall pattern
-  auto initSend = [&](size_t countPerPeer) {
-    for (int r = 0; r < totalProcs; r++)
-      for (size_t i = 0; i < countPerPeer; i++)
-        hostBuf[(size_t)r * countPerPeer + i] =
-            (float)(proc * 1000 + r * 100 + (int)i);
-    devHandle->deviceMemcpy(sendBuff, hostBuf,
-                            (size_t)totalProcs * countPerPeer * sizeof(float),
-                            flagcxMemcpyHostToDevice, stream);
-    devHandle->streamSynchronize(stream);
-  };
-
-  // Helper lambda: verify alltoall pattern in recvBuff (inter peers only)
-  auto verifyAlltoAll = [&](size_t countPerPeer) -> bool {
-    devHandle->deviceMemcpy(hostBuf, recvBuff,
-                            (size_t)totalProcs * countPerPeer * sizeof(float),
-                            flagcxMemcpyDeviceToHost, stream);
-    for (int src = 0; src < totalProcs; src++) {
-      if (src >= intraBase && src < intraBase + intraSize)
-        continue;
-      for (size_t i = 0; i < countPerPeer; i++) {
-        float expected = (float)(src * 1000 + proc * 100 + (int)i);
-        if (hostBuf[(size_t)src * countPerPeer + i] != expected)
-          return false;
-      }
-    }
-    return true;
-  };
-
   if (proc == 0) {
     printf("=== Device IR Inter-Node Transport Tests ===\n");
-    printf("Ranks: %d\n", totalProcs);
-    printf("FLAGCX_TEST_MAX_S: %d%s\n", maxS,
-           maxS == 0 ? " (initialization only)" : "");
-    printf("S1=DevNetGetFromComm  S2=Reset  S3=PutSigInc  S4=PutSigAdd\n");
-    printf("S5=CounterPipeline  S6=FlushDecouple  S7=PutValue  S8=Get\n");
-    printf("S9=Signal  S10=Shadow(commented)  S11=WaitSignal+Flush\n");
-    printf("S12=InterBarrier  S13=WorldBarrier  S14=OneSidedAlltoAll\n");
-    printf("S15=TwoSidedAlltoAll(commented)\n\n");
+    printf("Ranks: %d\n\n", totalProcs);
+    FLAGCXCHECK(deviceApiReportWindowMode(comm, winFlags));
   }
 
   // =========================================================================
   // S1: DevNetGetFromComm (NetGetFromCommS) — run once before loop
   // =========================================================================
-  if (maxS < 1)
-    goto testSummary;
-
   MPI_Barrier(MPI_COMM_WORLD);
   FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, 4 * sizeof(int),
                                       flagcxMemDevice, stream));
@@ -276,21 +164,19 @@ int main(int argc, char *argv[]) {
   launchKernelNetGetFromCommS(devCommPtr, devResults, stream);
   FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
+  int hostS1[4] = {0};
   FLAGCXCHECK(devHandle->deviceMemcpy(hostS1, devResults, 4 * sizeof(int),
                                       flagcxMemcpyDeviceToHost, stream));
 
-  s1Pass = (hostS1[0] == 1);
-  s1Skip = (hostS1[0] == 0);
-  intraSize = hostS1[1] > 0 ? hostS1[1] : totalProcs;
-  intraBase = proc - (proc % intraSize);
+  bool s1Pass = (hostS1[0] == 1);
+  bool s1Skip = (hostS1[0] == 0);
+  int intraSize = hostS1[1] > 0 ? hostS1[1] : totalProcs;
+  int intraBase = proc - (proc % intraSize);
   printf("[rank %d] S1  DevNetGetFromCommS: %s (intraSize=%d)\n", proc,
          s1Skip ? "SKIP (no transport contexts)" : (s1Pass ? "PASS" : "FAIL"),
          intraSize);
   if (s1Skip)
     s1Pass = true;
-
-  if (maxS < 2)
-    goto testSummary;
 
   // =========================================================================
   // S2: Reset — run once before loop
@@ -301,19 +187,17 @@ int main(int argc, char *argv[]) {
   launchKernelNetResetS(devCommPtr, devResults, stream);
   FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
+  int hostS2[4] = {0};
   FLAGCXCHECK(devHandle->deviceMemcpy(hostS2, devResults, 4 * sizeof(int),
                                       flagcxMemcpyDeviceToHost, stream));
 
-  s2Pass = (hostS2[0] == 1) && (hostS2[1] == 1) && (hostS2[2] == 1);
-  s2Skip = (hostS2[0] == 0) && (hostS2[1] == 0) && (hostS2[2] == 0);
+  bool s2Pass = (hostS2[0] == 1) && (hostS2[1] == 1) && (hostS2[2] == 1);
+  bool s2Skip = (hostS2[0] == 0) && (hostS2[1] == 0) && (hostS2[2] == 0);
   printf("[rank %d] S2  ResetS: %s\n", proc,
          s2Skip ? "SKIP (no transport contexts)" : (s2Pass ? "PASS" : "FAIL"));
   if (s2Skip)
     s2Pass = true;
   MPI_Barrier(MPI_COMM_WORLD);
-
-  if (maxS < 3)
-    goto testSummary;
 
 #ifdef USE_NVIDIA_ADAPTOR
   // =========================================================================
@@ -374,9 +258,39 @@ int main(int argc, char *argv[]) {
   // =========================================================================
   // Main test loop: S3–S14
   // =========================================================================
+  bool allInterPass = true;
 #ifdef USE_NVIDIA_ADAPTOR
   allInterPass &= s3bPass;
 #endif
+
+  // Helper lambda: init sendBuff with alltoall pattern
+  auto initSend = [&](size_t countPerPeer) {
+    for (int r = 0; r < totalProcs; r++)
+      for (size_t i = 0; i < countPerPeer; i++)
+        hostBuf[(size_t)r * countPerPeer + i] =
+            (float)(proc * 1000 + r * 100 + (int)i);
+    devHandle->deviceMemcpy(sendBuff, hostBuf,
+                            (size_t)totalProcs * countPerPeer * sizeof(float),
+                            flagcxMemcpyHostToDevice, stream);
+    devHandle->streamSynchronize(stream);
+  };
+
+  // Helper lambda: verify alltoall pattern in recvBuff (inter peers only)
+  auto verifyAlltoAll = [&](size_t countPerPeer) -> bool {
+    devHandle->deviceMemcpy(hostBuf, recvBuff,
+                            (size_t)totalProcs * countPerPeer * sizeof(float),
+                            flagcxMemcpyDeviceToHost, stream);
+    for (int src = 0; src < totalProcs; src++) {
+      if (src >= intraBase && src < intraBase + intraSize)
+        continue;
+      for (size_t i = 0; i < countPerPeer; i++) {
+        float expected = (float)(src * 1000 + proc * 100 + (int)i);
+        if (hostBuf[(size_t)src * countPerPeer + i] != expected)
+          return false;
+      }
+    }
+    return true;
+  };
 
   for (size_t size = minBytes; size <= maxBytes; size *= (size_t)stepFactor) {
     size_t countPerPeer =
@@ -387,9 +301,6 @@ int main(int argc, char *argv[]) {
       printf("# Size = %zu bytes, countPerPeer = %zu\n", size, countPerPeer);
 
     MPI_Barrier(MPI_COMM_WORLD);
-
-    if (maxS < 3)
-      break;
 
     // --- S3: PutSignalInc (PutS_RSigInc + WaitSignalS + FlushS) ---
     if (!s1Skip) {
@@ -408,9 +319,6 @@ int main(int argc, char *argv[]) {
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
-    if (maxS < 4)
-      break;
-
     // --- S4: PutSignalAdd (PutS_RSigAdd + WaitSignalS + FlushS) ---
     if (!s1Skip) {
       initSend(countPerPeer);
@@ -428,9 +336,6 @@ int main(int argc, char *argv[]) {
       allInterPass &= s4Ok;
       MPI_Barrier(MPI_COMM_WORLD);
     }
-
-    if (maxS < 5)
-      break;
 
     // --- S5: CounterPipeline (PutS_RSigInc_LCtrInc + WaitSignalS +
     // WaitCounterS) ---
@@ -464,9 +369,6 @@ int main(int argc, char *argv[]) {
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
-    if (maxS < 6)
-      break;
-
     // --- S6: Put(None) + Flush + Signal (FlushDecouple) ---
     if (!s1Skip) {
       initSend(countPerPeer);
@@ -484,9 +386,6 @@ int main(int argc, char *argv[]) {
       allInterPass &= s6Ok;
       MPI_Barrier(MPI_COMM_WORLD);
     }
-
-    if (maxS < 7)
-      break;
 
     // --- S7: PutValue (PutValueS None+Signal, then PutValueS_RSigInc) ---
     if (!s1Skip) {
@@ -521,9 +420,6 @@ int main(int argc, char *argv[]) {
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
-    if (maxS < 8)
-      break;
-
     // --- S8: Get (GetS + FlushS) --- SKIPPED (get unsupported on vendor path)
     if (!s1Skip) {
       // initSend(countPerPeer);
@@ -545,9 +441,6 @@ int main(int argc, char *argv[]) {
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
-    if (maxS < 9)
-      break;
-
     // --- S9: Signal (SignalSigIncS + SignalSigAddS) ---
     if (!s1Skip) {
       MPI_Barrier(MPI_COMM_WORLD);
@@ -559,13 +452,7 @@ int main(int argc, char *argv[]) {
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
-    if (maxS < 10)
-      break;
-
     // --- S10: Shadow (commented — MeetShadowS) ---
-
-    if (maxS < 11)
-      break;
 
     // --- S11: WaitSignal + Flush (standalone) ---
     if (!s1Skip) {
@@ -576,9 +463,6 @@ int main(int argc, char *argv[]) {
       fflush(stdout);
       MPI_Barrier(MPI_COMM_WORLD);
     }
-
-    if (maxS < 12)
-      break;
 
     // --- S12: Inter Barrier (InterBarrierStress) ---
     if (!s1Skip) {
@@ -591,14 +475,15 @@ int main(int argc, char *argv[]) {
       int hostRes[1] = {0};
       FLAGCXCHECK(devHandle->deviceMemcpy(hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
+      bool s12Ok = (hostRes[0] == 1);
       printf("[rank %d] S12 InterBarrier: %s\n", proc,
              hostRes[0] == 1 ? "PASS" : (hostRes[0] == -1 ? "SKIP" : "FAIL"));
+      if (hostRes[0] != -1) {  // SKIP does not affect verdict
+        allInterPass &= s12Ok;
+      }
       fflush(stdout);
       MPI_Barrier(MPI_COMM_WORLD);
     }
-
-    if (maxS < 13)
-      break;
 
     // --- S13: World Barrier (sync + arrive/wait split) ---
     if (!s1Skip) {
@@ -610,9 +495,6 @@ int main(int argc, char *argv[]) {
       fflush(stdout);
       MPI_Barrier(MPI_COMM_WORLD);
     }
-
-    if (maxS < 14)
-      break;
 
     // --- S14: AlltoAll (one-sided composite) ---
     if (!s1Skip) {
@@ -633,9 +515,6 @@ int main(int argc, char *argv[]) {
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
-    if (maxS < 15)
-      break;
-
     // --- S15: AlltoAll (two-sided, commented) ---
 
     if (proc == 0)
@@ -644,7 +523,6 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
   }
 
-testSummary:
   // =========================================================================
   // Summary
   // =========================================================================
@@ -657,19 +535,18 @@ testSummary:
   printf("[rank %d] === Overall: %s ===\n", proc, globalPass ? "PASS" : "FAIL");
 
   // Cleanup
+  FLAGCXCHECK(deviceApiCloseWindows(comm, splitComm, devHandle, stream,
+                                    {&sendMem, &recvMem}, {&sendWin, &recvWin},
+                                    memAllocator));
   delete[] hostBuf;
   FLAGCXCHECK(devHandle->deviceFree(devResults, flagcxMemDevice, NULL));
-  FLAGCXCHECK(flagcxDevMemFreeDevicePtr(sendMem));
-  FLAGCXCHECK(flagcxDevMemFreeDevicePtr(recvMem));
   FLAGCXCHECK(flagcxDevCommFreeDevicePtr(devComm));
-  FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
-  FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
-  FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
-  FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
   FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
   FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
   FLAGCXCHECK(devHandle->streamDestroy(stream));
+  FLAGCXCHECK(flagcxCommFinalize(comm));
+  FLAGCXCHECK(flagcxCommFinalize(comm));
   FLAGCXCHECK(flagcxCommDestroy(comm));
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
 

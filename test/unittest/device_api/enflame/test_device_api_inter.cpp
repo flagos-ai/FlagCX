@@ -24,25 +24,12 @@
  * Requirements:
  *   - Multi-node, OR single-node with FLAGCX_P2P_DISABLE=1
  *   - FLAGCX_USE_HETERO_COMM=1 (for DevComm setup)
- *   - -R 1 (IPC) or -R 2 (window) for symmetric memory registration
+ *   - -R 2 (Window registration prepares IPC or symmetric mappings)
  *
  * Usage: mpirun -np N ./test_device_api_inter [options]
  *   -b <minbytes>  -e <maxbytes>  -f <stepfactor>
  *   -w <warmup>    -n <iters>
- *   -R <regMode>   1=IPC(flagcxMemAlloc+CommRegister)
- *                  2=window(flagcxMemAlloc+CommWindowRegister)
- *
- * TEMPORARY bring-up aid: the FLAGCX_TEST_MAX_K environment variable limits how
- * many of the K tests are executed (0 = initialization only, 1 = K1,
- * 2 = K1..K2, ... 15 = all). See readMaxK() below. It exists to bisect a
- * bring-up failure without recompiling, and should be removed once the Enflame
- * kernels are implemented.
- *
- * The DEFAULT IS 0, so an unset variable runs no test at all: the process only
- * initializes and tears down, then reports success. That makes a bare run safe
- * while the kernels are still stubs, but it also means a run that never sets
- * the variable cannot fail on a kernel bug. Pass it to every rank explicitly:
- *   mpirun -x FLAGCX_TEST_MAX_K=3 ...
+ *   -R 2          flagcxMemAlloc + CommWindowRegister
  *
  * Signal/counter slot assignments:
  *   slot 0: K3(SignalInc), K5(CounterPipeline), K6(FlushDecouple),
@@ -54,10 +41,10 @@
 
 #include "check.h"
 #include "device_api.h"
+#include "device_api_window.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "global_comm.h"
-#include "tools.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -65,58 +52,6 @@
 #include <unistd.h>
 
 #define DATATYPE flagcxFloat
-
-// ---------------------------------------------------------------------------
-// Temporary test stagger control
-// ---------------------------------------------------------------------------
-// FLAGCX_TEST_MAX_K selects how many of the K tests run, so a bring-up
-// failure can be bisected without recompiling:
-//
-//   0   initialization (and teardown) only -- no kernel is launched
-//   1   K1
-//   2   K1..K2
-//   ...
-//   15  K1..K15
-//
-// 0 is the DEFAULT: an unset, empty, or unparsable variable selects no test.
-// A bare run therefore passes without exercising anything, which keeps it safe
-// while the kernels are still stubs -- but it also cannot fail on a kernel bug,
-// so the variable has to be passed explicitly to test anything.
-//
-// K8 is skipped (get unsupported), K10/K15 are commented out, so values
-// that span them select the same set as the next active test.
-// Values above 15 are clamped.
-//
-// The tests are selected with a jump rather than a wrapper -- see the guard
-// comment on the test loop below. Because that jump leaves the size loop, any
-// value below 15 runs the selected tests once, at the first size only.
-//
-// Every rank must use the same value: a rank that stops earlier skips barriers
-// the others still execute, so a mismatch would hang rather than fail.
-static int readMaxK() {
-  const char *env = getenv("FLAGCX_TEST_MAX_K");
-  if (env == nullptr) {
-    printf("[info] FLAGCX_TEST_MAX_K is not set; running initialization "
-           "only (0)\n");
-    return 0;
-  }
-  if (env[0] == '\0')
-    return 0;
-
-  char *end = nullptr;
-  long v = strtol(env, &end, 10);
-  if (end == env || *end != '\0') {
-    printf("[warn] FLAGCX_TEST_MAX_K='%s' is not an integer; running "
-           "initialization only (0)\n",
-           env);
-    return 0;
-  }
-  if (v < 0)
-    v = 0;
-  if (v > 15)
-    v = 15;
-  return (int)v;
-}
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -141,14 +76,8 @@ static bool verifyAlltoAll(const float *buf, size_t countPerPeer, int nRanks,
   for (int src = 0; src < nRanks; src++)
     for (size_t i = 0; i < countPerPeer; i++) {
       float expected = (float)(src * 1000 + myRank * 100 + (int)i);
-      float actual = buf[(size_t)src * countPerPeer + i];
-      if (actual != expected) {
-        printf("[rank %d] verifyAlltoAll FAIL: src=%d count=%zu offset=%zu "
-               "expected=%.1f actual=%.1f\n",
-               myRank, src, i, (size_t)src * countPerPeer + i, (double)expected,
-               (double)actual);
+      if (buf[(size_t)src * countPerPeer + i] != expected)
         return false;
-      }
     }
   return true;
 }
@@ -171,24 +100,13 @@ static bool verifyInterAlltoAll(const float *buf, size_t countPerPeer,
 #endif
 
 static bool verifyCounterPipeline(const uint64_t *hResult, const float *buf,
-                                  size_t countPerPeer, int nRanks, int myRank) {
+                                  size_t countPerPeer, int nRanks) {
   uint64_t nInterRanks = hResult[1];
-  if (hResult[0] != 2 * nInterRanks) {
-    printf("[rank %d] verifyCounterPipeline FAIL: hResult[0] expected=%lu "
-           "actual=%lu (nInterRanks=%lu)\n",
-           myRank, (unsigned long)(2 * nInterRanks), (unsigned long)hResult[0],
-           (unsigned long)nInterRanks);
+  if (hResult[0] != 2 * nInterRanks)
     return false;
-  }
-  for (int src = 0; src < nRanks; src++) {
-    float actual = buf[(size_t)src * countPerPeer];
-    if (actual != 999.0f) {
-      printf("[rank %d] verifyCounterPipeline FAIL: src=%d offset=%zu "
-             "expected=999.0 actual=%.1f\n",
-             myRank, src, (size_t)src * countPerPeer, (double)actual);
+  for (int src = 0; src < nRanks; src++)
+    if (buf[(size_t)src * countPerPeer] != 999.0f)
       return false;
-    }
-  }
   return true;
 }
 
@@ -197,13 +115,8 @@ static bool verifyPutValue(const void *buf, size_t putValBase, int nRanks,
   const uint64_t *vals = (const uint64_t *)((const char *)buf + putValBase);
   for (int src = 0; src < nRanks; src++) {
     uint64_t expected = (uint64_t)src * 1000u + (uint64_t)myRank;
-    if (vals[src] != expected) {
-      printf("[rank %d] verifyPutValue FAIL: src=%d offset=%zu "
-             "expected=%lu actual=%lu\n",
-             myRank, src, putValBase + (size_t)src * sizeof(uint64_t),
-             (unsigned long)expected, (unsigned long)vals[src]);
+    if (vals[src] != expected)
       return false;
-    }
   }
   return true;
 }
@@ -222,13 +135,14 @@ static void printResult(const char *name, bool ok, int rank) {
 
 int main(int argc, char *argv[]) {
   parser args(argc, argv);
+  int winFlags;
+  if (!deviceApiWindowMode(args, &winFlags))
+    return 1;
   size_t minBytes = args.getMinBytes();
   size_t maxBytes = args.getMaxBytes();
   int stepFactor = args.getStepFactor();
   int numWarmupIters = args.getWarmupIters();
-  int localRegister = args.getLocalRegister();
   uint64_t splitMask = args.getSplitMask();
-  const int maxK = readMaxK();
 
   if (stepFactor <= 1) {
     printf("Error: stepFactor must be > 1, got %d\n", stepFactor);
@@ -269,15 +183,8 @@ int main(int argc, char *argv[]) {
              "totalRanks=%d intraSize=%d\n",
              totalProcs, intraSize);
     }
-    FLAGCXCHECK(flagcxCommDestroy(comm));
-    FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
-    MPI_Finalize();
-    return 1;
-  }
-
-  if (localRegister == 0) {
-    if (proc == 0)
-      printf("ERROR: one-sided ops require -R 1 or -R 2.\n");
+    FLAGCXCHECK(flagcxCommFinalize(comm));
+    FLAGCXCHECK(flagcxCommFinalize(comm));
     FLAGCXCHECK(flagcxCommDestroy(comm));
     FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
     MPI_Finalize();
@@ -288,7 +195,6 @@ int main(int argc, char *argv[]) {
   const size_t putValBase = maxBytes;
 
   void *sendBuff = nullptr, *recvBuff = nullptr;
-  void *sendHandle = nullptr, *recvHandle = nullptr;
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
 
   flagcxStream_t stream;
@@ -318,19 +224,10 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
   FLAGCXCHECK(flagcxMemAlloc(&recvBuff, recvBuffSize, memAllocator));
 
-  if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC,
-                                         memAllocator));
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, recvBuffSize, &recvWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC,
-                                         memAllocator));
-  } else {
-    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle,
-                                   memAllocator));
-    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, recvBuffSize, &recvHandle,
-                                   memAllocator));
-  }
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
+                                       winFlags, memAllocator));
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, recvBuffSize, &recvWin,
+                                       winFlags, memAllocator));
 
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
   FLAGCXCHECK(flagcxDevMemCreate(comm, sendBuff, maxBytes, sendWin, &sendMem));
@@ -339,10 +236,8 @@ int main(int argc, char *argv[]) {
 
   if (proc == 0 && color == 0) {
     printf("# FlagCX Device API Inter-Node Test\n");
-    printf("# nRanks: %d, regMode: %s\n", totalProcs,
-           localRegister == 2 ? "window" : "ipc");
-    printf("# FLAGCX_TEST_MAX_K: %d%s\n", maxK,
-           maxK == 0 ? " (initialization only)" : "");
+    printf("# nRanks: %d, regMode: window\n", totalProcs);
+    FLAGCXCHECK(deviceApiReportWindowMode(comm, winFlags));
     printf("# K1=DevNetGetFromComm  K2=Reset  K3=PutSigInc  K4=PutSigAdd\n");
     printf("# K5=CounterPipeline  K6=FlushDecouple  K7=PutValue  K8=Get\n");
     printf("# K9=Signal  K10=Shadow(commented)  K11=WaitSignal+Flush\n");
@@ -350,61 +245,47 @@ int main(int argc, char *argv[]) {
     printf("# K15=TwoSidedAlltoAll(commented)\n#\n");
   }
 
+  // --- K1: DevNetGetFromComm ---
   bool allPass = true;
+  FLAGCXCHECK(devHandle->deviceMemset(dResultBuf, 0, 4 * sizeof(uint64_t),
+                                      flagcxMemDevice, stream));
+  FLAGCXCHECK(launchKernelNetGetFromComm(devComm, (int *)dResultBuf, stream));
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+  FLAGCXCHECK(devHandle->deviceMemcpy(hResultBuf, dResultBuf, 2 * sizeof(int),
+                                      flagcxMemcpyDeviceToHost, stream));
+  {
+    int *k1Res = (int *)hResultBuf;
+    bool k1Ok = (k1Res[0] == 1);
+    allPass &= k1Ok;
+    if (proc == 0 && color == 0)
+      printf("  %-30s %s (intraSize=%d)\n", "K1 DevNetGetFromComm",
+             k1Ok ? "PASS" : "FAIL", k1Res[1]);
+  }
 
-  // =========================================================================
+  // Warm-up: K3 only
+  for (int i = 0; i < numWarmupIters; i++) {
+    size_t cp =
+        std::max((size_t)1, maxBytes / sizeof(float) / (size_t)totalProcs);
+    FLAGCXCHECK(launchKernelNetPutSignalInc(sendMem, recvMem, cp, DATATYPE,
+                                            devComm, stream));
+  }
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  // Initial K2 reset — establishes clean signal/counter/shadow state
+  FLAGCXCHECK(launchKernelNetReset(devComm, stream, dResultBuf));
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+  MPI_Barrier(MPI_COMM_WORLD);
+
   // Main test loop
-  // =========================================================================
-  // Every test is preceded by one guard of the form
-  //     if (maxK < N) goto testSummary;
-  // which keeps the test bodies at their original indentation and stops the run
-  // as soon as the tests selected by FLAGCX_TEST_MAX_K are done. The jump
-  // leaves this size loop, so the selection runs once, at the first size.
   for (size_t size = minBytes; size <= maxBytes; size *= (size_t)stepFactor) {
     size_t countPerPeer = size / sizeof(float) / (size_t)totalProcs;
     if (countPerPeer == 0)
       countPerPeer = 1;
     size_t floatSize = (size_t)totalProcs * countPerPeer * sizeof(float);
 
-    if (maxK < 1) // initialization only: no test runs at all
-      break;
-
     if (proc == 0 && color == 0)
       printf("# Size = %zu bytes, countPerPeer = %zu\n", size, countPerPeer);
 
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    // --- K1: DevNetGetFromComm ---
-    FLAGCXCHECK(devHandle->deviceMemset(dResultBuf, 0, 4 * sizeof(uint64_t),
-                                        flagcxMemDevice, stream));
-    FLAGCXCHECK(launchKernelNetGetFromComm(devComm, (int *)dResultBuf, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    FLAGCXCHECK(devHandle->deviceMemcpy(hResultBuf, dResultBuf, 2 * sizeof(int),
-                                        flagcxMemcpyDeviceToHost, stream));
-    {
-      int *k1Res = (int *)hResultBuf;
-      bool k1Ok = (k1Res[0] == 1);
-      allPass &= k1Ok;
-      if (proc == 0 && color == 0)
-        printf("  %-30s %s (intraSize=%d)\n", "K1 DevNetGetFromComm",
-               k1Ok ? "PASS" : "FAIL", k1Res[1]);
-    }
-
-    if (maxK < 2)
-      break;
-
-    // Warm-up: K3 only
-    for (int i = 0; i < numWarmupIters; i++) {
-      size_t cp =
-          std::max((size_t)1, maxBytes / sizeof(float) / (size_t)totalProcs);
-      FLAGCXCHECK(launchKernelNetPutSignalInc(sendMem, recvMem, cp, DATATYPE,
-                                              devComm, stream));
-    }
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-    // Initial K2 reset — establishes clean signal/counter/shadow state
-    FLAGCXCHECK(launchKernelNetReset(devComm, stream, dResultBuf));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
     MPI_Barrier(MPI_COMM_WORLD);
 
     // --- K2: Reset ---
@@ -417,9 +298,6 @@ int main(int argc, char *argv[]) {
     printResult("K2 Reset", k2Ok, proc);
     allPass &= k2Ok;
     MPI_Barrier(MPI_COMM_WORLD);
-
-    if (maxK < 3)
-      break;
 
     // --- K3: Put + SigInc ---
     initSendBuff(sendBuff, countPerPeer, totalProcs, proc, devHandle, stream,
@@ -437,9 +315,6 @@ int main(int argc, char *argv[]) {
     allPass &= k3Ok;
     MPI_Barrier(MPI_COMM_WORLD);
 
-    if (maxK < 4)
-      break;
-
     // --- K4: Put + SigAdd ---
     initSendBuff(sendBuff, countPerPeer, totalProcs, proc, devHandle, stream,
                  hostBuff);
@@ -455,9 +330,6 @@ int main(int argc, char *argv[]) {
     printResult("K4 PutSigAdd", k4Ok, proc);
     allPass &= k4Ok;
     MPI_Barrier(MPI_COMM_WORLD);
-
-    if (maxK < 5)
-      break;
 
 #ifdef USE_NVIDIA_ADAPTOR
     // --- K4b: multi-context data + standalone release ---
@@ -482,9 +354,6 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
 #endif
 
-    if (maxK < 5)
-      break;
-
     // --- K5: Put + SigInc + CtrInc (CounterPipeline) ---
     initSendBuff(sendBuff, countPerPeer, totalProcs, proc, devHandle, stream,
                  hostBuff);
@@ -499,13 +368,10 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(devHandle->deviceMemcpy(hostBuff, recvBuff, floatSize,
                                         flagcxMemcpyDeviceToHost, stream));
     bool k5Ok = verifyCounterPipeline(hResultBuf, (const float *)hostBuff,
-                                      countPerPeer, totalProcs, proc);
+                                      countPerPeer, totalProcs);
     printResult("K5 CounterPipeline", k5Ok, proc);
     allPass &= k5Ok;
     MPI_Barrier(MPI_COMM_WORLD);
-
-    if (maxK < 6)
-      break;
 
     // --- K6: Put(None) + Flush + Signal (FlushDecouple) ---
     initSendBuff(sendBuff, countPerPeer, totalProcs, proc, devHandle, stream,
@@ -523,9 +389,6 @@ int main(int argc, char *argv[]) {
     allPass &= k6Ok;
     MPI_Barrier(MPI_COMM_WORLD);
 
-    if (maxK < 7)
-      break;
-
     // --- K7: PutValue ---
     FLAGCXCHECK(devHandle->deviceMemset((char *)recvBuff + putValBase, 0,
                                         (size_t)totalProcs * sizeof(uint64_t),
@@ -540,9 +403,6 @@ int main(int argc, char *argv[]) {
     printResult("K7 PutValue", k7Ok, proc);
     allPass &= k7Ok;
     MPI_Barrier(MPI_COMM_WORLD);
-
-    if (maxK < 8)
-      break;
 
     // --- K8: Get --- SKIPPED (get unsupported on vendor path)
     // initSendBuff(sendBuff, countPerPeer, totalProcs, proc, devHandle, stream,
@@ -562,17 +422,11 @@ int main(int argc, char *argv[]) {
     printResult("K8 Get (SKIP)", true, proc);
     MPI_Barrier(MPI_COMM_WORLD);
 
-    if (maxK < 9)
-      break;
-
     // --- K9: Signal (standalone SigInc + SigAdd) ---
     FLAGCXCHECK(launchKernelNetSignal(devComm, stream));
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
     printResult("K9 Signal", true, proc); // hang-free = PASS
     MPI_Barrier(MPI_COMM_WORLD);
-
-    if (maxK < 10)
-      break;
 
     // --- K10: Shadow (commented — FollowShadow + MeetShadow) ---
     // FLAGCXCHECK(launchKernelNetFollowShadow(devComm, stream));
@@ -585,17 +439,11 @@ int main(int argc, char *argv[]) {
     // printResult("K10b MeetShadow", true, proc);
     // MPI_Barrier(MPI_COMM_WORLD);
 
-    if (maxK < 11)
-      break;
-
     // --- K11: WaitSignal + Flush (standalone) ---
     FLAGCXCHECK(launchKernelNetWaitSignalFlush(devComm, stream));
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
     printResult("K11 WaitSignal+Flush", true, proc); // hang-free = PASS
     MPI_Barrier(MPI_COMM_WORLD);
-
-    if (maxK < 12)
-      break;
 
     // --- K12: Inter Barrier ---
     FLAGCXCHECK(devHandle->deviceMemset(dResultBuf, 0, 4 * sizeof(uint64_t),
@@ -614,9 +462,6 @@ int main(int argc, char *argv[]) {
     }
     MPI_Barrier(MPI_COMM_WORLD);
 
-    if (maxK < 13)
-      break;
-
     // --- K13: World Barrier ---
     FLAGCXCHECK(devHandle->deviceMemset(dResultBuf, 0, 4 * sizeof(uint64_t),
                                         flagcxMemDevice, stream));
@@ -631,9 +476,6 @@ int main(int argc, char *argv[]) {
       allPass &= k13Ok;
     }
     MPI_Barrier(MPI_COMM_WORLD);
-
-    if (maxK < 14)
-      break;
 
     // --- K14: AlltoAll (one-sided composite) ---
     initSendBuff(sendBuff, countPerPeer, totalProcs, proc, devHandle, stream,
@@ -650,9 +492,6 @@ int main(int argc, char *argv[]) {
     printResult("K14 OneSidedAlltoAll", k14Ok, proc);
     allPass &= k14Ok;
     MPI_Barrier(MPI_COMM_WORLD);
-
-    if (maxK < 15)
-      break;
 
     // --- K15: AlltoAll (two-sided, commented) ---
     // initSendBuff(sendBuff, countPerPeer, totalProcs, proc, devHandle, stream,
@@ -686,22 +525,17 @@ int main(int argc, char *argv[]) {
   printf("[rank %d] === Overall: %s ===\n", proc, globalPass ? "PASS" : "FAIL");
 
   // Cleanup
-  FLAGCXCHECK(devHandle->streamDestroy(stream));
+  FLAGCXCHECK(deviceApiCloseWindows(comm, splitComm, devHandle, stream,
+                                    {&sendMem, &recvMem}, {&sendWin, &recvWin},
+                                    memAllocator));
   FLAGCXCHECK(devHandle->deviceFree(dResultBuf, flagcxMemDevice, NULL));
-  FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
-  FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
-
-  if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
-  } else {
-    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle, memAllocator));
-    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle, memAllocator));
-  }
+  FLAGCXCHECK(devHandle->streamDestroy(stream));
 
   FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
   FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+  FLAGCXCHECK(flagcxCommFinalize(comm));
+  FLAGCXCHECK(flagcxCommFinalize(comm));
   FLAGCXCHECK(flagcxCommDestroy(comm));
   free(hostBuff);
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
