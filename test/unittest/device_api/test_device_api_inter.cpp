@@ -240,16 +240,18 @@ static int runDeviceApiTest(int argc, char *argv[],
   resources.check(
       flagcxDevMemCreate(comm, recvBuff, recvBuffSize, recvWin, &recvMem));
 
+  flagcxResult_t reportStatus = flagcxSuccess;
   if (proc == 0 && color == 0) {
     printf("# FlagCX Device API Inter-Node Test\n");
     printf("# nRanks: %d, regMode: window\n", totalProcs);
-    resources.check(deviceApiReportWindowMode(comm, winFlags));
+    reportStatus = deviceApiReportWindowMode(comm, winFlags);
     printf("# K1=DevNetGetFromComm  K2=Reset  K3=PutSigInc  K4=PutSigAdd\n");
     printf("# K5=CounterPipeline  K6=FlushDecouple  K7=PutValue  K8=Get\n");
     printf("# K9=Signal  K10=Shadow(commented)  K11=WaitSignal+Flush\n");
     printf("# K12=InterBarrier  K13=WorldBarrier  K14=OneSidedAlltoAll\n");
     printf("# K15=TwoSidedAlltoAll(commented)\n#\n");
   }
+  resources.check(reportStatus);
 
   // --- K1: DevNetGetFromComm ---
   bool allPass = true;

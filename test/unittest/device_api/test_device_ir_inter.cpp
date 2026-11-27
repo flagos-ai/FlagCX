@@ -159,11 +159,13 @@ static int runDeviceApiTest(int argc, char *argv[],
   auto &hostBuf = resources.hostBuf;
   hostBuf = new float[maxBytes / sizeof(float)];
 
+  flagcxResult_t reportStatus = flagcxSuccess;
   if (proc == 0) {
     printf("=== Device IR Inter-Node Transport Tests ===\n");
     printf("Ranks: %d\n\n", totalProcs);
-    resources.check(deviceApiReportWindowMode(comm, winFlags));
+    reportStatus = deviceApiReportWindowMode(comm, winFlags);
   }
+  resources.check(reportStatus);
 
   // =========================================================================
   // S1: DevNetGetFromComm (NetGetFromCommS) — run once before loop
