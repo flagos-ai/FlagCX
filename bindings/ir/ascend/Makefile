@@ -105,7 +105,10 @@ SYMBOLS_FILE := $(abspath ../public_symbols.txt)
 
 all: llvm_ir
 
-# One bisheng invocation emits both core modules; the stamp records it.
+# One bisheng invocation emits both core modules; the stamp records it. The
+# staged modules are kept on purpose: the final .bc files are copied out of
+# the staging directory by their own rules below, so a missing final artifact
+# is restored without recompiling.
 $(COMPILE_STAMP): Makefile $(LLVM_SRC) $(SYMBOLS_FILE) \
 		$(wildcard $(FLAGCX_ROOT)/flagcx/adaptor/include/*.h) \
 		$(wildcard $(FLAGCX_ROOT)/flagcx/adaptor/include/device_api/*.h) \
@@ -117,11 +120,18 @@ $(COMPILE_STAMP): Makefile $(LLVM_SRC) $(SYMBOLS_FILE) \
 	@mkdir -p $(STAGE_DIR)
 	@echo "Generating LLVM bitcode (bisheng, $(ASCEND_SOC))..."
 	cd $(STAGE_DIR) && $(BISHENG) $(CLANG_FLAGS) $(abspath $(LLVM_SRC))
-	cp $(STAGE_DIR)/*-vec.bc $(FINAL_BC)
-	cp $(STAGE_DIR)/*-cube.bc $(FINAL_CUBE_BC)
 	@touch $@
 
-$(FINAL_BC) $(FINAL_CUBE_BC): $(COMPILE_STAMP)
+# Each output carries its own recipe. A stamp-only prerequisite would leave a
+# deleted .bc target "up to date" (the stamp is still newer than nothing) with
+# no command to recreate it, and the disassembly checks would then fail on the
+# missing file. Both rules depend on the single stamp, so parallel builds
+# still run the compiler once.
+$(FINAL_BC): $(COMPILE_STAMP)
+	cp $(STAGE_DIR)/*-vec.bc $@
+
+$(FINAL_CUBE_BC): $(COMPILE_STAMP)
+	cp $(STAGE_DIR)/*-cube.bc $@
 
 $(FINAL_LL): $(FINAL_BC)
 	$(BISHENG) -S -emit-llvm $< -o $@

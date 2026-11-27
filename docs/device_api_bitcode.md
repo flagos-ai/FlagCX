@@ -177,7 +177,10 @@ modules; consumers include only the API declaration headers.
 
 `DEVICE_BITCODE_ARCH` is the soc name reported by `aclrtGetSocName()`
 (`Ascend910_9382` on the 910C); `bisheng` is located from `DEVICE_HOME`, then
-`PATH`, and can be overridden with `BISHENG`.
+`PATH`, and can be overridden with `BISHENG`. The same soc also targets the
+host library's embedded device helper kernels; if `ASCEND_SOC` is set
+explicitly as well and names a different soc, the build fails instead of
+producing bitcode and helper kernels for different devices.
 
 Consumption is an LLVM-level pipeline (for example FlagTree / Triton-Ascend on
 Ascend): the bisheng driver compiles CCE from `.asc` sources and does not
@@ -207,8 +210,8 @@ FLAGCX_ADAPTOR=metax DEVICE_HOME=/opt/maca \
   FLAGCX_BITCODE_ARCH=xcore1000 pip install . -v --no-build-isolation
 ```
 
-The wheel path currently covers nvidia, iluvatar, du, musa, and ppu. Build
-Ascend bitcode with the make target above and package the two modules
+The wheel path currently covers nvidia, iluvatar, du, musa, ppu, and metax.
+Build Ascend bitcode with the make target above and package the two modules
 yourself.
 
 The wheel includes `flagcx/lib/libflagcx_device.bc`, `libflagcx.so`, and the
