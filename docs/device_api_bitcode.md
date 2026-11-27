@@ -1,9 +1,9 @@
 # Device API bitcode
 
 FlagCX can build Device API LLVM bitcode for NVIDIA CUDA, Iluvatar CoreX,
-Hygon DU, MUSA, PPU, and MetaX MACA. A kernel consumer links `libflagcx_device.bc` and
-includes the headers from the same build. Choose an architecture supported by
-the installed SDK.
+Hygon DU, MUSA, PPU, MetaX MACA, and Huawei Ascend. A kernel consumer links
+`libflagcx_device.bc` and includes the headers from the same build. Choose an
+architecture supported by the installed SDK.
 
 ## Build from the repository root
 
@@ -27,6 +27,10 @@ make USE_PPU=1 DEVICE_HOME=/usr/local/PPU_SDK \
 
 make USE_METAX=1 DEVICE_HOME=/opt/maca \
   DEVICE_BITCODE_ARCH=xcore1000 BUILDDIR="$PWD/build/metax-bc" device_bitcode
+
+make USE_ASCEND=1 USE_SHMEM=1 COMPILE_KERNEL=1 \
+  SHMEM_HOME=/usr/local/Ascend/shmem/latest \
+  DEVICE_BITCODE_ARCH=Ascend910_9382 device_bitcode
 ```
 
 `build/` contains `lib/libflagcx.so`, `lib/libflagcx_device.bc`, and consumer
@@ -137,6 +141,54 @@ native API, Scalar IR and Unified IR tests. Inter tests use two logical nodes
 on the same runner; actual cross-host operation and downstream FlagTree linking
 and execution require validation in those environments.
 
+## Ascend Device IR
+
+The Ascend build uses `CommTraits<AclshmemBackend>` when `USE_SHMEM=1`
+(`DefaultBackend<AscendPlatform>` otherwise) and compiles the same
+`flagcx_device_wrapper_impl.h` with bisheng, the toolkit's clang 15 CCE
+frontend:
+
+```sh
+bisheng -x asc --npu-soc=<soc> --cce-aicore-only -emit-llvm -c ...
+```
+
+The CCE target is a two-core machine, so one build produces two modules
+instead of one:
+
+- `lib/libflagcx_device.bc` — AI Vector (AIV) core module;
+- `lib/libflagcx_device-cube.bc` — AI Cube (AIC) core module.
+
+Both modules carry the 152 public entry points listed in
+`bindings/ir/public_symbols.txt`, under the CCE core suffix: `flagcxPut.vector`
+in the AIV module and `flagcxPut.cube` in the AIC module. The build fails if a
+listed symbol has no suffixed definition with external linkage. It also checks
+the CCE triple and each module's core marker symbol
+(`__init_kfc_workspace_addr.vector` / `.cube`). Readable IR is written to
+`obj/llvm_ir/ascend/libflagcx_device.ll` and `libflagcx_device-cube.ll`.
+
+The suffix is part of CCE's device ABI, not a FlagCX choice: a bisheng-compiled
+consumer references an external aicore function with the same suffix (measured
+on the 910C: a call to `probeAdd` becomes `@probeAdd.vector`), so CCE-built
+consumer kernels link name-for-name with these modules. Source-level C names
+are unchanged. The toolkit's `llvm-link` accepts `--internalize` but does not
+apply it on this install (the internal-definition count is unchanged with both
+the file and list spellings), so the non-API device functions remain in the
+modules; consumers include only the API declaration headers.
+
+`DEVICE_BITCODE_ARCH` is the soc name reported by `aclrtGetSocName()`
+(`Ascend910_9382` on the 910C); `bisheng` is located from `DEVICE_HOME`, then
+`PATH`, and can be overridden with `BISHENG`. The same soc also targets the
+host library's embedded device helper kernels; if `ASCEND_SOC` is set
+explicitly as well and names a different soc, the build fails instead of
+producing bitcode and helper kernels for different devices.
+
+Consumption is an LLVM-level pipeline (for example FlagTree / Triton-Ascend on
+Ascend): the bisheng driver compiles CCE from `.asc` sources and does not
+accept LLVM bitcode input, so the modules are linked into the consumer's LLVM
+pipeline rather than passed back to the driver. Generation and module content
+are validated on real 910C hardware; upstream CI does not build Ascend
+bitcode.
+
 ## Include bitcode in a Python wheel
 
 Set `FLAGCX_BITCODE_ARCH` when installing from the repository root:
@@ -157,6 +209,10 @@ FLAGCX_ADAPTOR=ppu DEVICE_HOME=/usr/local/PPU_SDK \
 FLAGCX_ADAPTOR=metax DEVICE_HOME=/opt/maca \
   FLAGCX_BITCODE_ARCH=xcore1000 pip install . -v --no-build-isolation
 ```
+
+The wheel path currently covers nvidia, iluvatar, du, musa, ppu, and metax.
+Build Ascend bitcode with the make target above and package the two modules
+yourself.
 
 The wheel includes `flagcx/lib/libflagcx_device.bc`, `libflagcx.so`, and the
 matching headers under `flagcx/include/`. The BC build selects

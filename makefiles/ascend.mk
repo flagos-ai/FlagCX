@@ -159,6 +159,24 @@ DEVICE_COMPILER := $(ASCEND_BISHENG)
 # --npu-soc takes the name reported by the runtime itself (aclrtGetSocName());
 # --npu-arch and --cce-soc-version both reject every spelling tried on this
 # toolchain, so the soc form is the only supported entry point here.
+#
+# The root Makefile exposes DEVICE_BITCODE_ARCH as the single public arch
+# input for `device_bitcode` and forwards it to the bitcode submake. The same
+# SoC must also select the target of the host library's embedded device
+# helper kernels (device_api_host_helpers.asc), which DEVICE_COMPILE_FLAG
+# below compiles -- otherwise a non-default DEVICE_BITCODE_ARCH produces
+# bitcode and helper kernels for different targets, and the initialization
+# kernels a consumer loads can be incompatible with the selected device.
+# Resolve the two selectors here, before DEVICE_COMPILE_FLAG expands. Policy:
+# DEVICE_BITCODE_ARCH fills ASCEND_SOC when ASCEND_SOC is unset; when both are
+# given and disagree, fail instead of silently picking one.
+ifneq ($(strip $(DEVICE_BITCODE_ARCH)),)
+  ifeq ($(strip $(ASCEND_SOC)),)
+    ASCEND_SOC := $(DEVICE_BITCODE_ARCH)
+  else ifneq ($(ASCEND_SOC),$(DEVICE_BITCODE_ARCH))
+    $(error ASCEND_SOC ($(ASCEND_SOC)) and DEVICE_BITCODE_ARCH ($(DEVICE_BITCODE_ARCH)) select different SoCs; set only one of them)
+  endif
+endif
 ASCEND_SOC ?= Ascend910_9382
 
 # ld.lld cannot derive a kernel's AI-Cube/AI-Vector type for kernels that do not

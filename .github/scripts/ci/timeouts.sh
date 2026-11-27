@@ -98,7 +98,12 @@ flagcx_ci_run() {
     torch-coverage) limit=$FLAGCX_CI_TORCH_COVERAGE_TIMEOUT ;;
     *) echo "Unknown CI timeout phase: $phase" >&2; return 2 ;;
   esac
+  # This helper wraps build and preparation phases only. A platform that
+  # exports FLAGCX_CI_REQUIRE_GTEST_PASS for its test invocations (Ascend
+  # rma/symmem) must not fail those phases for printing no GoogleTest PASS
+  # line.
   FLAGCX_CI_TEST_TIMEOUT="$limit" FLAGCX_CI_TEST_MAX_ATTEMPTS=1 \
     FLAGCX_CI_TEST_LABEL="${FLAGCX_CI_TEST_LABEL:-CI $phase}" \
+    env -u FLAGCX_CI_REQUIRE_GTEST_PASS \
     bash "$(dirname "${BASH_SOURCE[0]}")/run_with_timeout.sh" "$@"
 }

@@ -471,6 +471,9 @@ else ifeq ($(USE_PPU),1)
 else ifeq ($(USE_METAX),1)
   DEVICE_BITCODE_DIR := metax
   DEVICE_BITCODE_ARCH_ARG := BITCODE_LIB_ARCH=$(DEVICE_BITCODE_ARCH)
+else ifeq ($(USE_ASCEND),1)
+  DEVICE_BITCODE_DIR := ascend
+  DEVICE_BITCODE_ARCH_ARG := ASCEND_SOC=$(DEVICE_BITCODE_ARCH)
 endif
 
 ifneq ($(filter device_bitcode,$(MAKECMDGOALS)),)
