@@ -1134,7 +1134,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "bb7af89a694a0f2113cc51bae63273cff8727f690cdacbddb2d1e961e25ed050",
+      "current_sha256": "945c7b18eb650603fdd84bfd1dbbde19e66ccb68937bf035eaed0eb3be7e0d6c",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -8176,13 +8176,13 @@
     },
     {
       "path": "test/make.inc",
-      "decision": "preserve-exact",
+      "decision": "align-tests-and-contracts",
       "reason": "Unchanged from feature reference.",
       "reference_sha256": "fcecbf67f5348ddef7f6e0ef2a179b5434166e8e2b6ca10afe7d39fe8779920b",
       "audit_start_sha256": "fcecbf67f5348ddef7f6e0ef2a179b5434166e8e2b6ca10afe7d39fe8779920b",
       "rollback_hunks": [],
-      "current_sha256": "fcecbf67f5348ddef7f6e0ef2a179b5434166e8e2b6ca10afe7d39fe8779920b",
-      "current_resolution": "exact feature-reference content"
+      "current_sha256": "45a20745111c8fa614b61db5c7d1aa7ae1ad52dcf0f46f070c72230592042ccf",
+      "current_resolution": "PR751 CI follow-up: Add Device API backend headers to standard test include configuration"
     },
     {
       "path": "test/perf/host_api/test_core_sendrecv.cpp",

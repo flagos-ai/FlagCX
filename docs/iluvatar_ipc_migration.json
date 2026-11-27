@@ -381,5 +381,12 @@
     "onto": "a53e18eaf22446216e1b3528526a9fce6f853a8a",
     "head_before_review_repairs": "98d6bc3a",
     "note": "MUSA feature/CI additions preserved; updated path evidence in ipc_preservation_audit.json."
+  },
+  "ci_followup": {
+    "step1": {
+      "description": "Add Device API backend headers to standard test include configuration",
+      "status": "complete",
+      "validation": "Unmodified FLAGCX_INCLUDES: full core standard-make builds and runs pass336/skip5 against both IBRC and IBUC libraries."
+    }
   }
 }

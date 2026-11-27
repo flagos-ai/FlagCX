@@ -22,6 +22,7 @@ CXXFLAGS += -DOMPI_SKIP_MPICXX -DMPICH_SKIP_MPICXX
 FLAGCX_INCLUDES := \
     -I$(PROJECT_ROOT)/flagcx/include \
     -I$(PROJECT_ROOT)/flagcx/adaptor/include \
+    -I$(PROJECT_ROOT)/flagcx/adaptor/device_api \
     -I$(PROJECT_ROOT)/flagcx/core/include \
     -I$(PROJECT_ROOT)/flagcx/runner/include \
     -I$(PROJECT_ROOT)/flagcx/service/include \
