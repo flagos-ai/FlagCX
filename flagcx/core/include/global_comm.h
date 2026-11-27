@@ -74,7 +74,7 @@ struct flagcxC2cResources {
   struct flagcxC2cResources *next;
   void *scratch;
   flagcxStream_t userStream, privateStream;
-  bool needDrain, userDrained, privateDrained;
+  bool needDrain, userDrained, privateDrained, nativePending;
 };
 
 struct flagcxCommNativeOwner {

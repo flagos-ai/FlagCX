@@ -106,6 +106,8 @@ TEST_F(IpcLifecycleMock, C2cFailedDrainRetainsScratchAndBothStreamProgress) {
 class C2cScratchCompletion : public IpcLifecycleMock {
 public:
   bool scratchInUse = false;
+  bool nativeSubmissionPending = false;
+  flagcxResult_t queryResult = flagcxSuccess;
   flagcxStream_t userStream = (flagcxStream_t)0x2000;
 
   void SetUp() override {
@@ -136,6 +138,7 @@ public:
     device.streamSynchronize = [](flagcxStream_t stream) {
       ++active->syncs;
       auto *test = static_cast<C2cScratchCompletion *>(active);
+      EXPECT_FALSE(test->nativeSubmissionPending);
       if (stream == test->userStream && test->scratchInUse) {
         if (test->nativeResult != flagcxSuccess)
           return test->nativeResult;
@@ -166,6 +169,23 @@ public:
     flagcxC2cPlanner planner(1, 1, 0, comm, flagcxCommOpReduceScatter,
                              flagcxMin);
     return planner.execute(&input, &output, flagcxInt, 0, userStream);
+  }
+
+  void deferFinalSubmission() {
+    comm->homoComm = (flagcxInnerComm_t)0x9000;
+    sdk.groupEnd = [] {
+      auto *test = static_cast<C2cScratchCompletion *>(active);
+      test->nativeSubmissionPending = test->scratchInUse;
+      return test->nativeSubmissionPending ? flagcxInProgress : flagcxSuccess;
+    };
+    sdk.commGetAsyncError = [](flagcxInnerComm_t, flagcxResult_t *status) {
+      auto *test = static_cast<C2cScratchCompletion *>(active);
+      ++test->asyncPolls;
+      *status = test->pendingPolls-- > 0 ? flagcxInProgress : test->asyncResult;
+      if (test->queryResult == flagcxSuccess && *status == flagcxSuccess)
+        test->nativeSubmissionPending = false;
+      return test->queryResult;
+    };
   }
 };
 
@@ -220,6 +240,57 @@ TEST_F(C2cScratchCompletion, CompletedUserStreamMayBeDestroyedBeforeFreeRetry) {
   EXPECT_EQ(backendCleanups, 1);
   EXPECT_EQ(frees.size(), 1u);
   EXPECT_EQ(destroyCalls, 1);
+  EXPECT_EQ(comm->pendingC2cResources, nullptr);
+}
+
+TEST_F(C2cScratchCompletion, PendingNativeSubmissionFinishesBeforeStreamDrain) {
+  deferFinalSubmission();
+  comm->homoInterComm = comm->homoComm; // Query an aliased native owner once.
+  pendingPolls = 2;
+  ASSERT_EQ(execute(), flagcxSuccess);
+  EXPECT_EQ(asyncPolls, 3);
+  EXPECT_FALSE(nativeSubmissionPending);
+  EXPECT_EQ(backendCleanups, 1);
+  EXPECT_EQ(frees.size(), 1u);
+  EXPECT_EQ(comm->pendingC2cResources, nullptr);
+}
+
+TEST_F(C2cScratchCompletion, NativeSubmissionErrorsKeepScratchUntilRetry) {
+  deferFinalSubmission();
+  for (bool failQuery : {false, true}) {
+    queryResult = failQuery ? flagcxRemoteError : flagcxSuccess;
+    asyncResult = failQuery ? flagcxSuccess : flagcxRemoteError;
+    auto freed = frees.size();
+    EXPECT_EQ(execute(), flagcxRemoteError);
+    ASSERT_NE(comm->pendingC2cResources, nullptr);
+    EXPECT_TRUE(comm->pendingC2cResources->nativePending);
+    EXPECT_FALSE(comm->pendingC2cResources->userDrained);
+    EXPECT_TRUE(nativeSubmissionPending);
+    EXPECT_TRUE(scratchInUse);
+    EXPECT_EQ(frees.size(), freed);
+    queryResult = flagcxSuccess;
+    asyncResult = flagcxSuccess;
+    pendingPolls = 1;
+    EXPECT_EQ(flagcxC2cDrainPendingResources(comm), flagcxInProgress);
+    EXPECT_EQ(frees.size(), freed);
+    ASSERT_EQ(flagcxC2cDrainPendingResources(comm), flagcxSuccess);
+    EXPECT_EQ(frees.size(), freed + 1);
+    EXPECT_EQ(comm->pendingC2cResources, nullptr);
+  }
+  EXPECT_EQ(backendCleanups, 2);
+}
+
+TEST_F(C2cScratchCompletion, MissingSubmissionQueryRetainsNativeOwner) {
+  deferFinalSubmission();
+  auto query = sdk.commGetAsyncError;
+  sdk.commGetAsyncError = nullptr;
+  EXPECT_EQ(execute(), flagcxNotSupported);
+  ASSERT_NE(comm->pendingC2cResources, nullptr);
+  EXPECT_TRUE(comm->pendingC2cResources->nativePending);
+  EXPECT_TRUE(frees.empty());
+  sdk.commGetAsyncError = query;
+  ASSERT_EQ(flagcxC2cDrainPendingResources(comm), flagcxSuccess);
+  EXPECT_EQ(frees.size(), 1u);
   EXPECT_EQ(comm->pendingC2cResources, nullptr);
 }
 

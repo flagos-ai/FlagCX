@@ -472,11 +472,15 @@ static int runDeviceApiTest(int argc, char *argv[],
       // A slot that is correct a moment later was late, not lost. The host
       // copy that reads it is not ordered against the SDMA queue the put was
       // posted on, so a transfer still in flight shows up as the sentinel.
+      flagcxResult_t readbackStatus = flagcxSuccess;
       if (!s18bOk) {
         usleep(200000);
-        resources.check(devHandle->deviceMemcpy(
+        readbackStatus = devHandle->deviceMemcpy(
             hostRecvV, recvBuff, 6 * kPutValueStrideBytes,
-            flagcxMemcpyDeviceToHost, stream));
+            flagcxMemcpyDeviceToHost, stream);
+      }
+      resources.check(readbackStatus);
+      if (!s18bOk) {
         for (int combo = 0; combo < 6; combo++) {
           int teamIdx = combo % 2;
           int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;

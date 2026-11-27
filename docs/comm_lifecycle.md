@@ -50,7 +50,10 @@ Destroying a Default Device API view can retire its IPC generation to the Comm
 without closing imports or freeing backing. A subsequent generation gets its
 own resources. C2C waits for the user and private streams before releasing
 per-call scratch, including after successful native submission, because some
-backends free memory without stream ordering. Failed drains retain the owner and
+backends free memory without stream ordering. A native GroupEnd that returns
+InProgress is polled through its participating native communicator handles
+before the next stage's stream drain. Query failures keep the concrete pending
+submission and scratch owner for cleanup retry. Failed drains retain the owner and
 completed steps for retry. After the user stream drains, cleanup drops its
 borrowed wrapper and uses the owned private stream for freeing scratch.
 Calls without scratch keep their existing successful
