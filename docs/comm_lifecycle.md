@@ -12,6 +12,10 @@ Before Finalize, finish every user stream, directly launched Device API kernel,
 and any application-managed device execution that can access the communicator
 or its buffers.
 Do not submit concurrently with lifecycle calls, and finish open groups first.
+Heterogeneous execution keeps its existing group depth. Native SDK groups have
+a separate thread-local nesting count; Barrier and unfinished Finalize reject
+an open group before releasing resources. These counters record nesting only,
+without per-operation work records or completion events.
 Finalize drains internal producers and transport owners; it does not discover
 all previously accepted user work or synchronize the entire device. This is an
 explicit change from the removed work-tracking contract.
@@ -50,6 +54,10 @@ root-issued creation generation, and the owning rank. Collective DevComm
 creation is serialized; root broadcasts the generation before mappings are
 created. Failed creations consume their generation, and retirement never resets
 it. Reusing a live stack ID therefore cannot reopen or zero retained storage.
+Broadcast participation uses the common barrier/signal requirements. Counter-only
+creation allocates no SHM and skips the broadcast on every platform. Participation
+does not depend on the local completion word width or whether that rank will
+allocate a host-mapped signal plane.
 
 ```text
 caller completes all user work

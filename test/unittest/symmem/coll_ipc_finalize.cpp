@@ -243,3 +243,50 @@ TEST_F(IpcFinalizeBootstrapTest, HostShmGenerationIsIssuedByRootAndRetained) {
   expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
   destroyOneRankAtATime();
 }
+
+TEST_F(IpcFinalizeBootstrapTest,
+       CounterOnlyCreationLeavesNextShmGenerationAligned) {
+  setenv("FLAGCX_SIGNAL_HOST_ENABLE", "1", 1);
+  comm->commType = flagcxCommunicatorHybrid;
+  comm->localRanks = nranks;
+  comm->localRank = rank;
+  comm->localRankToRank = (int *)calloc(nranks, sizeof(int));
+  for (int i = 0; i < nranks; ++i)
+    comm->localRankToRank[i] = i;
+  device.hostRegister = [](void *, size_t) { return flagcxSuccess; };
+  device.hostUnregister = [](void *) { return flagcxSuccess; };
+  device.deviceMemcpy = [](void *dst, void *src, size_t bytes,
+                           flagcxMemcpyType_t, flagcxStream_t, void *) {
+    memcpy(dst, src, bytes);
+    return flagcxSuccess;
+  };
+  comm->shmGeneration = rank == 0 ? 8 : 100;
+  device.hostGetDevicePointer = [](void **out, void *ptr) {
+    *out = ptr;
+    return flagcxSuccess;
+  };
+  device.deviceMemset = [](void *ptr, int value, size_t bytes, flagcxMemType_t,
+                           flagcxStream_t) {
+    memset(ptr, value, bytes);
+    return flagcxSuccess;
+  };
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.interCounterCount = 1;
+  flagcxDevComm_t view = nullptr;
+  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &view), flagcxSuccess);
+  EXPECT_EQ(view->shmGeneration, 0u);
+  ASSERT_NE(view->counterBuffer, nullptr);
+  EXPECT_EQ(view->counterBuffer[0], 0u);
+  ASSERT_EQ(flagcxDevCommDestroy(comm, view), flagcxSuccess);
+  // Every rank skips the counter-only reservation. The next creation opens
+  // shared mappings and must receive its own fresh generation, not a stale one.
+  reqs.interCounterCount = 0;
+  reqs.intraBarrierCount = 1;
+  view = nullptr;
+  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &view), flagcxSuccess);
+  EXPECT_EQ(view->shmGeneration, 9u);
+  EXPECT_NE(view->localBarrierShmPtr, nullptr);
+  ASSERT_EQ(flagcxDevCommDestroy(comm, view), flagcxSuccess);
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  destroyOneRankAtATime();
+}

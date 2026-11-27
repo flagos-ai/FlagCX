@@ -543,7 +543,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       reqs->interSignalCount > 0 || reqs->interCounterCount > 0;
   if (flagcxParamSignalHostEnable() != 0 &&
       (reqs->intraBarrierCount > 0 || reqs->interBarrierCount > 0 ||
-       (hostMappedSignals && oneSidedRequested))) {
+       reqs->interSignalCount > 0)) {
     FLAGCXCHECKGOTO(reserveShmGeneration(comm, devComm), result, exit);
     if (result == flagcxInProgress)
       goto exit;

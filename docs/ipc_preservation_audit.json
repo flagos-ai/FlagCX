@@ -1106,7 +1106,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "d52d2bc21284618d7d1020d9e1bf3585987706f1e2033d9353d5470f2e50f6e1",
+      "current_sha256": "755aa47db6eb22bcca26d4a3b7d5fcb0c5ffd083b14c7b17f34859b36ce584f7",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "ec534389bd128242d9d68c425cd822a6f73203be50d9c37dbb08616f613198b3"
     },
@@ -1134,7 +1134,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "e6a008983544198c9bb55c4042ce95f6d95ba3b555d509cd1468664e7d9c91be",
+      "current_sha256": "10d4f9019ea79a2ae97ee4c7ee93ed9a529ffe7b899feade4efb756fd3e6389a",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites"
     },
     {
@@ -1872,7 +1872,7 @@
           "decision": "preserve-independent-fixes"
         }
       ],
-      "current_sha256": "69e43767d94bc0b13353be9c6768cbc2b082e6d8e604a26411a5b317d62de69b",
+      "current_sha256": "c2bb498e2bc9ac2b5f8a5280b43d577fad9f0afe6c18ed53fc7c4995c93eacae",
       "current_resolution": "strict cleanup, backend generation ownership and IPC lifetime adapted; no core WorkRecord"
     },
     {
@@ -6596,7 +6596,7 @@
           "decision": "adapt-execution-and-ipc"
         }
       ],
-      "current_sha256": "f5fc40ada3de83f2140c68c114632902da724b7a1148121b6e6a15b300d065ed",
+      "current_sha256": "0dd22ad7b66a98c2c96e33420f2dd294e97b7f4a0762709c1f6b9313b2e747ed",
       "current_resolution": "adapted execution/IPC integration; independent features and fixes retained; tested in host/mock suites",
       "pre_rebase_reference_sha256": "da9c4bea234b45842a806e8b04fcc92a8559662335a932dd24c184c9853b9b96"
     },
@@ -9353,7 +9353,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "7851479a19627199dcf731fc934dcbc1194b7124527245d1f4eb15285dea41a0",
+      "current_sha256": "3a7a658f9cf4220662aaa28d42d753740206248aa76018281476255dd610cd06",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -9532,7 +9532,7 @@
           "decision": "align-tests-and-contracts"
         }
       ],
-      "current_sha256": "90e8b91f5842bdfef27232a8448f94e634cea7ccc5df1327aa1f41fffcb8e4e2",
+      "current_sha256": "812dea9eb27a1bf4bd223e1a9b55cece7d80d77ec212322862ada100e68e7763",
       "current_resolution": "adapted for caller completion and minimal IPC ownership contract; see core IPC/lifecycle tests and docs/comm_lifecycle.md"
     },
     {
@@ -10055,6 +10055,13 @@
         "P2": 2
       },
       "resolution": "Isolate retained host-mapped SHM epochs with root-issued/broadcast monotonic generation; preserve native pending group status before staged copies/depth changes. Two core, three host-runner and one real-bootstrap cases passed. Full matrices and2/4-rank bootstrap pass."
+    },
+    "round10": {
+      "reviewed_head": "f6a6c630",
+      "findings": {
+        "P1": 2
+      },
+      "resolution": "Use common barrier/signal requirements for SHM generation; counter-only skips on all traits. Restore native nesting independently of work tracking; reuse hetero depth. Four core, one native-status and one bootstrap case pass. Real32/64 mixed-trait host test passes2/4 ranks; original backends fail the same case."
     }
   },
   "original_feature_reference": "34a81ae38e83ec571152d4a45b9276b44aff48c3",

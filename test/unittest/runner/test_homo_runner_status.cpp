@@ -128,9 +128,9 @@ TEST_F(HomoRunnerStatus, PublicApiPreservesStatusAndExecutesOnce) {
                                NULL);
       },
       [](flagcxComm_t c) { return flagcxSend(NULL, 0, flagcxInt, 0, c, NULL); },
-      [](flagcxComm_t c) { return flagcxRecv(NULL, 0, flagcxInt, 0, c, NULL); },
-      [](flagcxComm_t) { return flagcxGroupStart(NULL); },
-      [](flagcxComm_t) { return flagcxGroupEnd(NULL); }};
+      [](flagcxComm_t c) {
+        return flagcxRecv(NULL, 0, flagcxInt, 0, c, NULL);
+      }};
   for (auto result : {flagcxSuccess, flagcxInProgress, flagcxRemoteError,
                       flagcxNotSupported}) {
     for (auto call : calls) {
@@ -154,3 +154,25 @@ TEST_F(HomoRunnerStatus, FlagscaleTunerPreservesAcceptedNativeStatus) {
   EXPECT_EQ(nativeCalls, 1);
 }
 } // namespace
+
+TEST_F(HomoRunnerStatus, PublicGroupsPreserveStatusAtMatchedBoundaries) {
+  for (auto result : {flagcxSuccess, flagcxInProgress, flagcxRemoteError,
+                      flagcxNotSupported}) {
+    nativeResult = result;
+    nativeCalls = 0;
+    EXPECT_EQ(flagcxGroupStart(NULL), result);
+    EXPECT_EQ(nativeCalls, 1);
+    if (result != flagcxSuccess) {
+      EXPECT_EQ(flagcxGroupEnd(NULL), flagcxInvalidUsage);
+      EXPECT_EQ(nativeCalls, 1);
+      nativeResult = flagcxSuccess;
+      ASSERT_EQ(flagcxGroupStart(NULL), flagcxSuccess);
+    }
+    nativeResult = result;
+    nativeCalls = 0;
+    EXPECT_EQ(flagcxGroupEnd(NULL), result);
+    EXPECT_EQ(nativeCalls, 1);
+    EXPECT_EQ(flagcxGroupEnd(NULL), flagcxInvalidUsage);
+    EXPECT_EQ(nativeCalls, 1);
+  }
+}

@@ -1,6 +1,7 @@
 #include "group.h"
 #include "ipc_lifecycle_mock.hpp"
 #include "runner.h"
+#include <thread>
 
 class BarrierFailureTest : public IpcLifecycleMock {
 public:
@@ -49,6 +50,9 @@ public:
   }
   void TearDown() override {
     syncResult = flagcxSuccess;
+    runner.groupEnd = [] { return flagcxSuccess; };
+    while (flagcxGroupEnd(comm) == flagcxSuccess) {
+    }
     flagcxGroupDepth = 0;
     flagcxRunners[flagcxHomoRunner] = savedRunner;
     IpcLifecycleMock::TearDown();
@@ -166,4 +170,54 @@ TEST_F(BarrierFailureTest, HeterogeneousGroupRejectsBeforeAllocation) {
   EXPECT_EQ(flagcxBarrier(comm, nullptr), flagcxInvalidUsage);
   flagcxGroupDepth = 0;
   EXPECT_EQ(allocations, 0);
+}
+
+TEST_F(BarrierFailureTest, NativeNestedGroupsRejectBarrierAndFinalize) {
+  runner.groupStart = runner.groupEnd = [] { return flagcxSuccess; };
+  ASSERT_EQ(flagcxGroupStart(NULL), flagcxSuccess);
+  ASSERT_EQ(flagcxGroupStart(comm), flagcxSuccess);
+  EXPECT_EQ(flagcxGetGroupDepth(), 0);
+  EXPECT_EQ(flagcxBarrier(comm, nullptr), flagcxInvalidUsage);
+  EXPECT_EQ(flagcxCommFinalize(comm), flagcxInvalidUsage);
+  EXPECT_FALSE(comm->closing);
+  EXPECT_EQ(allocations, 0);
+  ASSERT_EQ(flagcxGroupEnd(comm), flagcxSuccess);
+  EXPECT_EQ(flagcxBarrier(comm, nullptr), flagcxInvalidUsage);
+  ASSERT_EQ(flagcxGroupEnd(NULL), flagcxSuccess);
+  EXPECT_EQ(flagcxBarrier(comm, nullptr), flagcxSuccess);
+  EXPECT_EQ(allocations, 1);
+}
+
+TEST_F(BarrierFailureTest, NativeGroupDepthBelongsToCallingThread) {
+  runner.groupStart = runner.groupEnd = [] { return flagcxSuccess; };
+  ASSERT_EQ(flagcxGroupStart(comm), flagcxSuccess);
+  std::thread another(
+      [&] { EXPECT_EQ(flagcxGroupEnd(comm), flagcxInvalidUsage); });
+  another.join();
+  EXPECT_EQ(flagcxBarrier(comm, nullptr), flagcxInvalidUsage);
+  EXPECT_EQ(allocations, 0);
+  ASSERT_EQ(flagcxGroupEnd(comm), flagcxSuccess);
+  EXPECT_EQ(flagcxBarrier(comm, nullptr), flagcxSuccess);
+}
+
+TEST_F(BarrierFailureTest, FailedNativeEndUnwindsTheMatchedBoundary) {
+  runner.groupStart = [] { return flagcxSuccess; };
+  runner.groupEnd = [] { return flagcxRemoteError; };
+  ASSERT_EQ(flagcxGroupStart(comm), flagcxSuccess);
+  EXPECT_EQ(flagcxGroupEnd(comm), flagcxRemoteError);
+  EXPECT_EQ(flagcxGroupEnd(comm), flagcxInvalidUsage);
+  EXPECT_EQ(flagcxBarrier(comm, nullptr), flagcxSuccess);
+}
+
+TEST_F(BarrierFailureTest, HybridGroupsReuseExistingHeterogeneousDepth) {
+  sdk.groupStart = sdk.groupEnd = [] { return flagcxSuccess; };
+  comm->commType = flagcxCommunicatorHybrid;
+  ASSERT_EQ(flagcxGroupStart(comm), flagcxSuccess);
+  EXPECT_EQ(flagcxGetGroupDepth(), 1);
+  EXPECT_EQ(flagcxBarrier(comm, nullptr), flagcxInvalidUsage);
+  EXPECT_EQ(allocations, 0);
+  ASSERT_EQ(flagcxGroupEnd(comm), flagcxSuccess);
+  EXPECT_EQ(flagcxGetGroupDepth(), 0);
+  comm->commType = flagcxCommunicatorHomo;
+  EXPECT_EQ(flagcxBarrier(comm, nullptr), flagcxSuccess);
 }

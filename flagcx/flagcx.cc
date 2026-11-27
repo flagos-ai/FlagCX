@@ -27,6 +27,7 @@
 #include "utils.h"
 #include <algorithm>
 #include <cassert>
+#include <limits.h>
 #include <limits>
 #include <stdio.h>
 #include <string.h>
@@ -36,6 +37,10 @@
 #include <vector>
 
 flagcxRegPool globalRegPool;
+
+// Public groups can route directly to a native SDK without a hetero group.
+// Only nesting is tracked here; no work records or completion events are owned.
+static __thread int flagcxNativeGroupDepth = 0;
 
 flagcxResult_t flagcxValidateGdrFlushCapability(uint32_t requirements,
                                                 uint32_t capabilities,
@@ -4848,7 +4853,7 @@ static flagcxResult_t flagcxCommFinalizePhase(flagcxComm_t comm, int phase) {
 static flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
   if (comm->finalized)
     return flagcxSuccess;
-  if (flagcxGetGroupDepth() != 0)
+  if (flagcxNativeGroupDepth != 0 || flagcxGetGroupDepth() != 0)
     return flagcxInvalidUsage;
   __atomic_store_n(&comm->closing, true, __ATOMIC_RELEASE);
   comm->ipcClosingImports = true;
@@ -5308,7 +5313,7 @@ flagcxResult_t flagcxBarrier(flagcxComm_t comm, flagcxStream_t stream) {
   struct flagcxBarrierResources *owner = NULL;
   FLAGCXCHECKGOTO(flagcxCommCheckSubmission(comm), result, exit);
   FLAGCXCHECKGOTO(flagcxEnsureCommReady(comm), result, exit);
-  if (flagcxGetGroupDepth() != 0) {
+  if (flagcxNativeGroupDepth != 0 || flagcxGetGroupDepth() != 0) {
     result = flagcxInvalidUsage;
     goto exit;
   }
@@ -5859,39 +5864,56 @@ flagcxResult_t flagcxWaitCounter(flagcxComm_t comm, uint64_t target) {
   return flagcxHeteroWaitCounter(comm->heteroComm, target);
 }
 
+static int flagcxGroupRunnerIndex(flagcxComm_t comm) {
+  if (useHeteroComm())
+    return flagcxUniRunner;
+  if (comm == NULL || useHomoComm(comm))
+    return flagcxHomoRunner;
+  if (useHostComm())
+    return flagcxHostRunner;
+  return flagcxHybridRunner;
+}
+
 flagcxResult_t flagcxGroupStart(flagcxComm_t comm) {
+  flagcxResult_t result = flagcxSuccess;
+  int runnerIndex = flagcxGroupRunnerIndex(comm);
+  bool native =
+      runnerIndex == flagcxHomoRunner || runnerIndex == flagcxHostRunner;
   if (comm)
-    FLAGCXCHECK(flagcxCommCheckSubmission(comm));
-  if (useHeteroComm()) {
-    return flagcxRunners[flagcxUniRunner]->groupStart();
-  } else if (comm == NULL || useHomoComm(comm)) {
-    if (comm == NULL) {
-      INFO(
-          FLAGCX_COLL,
-          "flagcxGroupStart: comm is NULL, delegating to homo runner directly");
-    }
-    return flagcxRunners[flagcxHomoRunner]->groupStart();
-  } else if (useHostComm()) {
-    return flagcxRunners[flagcxHostRunner]->groupStart();
-  } else {
-    return flagcxRunners[flagcxHybridRunner]->groupStart();
+    FLAGCXCHECKGOTO(flagcxCommCheckSubmission(comm), result, exit);
+  if (native && flagcxNativeGroupDepth == INT_MAX) {
+    result = flagcxInvalidUsage;
+    goto exit;
   }
-  return flagcxSuccess;
+  if (comm == NULL && runnerIndex == flagcxHomoRunner)
+    INFO(FLAGCX_COLL,
+         "flagcxGroupStart: comm is NULL, delegating to homo runner directly");
+  FLAGCXCHECKGOTO(flagcxRunners[runnerIndex]->groupStart(), result, exit);
+  if (result == flagcxSuccess && native)
+    ++flagcxNativeGroupDepth;
+exit:
+  return result;
 }
 
 flagcxResult_t flagcxGroupEnd(flagcxComm_t comm) {
-  if (useHeteroComm()) {
-    return flagcxRunners[flagcxUniRunner]->groupEnd();
-  } else if (comm == NULL || useHomoComm(comm)) {
-    if (comm == NULL) {
-      INFO(FLAGCX_COLL,
-           "flagcxGroupEnd: comm is NULL, delegating to homo runner directly");
-    }
-    return flagcxRunners[flagcxHomoRunner]->groupEnd();
-  } else if (useHostComm()) {
-    return flagcxRunners[flagcxHostRunner]->groupEnd();
-  } else {
-    return flagcxRunners[flagcxHybridRunner]->groupEnd();
+  flagcxResult_t result = flagcxSuccess;
+  int runnerIndex = flagcxGroupRunnerIndex(comm);
+  bool native =
+      runnerIndex == flagcxHomoRunner || runnerIndex == flagcxHostRunner;
+  if (native) {
+    if (flagcxNativeGroupDepth == 0)
+      return flagcxInvalidUsage;
+  } else if (flagcxGetGroupDepth() == 0) {
+    return flagcxInvalidUsage;
   }
-  return flagcxSuccess;
+  if (comm == NULL && runnerIndex == flagcxHomoRunner)
+    INFO(FLAGCX_COLL,
+         "flagcxGroupEnd: comm is NULL, delegating to homo runner directly");
+  FLAGCXCHECKGOTO(flagcxRunners[runnerIndex]->groupEnd(), result, exit);
+exit:
+  // Keep the guard active until SDK GroupEnd returns, then consume its matched
+  // boundary on every result, as the native SDK does.
+  if (native)
+    --flagcxNativeGroupDepth;
+  return result;
 }
