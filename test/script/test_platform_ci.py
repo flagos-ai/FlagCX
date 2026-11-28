@@ -120,14 +120,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 steps = workflow["jobs"][job_name]["steps"]
                 checkout = next(i for i, step in enumerate(steps)
                                 if step.get("name") == checkout_name)
+                retry_name = ("Checkout submodules with retries" if job_name == "unit_test"
+                              else "Checkout CUDA submodules with retries")
                 retry = next(i for i, step in enumerate(steps)
-                             if step.get("name") == "Checkout submodules with retries")
+                             if step.get("name") == retry_name)
                 self.assertLess(checkout, retry)
                 self.assertIn("bash .github/scripts/ci/checkout_submodules.sh", steps[retry]["run"])
-                self.assertIn("set -euo pipefail", steps[retry]["run"])
-                self.assertFalse(steps[checkout]["with"]["submodules"])
-                self.assertEqual(steps[checkout]["with"]["path"], "${{ env.FLAGCX_CI_CHECKOUT_PATH }}")
-                self.assertNotIn("if", steps[retry])
+                self.assertNotIn("path", steps[checkout]["with"])
+                if job_name == "unit_test":
+                    self.assertIn("set -euo pipefail", steps[retry]["run"])
+                    self.assertFalse(steps[checkout]["with"]["submodules"])
+                    self.assertNotIn("if", steps[retry])
 
     def test_all_hardware_platforms_are_enabled(self):
         self.assertEqual(

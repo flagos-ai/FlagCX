@@ -31,10 +31,6 @@ jobs:
   # ascend targets aarch64 (the CANN 910 base image is arm64), so it runs on an
   # arm64 runner; the other targets build x86_64 packages.
   build-rpm-packages:
-    env:
-      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-build-rpm-packages-${{ matrix.target }}
-      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-build-rpm-packages-${{ matrix.target }}
-      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-build-rpm-packages-${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
@@ -97,52 +93,16 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     steps:
-      - name: Prepare isolated checkout and diagnostics
-        shell: bash
-        run: |
-          set -euo pipefail
-          umask 022
-          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
-          {
-            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
-            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
-            git --version || true
-          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
-
       - name: Checkout repository
-        id: checkout
         uses: actions/checkout@v7
         with:
-          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
-          submodules: false
-
-      - name: Checkout submodules with retries
-        id: submodules
-        shell: bash
-        run: |
-          set -euo pipefail
-          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
-          cd "$GITHUB_WORKSPACE"
-          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
-
-      - name: Record checkout outcome
-        if: always()
-        shell: bash
-        env:
-          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
-          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
-        run: |
-          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+          submodules: recursive
 
       - name: Build ${{ matrix.target }} RPM packages
-        id: workload
         env:
           RPM_DISTRO: ${{ matrix.distro }}
           BASE_IMAGE: ${{ matrix.base_image }}
-        run: |
-          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
-          cd "$GITHUB_WORKSPACE"
-          ./packaging/rpm/build-flagcx-rpm.sh ${{ matrix.backend }} ${{ matrix.base_image_version }}
+        run: ./packaging/rpm/build-flagcx-rpm.sh ${{ matrix.backend }} ${{ matrix.base_image_version }}
 
       - name: Install ${{ matrix.target }} RPM packages in a clean container
         if: matrix.install_image != ''
@@ -151,8 +111,6 @@ jobs:
           TARGET: ${{ matrix.target }}
           BACKEND: ${{ matrix.backend }}
         run: |
-          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
-          cd "$GITHUB_WORKSPACE"
           docker run --rm \
             -v "${PWD}/rpm-packages/${TARGET}/RPMS:/rpms:ro" \
             -e BACKEND \
@@ -163,19 +121,10 @@ jobs:
               rpm -q "libflagcx-${BACKEND}" "libflagcx-${BACKEND}-devel"
               test -e /usr/lib64/libflagcx.so
             '
+
       - name: Upload ${{ matrix.target }} RPM packages
         uses: actions/upload-artifact@v7
         with:
           name: flagcx-${{ matrix.target }}-rpm-packages
-          path: ${{ env.FLAGCX_CI_SOURCE_ROOT }}/rpm-packages/${{ matrix.target }}/**/*.rpm
-          retention-days: 7
-
-      - name: Upload test attempt logs
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: checkout-build-rpm-${{ github.run_attempt }}-${{ matrix.target }}
-          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
-          include-hidden-files: true
-          if-no-files-found: error
+          path: rpm-packages/${{ matrix.target }}/**/*.rpm
           retention-days: 7

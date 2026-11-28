@@ -18,29 +18,26 @@ def checkout_jobs():
     for filename in WORKFLOWS:
         workflow = yaml.safe_load((REPO_ROOT / ".github/workflows" / filename).read_text())
         for name, job in workflow["jobs"].items():
-            if "FLAGCX_CI_SOURCE_ROOT" in job.get("env", {}):
+            if any(s.get("name") == "Checkout submodules with retries" for s in job.get("steps", [])):
                 yield filename, name, job
 
 
 class CheckoutWorkflowTest(unittest.TestCase):
-    def test_every_hardware_and_packaging_checkout_is_isolated_and_logged(self):
+    def test_hardware_checkouts_reuse_workspace_and_keep_failure_logs(self):
         jobs = list(checkout_jobs())
-        self.assertEqual(len(jobs), 25)
+        self.assertEqual(len(jobs), 3)
         for filename, name, job in jobs:
             with self.subTest(workflow=filename, job=name):
-                env, steps = job["env"], job["steps"]
-                self.assertIn("github.run_id", env["FLAGCX_CI_CHECKOUT_PATH"])
-                self.assertIn("github.run_attempt", env["FLAGCX_CI_CHECKOUT_PATH"])
-                self.assertIn(name, env["FLAGCX_CI_CHECKOUT_PATH"])
-                self.assertNotEqual(env["FLAGCX_CI_SOURCE_ROOT"], env["FLAGCX_CI_LOG_DIR"])
+                env, steps = job.get("env", {}), job["steps"]
+                self.assertNotIn("FLAGCX_CI_SOURCE_ROOT", env)
+                self.assertNotIn("FLAGCX_CI_CHECKOUT_PATH", env)
                 checkout = next(i for i, s in enumerate(steps)
                                 if s.get("uses", "").startswith("actions/checkout@"))
                 submodules = next(i for i, s in enumerate(steps)
                                   if s.get("name") == "Checkout submodules with retries")
-                self.assertEqual(steps[0]["name"], "Prepare isolated checkout and diagnostics")
                 self.assertLess(checkout, submodules)
                 self.assertFalse(steps[checkout]["with"]["submodules"])
-                self.assertEqual(steps[checkout]["with"]["path"], "${{ env.FLAGCX_CI_CHECKOUT_PATH }}")
+                self.assertNotIn("path", steps[checkout]["with"])
                 self.assertIn("set -euo pipefail", steps[submodules]["run"])
                 self.assertNotIn("if", steps[submodules])
                 uploads = [s for s in steps if s.get("uses", "").startswith("actions/upload-artifact@")
@@ -53,22 +50,26 @@ class CheckoutWorkflowTest(unittest.TestCase):
                         self.assertIn("steps.workload.outcome != 'skipped'", step["if"])
                         self.assertEqual(step["with"]["if-no-files-found"], "error")
 
-    def test_checkout_failure_has_diagnostics_before_source_exists(self):
+    def test_checkout_failure_creates_diagnostics_without_a_source_checkout(self):
         for filename, name, job in checkout_jobs():
             with self.subTest(workflow=filename, job=name), tempfile.TemporaryDirectory() as tmp:
-                source, logs = Path(tmp) / "checkout", Path(tmp) / "logs"
-                env = dict(os.environ, FLAGCX_CI_SOURCE_ROOT=str(source),
-                           FLAGCX_CI_LOG_DIR=str(logs), GITHUB_JOB=name,
-                           GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="2", RUNNER_NAME="fixture")
-                subprocess.run(["bash", "-c", job["steps"][0]["run"]],
-                               env=env, check=True, capture_output=True)
-                self.assertTrue(source.is_dir())
-                self.assertIn("run=123 attempt=2", (logs / "checkout.log").read_text())
+                logs = Path(tmp) / "logs"
+                env = dict(os.environ, FLAGCX_CI_LOG_DIR=str(logs),
+                           CHECKOUT_OUTCOME="failure", SUBMODULE_OUTCOME="skipped")
                 outcome = next(s for s in job["steps"] if s.get("name") == "Record checkout outcome")
-                subprocess.run(["bash", "-c", outcome["run"]],
-                               env=dict(env, CHECKOUT_OUTCOME="failure", SUBMODULE_OUTCOME="skipped"),
+                self.assertEqual(outcome["if"], "always()")
+                subprocess.run(["bash", "-c", outcome["run"]], env=env,
                                check=True, capture_output=True)
                 self.assertIn("checkout=failure submodules=skipped", (logs / "checkout.log").read_text())
+
+    def test_packaging_keeps_its_original_checkout_and_artifact_paths(self):
+        for filename in ("build-deb.yml", "build-rpm.yml"):
+            workflow = yaml.safe_load((REPO_ROOT / ".github/workflows" / filename).read_text())
+            for job in workflow["jobs"].values():
+                checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout@"))
+                self.assertNotIn("path", checkout.get("with", {}))
+                self.assertEqual(checkout["with"]["submodules"], "recursive")
+                self.assertFalse(any(s.get("name") == "Checkout submodules with retries" for s in job["steps"]))
 
 
 @unittest.skipUnless(shutil.which("timeout"), "GNU timeout required")
