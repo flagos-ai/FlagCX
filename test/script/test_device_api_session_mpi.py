@@ -11,6 +11,43 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@unittest.skipUnless(shutil.which("g++"), "C++ compiler is required")
+class DeviceApiSessionHeaderTest(unittest.TestCase):
+    def test_header_declares_its_own_standard_library_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            # C-only MPI and a minimal yield interface must not accidentally
+            # supply declarations for initializer_list or free, as some SDKs do.
+            (directory / "thread").write_text(
+                "#pragma once\nnamespace std { namespace this_thread { "
+                "inline void yield() {} } }\n")
+            (directory / "mpi.h").write_text('''
+#pragma once
+typedef int MPI_Comm;
+#define MPI_COMM_WORLD 0
+#define MPI_COMM_NULL -1
+#define MPI_SUCCESS 0
+#define MPI_INT 0
+#define MPI_MAX 0
+int MPI_Initialized(int *);
+int MPI_Allreduce(const void *, void *, int, int, int, MPI_Comm);
+int MPI_Bcast(void *, int, int, int, MPI_Comm);
+int MPI_Comm_rank(MPI_Comm, int *);
+int MPI_Comm_free(MPI_Comm *);
+int MPI_Finalize();
+int MPI_Abort(MPI_Comm, int);
+double MPI_Wtime();
+''')
+            source = directory / "header.cpp"
+            source.write_text('#include "device_api_test_session.hpp"\n')
+            result = subprocess.run(
+                ["g++", "-std=c++17", "-fsyntax-only", "-DFLAGCX_COMM_TRAITS_DEFAULT",
+                 f"-I{directory}", f"-I{ROOT / 'test/fixtures'}",
+                 f"-I{ROOT / 'flagcx/include'}", f"-I{ROOT / 'flagcx/adaptor/include'}",
+                 str(source)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+
 @unittest.skipUnless(shutil.which("mpic++") and shutil.which("mpirun"),
                      "MPI compiler and launcher are required")
 class DeviceApiSessionMpiTest(unittest.TestCase):

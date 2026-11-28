@@ -2,6 +2,8 @@
 
 #include "comm_lifecycle_check.hpp"
 #include "flagcx_kernel.h"
+#include <cstdlib>
+#include <initializer_list>
 
 struct DeviceApiTestFailure {
   flagcxResult_t status;
@@ -176,7 +178,7 @@ struct DeviceApiTestSession {
     delete[] hostSend;
     delete[] hostRecv;
     delete[] hostBuf;
-    free(hostBuff);
+    std::free(hostBuff);
     hostSend = hostRecv = hostBuf = nullptr;
     hostBuff = nullptr;
     return flagcxSuccess;
