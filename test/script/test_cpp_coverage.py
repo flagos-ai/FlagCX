@@ -50,7 +50,7 @@ class SupplementalFilterTest(unittest.TestCase):
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("cpp_coverage: true", workflow)
         reusable = (REPO_ROOT / ".github/workflows/unit_tests_common.yml").read_text()
-        self.assertIn("if: ${{ always() && inputs.cpp_coverage }}", reusable)
+        self.assertIn("if: ${{ always() && inputs.cpp_coverage && steps.workload.outcome != 'skipped' }}", reusable)
 
 
 @unittest.skipUnless(

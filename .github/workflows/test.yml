@@ -69,6 +69,7 @@ jobs:
       kunlunxin_runs_on: ${{ steps.kunlunxin.outputs.runs_on }}
     steps:
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
           repository: ${{ inputs.repository }}
@@ -108,6 +109,10 @@ jobs:
         run: ruby .github/scripts/ci/load_platform_config.rb kunlunxin
 
   perf-test-experimental-cuda:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-experimental-cuda
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-experimental-cuda
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-experimental-cuda
     if: contains(fromJSON(inputs.platforms), 'cuda')
     name: perf-test-experimental (cuda)
     needs: load-hardware-container-configs
@@ -115,24 +120,56 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
           submodules: false
           persist-credentials: false
           set-safe-directory: true
 
-      - name: Checkout CUDA submodules with retries
+      - name: Checkout submodules with retries
+        id: submodules
         shell: bash
-        run: bash .github/scripts/ci/checkout_submodules.sh
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
 
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run perf-test-experimental (cuda) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-cuda-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
@@ -140,16 +177,19 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.cuda_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.cuda_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.cuda_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          cuda perf-test-experimental
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" cuda perf-test-experimental
       - name: Cleanup perf-test-experimental (cuda) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-cuda-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()
@@ -162,6 +202,10 @@ jobs:
           retention-days: 7
 
   perf-test-iluvatar:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-iluvatar
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-iluvatar
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-iluvatar
     if: contains(fromJSON(inputs.platforms), 'iluvatar')
     name: perf-test (iluvatar)
     needs: load-hardware-container-configs
@@ -169,20 +213,56 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run perf-test (iluvatar) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-iluvatar-perf-${{ github.run_id }}-${{ github.run_attempt }}
@@ -191,17 +271,21 @@ jobs:
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.iluvatar_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.iluvatar_ignore_test }}
         run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
           set -euo pipefail
           mkdir -p "$FLAGCX_CI_LOG_DIR"
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" \
             iluvatar perf 2>&1 | tee "$FLAGCX_CI_LOG_DIR/iluvatar-perf.log"
-
       - name: Cleanup perf-test (iluvatar) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-iluvatar-perf-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()
@@ -214,6 +298,10 @@ jobs:
           retention-days: 7
 
   perf-test-hygon:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-hygon
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-hygon
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-hygon
     if: contains(fromJSON(inputs.platforms), 'hygon')
     name: perf-test (hygon)
     needs: load-hardware-container-configs
@@ -221,20 +309,56 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run perf-test (hygon) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-hygon-perf-${{ github.run_id }}-${{ github.run_attempt }}
@@ -242,16 +366,19 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.hygon_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.hygon_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.hygon_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          hygon perf
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" hygon perf
       - name: Cleanup perf-test (hygon) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-hygon-perf-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()
@@ -264,6 +391,10 @@ jobs:
           retention-days: 7
 
   perf-test-experimental-hygon:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-experimental-hygon
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-experimental-hygon
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-experimental-hygon
     if: contains(fromJSON(inputs.platforms), 'hygon')
     name: perf-test-experimental (hygon)
     needs: load-hardware-container-configs
@@ -271,20 +402,56 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run perf-test-experimental (hygon) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-hygon-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
@@ -292,16 +459,19 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.hygon_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.hygon_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.hygon_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          hygon perf-test-experimental
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" hygon perf-test-experimental
       - name: Cleanup perf-test-experimental (hygon) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-hygon-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()
@@ -314,6 +484,10 @@ jobs:
           retention-days: 7
 
   perf-test-cuda:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-cuda
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-cuda
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-cuda
     if: contains(fromJSON(inputs.platforms), 'cuda')
     name: perf-test (cuda)
     needs: load-hardware-container-configs
@@ -321,24 +495,56 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
           submodules: false
           persist-credentials: false
           set-safe-directory: true
 
-      - name: Checkout CUDA submodules with retries
+      - name: Checkout submodules with retries
+        id: submodules
         shell: bash
-        run: bash .github/scripts/ci/checkout_submodules.sh
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
 
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run perf-test (cuda) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-cuda-perf-${{ github.run_id }}-${{ github.run_attempt }}
@@ -346,16 +552,19 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.cuda_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.cuda_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.cuda_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          cuda perf
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" cuda perf
       - name: Cleanup perf-test (cuda) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-cuda-perf-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()
@@ -368,6 +577,10 @@ jobs:
           retention-days: 7
 
   perf-test-metax:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-metax
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-metax
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-metax
     if: contains(fromJSON(inputs.platforms), 'metax')
     name: perf-test (metax)
     needs: load-hardware-container-configs
@@ -375,20 +588,56 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run perf-test (metax) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-metax-perf-${{ github.run_id }}-${{ github.run_attempt }}
@@ -396,16 +645,19 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.metax_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.metax_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.metax_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          metax perf
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" metax perf
       - name: Cleanup perf-test (metax) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-metax-perf-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()
@@ -418,6 +670,10 @@ jobs:
           retention-days: 7
 
   perf-test-ppu:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-ppu
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-ppu
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-ppu
     if: contains(fromJSON(inputs.platforms), 'ppu')
     name: perf-test (ppu)
     needs: load-hardware-container-configs
@@ -425,20 +681,56 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run perf-test (ppu) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-perf-${{ github.run_id }}-${{ github.run_attempt }}
@@ -446,16 +738,19 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ppu_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.ppu_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.ppu_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          ppu perf
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" ppu perf
       - name: Cleanup perf-test (ppu) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-perf-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()
@@ -468,6 +763,10 @@ jobs:
           retention-days: 7
 
   perf-test-experimental-ppu:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-experimental-ppu
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-experimental-ppu
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-experimental-ppu
     if: contains(fromJSON(inputs.platforms), 'ppu')
     name: perf-test-experimental (ppu)
     needs: load-hardware-container-configs
@@ -475,20 +774,56 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run perf-test-experimental (ppu) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
@@ -496,16 +831,19 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ppu_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.ppu_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.ppu_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          ppu perf-test-experimental
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" ppu perf-test-experimental
       - name: Cleanup perf-test-experimental (ppu) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()
@@ -518,6 +856,10 @@ jobs:
           retention-days: 7
 
   perf-test-mthreads:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-mthreads
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-mthreads
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-mthreads
     if: contains(fromJSON(inputs.platforms), 'mthreads')
     name: perf-test (musa)
     needs: load-hardware-container-configs
@@ -525,20 +867,56 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run perf-test (musa) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-perf-${{ github.run_id }}-${{ github.run_attempt }}
@@ -546,16 +924,19 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.mthreads_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.mthreads_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.mthreads_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          mthreads perf
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" mthreads perf
       - name: Cleanup perf-test (musa) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-perf-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()
@@ -568,6 +949,10 @@ jobs:
           retention-days: 7
 
   perf-test-experimental-mthreads:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-experimental-mthreads
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-experimental-mthreads
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-experimental-mthreads
     # Deferred while the UniRunner stream-value completion stall is investigated.
     if: ${{ false && contains(fromJSON(inputs.platforms), 'mthreads') }}
     name: perf-test-experimental (musa)
@@ -576,20 +961,56 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run perf-test-experimental (musa) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
@@ -597,16 +1018,19 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.mthreads_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.mthreads_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.mthreads_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          mthreads perf-test-experimental
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" mthreads perf-test-experimental
       - name: Cleanup perf-test-experimental (musa) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-perf_experimental-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()
@@ -619,6 +1043,10 @@ jobs:
           retention-days: 7
 
   perf-test-ascend:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-ascend
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-ascend
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-ascend
     if: contains(fromJSON(inputs.platforms), 'ascend')
     name: perf-test (ascend)
     needs: load-hardware-container-configs
@@ -626,20 +1054,56 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run perf-test (ascend) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ascend-perf-${{ github.run_id }}-${{ github.run_attempt }}
@@ -647,16 +1111,19 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ascend_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.ascend_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.ascend_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          ascend perf
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" ascend perf
       - name: Cleanup perf-test (ascend) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ascend-perf-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()
@@ -669,6 +1136,10 @@ jobs:
           retention-days: 7
 
   perf-test-kunlunxin:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-kunlunxin
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-kunlunxin
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-perf-test-kunlunxin
     if: contains(fromJSON(inputs.platforms), 'kunlunxin')
     name: perf-test (kunlunxin)
     needs: load-hardware-container-configs
@@ -680,35 +1151,70 @@ jobs:
       volumes: ${{ fromJSON(needs.load-hardware-container-configs.outputs.kunlunxin_container_volumes) }}
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Trust workspace and submodules for checkout
         shell: bash
         run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
           git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
-
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Run perf-test (kunlunxin) in job container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_ignore_test }}
         run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
           set -euo pipefail
           git clean -ffdX
           git submodule foreach --recursive 'git clean -ffdX'
           mkdir -p "$FLAGCX_CI_LOG_DIR"
           bash .github/scripts/ci/run_in_host_network.sh \
             bash .github/scripts/ci/run_hardware_workload.sh kunlunxin perf "$FLAGCX_CI_SET_ENV" '' 2>&1 | tee "$FLAGCX_CI_LOG_DIR/perf.log"
-
       - name: Upload test attempt logs
         if: always()
         uses: actions/upload-artifact@v7
@@ -754,6 +1260,7 @@ jobs:
       MTHREADS_EXPERIMENTAL_RESULT: ${{ needs['perf-test-experimental-mthreads'].result }}
     steps:
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
           repository: ${{ inputs.repository }}

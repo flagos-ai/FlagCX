@@ -41,6 +41,7 @@ jobs:
       ignore_test: ${{ steps.config.outputs.ignore_test }}
     steps:
       - name: Checkout code
+        id: checkout
         uses: actions/checkout@v7
         with:
           repository: ${{ inputs.repository || github.repository }}
@@ -54,6 +55,10 @@ jobs:
         run: ruby .github/scripts/ci/load_platform_config.rb "$FLAGCX_CI_PLATFORM"
 
   unit_test:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-unit_test-${{ inputs.platform }}-${{ matrix.suite }}
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-unit_test-${{ inputs.platform }}-${{ matrix.suite }}
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-unit_test-${{ inputs.platform }}-${{ matrix.suite }}
     name: ${{ needs.load_config.outputs.display_name }} / ${{ matrix.suite }}
     needs: load_config
     if: inputs.platform != 'enflame' && inputs.platform != 'kunlunxin'
@@ -64,11 +69,25 @@ jobs:
         suite: ${{ fromJSON(needs.load_config.outputs.unit_test_suites) }}
     runs-on: ${{ fromJSON(needs.load_config.outputs.runs_on) }}
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Install Git for repository checkout
         shell: bash
         env:
           FLAGCX_CI_PLATFORM: ${{ inputs.platform }}
         run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
           if [[ "$FLAGCX_CI_PLATFORM" == "ascend" ]]; then
             git_version=""
             if command -v git >/dev/null 2>&1; then
@@ -97,26 +116,44 @@ jobs:
             fi
           fi
           git version
-
       - name: Checkout code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository || github.repository }}
           ref: ${{ inputs.ref || github.ref }}
-          submodules: ${{ inputs.platform != 'cuda' && 'recursive' || 'false' }}
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
-
-      - name: Checkout CUDA submodules with retries
-        if: inputs.platform == 'cuda'
-        shell: bash
-        run: bash .github/scripts/ci/checkout_submodules.sh
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run unit-test suite in host-managed container
+        id: workload
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-unit-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load_config.outputs.docker_args }}
@@ -127,16 +164,19 @@ jobs:
           FLAGCX_CI_CPP_COVERAGE_REPORT: /ci-logs/cpp-coverage/${{ inputs.platform }}/${{ matrix.suite }}
           FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '10m' || '3m' }}
           FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '10m' || '5m' }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          "${{ inputs.platform }}" unittest "${{ matrix.suite }}"
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" "${{ inputs.platform }}" unittest "${{ matrix.suite }}"
       - name: Cleanup unit-test container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-unit-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
-        run: docker container rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker container rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()
@@ -149,7 +189,7 @@ jobs:
           retention-days: 7
 
       - name: Upload C++ coverage report
-        if: ${{ always() && inputs.cpp_coverage }}
+        if: ${{ always() && inputs.cpp_coverage && steps.workload.outcome != 'skipped' }}
         uses: actions/upload-artifact@v7
         with:
           name: cpp-coverage-${{ inputs.platform }}-${{ matrix.suite }}
@@ -159,6 +199,10 @@ jobs:
           retention-days: 14
 
   unit_test_enflame:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-unit_test_enflame-${{ inputs.platform }}-${{ matrix.suite }}
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-unit_test_enflame-${{ inputs.platform }}-${{ matrix.suite }}
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-unit_test_enflame-${{ inputs.platform }}-${{ matrix.suite }}
     name: ${{ needs.load_config.outputs.display_name }} / ${{ matrix.suite }}
     needs: load_config
     if: inputs.platform == 'enflame'
@@ -176,9 +220,23 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Install Git for repository checkout
         shell: bash
         run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
           git_version="$(git --version 2>/dev/null | sed -E 's/.* ([0-9]+)\.([0-9]+).*/\1 \2/')"
           read -r git_major git_minor <<< "$git_version"
           if [[ -z "$git_version" ]] || ((git_major < 2 || (git_major == 2 && git_minor < 18))); then
@@ -192,26 +250,44 @@ jobs:
             fi
           fi
           git version
-
       - name: Checkout code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository || github.repository }}
           ref: ${{ inputs.ref || github.ref }}
           submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Trust workspace and submodules
         run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
           git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
-
-      - name: Checkout submodules
-        run: bash .github/scripts/ci/checkout_submodules.sh
-
       - name: Run Enflame unit-test suite in job container
+        id: workload
         env:
           FLAGCX_CI_SET_ENV: ${{ needs.load_config.outputs.set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load_config.outputs.ignore_test }}
@@ -220,10 +296,11 @@ jobs:
           FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '10m' || '3m' }}
           FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '10m' || '5m' }}
         run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
           set -euo pipefail
           bash .github/scripts/ci/run_hardware_workload.sh \
             "${{ inputs.platform }}" unittest "$FLAGCX_CI_SET_ENV" "${{ matrix.suite }}"
-
       - name: Upload test attempt logs
         if: always()
         uses: actions/upload-artifact@v7
@@ -235,7 +312,7 @@ jobs:
           retention-days: 7
 
       - name: Upload C++ coverage report
-        if: ${{ always() && inputs.cpp_coverage }}
+        if: ${{ always() && inputs.cpp_coverage && steps.workload.outcome != 'skipped' }}
         uses: actions/upload-artifact@v7
         with:
           name: cpp-coverage-${{ inputs.platform }}-${{ matrix.suite }}
@@ -263,44 +340,83 @@ jobs:
       run:
         shell: bash
     env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-kunlunxin_unit_test-${{ inputs.platform }}-${{ matrix.suite }}
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-kunlunxin_unit_test-${{ inputs.platform }}-${{ matrix.suite }}
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-kunlunxin_unit_test-${{ inputs.platform }}-${{ matrix.suite }}
       FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '10m' || '3m' }}
       FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '10m' || '5m' }}
       FLAGCX_CI_COVERAGE: ${{ inputs.cpp_coverage && '1' || '0' }}
-      FLAGCX_CI_CPP_COVERAGE_REPORT: ${{ github.workspace }}/.ci-logs/cpp-coverage/kunlunxin/${{ matrix.suite }}
+      FLAGCX_CI_CPP_COVERAGE_REPORT: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-kunlunxin_unit_test-${{ inputs.platform }}-${{ matrix.suite }}/cpp-coverage/kunlunxin/${{ matrix.suite }}
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Trust workspace and submodules for checkout
         run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
           git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
-
       - name: Checkout code in job container
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository || github.repository }}
           ref: ${{ inputs.ref || github.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Clean build artifacts in job container
         run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
           git clean -ffdX
           git submodule foreach --recursive 'git clean -ffdX'
           mkdir -p "$FLAGCX_CI_LOG_DIR"
-
       - name: Run unit-test suite in job container
+        id: workload
         env:
           FLAGCX_CI_SET_ENV: ${{ needs.load_config.outputs.set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load_config.outputs.ignore_test }}
           FLAGCX_CI_SUITE: ${{ matrix.suite }}
         run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
           set -euo pipefail
           bash .github/scripts/ci/run_in_host_network.sh \
             bash .github/scripts/ci/run_unit_test.sh \
             "$FLAGCX_CI_SET_ENV" "$FLAGCX_CI_SUITE" 2>&1 \
             | tee "$FLAGCX_CI_LOG_DIR/suite.log"
-
       - name: Upload unit-test logs
         if: always()
         uses: actions/upload-artifact@v7
@@ -312,7 +428,7 @@ jobs:
           retention-days: 7
 
       - name: Upload C++ coverage report
-        if: ${{ always() && inputs.cpp_coverage }}
+        if: ${{ always() && inputs.cpp_coverage && steps.workload.outcome != 'skipped' }}
         uses: actions/upload-artifact@v7
         with:
           name: cpp-coverage-kunlunxin-${{ matrix.suite }}

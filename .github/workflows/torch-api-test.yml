@@ -72,6 +72,7 @@ jobs:
       kunlunxin_runs_on: ${{ steps.kunlunxin.outputs.runs_on }}
     steps:
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
           repository: ${{ inputs.repository }}
@@ -117,23 +118,62 @@ jobs:
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.iluvatar_runs_on) }}
     timeout-minutes: 60
     env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-iluvatar
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-iluvatar
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-iluvatar
       FLAGCICD_TOKEN_SET: ${{ secrets.FLAGCICD_API_TOKEN != '' }}
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run torch-api-test (iluvatar) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_TORCH_COVERAGE: '1'
@@ -143,42 +183,49 @@ jobs:
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.iluvatar_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.iluvatar_ignore_test }}
         run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
           set -euo pipefail
           mkdir -p "$FLAGCX_CI_LOG_DIR"
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" \
             iluvatar torch-api 2>&1 | tee "$FLAGCX_CI_LOG_DIR/iluvatar-torch-api.log"
-
       - name: Cleanup torch-api-test (iluvatar) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-iluvatar-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Collect Python coverage report
-        if: ${{ !cancelled() && hashFiles('.ci-logs/coverage-iluvatar-gpu-torch.json') != '' }}
-        run: cp "$FLAGCX_CI_LOG_DIR/coverage-iluvatar-gpu-torch.json" coverage-iluvatar-gpu-torch.json
+        if: ${{ !cancelled() && hashFiles(format('{0}/coverage-iluvatar-gpu-torch.json', env.FLAGCX_CI_LOG_DIR)) != '' }}
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          cp "$FLAGCX_CI_LOG_DIR/coverage-iluvatar-gpu-torch.json" coverage-iluvatar-gpu-torch.json
 
       - name: Upload coverage report to FlagCICD
-        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles('coverage-iluvatar-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles(format('{0}/coverage-iluvatar-gpu-torch.json', env.FLAGCX_CI_SOURCE_ROOT)) != '' }}
         uses: flagos-ai/FlagOps/actions/post-pytest-report@5bd0e138a6ae482b1a1cc809ea6705ecfd6eb410
         continue-on-error: true
         timeout-minutes: 2
         with:
           backend_url: https://flagcicd.flagos.net/flagcicd/api/v1/cicd/metrics/
           api_token: ${{ secrets.FLAGCICD_API_TOKEN }}
-          report_path: coverage-iluvatar-gpu-torch.json
+          report_path: ${{ env.FLAGCX_CI_SOURCE_ROOT }}/coverage-iluvatar-gpu-torch.json
           file_type: coverage
           job_name: coverage-iluvatar-gpu-torch
           pr_id: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
           fail_on_error: 'false'
 
       - name: Archive Python coverage report
-        if: ${{ !cancelled() && hashFiles('coverage-iluvatar-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && hashFiles(format('{0}/coverage-iluvatar-gpu-torch.json', env.FLAGCX_CI_SOURCE_ROOT)) != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: coverage-iluvatar-gpu-torch
-          path: coverage-iluvatar-gpu-torch.json
+          path: ${{ env.FLAGCX_CI_SOURCE_ROOT }}/coverage-iluvatar-gpu-torch.json
           retention-days: 7
 
       - name: Upload test attempt logs
@@ -198,23 +245,62 @@ jobs:
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.hygon_runs_on) }}
     timeout-minutes: 60
     env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-hygon
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-hygon
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-hygon
       FLAGCICD_TOKEN_SET: ${{ secrets.FLAGCICD_API_TOKEN != '' }}
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run torch-api-test (hygon) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_TORCH_COVERAGE: '1'
@@ -223,41 +309,47 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.hygon_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.hygon_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.hygon_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          hygon torch-api
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" hygon torch-api
       - name: Cleanup torch-api-test (hygon) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-hygon-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Collect Python coverage report
-        if: ${{ !cancelled() && hashFiles('.ci-logs/coverage-hygon-gpu-torch.json') != '' }}
-        run: cp "$FLAGCX_CI_LOG_DIR/coverage-hygon-gpu-torch.json" coverage-hygon-gpu-torch.json
+        if: ${{ !cancelled() && hashFiles(format('{0}/coverage-hygon-gpu-torch.json', env.FLAGCX_CI_LOG_DIR)) != '' }}
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          cp "$FLAGCX_CI_LOG_DIR/coverage-hygon-gpu-torch.json" coverage-hygon-gpu-torch.json
 
       - name: Upload coverage report to FlagCICD
-        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles('coverage-hygon-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles(format('{0}/coverage-hygon-gpu-torch.json', env.FLAGCX_CI_SOURCE_ROOT)) != '' }}
         uses: flagos-ai/FlagOps/actions/post-pytest-report@5bd0e138a6ae482b1a1cc809ea6705ecfd6eb410
         continue-on-error: true
         timeout-minutes: 2
         with:
           backend_url: https://flagcicd.flagos.net/flagcicd/api/v1/cicd/metrics/
           api_token: ${{ secrets.FLAGCICD_API_TOKEN }}
-          report_path: coverage-hygon-gpu-torch.json
+          report_path: ${{ env.FLAGCX_CI_SOURCE_ROOT }}/coverage-hygon-gpu-torch.json
           file_type: coverage
           job_name: coverage-hygon-gpu-torch
           pr_id: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
           fail_on_error: 'false'
 
       - name: Archive Python coverage report
-        if: ${{ !cancelled() && hashFiles('coverage-hygon-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && hashFiles(format('{0}/coverage-hygon-gpu-torch.json', env.FLAGCX_CI_SOURCE_ROOT)) != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: coverage-hygon-gpu-torch
-          path: coverage-hygon-gpu-torch.json
+          path: ${{ env.FLAGCX_CI_SOURCE_ROOT }}/coverage-hygon-gpu-torch.json
           retention-days: 7
 
       - name: Upload test attempt logs
@@ -277,27 +369,62 @@ jobs:
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.cuda_runs_on) }}
     timeout-minutes: 60
     env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-cuda
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-cuda
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-cuda
       FLAGCICD_TOKEN_SET: ${{ secrets.FLAGCICD_API_TOKEN != '' }}
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
           submodules: false
           persist-credentials: false
           set-safe-directory: true
 
-      - name: Checkout CUDA submodules with retries
+      - name: Checkout submodules with retries
+        id: submodules
         shell: bash
-        run: bash .github/scripts/ci/checkout_submodules.sh
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
 
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run torch-api-test (cuda) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_TORCH_COVERAGE: '1'
@@ -306,41 +433,47 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.cuda_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.cuda_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.cuda_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          cuda torch-api
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" cuda torch-api
       - name: Cleanup torch-api-test (cuda) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-cuda-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Collect Python coverage report
-        if: ${{ !cancelled() && hashFiles('.ci-logs/coverage-cuda-gpu-torch.json') != '' }}
-        run: cp "$FLAGCX_CI_LOG_DIR/coverage-cuda-gpu-torch.json" coverage-cuda-gpu-torch.json
+        if: ${{ !cancelled() && hashFiles(format('{0}/coverage-cuda-gpu-torch.json', env.FLAGCX_CI_LOG_DIR)) != '' }}
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          cp "$FLAGCX_CI_LOG_DIR/coverage-cuda-gpu-torch.json" coverage-cuda-gpu-torch.json
 
       - name: Upload coverage report to FlagCICD
-        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles('coverage-cuda-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles(format('{0}/coverage-cuda-gpu-torch.json', env.FLAGCX_CI_SOURCE_ROOT)) != '' }}
         uses: flagos-ai/FlagOps/actions/post-pytest-report@5bd0e138a6ae482b1a1cc809ea6705ecfd6eb410
         continue-on-error: true
         timeout-minutes: 2
         with:
           backend_url: https://flagcicd.flagos.net/flagcicd/api/v1/cicd/metrics/
           api_token: ${{ secrets.FLAGCICD_API_TOKEN }}
-          report_path: coverage-cuda-gpu-torch.json
+          report_path: ${{ env.FLAGCX_CI_SOURCE_ROOT }}/coverage-cuda-gpu-torch.json
           file_type: coverage
           job_name: coverage-cuda-gpu-torch
           pr_id: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
           fail_on_error: 'false'
 
       - name: Archive Python coverage report
-        if: ${{ !cancelled() && hashFiles('coverage-cuda-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && hashFiles(format('{0}/coverage-cuda-gpu-torch.json', env.FLAGCX_CI_SOURCE_ROOT)) != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: coverage-cuda-gpu-torch
-          path: coverage-cuda-gpu-torch.json
+          path: ${{ env.FLAGCX_CI_SOURCE_ROOT }}/coverage-cuda-gpu-torch.json
           retention-days: 7
 
       - name: Upload test attempt logs
@@ -360,23 +493,62 @@ jobs:
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.metax_runs_on) }}
     timeout-minutes: 60
     env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-metax
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-metax
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-metax
       FLAGCICD_TOKEN_SET: ${{ secrets.FLAGCICD_API_TOKEN != '' }}
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run torch-api-test (metax) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_TORCH_COVERAGE: '1'
@@ -385,41 +557,47 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.metax_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.metax_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.metax_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          metax torch-api
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" metax torch-api
       - name: Cleanup torch-api-test (metax) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-metax-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Collect Python coverage report
-        if: ${{ !cancelled() && hashFiles('.ci-logs/coverage-metax-gpu-torch.json') != '' }}
-        run: cp "$FLAGCX_CI_LOG_DIR/coverage-metax-gpu-torch.json" coverage-metax-gpu-torch.json
+        if: ${{ !cancelled() && hashFiles(format('{0}/coverage-metax-gpu-torch.json', env.FLAGCX_CI_LOG_DIR)) != '' }}
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          cp "$FLAGCX_CI_LOG_DIR/coverage-metax-gpu-torch.json" coverage-metax-gpu-torch.json
 
       - name: Upload coverage report to FlagCICD
-        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles('coverage-metax-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles(format('{0}/coverage-metax-gpu-torch.json', env.FLAGCX_CI_SOURCE_ROOT)) != '' }}
         uses: flagos-ai/FlagOps/actions/post-pytest-report@5bd0e138a6ae482b1a1cc809ea6705ecfd6eb410
         continue-on-error: true
         timeout-minutes: 2
         with:
           backend_url: https://flagcicd.flagos.net/flagcicd/api/v1/cicd/metrics/
           api_token: ${{ secrets.FLAGCICD_API_TOKEN }}
-          report_path: coverage-metax-gpu-torch.json
+          report_path: ${{ env.FLAGCX_CI_SOURCE_ROOT }}/coverage-metax-gpu-torch.json
           file_type: coverage
           job_name: coverage-metax-gpu-torch
           pr_id: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
           fail_on_error: 'false'
 
       - name: Archive Python coverage report
-        if: ${{ !cancelled() && hashFiles('coverage-metax-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && hashFiles(format('{0}/coverage-metax-gpu-torch.json', env.FLAGCX_CI_SOURCE_ROOT)) != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: coverage-metax-gpu-torch
-          path: coverage-metax-gpu-torch.json
+          path: ${{ env.FLAGCX_CI_SOURCE_ROOT }}/coverage-metax-gpu-torch.json
           retention-days: 7
 
       - name: Upload test attempt logs
@@ -439,23 +617,62 @@ jobs:
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.ppu_runs_on) }}
     timeout-minutes: 60
     env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-ppu
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-ppu
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-ppu
       FLAGCICD_TOKEN_SET: ${{ secrets.FLAGCICD_API_TOKEN != '' }}
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run torch-api-test (ppu) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_TORCH_COVERAGE: '1'
@@ -464,41 +681,47 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ppu_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.ppu_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.ppu_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          ppu torch-api
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" ppu torch-api
       - name: Cleanup torch-api-test (ppu) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Collect Python coverage report
-        if: ${{ !cancelled() && hashFiles('.ci-logs/coverage-ppu-gpu-torch.json') != '' }}
-        run: cp "$FLAGCX_CI_LOG_DIR/coverage-ppu-gpu-torch.json" coverage-ppu-gpu-torch.json
+        if: ${{ !cancelled() && hashFiles(format('{0}/coverage-ppu-gpu-torch.json', env.FLAGCX_CI_LOG_DIR)) != '' }}
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          cp "$FLAGCX_CI_LOG_DIR/coverage-ppu-gpu-torch.json" coverage-ppu-gpu-torch.json
 
       - name: Upload coverage report to FlagCICD
-        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles('coverage-ppu-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles(format('{0}/coverage-ppu-gpu-torch.json', env.FLAGCX_CI_SOURCE_ROOT)) != '' }}
         uses: flagos-ai/FlagOps/actions/post-pytest-report@5bd0e138a6ae482b1a1cc809ea6705ecfd6eb410
         continue-on-error: true
         timeout-minutes: 2
         with:
           backend_url: https://flagcicd.flagos.net/flagcicd/api/v1/cicd/metrics/
           api_token: ${{ secrets.FLAGCICD_API_TOKEN }}
-          report_path: coverage-ppu-gpu-torch.json
+          report_path: ${{ env.FLAGCX_CI_SOURCE_ROOT }}/coverage-ppu-gpu-torch.json
           file_type: coverage
           job_name: coverage-ppu-gpu-torch
           pr_id: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
           fail_on_error: 'false'
 
       - name: Archive Python coverage report
-        if: ${{ !cancelled() && hashFiles('coverage-ppu-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && hashFiles(format('{0}/coverage-ppu-gpu-torch.json', env.FLAGCX_CI_SOURCE_ROOT)) != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: coverage-ppu-gpu-torch
-          path: coverage-ppu-gpu-torch.json
+          path: ${{ env.FLAGCX_CI_SOURCE_ROOT }}/coverage-ppu-gpu-torch.json
           retention-days: 7
 
       - name: Upload test attempt logs
@@ -518,23 +741,62 @@ jobs:
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.mthreads_runs_on) }}
     timeout-minutes: 180
     env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-mthreads
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-mthreads
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-mthreads
       FLAGCICD_TOKEN_SET: ${{ secrets.FLAGCICD_API_TOKEN != '' }}
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run torch-api-test (musa) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_TORCH_COVERAGE: '1'
@@ -543,41 +805,47 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.mthreads_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.mthreads_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.mthreads_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          mthreads torch-api
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" mthreads torch-api
       - name: Cleanup torch-api-test (musa) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Collect Python coverage report
-        if: ${{ !cancelled() && hashFiles('.ci-logs/coverage-mthreads-gpu-torch.json') != '' }}
-        run: cp "$FLAGCX_CI_LOG_DIR/coverage-mthreads-gpu-torch.json" coverage-mthreads-gpu-torch.json
+        if: ${{ !cancelled() && hashFiles(format('{0}/coverage-mthreads-gpu-torch.json', env.FLAGCX_CI_LOG_DIR)) != '' }}
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          cp "$FLAGCX_CI_LOG_DIR/coverage-mthreads-gpu-torch.json" coverage-mthreads-gpu-torch.json
 
       - name: Upload coverage report to FlagCICD
-        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles('coverage-mthreads-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles(format('{0}/coverage-mthreads-gpu-torch.json', env.FLAGCX_CI_SOURCE_ROOT)) != '' }}
         uses: flagos-ai/FlagOps/actions/post-pytest-report@5bd0e138a6ae482b1a1cc809ea6705ecfd6eb410
         continue-on-error: true
         timeout-minutes: 2
         with:
           backend_url: https://flagcicd.flagos.net/flagcicd/api/v1/cicd/metrics/
           api_token: ${{ secrets.FLAGCICD_API_TOKEN }}
-          report_path: coverage-mthreads-gpu-torch.json
+          report_path: ${{ env.FLAGCX_CI_SOURCE_ROOT }}/coverage-mthreads-gpu-torch.json
           file_type: coverage
           job_name: coverage-mthreads-gpu-torch
           pr_id: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
           fail_on_error: 'false'
 
       - name: Archive Python coverage report
-        if: ${{ !cancelled() && hashFiles('coverage-mthreads-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && hashFiles(format('{0}/coverage-mthreads-gpu-torch.json', env.FLAGCX_CI_SOURCE_ROOT)) != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: coverage-mthreads-gpu-torch
-          path: coverage-mthreads-gpu-torch.json
+          path: ${{ env.FLAGCX_CI_SOURCE_ROOT }}/coverage-mthreads-gpu-torch.json
           retention-days: 7
 
       - name: Upload test attempt logs
@@ -591,6 +859,10 @@ jobs:
           retention-days: 7
 
   torch-api-test-ascend:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-ascend
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-ascend
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-ascend
     if: contains(fromJSON(inputs.platforms), 'ascend')
     name: torch-api-test (ascend)
     needs: load-hardware-container-configs
@@ -598,20 +870,56 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Check Docker
         shell: bash
-        run: docker version
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker version
 
       - name: Run torch-api-test (ascend) in configured container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ascend-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
@@ -619,16 +927,19 @@ jobs:
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ascend_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.ascend_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.ascend_ignore_test }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          ascend torch-api
-
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh" ascend torch-api
       - name: Cleanup torch-api-test (ascend) container
         if: always()
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ascend-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()
@@ -641,6 +952,10 @@ jobs:
           retention-days: 7
 
   torch-api-test-kunlunxin:
+    env:
+      FLAGCX_CI_CHECKOUT_PATH: .ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-kunlunxin
+      FLAGCX_CI_SOURCE_ROOT: ${{ github.workspace }}/.ci-checkouts/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-kunlunxin
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs/${{ github.run_id }}-${{ github.run_attempt }}-torch-api-test-kunlunxin
     if: contains(fromJSON(inputs.platforms), 'kunlunxin')
     name: torch-api-test (kunlunxin)
     needs: load-hardware-container-configs
@@ -652,35 +967,70 @@ jobs:
       volumes: ${{ fromJSON(needs.load-hardware-container-configs.outputs.kunlunxin_container_volumes) }}
 
     steps:
+      - name: Prepare isolated checkout and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+          {
+            printf 'job=%s run=%s attempt=%s runner=%s\n' "$GITHUB_JOB" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+            printf 'source=%s\nlogs=%s\n' "$FLAGCX_CI_SOURCE_ROOT" "$FLAGCX_CI_LOG_DIR"
+            git --version || true
+          } > "$FLAGCX_CI_LOG_DIR/checkout.log" 2>&1
+
       - name: Trust workspace and submodules for checkout
         shell: bash
         run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
           git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
-
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
+          path: ${{ env.FLAGCX_CI_CHECKOUT_PATH }}
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Checkout submodules with retries
+        id: submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/ci/checkout_submodules.sh 2>&1 | tee -a "$FLAGCX_CI_LOG_DIR/checkout.log"
+
+      - name: Record checkout outcome
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SUBMODULE_OUTCOME: ${{ steps.submodules.outcome }}
+        run: |
+          printf 'checkout=%s submodules=%s\n' "$CHECKOUT_OUTCOME" "$SUBMODULE_OUTCOME" >> "$FLAGCX_CI_LOG_DIR/checkout.log"
+
       - name: Run torch-api-test (kunlunxin) in job container
+        id: workload
         shell: bash
         env:
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_set_env }}
           FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_ignore_test }}
         run: |
+          export GITHUB_WORKSPACE="${FLAGCX_CI_SOURCE_ROOT:-$GITHUB_WORKSPACE}"
+          cd "$GITHUB_WORKSPACE"
           set -euo pipefail
           git clean -ffdX
           git submodule foreach --recursive 'git clean -ffdX'
           mkdir -p "$FLAGCX_CI_LOG_DIR"
           bash .github/scripts/ci/run_in_host_network.sh \
             bash .github/scripts/ci/run_hardware_workload.sh kunlunxin torch-api "$FLAGCX_CI_SET_ENV" '' 2>&1 | tee "$FLAGCX_CI_LOG_DIR/torch-api.log"
-
       - name: Upload test attempt logs
         if: always()
         uses: actions/upload-artifact@v7
@@ -719,6 +1069,7 @@ jobs:
       ASCEND_RESULT: ${{ needs['torch-api-test-ascend'].result }}
     steps:
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v7
         with:
           repository: ${{ inputs.repository }}
