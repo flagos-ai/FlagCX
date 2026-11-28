@@ -1,7 +1,7 @@
 #include "adaptor.h"
+#include "flagcx_tuner.h"
 #include "global_comm.h"
 #include "runner.h"
-#include "work.h"
 #include <gtest/gtest.h>
 
 namespace {
@@ -17,6 +17,7 @@ protected:
   flagcxCCLAdaptor mock = {};
   flagcxComm comm = {};
   void SetUp() override {
+    comm.commType = flagcxCommunicatorHomo;
     saved = cclAdaptors[flagcxCCLAdaptorDevice];
     cclAdaptors[flagcxCCLAdaptorDevice] = &mock;
     mock.reduce = [](const void *, void *, size_t, flagcxDataType_t,
@@ -40,10 +41,7 @@ protected:
                    flagcxStream_t) { return called(); };
     mock.groupStart = mock.groupEnd = called;
   }
-  void TearDown() override {
-    flagcxWorkNativeGroupResult(flagcxSuccess);
-    cclAdaptors[flagcxCCLAdaptorDevice] = saved;
-  }
+  void TearDown() override { cclAdaptors[flagcxCCLAdaptorDevice] = saved; }
 };
 TEST_F(HomoRunnerStatus, EveryNativeCallPreservesStatusAndExecutesOnce) {
   using Call = flagcxResult_t (*)(flagcxComm_t);
@@ -97,4 +95,84 @@ TEST_F(HomoRunnerStatus, EveryNativeCallPreservesStatusAndExecutesOnce) {
     }
   }
 }
+TEST_F(HomoRunnerStatus, PublicApiPreservesStatusAndExecutesOnce) {
+  using Call = flagcxResult_t (*)(flagcxComm_t);
+  const Call calls[] = {
+      [](flagcxComm_t c) {
+        return flagcxReduce(NULL, NULL, 0, flagcxInt, flagcxSum, 0, c, NULL);
+      },
+      [](flagcxComm_t c) {
+        return flagcxGather(NULL, NULL, 0, flagcxInt, 0, c, NULL);
+      },
+      [](flagcxComm_t c) {
+        return flagcxScatter(NULL, NULL, 0, flagcxInt, 0, c, NULL);
+      },
+      [](flagcxComm_t c) {
+        return flagcxBroadcast(NULL, NULL, 0, flagcxInt, 0, c, NULL);
+      },
+      [](flagcxComm_t c) {
+        return flagcxAllReduce(NULL, NULL, 0, flagcxInt, flagcxSum, c, NULL);
+      },
+      [](flagcxComm_t c) {
+        return flagcxReduceScatter(NULL, NULL, 0, flagcxInt, flagcxSum, c,
+                                   NULL);
+      },
+      [](flagcxComm_t c) {
+        return flagcxAllGather(NULL, NULL, 0, flagcxInt, c, NULL);
+      },
+      [](flagcxComm_t c) {
+        return flagcxAlltoAll(NULL, NULL, 0, flagcxInt, c, NULL);
+      },
+      [](flagcxComm_t c) {
+        return flagcxAlltoAllv(NULL, NULL, NULL, NULL, NULL, NULL, flagcxInt, c,
+                               NULL);
+      },
+      [](flagcxComm_t c) { return flagcxSend(NULL, 0, flagcxInt, 0, c, NULL); },
+      [](flagcxComm_t c) {
+        return flagcxRecv(NULL, 0, flagcxInt, 0, c, NULL);
+      }};
+  for (auto result : {flagcxSuccess, flagcxInProgress, flagcxRemoteError,
+                      flagcxNotSupported}) {
+    for (auto call : calls) {
+      nativeResult = result;
+      nativeCalls = 0;
+      EXPECT_EQ(call(&comm), result);
+      EXPECT_EQ(nativeCalls, 1);
+    }
+  }
+}
+TEST_F(HomoRunnerStatus, FlagscaleTunerPreservesAcceptedNativeStatus) {
+  flagcxTuner tuner = {};
+  tuner.handleFlagscaleTuning = [](void *, flagcxComm_t, flagcxCommOp_t,
+                                   size_t) { return flagcxSuccess; };
+  comm.tuner = &tuner;
+  comm.isTuningWithFlagscale = true;
+  nativeResult = flagcxInProgress;
+  nativeCalls = 0;
+  EXPECT_EQ(flagcxAllGather(NULL, NULL, 0, flagcxInt, &comm, NULL),
+            flagcxInProgress);
+  EXPECT_EQ(nativeCalls, 1);
+}
 } // namespace
+
+TEST_F(HomoRunnerStatus, PublicGroupsPreserveStatusAtMatchedBoundaries) {
+  for (auto result : {flagcxSuccess, flagcxInProgress, flagcxRemoteError,
+                      flagcxNotSupported}) {
+    nativeResult = result;
+    nativeCalls = 0;
+    EXPECT_EQ(flagcxGroupStart(NULL), result);
+    EXPECT_EQ(nativeCalls, 1);
+    if (result != flagcxSuccess) {
+      EXPECT_EQ(flagcxGroupEnd(NULL), flagcxInvalidUsage);
+      EXPECT_EQ(nativeCalls, 1);
+      nativeResult = flagcxSuccess;
+      ASSERT_EQ(flagcxGroupStart(NULL), flagcxSuccess);
+    }
+    nativeResult = result;
+    nativeCalls = 0;
+    EXPECT_EQ(flagcxGroupEnd(NULL), result);
+    EXPECT_EQ(nativeCalls, 1);
+    EXPECT_EQ(flagcxGroupEnd(NULL), flagcxInvalidUsage);
+    EXPECT_EQ(nativeCalls, 1);
+  }
+}

@@ -38,6 +38,7 @@ protected:
   void TearDown() override {
     failures = 0;
     EXPECT_EQ(flagcxHeteroRmaProxyStop(&comm), flagcxSuccess);
+    comm.importsClosedConfirmed = true;
     EXPECT_EQ(flagcxHeteroRmaProxyRelease(&comm), flagcxSuccess);
     deviceAdaptor = saved;
   }
@@ -53,11 +54,12 @@ TEST_F(RmaCleanup, StopRetainsExportsAndReleaseRetriesOnlyRemainingOwners) {
   EXPECT_EQ(flagcxHeteroRmaProxyRelease(&comm), flagcxInvalidUsage);
   ASSERT_EQ(flagcxHeteroRmaProxyStop(&comm), flagcxSuccess);
   EXPECT_EQ(proxy->doneSeqsCpu, nullptr);
-  EXPECT_EQ(proxy->readySeqsCpu, nullptr);
+  EXPECT_NE(proxy->readySeqsCpu, nullptr);
   EXPECT_EQ(proxy->doneSeqsDev, done);
   EXPECT_EQ(frees, 0);
   EXPECT_EQ(unmaps, 1);
   EXPECT_EQ(flagcxHeteroRmaProxyStop(&comm), flagcxSuccess);
+  comm.importsClosedConfirmed = true;
   failures = 1;
   EXPECT_EQ(flagcxHeteroRmaProxyRelease(&comm), flagcxSystemError);
   EXPECT_EQ(comm.rmaProxy, proxy);
@@ -72,6 +74,7 @@ TEST_F(RmaCleanup, HostFunctionModeDoesNotRequireDeviceAllocations) {
   comm.rmaProxy->readySeqsCpu = (volatile uint64_t *)calloc(1, 8);
   ASSERT_EQ(flagcxHeteroRmaProxyStop(&comm), flagcxSuccess);
   EXPECT_TRUE(comm.rmaProxy->stopComplete);
+  comm.importsClosedConfirmed = true;
   EXPECT_EQ(flagcxHeteroRmaProxyRelease(&comm), flagcxSuccess);
   EXPECT_EQ(frees, 0);
 }

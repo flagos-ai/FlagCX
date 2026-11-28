@@ -8,7 +8,6 @@
 #define FLAGCX_COMM_H_
 
 #include "bootstrap.h"
-#include "comm_lifecycle.h"
 #include "device.h"
 #include "flagcx_kernel.h"
 #include "flagcx_net.h"
@@ -17,7 +16,6 @@
 #include "info.h"
 #include "register.h"
 #include "type.h"
-#include "work.h"
 #include <stdint.h>
 
 #define CACHE_LINE_SIZE 128
@@ -175,12 +173,14 @@ struct flagcxSymLsaArena;
 class flagcxWorkerPool;
 
 struct flagcxHeteroComm {
-  struct flagcxWorkTracker submittedWork;
-  struct flagcxWorkTracker proxyWork;
-  struct flagcxWorkTracker *workOwner;
-  struct flagcxGroupPendingWork *pendingGroupWork;
-  uint64_t startMagic;
+  struct flagcxComm *ownerComm;
+  bool importsClosedConfirmed, registrationsClosed, closeLocalDone,
+      closeStarted;
   bool netPluginHeld;
+  bool initRollbackPending;
+  struct flagcxProxyOp *rejectedGroupOps;
+  int closePhase, closeRunning;
+  uint64_t startMagic;
   bool destroyProxyComplete;
   flagcxResult_t destroyProxyResult;
   struct flagcxMemoryStack memPermanent, memScoped;
@@ -356,8 +356,6 @@ struct flagcxHeteroComm {
   flagcxResult_t initState;
   // flag to indicate if flagcxCommFinalize() is called
   bool finalizeCalled;
-  struct flagcxHeteroFinalizeState finalizeState;
-  flagcxComm_t ownerComm;
   // shared structures for finalization
   int finalizeRankCnt;
   // group job to support multi-thread FT
@@ -386,6 +384,7 @@ struct flagcxHeteroComm {
   flagcxWorkerPool *workerPool;
   // Async RMA proxy state (one-sided Put/Get offload worker).
   struct flagcxRmaProxyState *rmaProxy;
+  struct flagcxFlushState *flushState; // accepted explicit transport flushes
 
   // One-sided signal / staging handle
   struct flagcxOneSideHandleInfo *signalHandle;

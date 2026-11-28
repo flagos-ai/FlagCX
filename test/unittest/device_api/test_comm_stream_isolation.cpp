@@ -112,12 +112,6 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
     ASSERT_EQ(flagcxCommInitRank(&owners.comms[i], 1, &id, 0), flagcxSuccess);
     std::fprintf(stderr, "ISOLATION comm-init done index=%d\n", i);
     std::fflush(stderr);
-    // These two native cases require independent SDK Finalize/Destroy phases.
-    // Compatibility Destroy is still covered by public lifecycle tests. RMA
-    // isolation below submits only runtime work on B, not native CCL work.
-    if (!withRma && owners.comms[i]->allowNativeDestroyFinalize)
-      GTEST_SKIP() << "Native stream isolation requires a separate native "
-                      "Finalize; this adaptor uses compatibility Destroy";
     ASSERT_EQ(deviceAdaptor->streamCreate(&owners.streams[i]), flagcxSuccess);
     ASSERT_EQ(deviceAdaptor->deviceMalloc(&owners.buffers[i], sizeof(float),
                                           flagcxMemDevice, nullptr),
@@ -160,6 +154,7 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
   ASSERT_EQ(deviceAdaptor->streamSynchronize(owners.streams[0]), flagcxSuccess);
   flagcxRmaProxyState *rmaProxy = nullptr;
   uint64_t *doneAllocation = nullptr, *readyAllocation = nullptr;
+  volatile uint64_t *doneHost = nullptr, *readyHost = nullptr;
   if (withRma) {
     for (int i = 0; i < 2; i++) {
       ASSERT_NE(owners.comms[i]->heteroComm, nullptr);
@@ -171,6 +166,8 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
     ASSERT_NE(rmaProxy->worker, nullptr);
     ASSERT_NE(rmaProxy->doneSeqsCpu, nullptr);
     ASSERT_NE(rmaProxy->readySeqsCpu, nullptr);
+    doneHost = rmaProxy->doneSeqsMapped ? nullptr : rmaProxy->doneSeqsCpu;
+    readyHost = rmaProxy->readySeqsMapped ? nullptr : rmaProxy->readySeqsCpu;
     doneAllocation = rmaProxy->doneSeqsDev;
     readyAllocation = rmaProxy->readySeqsDev;
     // HOST_FUNC may have no device counters, or retain allocations with only
@@ -248,8 +245,8 @@ static void runIsolation(bool withPartialOwners, bool withRma = false) {
     EXPECT_TRUE(proxy->quiesced);
     EXPECT_EQ(proxy->worker, nullptr);
     EXPECT_EQ(proxy->ipcState, nullptr);
-    EXPECT_EQ(proxy->doneSeqsCpu, nullptr);
-    EXPECT_EQ(proxy->readySeqsCpu, nullptr);
+    EXPECT_EQ(proxy->doneSeqsCpu, doneHost);
+    EXPECT_EQ(proxy->readySeqsCpu, readyHost);
     EXPECT_FALSE(proxy->doneSeqsMapped);
     EXPECT_FALSE(proxy->readySeqsMapped);
     // Only local Destroy may free a device allocation that actually exists.

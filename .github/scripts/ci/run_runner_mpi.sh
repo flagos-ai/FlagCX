@@ -32,10 +32,9 @@ per_test_timeout=$FLAGCX_CI_RUNNER_PER_TEST_TIMEOUT
 stage_budget=$FLAGCX_CI_RUNNER_STAGE_BUDGET
 sendrecv_timeout=${FLAGCX_CI_RUNNER_SENDRECV_TIMEOUT:-$per_test_timeout}
 flagcx_ci_start_budget FLAGCX_CI_MODE_DEADLINE "$stage_budget"
-# Keep the existing SendRecv-only diagnostic enablement.
-diagnostics_after=${FLAGCX_CI_RUNNER_DIAGNOSTICS_AFTER:-$(
-  awk -v t="$(flagcx_ci_seconds "$sendrecv_timeout")" 'BEGIN { printf "%.3f", t * 0.75 }'
-)}
+# Each platform and case uses the same pre-timeout diagnostics. The timeout
+# wrapper computes "auto" from the effective (including cumulative) limit.
+diagnostics_after=${FLAGCX_CI_RUNNER_DIAGNOSTICS_AFTER:-auto}
 
 # GTest applies the original positive and negative filters before listing.
 # Listing does not initialize MPI or run any hardware fixture.
@@ -72,26 +71,16 @@ if ((${#tests[@]} == 0)); then
   exit 1
 fi
 
-# The published CI image may predate the Dockerfile's gdb dependency. Install
-# it for this runner job so a SendRecv timeout yields user-space thread stacks.
-# Diagnostics remain best effort if the package mirror is unavailable.
-needs_sendrecv_diagnostics=0
-for test in "${tests[@]}"; do
-  if [[ "$test" == *.SendRecv ]]; then
-    needs_sendrecv_diagnostics=1
-    break
-  fi
-done
-if ((needs_sendrecv_diagnostics)) &&
-   [[ "${FLAGCX_CI_INSTALL_GDB:-0}" == 1 ]] &&
+# Diagnostics remain best effort when an opt-in gdb installation is unavailable.
+if [[ "${FLAGCX_CI_INSTALL_GDB:-0}" == 1 ]] &&
    ! command -v gdb >/dev/null 2>&1; then
   if command -v apt-get >/dev/null 2>&1; then
     if ! timeout --signal=TERM --kill-after=5s 90s bash -c \
       'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends gdb'; then
-      echo 'Iluvatar runner: gdb installation failed; timeout diagnostics will use /proc only' >&2
+      echo 'Runner diagnostics: gdb installation failed; timeout diagnostics will use /proc only' >&2
     fi
   else
-    echo 'Iluvatar runner: apt-get unavailable; timeout diagnostics will use /proc only' >&2
+    echo 'Runner diagnostics: apt-get unavailable; timeout diagnostics will use /proc only' >&2
   fi
 fi
 
@@ -129,22 +118,19 @@ for index in "${!tests[@]}"; do
     # report an actual pass, not merely a successful MPI exit.
     require_pass=1
   fi
+  case_timeout=$per_test_timeout
   if [[ "$test" == *.SendRecv && "${FLAGCX_CI_PLATFORM:-}" == iluvatar ]]; then
-    # Keep Iluvatar's existing pre-timeout diagnostics.
-    FLAGCX_CI_MPI_TIMEOUT="$sendrecv_timeout" \
-      FLAGCX_CI_TEST_DIAGNOSTICS_AFTER="$diagnostics_after" \
-      FLAGCX_CI_TEST_MAX_ATTEMPTS=1 \
-      FLAGCX_CI_REQUIRE_GTEST_PASS="$require_pass" \
-      FLAGCX_CI_MPI_LABEL="$label $test" \
-      "$script_dir/run_mpi_with_timeout.sh" "${mpi_env[@]}" "${args[@]}" \
-      --gtest_filter="$test" || test_status=$?
-  else
-    FLAGCX_CI_MPI_TIMEOUT="$per_test_timeout" \
-      FLAGCX_CI_REQUIRE_GTEST_PASS="$require_pass" \
-      FLAGCX_CI_MPI_LABEL="$label $test" \
-      "$script_dir/run_mpi_with_timeout.sh" "${mpi_env[@]}" "${args[@]}" \
-      --gtest_filter="$test" || test_status=$?
+    case_timeout=$sendrecv_timeout
   fi
+  FLAGCX_CI_MPI_TIMEOUT="$case_timeout" \
+    FLAGCX_CI_TEST_DIAGNOSTICS_AFTER="$diagnostics_after" \
+    FLAGCX_CI_TEST_MAX_ATTEMPTS=1 \
+    FLAGCX_CI_REQUIRE_GTEST_PASS="$require_pass" \
+    FLAGCX_CI_LIFECYCLE_CASE="$test" \
+    FLAGCX_CI_MPI_LABEL="$label $test" \
+    "$script_dir/run_mpi_with_timeout.sh" "${mpi_env[@]}" "${args[@]}" \
+    --gtest_filter="$test" || test_status=$?
+
   echo "$label $test result=$test_status"
   if [[ "$test_status" == 130 || "$test_status" == 143 ]]; then
     exit "$test_status"

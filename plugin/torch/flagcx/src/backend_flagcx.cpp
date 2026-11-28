@@ -453,6 +453,8 @@ struct flagcxBackend::ShutdownState {
   flagcxDeviceHandle_t handle = nullptr;
   flagcxComm_t comm = nullptr;
   bool sdkReleased = false;
+  bool streamsDrained = false;
+  size_t synchronizedStreams = 0;
   flagcxPairComms pairs;
   std::unordered_map<int, flagcxStream_t> streams;
   std::unordered_map<int, std::unique_ptr<flagcxEvent>> events;
@@ -507,6 +509,22 @@ struct flagcxBackend::ShutdownState {
     result = handle->setDevice(deviceId);
     if (result != flagcxSuccess)
       return result;
+    // Core teardown no longer tracks submitted user work. Finish the backend's
+    // own communication streams before any Comm can close mappings or owners.
+    if (!streamsDrained) {
+      size_t index = 0;
+      for (std::unordered_map<int, flagcxStream_t>::const_iterator it =
+               streams.begin();
+           it != streams.end(); ++it, ++index) {
+        if (index < synchronizedStreams)
+          continue;
+        result = handle->streamSynchronize(it->second);
+        if (result != flagcxSuccess)
+          return result;
+        ++synchronizedStreams;
+      }
+      streamsDrained = true;
+    }
     // Numeric pair order is identical on all ranks, including self pairs.
     while (!pairs.empty()) {
       result = flagcxCommDestroy(pairs.begin()->second);

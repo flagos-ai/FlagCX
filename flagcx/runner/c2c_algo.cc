@@ -1,57 +1,139 @@
 #include "c2c_algo.h"
 #include "c2c_ir.h"
 #include "coll_proxy_transport.h"
+#include "proxy.h"
+#include "runner.h"
 #include "runner_result.h"
 #include <cstdint>
 #include <cstdlib>
+#include <sched.h>
 #include <stdlib.h>
 
-struct flagcxC2cPendingResources {
-  struct flagcxC2cPendingResources *next;
-  struct flagcxWorkRecord *work[2];
-  void *scratch;
-  flagcxStream_t stream;
-};
-
-extern "C" flagcxResult_t flagcxC2cDrainPendingResources(flagcxComm_t comm,
-                                                         int wait) {
-  flagcxResult_t first = flagcxSuccess;
-  auto **link = &comm->pendingC2cResources;
-  while (*link != nullptr) {
-    auto *node = *link;
-    flagcxResult_t result = flagcxSuccess;
-    for (int i = 0; i < 2; ++i) {
-      if (node->work[i] == nullptr)
-        continue;
-      result = wait ? flagcxWorkWaitRecord(node->work[i])
-                    : flagcxWorkPollRecord(node->work[i]);
-      if (result != flagcxSuccess)
-        break;
-    }
-    if (result == flagcxSuccess && node->scratch != nullptr) {
-      result = flagcxCommReleaseBuffer(comm, node->scratch,
-                                       flagcxInternalBufferDevice);
-      if (result == flagcxSuccess)
-        node->scratch = nullptr;
-    }
-    if (result == flagcxSuccess && node->stream != nullptr) {
-      result = deviceAdaptor->streamDestroy(node->stream);
-      if (result == flagcxSuccess)
-        node->stream = nullptr;
-    }
-    if (result != flagcxSuccess) {
-      if (first == flagcxSuccess && (wait || result != flagcxInProgress))
-        first = result;
-      link = &node->next;
+static flagcxResult_t pollC2cNativeSubmission(struct flagcxC2cResources *owner,
+                                              flagcxComm_t comm) {
+  if (!owner->nativePending)
+    return flagcxSuccess;
+  struct flagcxCCLAdaptor *adaptor = cclAdaptors[flagcxCCLAdaptorDevice];
+  if (adaptor->commGetAsyncError == NULL)
+    return flagcxNotSupported;
+  flagcxInnerComm_t handles[2] = {comm->homoComm, comm->homoInterComm};
+  bool pending = false, queried = false;
+  for (int i = 0; i < 2; ++i) {
+    if (handles[i] == NULL || (i == 1 && handles[i] == handles[0]))
       continue;
-    }
-    *link = node->next;
-    for (int i = 0; i < 2; ++i)
-      if (node->work[i] != nullptr)
-        flagcxWorkDrop(node->work[i]);
-    free(node);
+    queried = true;
+    flagcxResult_t async = flagcxInProgress;
+    flagcxResult_t result = adaptor->commGetAsyncError(handles[i], &async);
+    FLAGCXCHECK(result);
+    if (result == flagcxInProgress)
+      return result;
+    FLAGCXCHECK(async);
+    if (async == flagcxInProgress)
+      pending = true;
   }
-  return first;
+  if (!queried)
+    return flagcxNotSupported;
+  if (pending)
+    return flagcxInProgress;
+  owner->nativePending = false;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t finishC2cNativeGroup(struct flagcxC2cResources *owner,
+                                           flagcxComm_t comm) {
+  flagcxResult_t result = cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
+  owner->nativePending = result == flagcxInProgress;
+  FLAGCXCHECK(result);
+  // A stream drain is meaningful only after the SDK has enqueued the group.
+  // Leave pending ownership intact if querying submission completion fails.
+  while (owner->nativePending) {
+    result = pollC2cNativeSubmission(owner, comm);
+    FLAGCXCHECK(result);
+    if (result == flagcxInProgress)
+      sched_yield();
+  }
+  return flagcxSuccess;
+}
+
+// Private scratch must outlive its users even when native submission succeeds:
+// deviceFree is not stream ordered on every backend. Failed cleanup retains
+// this concrete owner without completion events or work tracker records.
+static flagcxResult_t releaseC2cResources(struct flagcxC2cResources *owner,
+                                          flagcxComm_t comm) {
+  {
+    flagcxResult_t result = pollC2cNativeSubmission(owner, comm);
+    FLAGCXCHECK(result);
+    if (result == flagcxInProgress)
+      return result;
+  }
+  if (owner->needDrain && !owner->userDrained) {
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceAdaptor->streamSynchronize(owner->userStream));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    owner->userDrained = true;
+    owner->userStream = NULL;
+  }
+  if (owner->needDrain && !owner->privateDrained &&
+      owner->privateStream != NULL) {
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceAdaptor->streamSynchronize(owner->privateStream));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    owner->privateDrained = true;
+  }
+  {
+    flagcxResult_t cleanupStatus = (flagcxProxyScratchReady(comm->heteroComm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  if (owner->scratch != NULL) {
+    // The caller may have destroyed its completed stream before this retry.
+    // Keep any stream-ordered free on the private stream owned by this record.
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->deviceFree(
+          owner->scratch, flagcxMemDevice, owner->privateStream));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    owner->scratch = NULL;
+  }
+  if (owner->privateStream != NULL) {
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceAdaptor->streamDestroy(owner->privateStream));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    owner->privateStream = NULL;
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxC2cDrainPendingResources(flagcxComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  while (comm->pendingC2cResources != NULL) {
+    struct flagcxC2cResources *owner = comm->pendingC2cResources;
+    {
+      flagcxResult_t cleanupStatus = (releaseC2cResources(owner, comm));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    comm->pendingC2cResources = owner->next;
+    free(owner);
+  }
+  return flagcxSuccess;
 }
 
 // GCD using Euclidean algorithm
@@ -460,10 +542,7 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
             }
             return flagcxSuccess;
           },
-          [&]() {
-            return flagcxWorkNativeGroupResult(
-                cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
-          });
+          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); });
     case flagcxCommOpRecv:
       return flagcxRunnerRunGroup(
           [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupStart(); },
@@ -524,10 +603,7 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
             }
             return flagcxSuccess;
           },
-          [&]() {
-            return flagcxWorkNativeGroupResult(
-                cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
-          });
+          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); });
     case flagcxCommOpBroadcast:
       return cclAdaptors[flagcxCCLAdaptorDevice]->broadcast(
           const_cast<const void *>(static_cast<void *>(
@@ -578,10 +654,7 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
             }
             return flagcxSuccess;
           },
-          [&]() {
-            return flagcxWorkNativeGroupResult(
-                cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
-          });
+          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); });
     default:
       return flagcxSuccess;
   }
@@ -2388,7 +2461,9 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
                                          size_t *recvCounts, size_t *rDispls) {
   // Planner stages synchronize before continuing, but an outer group defers
   // their Hetero work until after execute returns.
-  if (flagcxGetGroupDepth() > 0)
+  // C2C planners do not support an outer group. A native group opened with
+  // NULL or another Comm also postpones the SDK's nested submissions.
+  if (flagcxGroupIsOpen())
     return flagcxInvalidUsage;
 
   // redOp validation
@@ -2465,25 +2540,17 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
     strategyFound_ = 1;
   }
 
+  {
+    flagcxResult_t cleanupStatus = (flagcxC2cDrainPendingResources(comm_));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  struct flagcxC2cResources *owner = NULL;
+  FLAGCXCHECK(flagcxCalloc(&owner, 1));
+  owner->userStream = stream;
   scratchBuffer_ = nullptr;
   flagcxStream_t hetStream = nullptr;
-  flagcxResult_t pendingResult = flagcxC2cDrainPendingResources(comm_, 0);
-  if (pendingResult != flagcxSuccess)
-    return pendingResult;
-  auto *pending =
-      (flagcxC2cPendingResources *)calloc(1, sizeof(flagcxC2cPendingResources));
-  if (pending == nullptr)
-    return flagcxSystemError;
-  pendingResult = flagcxWorkPrepareAccepted(&comm_->submittedWork, stream,
-                                            &pending->work[0]);
-  if (pendingResult != flagcxSuccess) {
-    free(pending);
-    return pendingResult;
-  }
-  flagcxWorkRetain(pending->work[0]);
-  pending->next = comm_->pendingC2cResources;
-  comm_->pendingC2cResources = pending;
-  auto *previousWork = flagcxWorkSetCurrent(pending->work[0]);
   const int homoRoot = root >= 0 ? comm_->globalRank2HomoRank[root] : -1;
   flagcxResult_t result = [&]() -> flagcxResult_t {
     // init scratch buffer if need
@@ -2494,9 +2561,8 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
          ((eachNicPerRank_ && isRootCluster_) ||
           (!eachNicPerRank_ && rank_ != rootRank_)))) {
       FLAGCXCHECK(deviceAdaptor->deviceMalloc(
-          &pending->scratch, totalCount_ * getFlagcxDataTypeSize(datatype),
+          &scratchBuffer_, totalCount_ * getFlagcxDataTypeSize(datatype),
           flagcxMemDevice, stream));
-      scratchBuffer_ = pending->scratch;
     } else {
       scratchBuffer_ = nullptr;
     }
@@ -2522,13 +2588,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
             ? const_cast<void *>(sendbuff)
             : recvTmpBuff;
 
-    FLAGCXCHECK(deviceAdaptor->streamCreate(&pending->stream));
-    hetStream = pending->stream;
-    flagcxResult_t prepared = flagcxWorkPrepareAccepted(
-        &comm_->submittedWork, hetStream, &pending->work[1]);
-    if (prepared != flagcxSuccess)
-      return prepared;
-    flagcxWorkRetain(pending->work[1]);
+    FLAGCXCHECK(deviceAdaptor->streamCreate(&hetStream));
 
     // execute sequential preHomoFunc steps
     FLAGCXCHECK(flagcxRunnerRunGroup(
@@ -2546,10 +2606,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
           }
           return flagcxSuccess;
         },
-        [&]() {
-          return flagcxWorkNativeGroupResult(
-              cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
-        }));
+        [&]() { return finishC2cNativeGroup(owner, comm_); }));
     FLAGCXCHECK(deviceAdaptor->streamSynchronize(stream));
 
     if (refreshFunc_.bufftype_ == -1) {
@@ -2580,10 +2637,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
             }
             return flagcxSuccess;
           },
-          [&]() {
-            return flagcxWorkNativeGroupResult(
-                cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
-          }));
+          [&]() { return finishC2cNativeGroup(owner, comm_); }));
 
       FLAGCXCHECK(flagcxRunnerRunGroup(
           []() { return flagcxHeteroGroupStart(); },
@@ -2657,10 +2711,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
             }
             return flagcxSuccess;
           },
-          [&]() {
-            return flagcxWorkNativeGroupResult(
-                cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
-          }));
+          [&]() { return finishC2cNativeGroup(owner, comm_); }));
 
       const int step = nPipePreSteps_ + nSeqInterSteps_ + s;
       FLAGCXCHECK(flagcxRunnerRunGroup(
@@ -2714,27 +2765,23 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
           }
           return flagcxSuccess;
         },
-        [&]() {
-          return flagcxWorkNativeGroupResult(
-              cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
-        }));
+        [&]() { return finishC2cNativeGroup(owner, comm_); }));
 
     return flagcxSuccess;
   }();
 
-  flagcxWorkSetCurrent(previousWork);
-  int deferred = flagcxWorkGroupDepth(flagcxWorkNativeGroup) != 0;
-  for (int i = 0; i < 2; ++i) {
-    if (pending->work[i] == nullptr)
-      continue;
-    flagcxResult_t finished =
-        flagcxWorkFinish(pending->work[i], i == 0 ? stream : hetStream, result,
-                         flagcxWorkNativeGroup, deferred);
-    if (result == flagcxSuccess && finished != flagcxSuccess)
-      result = finished;
+  owner->scratch = scratchBuffer_;
+  owner->privateStream = hetStream;
+  owner->needDrain = result != flagcxSuccess || owner->scratch != NULL;
+  flagcxResult_t cleanup = releaseC2cResources(owner, comm_);
+  scratchBuffer_ = NULL;
+  if (cleanup != flagcxSuccess) {
+    owner->next = comm_->pendingC2cResources;
+    comm_->pendingC2cResources = owner;
+  } else {
+    free(owner);
   }
-  scratchBuffer_ = nullptr;
-  flagcxRunnerRecordFirstError(flagcxC2cDrainPendingResources(comm_, 0),
-                               &result);
+  if (result == flagcxSuccess)
+    result = cleanup;
   return result;
 }

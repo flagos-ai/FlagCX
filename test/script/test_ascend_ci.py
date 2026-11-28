@@ -11,6 +11,34 @@ CI = ROOT / ".github/scripts/ci"
 
 
 class AscendCiTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("timeout"), "GNU timeout is required")
+    def test_inherited_gtest_policy_applies_only_to_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "BASH_ENV": "",
+                   "FLAGCX_CI_REQUIRE_GTEST_PASS": "1",
+                   "FLAGCX_CI_LOG_DIR": tmp,
+                   "FLAGCX_CI_TEST_TIMEOUT": "10s"}
+            build = subprocess.run(
+                ["bash", "-c", '''
+set -euo pipefail
+source "$1/timeouts.sh"
+for phase in build build-tests preflight import torch-build torch-coverage; do
+  flagcx_ci_run "$phase" /bin/true
+done
+[[ "$FLAGCX_CI_REQUIRE_GTEST_PASS" == 1 ]]
+''', "bash", str(CI)], env=env, capture_output=True, text=True, timeout=20)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            for output, expected in (("", 1),
+                                     ("[  SKIPPED ] one test", 1),
+                                     ("[  PASSED  ] 1 test.", 0)):
+                with self.subTest(output=output):
+                    runtime = subprocess.run(
+                        ["bash", str(CI / "run_with_timeout.sh"),
+                         "printf", "%s\\n", output], env=env,
+                        capture_output=True, text=True, timeout=20)
+                    self.assertEqual(runtime.returncode, expected,
+                                     runtime.stdout + runtime.stderr)
+
     def script(self, path, body):
         path.write_text("#!/usr/bin/env bash\nset -eu\n" + body)
         path.chmod(0o755)

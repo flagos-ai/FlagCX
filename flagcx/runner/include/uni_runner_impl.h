@@ -14,7 +14,6 @@
 #include "reg_pool.h"
 #include "socket.h"
 #include "utils.h"
-#include "work.h"
 #include <memory>
 #include <pthread.h>
 
@@ -262,10 +261,11 @@ struct uniRunnerStaticIpcTriggerConfig {
 };
 
 struct flagcxFusedInvocationBuffers {
-  struct flagcxWorkRecord *workspaceWork;
   void *workspace;
   void *counters;
   bool runnerCleanupPending;
+  bool streamDrainPending;
+  flagcxStream_t pendingStream;
   flagcxFusedInvocationBuffers *next;
 };
 
@@ -282,8 +282,6 @@ typedef struct {
   flagcxStream_t redStream;
   flagcxStream_t cpyStream;
   struct flagcxFusedInvocationBuffers *pendingFusedBuffers;
-  struct flagcxWorkRecord *invocationWork[4];
-  flagcxComm_t invocationOwner;
 
   // new: DAG and scheduling queues
   struct uniRunnerDagNode *dagNodes; // Array of all DAG nodes
@@ -505,14 +503,10 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
                                 size_t bytes);
 flagcxResult_t ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
                                               flagcxComm_t comm, size_t slots);
-flagcxResult_t flagcxUniRunnerDrainWork(flagcxComm_t comm,
-                                        bool atSubmissionBoundary = false);
-flagcxResult_t cleanupUniRunner(flagcxComm_t comm,
-                                bool atSubmissionBoundary = true);
+flagcxResult_t cleanupUniRunner(flagcxComm_t comm);
+flagcxResult_t cleanupUniRunnerIpcImports(flagcxUniRunnerState *state);
 flagcxResult_t
 cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState);
 flagcxResult_t runUniRunner(flagcxComm_t comm,
                             bool convergeHostPreparation = false);
-flagcxResult_t cleanupUniRunnerIpcImports(flagcxUniRunnerState *state);
-
 #endif // FLAGCX_UNIRUNNER_IMPL_H_

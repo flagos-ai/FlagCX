@@ -167,6 +167,7 @@ static bool released;
 static int waits, blocks, queries, destroys;
 static flagcxResult_t destroyResult = flagcxSuccess;
 static flagcxResult_t streamResult = flagcxSuccess;
+static flagcxResult_t streamSyncResult = flagcxSuccess;
 static std::mutex rendezvousMutex;
 static std::condition_variable rendezvous;
 static bool blockDestroy, destroyEntered, allowDestroy;
@@ -220,7 +221,7 @@ int main() {
   handle.setDevice = [](int) { assert(!released); return flagcxSuccess; };
   handle.getDevice = [](int *dev) { assert(!released); *dev = 0; return flagcxSuccess; };
   handle.streamSynchronize = [](flagcxStream_t) {
-    assert(!released); ++waits; return flagcxSuccess;
+    assert(!released); ++waits; return streamSyncResult;
   };
   handle.streamDestroy = [](flagcxStream_t) { return streamResult; };
   auto completion = std::make_shared<flagcxWorkCompletion>();
@@ -235,22 +236,26 @@ int main() {
   owner.comm = (flagcxComm_t)1;
   owner.streams.emplace(0, work.stream_);
   assert(work.wait() && waits == 1);
+  streamSyncResult = flagcxInProgress;
+  assert(owner.release() == flagcxInProgress);
+  assert(owner.comm != nullptr && destroys == 0 && !released);
+  streamSyncResult = flagcxSuccess;
   destroyResult = flagcxRemoteError;
   assert(owner.release() == flagcxRemoteError);
   assert(!completion->completed && !released);
-  assert(work.wait() && waits == 2);
+  assert(work.wait() && waits == 4);
   destroyResult = flagcxSuccess;
   streamResult = flagcxRemoteError;
   assert(owner.release() == flagcxRemoteError);
   assert(completion->completed && !released);
   const int savedBlocks = blocks, savedQueries = queries;
   assert(work.wait() && work.isCompleted() && work.isSuccess());
-  assert(waits == 2 && blocks == savedBlocks && queries == savedQueries);
+  assert(waits == 4 && blocks == savedBlocks && queries == savedQueries);
   streamResult = flagcxSuccess;
   assert(owner.release() == flagcxSuccess && released);
   assert(work.wait() && work.isCompleted());
   assert(owner.release() == flagcxSuccess);
-  assert(waits == 2 && destroys == 2);
+  assert(waits == 4 && destroys == 2);
   // A concurrent wait must finish without SDK access once shutdown completes.
   released = false;
   completion->completed = false;
@@ -276,7 +281,7 @@ int main() {
   }
   rendezvous.notify_all();
   assert(shutdown.get() == flagcxSuccess && wait.get());
-  assert(released && waits == 2);
+  assert(released && waits == 4);
 }
 """
         source = prelude + completion + classes + shutdown + methods + main

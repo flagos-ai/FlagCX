@@ -210,7 +210,7 @@ int main(int argc, char *argv[]) {
   free(hello);
   free(testdata1);
   free(testdata2);
-  flagcxHeteroCommDestroy(&comm);
+  FLAGCXCHECK(flagcxHeteroCommDestroy(comm));
   devHandle->streamDestroy(stream);
   flagcxDeviceHandleFree(devHandle);
 

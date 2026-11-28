@@ -17,7 +17,6 @@
 #include "device_api/flagcx_device.h"
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
-#include "kernel_proxy_transport.h"
 #include "net.h"
 #include "onesided.h"
 #include "p2p.h"
@@ -60,9 +59,8 @@ static flagcxResult_t shmHostRegister(void *ptr, size_t bytes) {
 }
 
 static flagcxResult_t shmHostUnregister(void *ptr) {
-  if (deviceAdaptor->hostUnregister == NULL)
-    return flagcxNotSupported;
-  return deviceAdaptor->hostUnregister(ptr);
+  return deviceAdaptor->hostUnregister ? deviceAdaptor->hostUnregister(ptr)
+                                       : flagcxNotSupported;
 }
 
 static bool
@@ -102,10 +100,6 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
     devComm->nInterPeers = 0;
     return flagcxSuccess;
   }
-
-  // Collective relay creation also declares its communicator-wide teardown.
-  // Keep the scope through partial creation and cleanup retries.
-  comm->nativeFinalizeScope = flagcxNativeFinalizeComm;
 
   // Already initialized: just copy pointers into devComm
   if (hetero->relayInitialized) {
@@ -178,6 +172,35 @@ relay_fail:
 // IPC Barrier setup
 // ==========================================================================
 
+static flagcxResult_t reserveShmGeneration(flagcxComm_t comm,
+                                           flagcxDevComm_t devComm) {
+  flagcxResult_t result = flagcxSuccess;
+  uint64_t generation = 0;
+  // DevComm creation is collective and serialized. Root issues a fresh epoch
+  // even when an earlier creation failed or its owner remains retired.
+  if (comm->rank == 0 && comm->shmGeneration != UINT64_MAX)
+    generation = ++comm->shmGeneration;
+  if (comm->nranks > 1) {
+    if (comm->bootstrap == NULL) {
+      result = flagcxInvalidUsage;
+      goto exit;
+    }
+    FLAGCXCHECKGOTO(bootstrapCollBroadcast(comm->bootstrap, comm->rank,
+                                           comm->nranks, 0, &generation,
+                                           sizeof(generation)),
+                    result, exit);
+    if (result == flagcxInProgress)
+      goto exit;
+  }
+  if (generation == 0) {
+    result = flagcxInvalidUsage;
+    goto exit;
+  }
+  devComm->shmGeneration = generation;
+exit:
+  return result;
+}
+
 static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
                                        flagcxDevComm_t devComm) {
   int localRanks = comm->localRanks;
@@ -236,8 +259,10 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     int registeredPeerCount = 0;
 
     char myShmPath[SHM_PATH_MAX];
-    snprintf(myShmPath, sizeof(myShmPath), "/dev/shm/flagcx_barrier_%016llx_%d",
-             (unsigned long long)comm->magic, myRank);
+    snprintf(myShmPath, sizeof(myShmPath),
+             "/dev/shm/flagcx_barrier_%016llx_%016llx_%d",
+             (unsigned long long)comm->magic,
+             (unsigned long long)devComm->shmGeneration, myRank);
 
     // Step 1: Create and map own shm segment.
     flagcxShmHandle_t myShmHandle = nullptr;
@@ -268,10 +293,11 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
       } else {
         char peerPath[SHM_PATH_MAX];
         snprintf(peerPath, sizeof(peerPath),
-                 "/dev/shm/flagcx_barrier_%016llx_%d",
-                 (unsigned long long)comm->magic, globalR);
+                 "/dev/shm/flagcx_barrier_%016llx_%016llx_%d",
+                 (unsigned long long)comm->magic,
+                 (unsigned long long)devComm->shmGeneration, globalR);
         FLAGCXCHECKGOTO(flagcxShmOpen(peerPath, sizeof(peerPath), barrierSize,
-                                      &peerCpuPtrs[lr], nullptr, -1,
+                                      &peerCpuPtrs[lr], NULL, -1,
                                       &peerShmHandles[lr]),
                         res, fail_peer_shm);
       }
@@ -377,8 +403,9 @@ static flagcxResult_t setupHostSignals(flagcxComm_t comm,
   void **hostDevicePtrs = nullptr;
   void *myCpuPtr = nullptr;
   char myPath[SHM_PATH_MAX];
-  snprintf(myPath, sizeof(myPath), "/dev/shm/flagcx_signal_%016llx_%d",
-           (unsigned long long)comm->magic, comm->rank);
+  snprintf(myPath, sizeof(myPath), "/dev/shm/flagcx_signal_%016llx_%016llx_%d",
+           (unsigned long long)comm->magic,
+           (unsigned long long)devComm->shmGeneration, comm->rank);
 
   FLAGCXCHECKGOTO(flagcxShmOpen(myPath, sizeof(myPath), shmBytes, &myCpuPtr,
                                 nullptr, localRanks,
@@ -406,8 +433,10 @@ static flagcxResult_t setupHostSignals(flagcxComm_t comm,
       devComm->peerSignalShmHandles[lr] = devComm->mySignalShmHandle;
     } else {
       char peerPath[SHM_PATH_MAX];
-      snprintf(peerPath, sizeof(peerPath), "/dev/shm/flagcx_signal_%016llx_%d",
-               (unsigned long long)comm->magic, rank);
+      snprintf(peerPath, sizeof(peerPath),
+               "/dev/shm/flagcx_signal_%016llx_%016llx_%d",
+               (unsigned long long)comm->magic,
+               (unsigned long long)devComm->shmGeneration, rank);
       FLAGCXCHECKGOTO(flagcxShmOpen(peerPath, sizeof(peerPath), shmBytes,
                                     &devComm->peerSignalShmPtrs[lr], nullptr,
                                     -1, &devComm->peerSignalShmHandles[lr]),
@@ -500,6 +529,7 @@ static flagcxResult_t
 defaultDevApiCommCreate(flagcxComm_t comm,
                         const struct flagcxDevCommRequirements *reqs,
                         size_t reqsSize, flagcxDevComm_t devComm) {
+  flagcxResult_t result = flagcxSuccess;
   // The default backend consumes only fields in the frozen prefix.
   (void)reqsSize;
   if (reqs->interBarrierCount < 0)
@@ -511,6 +541,13 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       sizeof(DefaultCompletionWord) == sizeof(uint64_t);
   const bool oneSidedRequested =
       reqs->interSignalCount > 0 || reqs->interCounterCount > 0;
+  if (flagcxParamSignalHostEnable() != 0 &&
+      (reqs->intraBarrierCount > 0 || reqs->interBarrierCount > 0 ||
+       reqs->interSignalCount > 0)) {
+    FLAGCXCHECKGOTO(reserveShmGeneration(comm, devComm), result, exit);
+    if (result == flagcxInProgress)
+      goto exit;
+  }
   // IPC barrier layer
   if (reqs->intraBarrierCount > 0 || reqs->interBarrierCount > 0) {
     flagcxResult_t res = setupIpcBarriers(comm, devComm);
@@ -931,7 +968,8 @@ defaultDevApiCommCreate(flagcxComm_t comm,
        devComm->netSignalReady, devComm->netPutValueReady,
        forceOneSidedNet ? 1 : 0);
 
-  return flagcxSuccess;
+exit:
+  return result;
 }
 
 // ==========================================================================
@@ -1000,14 +1038,26 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
         devComm->peerShmHandles[lr] = NULL;
       if (devComm->peerShmHandles[lr] == NULL)
         continue;
-      FLAGCXCHECK(flagcxShmClose(devComm->peerShmHandles[lr]));
+      {
+        flagcxResult_t cleanupStatus =
+            (flagcxShmClose(devComm->peerShmHandles[lr]));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
       devComm->peerShmHandles[lr] = NULL;
     }
     free(devComm->peerShmHandles);
     devComm->peerShmHandles = NULL;
   }
   if (devComm->myShmHandle != NULL) {
-    FLAGCXCHECK(flagcxShmClose(devComm->myShmHandle));
+    {
+      flagcxResult_t cleanupStatus = (flagcxCommReleaseBuffer(
+          comm, devComm->myShmHandle, flagcxInternalBufferShm));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     devComm->myShmHandle = NULL;
   }
   devComm->localBarrierShmPtr = NULL;
@@ -1035,14 +1085,26 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
         devComm->peerSignalShmHandles[lr] = NULL;
       if (devComm->peerSignalShmHandles[lr] == NULL)
         continue;
-      FLAGCXCHECK(flagcxShmClose(devComm->peerSignalShmHandles[lr]));
+      {
+        flagcxResult_t cleanupStatus =
+            (flagcxShmClose(devComm->peerSignalShmHandles[lr]));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
       devComm->peerSignalShmHandles[lr] = NULL;
     }
     free(devComm->peerSignalShmHandles);
     devComm->peerSignalShmHandles = NULL;
   }
   if (devComm->mySignalShmHandle != NULL) {
-    FLAGCXCHECK(flagcxShmClose(devComm->mySignalShmHandle));
+    {
+      flagcxResult_t cleanupStatus = (flagcxCommReleaseBuffer(
+          comm, devComm->mySignalShmHandle, flagcxInternalBufferShm));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     devComm->mySignalShmHandle = NULL;
   }
   devComm->signalHostBuffer = NULL;
@@ -1521,16 +1583,11 @@ static flagcxResult_t defaultCommQuiesce(flagcxComm_t comm) {
             (volatile uint64_t *)hetero->proxyState->kernelState.fifos[i]
                 ->buffer;
         if (buf) {
-          flagcxResult_t gate = flagcxKernelProxyCloseFifoProducerGate(
-              hetero->proxyState->kernelState.fifos[i]->buffer);
-          if (gate != flagcxSuccess)
-            return gate;
-          const flagcxCompletionWord_t target =
-              __atomic_load_n(flagcxFifoControlPtr(buf, flagcxFifoIdxProduced),
-                              __ATOMIC_ACQUIRE);
           while (
               __atomic_load_n(flagcxFifoControlPtr(buf, flagcxFifoIdxCompleted),
-                              __ATOMIC_ACQUIRE) != target) {
+                              __ATOMIC_ACQUIRE) !=
+              __atomic_load_n(flagcxFifoControlPtr(buf, flagcxFifoIdxProduced),
+                              __ATOMIC_ACQUIRE)) {
             flagcxResult_t terminal =
                 __atomic_load_n(&hetero->proxyState->kernelState.terminalResult,
                                 __ATOMIC_ACQUIRE);

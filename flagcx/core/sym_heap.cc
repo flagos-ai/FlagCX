@@ -1146,7 +1146,13 @@ static flagcxResult_t flagcxSymCleanupUnpublished(flagcxHeteroComm_t comm,
   }
   flagcxResult_t common = flagcxSuccess;
   if (mode == flagcxSymCleanupCollective) {
-    FLAGCXCHECK(flagcxSymGlobalConverge(comm, local, &common));
+    {
+      flagcxResult_t cleanupStatus =
+          (flagcxSymGlobalConverge(comm, local, &common));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
   } else {
     common = local;
   }
@@ -1174,7 +1180,13 @@ static flagcxResult_t flagcxSymCleanupUnpublished(flagcxHeteroComm_t comm,
   }
   if (mode == flagcxSymCleanupCollective) {
     // A rank with no local token still participates in the cleanup round.
-    FLAGCXCHECK(flagcxSymGlobalConverge(comm, local, &common));
+    {
+      flagcxResult_t cleanupStatus =
+          (flagcxSymGlobalConverge(comm, local, &common));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
   } else {
     common = local;
   }
@@ -1193,12 +1205,9 @@ static void flagcxSymFinishPendingCleanup(flagcxSymWindow_t d) {
     owner->defaultBase = nullptr;
     owner->isSymmetricDefault = 0;
     owner->winFlags = 0;
-  }
-  flagcxSymFreeWindowState(d);
-  if (owner != NULL) {
-    flagcxWorkSnapshotRelease(&owner->cleanupWork);
     owner->cleanupStarted = false;
   }
+  flagcxSymFreeWindowState(d);
   if (!publicOwner)
     free(owner);
 }
@@ -1210,8 +1219,19 @@ flagcxResult_t flagcxSymRetryPendingCleanup(flagcxHeteroComm_t comm,
   if (mode == flagcxSymCleanupLocal) {
     while (comm->pendingSymCleanup != nullptr) {
       flagcxSymWindow_t d = comm->pendingSymCleanup;
-      FLAGCXCHECK(flagcxSymCleanupUnpublished(comm, d, mode));
-      FLAGCXCHECK(flagcxSymReleaseAllocationLease(d));
+      {
+        flagcxResult_t cleanupStatus =
+            (flagcxSymCleanupUnpublished(comm, d, mode));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
+      {
+        flagcxResult_t cleanupStatus = (flagcxSymReleaseAllocationLease(d));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
       comm->pendingSymCleanup = d->cleanupNext;
       flagcxSymFinishPendingCleanup(d);
     }
@@ -1223,16 +1243,33 @@ flagcxResult_t flagcxSymRetryPendingCleanup(flagcxHeteroComm_t comm,
   // so MR and local-mapping status convergence cannot deadlock.
   while (true) {
     int anyPending = 0;
-    FLAGCXCHECK(flagcxSymGlobalConvergeScalar(
-        comm, comm->pendingSymCleanup != nullptr ? 1 : 0, kSymPendingGatherTag,
-        kSymPendingBroadcastTag, flagcxSymLogicalOr, &anyPending));
+    {
+      flagcxResult_t cleanupStatus = (flagcxSymGlobalConvergeScalar(
+          comm, comm->pendingSymCleanup != nullptr ? 1 : 0,
+          kSymPendingGatherTag, kSymPendingBroadcastTag, flagcxSymLogicalOr,
+          &anyPending));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     if (!anyPending)
       break;
 
     flagcxSymWindow_t d = comm->pendingSymCleanup;
-    FLAGCXCHECK(flagcxSymCleanupUnpublished(comm, d, mode));
+    {
+      flagcxResult_t cleanupStatus =
+          (flagcxSymCleanupUnpublished(comm, d, mode));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     if (d != nullptr) {
-      FLAGCXCHECK(flagcxSymReleaseAllocationLease(d));
+      {
+        flagcxResult_t cleanupStatus = (flagcxSymReleaseAllocationLease(d));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
       comm->pendingSymCleanup = d->cleanupNext;
       flagcxSymFinishPendingCleanup(d);
     }
@@ -1891,6 +1928,13 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
   w->defaultBase = d;
   w->isSymmetricDefault = 1;
   w->winFlags = winFlags;
+  if (comm->ownerComm != nullptr)
+    for (struct flagcxInternalBuffer *node = comm->ownerComm->internalBuffers;
+         node; node = node->next)
+      if (node->pointer == buff) {
+        w->ownership = flagcxBufferInternal;
+        break;
+      }
 
   d->mrIndex = -1;
   d->mrBase = 0;
@@ -2712,8 +2756,13 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
     }
     flagcxResult_t lease = flagcxSymReleaseAllocationLease(d);
     flagcxResult_t commonLease = lease;
-    if (mode == flagcxSymCleanupCollective)
-      FLAGCXCHECK(flagcxSymConvergeStatus(comm, lease, &commonLease));
+    if (mode == flagcxSymCleanupCollective) {
+      flagcxResult_t cleanupStatus =
+          (flagcxSymConvergeStatus(comm, lease, &commonLease));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     if (commonLease != flagcxSuccess) {
       WARN("flagcxSymWindowDeregister: allocation lease release failed "
            "rank=%d resourcePath=%d result=%d",
@@ -2744,7 +2793,6 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
     win->defaultBase = nullptr;
   }
 
-  flagcxWorkSnapshotRelease(&win->cleanupWork);
   win->cleanupStarted = false;
   if (win->ownerComm == nullptr)
     free(win);

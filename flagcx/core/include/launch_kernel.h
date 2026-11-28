@@ -16,25 +16,63 @@
 #include <math.h>
 #include <memory.h>
 #include <mutex>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
+struct flagcxHostSemaphore;
+struct flagcxGroupCallback {
+  struct flagcxGroupCallback *next;
+  struct flagcxHostSemaphore *semaphore;
+  int submitted, finished;
+};
+
 struct flagcxSemaphore {
   flagcxResult_t initResult = flagcxSuccess;
-  int completionCancelled = 0;
+  bool notificationSealed = true, notificationCancelled = false;
+  flagcxResult_t notificationError = flagcxSuccess;
+  pthread_mutex_t notificationMutex = PTHREAD_MUTEX_INITIALIZER;
+  flagcxStream_t ownedDefaultStream = NULL;
+  // Borrowed only by the builder; retirement never dereferences these wrappers.
+  std::vector<flagcxStream_t> notificationStreams;
+  void prepareNotifications() { notificationSealed = false; }
+  void sealNotifications() {
+    __atomic_store_n(&notificationSealed, true, __ATOMIC_RELEASE);
+  }
+  bool isCancelled() {
+    return __atomic_load_n(&notificationCancelled, __ATOMIC_ACQUIRE);
+  }
+  bool isSealed() {
+    return __atomic_load_n(&notificationSealed, __ATOMIC_ACQUIRE);
+  }
+  virtual void cancelNotifications(flagcxResult_t error = flagcxRemoteError);
+  virtual flagcxResult_t drainNotifications();
+  virtual flagcxResult_t captureCancellationCompletion(flagcxStream_t) {
+    return flagcxSuccess;
+  }
+  virtual flagcxResult_t release() {
+    {
+      flagcxResult_t cleanupStatus = (drainNotifications());
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    return releaseDefaultStream();
+  }
+  flagcxResult_t releaseDefaultStream();
+  void recordNotificationError(flagcxResult_t error) {
+    if (error == flagcxSuccess || error == flagcxInProgress)
+      return;
+    flagcxResult_t expected = flagcxSuccess;
+    __atomic_compare_exchange_n(&notificationError, &expected, error, false,
+                                __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+  }
+  flagcxResult_t getNotificationError() {
+    return __atomic_load_n(&notificationError, __ATOMIC_ACQUIRE);
+  }
   flagcxSemaphore() = default;
-  virtual ~flagcxSemaphore() = default;
-
-  // Only a saved last-use fence may authorize this for a rejected notification.
-  // Keep counters intact: failed proxy users may still retire accepted
-  // requests.
-  void markCompletionCancelled() {
-    __atomic_store_n(&completionCancelled, 1, __ATOMIC_RELEASE);
-  }
-  int isCompletionCancelled() {
-    return __atomic_load_n(&completionCancelled, __ATOMIC_ACQUIRE);
-  }
+  virtual ~flagcxSemaphore() { pthread_mutex_destroy(&notificationMutex); }
 
   virtual flagcxEvent_t getEvent() = 0;
   virtual void signalStart() = 0;
@@ -45,8 +83,6 @@ struct flagcxSemaphore {
   virtual int pollStart(int opId = 0, int step = 0) = 0;
   virtual int pollEnd() = 0;
   virtual void wait() = 0;
-  // Called by the Comm owner after its last-use event and all proxy users end.
-  virtual flagcxResult_t release() { return flagcxSuccess; }
 };
 
 #define FLAGCX_OPS_PER_SEMAPHORE 64
@@ -57,6 +93,8 @@ struct flagcxSemaphore {
 
 // Host semaphore derived class
 struct flagcxHostSemaphore : public flagcxSemaphore {
+  int callbacks = 0, callbackStarted = 0;
+  struct flagcxGroupCallback *callbackContexts = NULL;
   int counter;                              // total ops
   std::unordered_map<int, int> stepInfo;    // opId -> sigalId
   std::vector<std::pair<int, int>> signals; // [curStep, nSteps]
@@ -71,22 +109,16 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
     events.reserve(FLAGCX_SIGNALS_PER_SEMAPHORE);
   }
   ~flagcxHostSemaphore() override { (void)release(); }
-  flagcxResult_t release() override {
-    for (auto &event : events) {
-      if (event == nullptr)
-        continue;
-      flagcxResult_t result = deviceAdaptor->eventDestroy(event);
-      if (result != flagcxSuccess)
-        return result;
-      event = nullptr;
-    }
-    return flagcxSuccess;
-  }
+  flagcxResult_t release() override;
+  flagcxResult_t drainNotifications() override;
+  void runCallback();
   flagcxEvent_t getEvent() override {
     events.push_back(nullptr);
     auto &event = events.back();
     initResult = deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
-    return initResult == flagcxSuccess ? event : nullptr;
+    if (initResult != flagcxSuccess)
+      return NULL;
+    return event;
   }
   void signalStart() override {
     frozen =
@@ -123,13 +155,15 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
     return (signals[it->second].first >= step);
   }
   int pollEnd() override {
-    return isCompletionCancelled() ||
-           (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) == 0);
+    return isSealed() &&
+           (isCancelled() ||
+            __atomic_load_n(&counter, __ATOMIC_ACQUIRE) == 0) &&
+           __atomic_load_n(&callbacks, __ATOMIC_ACQUIRE) == 0;
   }
   void wait() override {
     int nDone = 0;
     int nOps = __atomic_load_n(&counter, __ATOMIC_ACQUIRE);
-    while (nDone < nOps) {
+    while (nDone < nOps && !isCancelled()) {
       for (auto it = stepInfo.begin(); it != stepInfo.end(); ++it) {
         if (__atomic_load_n(&signals[it->second].first, __ATOMIC_ACQUIRE) ==
             __atomic_load_n(&signals[it->second].second, __ATOMIC_ACQUIRE)) {
@@ -139,8 +173,8 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
       }
       sched_yield();
     }
+    frozen = false; // Last publication follows every access to semaphore state.
     __atomic_store_n(&counter, 0, __ATOMIC_RELEASE);
-    frozen = false; // unfreeze: allow addCounter for next round
   }
 };
 
@@ -154,12 +188,12 @@ struct flagcxDeviceSemaphoreBufferPool {
   };
   int capacity;
   Chunk *chunks, *pending;
-  std::mutex mutex;
+  pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
   flagcxDeviceSemaphoreBufferPool();
   ~flagcxDeviceSemaphoreBufferPool();
   flagcxResult_t getSlotId(int *id);
-  void releaseSlot(int id);
+  flagcxResult_t releaseSlot(int id);
   flagcxResult_t clear();
   int *getHostPtr(int id);
   void *getDevicePtr(int id);
@@ -195,8 +229,8 @@ extern flagcxStreamValueBufferPool streamValueBufferPool;
 // Probe on a private stream before group operations are submitted. Results are
 // cached for the current adaptor and device until the adaptor is unloaded.
 flagcxResult_t flagcxStreamValueSupported(bool *supported);
-void flagcxClearStreamValueProbeCache();
 flagcxResult_t flagcxStreamValueProbeCleanup();
+void flagcxClearStreamValueProbeCache();
 
 // Device semaphore derived class
 struct flagcxDeviceSemaphore : public flagcxSemaphore {
@@ -209,44 +243,39 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   std::map<int, int> nSteps;  // total steps of each op
   std::vector<flagcxEvent_t> events;
 
+  bool completionArmed = false, completionDrained = false;
+  bool notificationAttempted = false;
+  pthread_mutex_t signalMutex = PTHREAD_MUTEX_INITIALIZER;
   flagcxDeviceSemaphore() {
-    opOffset = 0;
     slotId = -1;
+    opOffset = 0;
     initResult = deviceSemaphoreBufferPool.getSlotId(&slotId);
     signals = initResult == flagcxSuccess
                   ? deviceSemaphoreBufferPool.getHostPtr(slotId)
-                  : nullptr;
+                  : NULL;
     dSignals = initResult == flagcxSuccess
                    ? deviceSemaphoreBufferPool.getDevicePtr(slotId)
-                   : nullptr;
-    headEvent = nullptr;
+                   : NULL;
+    headEvent = NULL;
+    if (initResult == flagcxSuccess && (signals == NULL || dSignals == NULL))
+      initResult = flagcxSystemError;
   }
-  ~flagcxDeviceSemaphore() override { (void)release(); }
-  flagcxResult_t release() override {
-    for (auto &event : events) {
-      if (event == nullptr)
-        continue;
-      flagcxResult_t result = deviceAdaptor->eventDestroy(event);
-      if (result != flagcxSuccess)
-        return result;
-      event = nullptr;
-    }
-    if (slotId >= 0) {
-      deviceSemaphoreBufferPool.releaseSlot(slotId);
-      slotId = -1;
-    }
-    return flagcxSuccess;
+  ~flagcxDeviceSemaphore() override {
+    (void)release();
+    pthread_mutex_destroy(&signalMutex);
   }
+  flagcxResult_t release() override;
+  void cancelNotifications(flagcxResult_t error = flagcxRemoteError) override;
+  flagcxResult_t drainNotifications() override;
+  flagcxResult_t captureCancellationCompletion(flagcxStream_t stream) override;
   flagcxEvent_t getEvent() override {
-    events.push_back(nullptr);
-    auto &event = events.back();
+    events.push_back(NULL);
+    flagcxEvent_t &event = events.back();
     initResult = deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
     if (initResult != flagcxSuccess)
-      return nullptr;
-    // Keep the first readiness event for the device completion kernel.
-    if (events.size() == 1) {
+      return NULL;
+    if (events.size() == 1)
       headEvent = event;
-    }
     return event;
   }
   // Since the device kernel handles the signaling,
@@ -254,6 +283,11 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   void signalStart() override {}
   void *getSignals() override { return dSignals; }
   void subCounter(int opId = 0) override {
+    pthread_mutex_lock(&signalMutex);
+    if (isCancelled()) {
+      pthread_mutex_unlock(&signalMutex);
+      return;
+    }
     assert(curStep.find(opId) != curStep.end());
     assert(nSteps.find(opId) != nSteps.end());
     if (signals[curStep[opId]] + 1 == signals[nSteps[opId]]) {
@@ -262,6 +296,7 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
     } else {
       __atomic_fetch_add(signals + curStep[opId], 1, __ATOMIC_RELEASE);
     }
+    pthread_mutex_unlock(&signalMutex);
   }
   void addCounter(int opId = 0) override {
     if (nSteps.find(opId) != nSteps.end()) {
@@ -287,9 +322,21 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
     return (__atomic_load_n(signals + curStep[opId], __ATOMIC_ACQUIRE) >= step);
   }
   int pollEnd() override {
-    return isCompletionCancelled() ||
-           (__atomic_load_n(signals + FLAGCX_SIGNAL_COUNTER_OFFSET,
-                            __ATOMIC_ACQUIRE) == 0);
+    if (!isSealed())
+      return 0;
+    if (__atomic_load_n(&completionDrained, __ATOMIC_ACQUIRE))
+      return 1;
+    if (isCancelled())
+      return 0;
+    if (notificationStreams.empty())
+      return 1;
+    if (!__atomic_load_n(&completionArmed, __ATOMIC_ACQUIRE))
+      return 0;
+    if (getCounter() != 0)
+      return 0;
+    flagcxResult_t result = deviceAdaptor->eventQuery(headEvent);
+    recordNotificationError(result);
+    return result == flagcxSuccess;
   }
   // Since the device kernel handles the signaling,
   // host-side wait is intentionally no-op and not needed
@@ -319,41 +366,17 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
         completionEvent(nullptr), completionState(0), completionUnsafe(false) {
     initResult = streamValueBufferPool.acquire(&signals, &dSignals);
   }
-  ~flagcxStreamValueSemaphore() override {
-    // A failed synchronization may leave GPU work using the event or slot.
-    // Keep both allocated so the pool cannot hand the slot out again.
-    if (completionUnsafe)
-      return;
-    (void)release();
-  }
-  flagcxResult_t release() override {
-    if (completionEvent != nullptr) {
-      flagcxResult_t result = deviceAdaptor->eventDestroy(completionEvent);
-      if (result != flagcxSuccess)
-        return result;
-      completionEvent = nullptr;
-    }
-    for (auto &event : events) {
-      if (event == nullptr)
-        continue;
-      flagcxResult_t result = deviceAdaptor->eventDestroy(event);
-      if (result != flagcxSuccess)
-        return result;
-      event = nullptr;
-    }
-    if (signals != nullptr) {
-      streamValueBufferPool.release(signals);
-      signals = nullptr;
-      dSignals = nullptr;
-    }
-    return flagcxSuccess;
-  }
+  ~flagcxStreamValueSemaphore() override { (void)release(); }
+  flagcxResult_t release() override;
+  flagcxResult_t drainNotifications() override;
+  void cancelNotifications(flagcxResult_t error = flagcxRemoteError) override;
+  flagcxResult_t captureCancellationCompletion(flagcxStream_t stream) override;
 
   flagcxResult_t enqueueCompletion(flagcxStream_t launchStream);
   void traceCompletion(const char *reason, int remaining, int state,
                        bool queried, flagcxResult_t queryResult);
   void markCompletionDrained() {
-    completionUnsafe = false;
+    __atomic_store_n(&completionUnsafe, false, __ATOMIC_RELEASE);
     __atomic_store_n(&completionState, 2, __ATOMIC_RELEASE);
   }
   void markCompletionUnsafe() { completionUnsafe = true; }
@@ -362,7 +385,9 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
     events.push_back(nullptr);
     auto &event = events.back();
     initResult = deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
-    return initResult == flagcxSuccess ? event : nullptr;
+    if (initResult != flagcxSuccess)
+      return NULL;
+    return event;
   }
   void signalStart() override {}
   void *getSignals() override { return dSignals; }
@@ -390,6 +415,7 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
   void wait() override {}
 };
 
+flagcxResult_t flagcxReleaseSemaphore(std::shared_ptr<flagcxSemaphore> *owner);
 void cpuAsyncKernel(void *args);
 extern flagcxLaunchFunc_t deviceAsyncKernel;
 

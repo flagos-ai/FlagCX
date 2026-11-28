@@ -3,6 +3,7 @@
 // for the coll_*.cpp test files.
 
 #include "comm.h"
+#include "comm_lifecycle_check.hpp"
 #include "global_comm.h"
 #include "runner_fixtures.hpp"
 #include "transport.h"
@@ -185,45 +186,26 @@ flagcxResult_t FlagCXCollTest::synchronizeAndCheckAsyncError() {
 flagcxResult_t
 FlagCXCollTest::synchronizeAndCheckAsyncError(flagcxComm_t target,
                                               flagcxStream_t targetStream) {
-  const char *expectedRunnerMode = std::getenv("FLAGCX_CI_EXPECT_RUNNER_MODE");
-  const ::testing::TestInfo *testInfo =
-      ::testing::UnitTest::GetInstance()->current_test_info();
-  const bool traceSendRecv = expectedRunnerMode != nullptr &&
-                             std::strcmp(expectedRunnerMode, "HYBRID") == 0 &&
-                             testInfo != nullptr &&
-                             std::strcmp(testInfo->name(), "SendRecv") == 0;
-  const char *traceName = testInfo == nullptr ? "SendRecv" : testInfo->name();
-  if (traceSendRecv)
-    std::cerr << traceName << " rank=" << rank << " phase=sync-stream-begin"
-              << std::endl;
-  flagcxResult_t localError = devHandle->streamSynchronize(targetStream);
-  if (traceSendRecv)
-    std::cerr << traceName << " rank=" << rank
-              << " phase=sync-stream-end result=" << localError << std::endl;
+  flagcxResult_t localError =
+      flagcxTestSynchronizeStream(devHandle, targetStream);
   flagcxResult_t asyncError = flagcxSuccess;
   if (localError == flagcxSuccess) {
-    if (traceSendRecv)
-      std::cerr << traceName << " rank=" << rank << " phase=async-error-begin"
-                << std::endl;
+    flagcxTestLifecyclePhase query{"async-error"};
+    query.enter();
     flagcxResult_t queryResult = flagcxCommGetAsyncError(target, &asyncError);
-    if (traceSendRecv)
-      std::cerr << traceName << " rank=" << rank
-                << " phase=async-error-end result=" << queryResult
-                << " async_error=" << asyncError << std::endl;
     localError = queryResult != flagcxSuccess ? queryResult : asyncError;
+    query.returned(localError);
   }
 
   int localErrorCode = static_cast<int>(localError);
   int globalErrorCode = static_cast<int>(flagcxSuccess);
-  if (traceSendRecv)
-    std::cerr << traceName << " rank=" << rank << " phase=sync-allreduce-begin"
-              << std::endl;
-  MPI_Allreduce(&localErrorCode, &globalErrorCode, 1, MPI_INT, MPI_MAX,
-                MPI_COMM_WORLD);
-  if (traceSendRecv)
-    std::cerr << traceName << " rank=" << rank
-              << " phase=sync-allreduce-end result=" << globalErrorCode
-              << std::endl;
+  flagcxTestLifecyclePhase agreement{"stream-agree"};
+  agreement.enter();
+  int mpiResult = MPI_Allreduce(&localErrorCode, &globalErrorCode, 1, MPI_INT,
+                                MPI_MAX, MPI_COMM_WORLD);
+  if (mpiResult != MPI_SUCCESS)
+    globalErrorCode = static_cast<int>(flagcxSystemError);
+  agreement.returned(static_cast<flagcxResult_t>(globalErrorCode));
   if (globalErrorCode != static_cast<int>(flagcxSuccess)) {
     runnerTransportFailureObserved = true;
     return static_cast<flagcxResult_t>(globalErrorCode);
@@ -235,14 +217,21 @@ void FlagCXCollTest::TearDown() {
   // Collective work is asynchronous with respect to the host.  Drain the
   // stream before communicator teardown so no runtime callback can retain an
   // IPC mapping after the communicator starts releasing transport resources.
-  if (devHandle != nullptr && stream != nullptr) {
-    EXPECT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
-  }
+  flagcxResult_t completed = flagcxSuccess;
+  if (devHandle != nullptr && stream != nullptr)
+    completed = flagcxTestSynchronizeStream(devHandle, stream);
+  flagcxTestLifecyclePhase agreement{"stream-agree"};
+  agreement.enter();
+  completed = flagcxTestAgreeLifecycleStatus(completed, MPI_COMM_WORLD);
+  agreement.returned(completed);
+  EXPECT_EQ(completed, flagcxSuccess);
+  if (completed != flagcxSuccess)
+    return; // Retain buffers and their Comm until stream completion is known.
 
-  if (comm != nullptr) {
-    EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
-    comm = nullptr;
-  }
+  flagcxResult_t destroyed = flagcxTestFinalizeAndDestroyAcrossRanks(&comm);
+  EXPECT_EQ(destroyed, flagcxSuccess);
+  if (destroyed != flagcxSuccess)
+    return;
 
   if (devHandle != nullptr) {
     if (stream != nullptr) {

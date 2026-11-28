@@ -286,9 +286,16 @@ flagcxP2pCleanupProxyConnection(struct flagcxProxyConnection *connection,
   struct flagcxP2pResources *resources =
       (struct flagcxP2pResources *)connection->transportResources;
   if (cleanupPhase == flagcxTransportCleanupCloseImports)
-    return connection->send ? flagcxP2pSendProxyFree(resources) : flagcxSuccess;
-  if (cleanupPhase == flagcxTransportCleanupReleaseResources)
-    return connection->send ? flagcxSuccess : flagcxP2pRecvProxyFree(resources);
+    return connection->send ? flagcxP2pCloseImportedFifo(resources)
+                            : flagcxSuccess;
+  if (cleanupPhase == flagcxTransportCleanupReleaseResources) {
+    flagcxResult_t result = connection->send
+                                ? flagcxP2pSendProxyFree(resources)
+                                : flagcxP2pRecvProxyFree(resources);
+    if (result != flagcxSuccess)
+      return result;
+    return flagcxSuccess;
+  }
   return flagcxInvalidArgument;
 }
 

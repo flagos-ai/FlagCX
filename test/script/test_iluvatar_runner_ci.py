@@ -251,15 +251,16 @@ printf 'FlagCXCollTest.\n  Slow\nRunnerResult.\n  NeverReached\n'
 ''')
             launcher = self.script(root / "mpirun", '''
 printf '%s\n' "$*" >> "$COMMAND_LOG"
-[[ "$*" != *Slow* ]] || sleep 2
+[[ "$*" != *Slow* ]] || sleep 6
 ''')
+            # Leave startup/discovery headroom; Slow must exceed the budget.
             result = subprocess.run(
                 ["bash", str(CI / "run_iluvatar_runner_mpi.sh"),
                  "-np", "4", str(binary)],
                 env={**os.environ, "BASH_ENV": "", "COMMAND_LOG": str(root / "calls"),
                      "FLAGCX_CI_MPIRUN": str(launcher),
                      "FLAGCX_CI_LOG_DIR": str(root / "logs"),
-                     "FLAGCX_CI_RUNNER_STAGE_BUDGET": "1",
+                     "FLAGCX_CI_RUNNER_STAGE_BUDGET": "5",
                      "FLAGCX_CI_MPI_KILL_AFTER": "0.1s"},
                 capture_output=True, text=True, timeout=20,
             )

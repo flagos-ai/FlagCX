@@ -1,6 +1,9 @@
 """Capture only the timed workload's descendants before CI kills them."""
 
 import argparse
+from contextlib import redirect_stdout
+from datetime import datetime, timezone
+import os
 from pathlib import Path
 import shutil
 import signal
@@ -55,10 +58,17 @@ def capture(root_pid):
         name = read(process / "comm")
         # /proc/comm truncates the experimental runner's name to 15 bytes.
         try:
-            executable = (process / "exe").readlink().name
+            executable = Path(os.readlink(process / "exe")).name
         except OSError:
             executable = ""
         print(f"\nPID {pid} PPID {processes.get(pid)} name={name}", flush=True)
+        try:
+            environment = (process / "environ").read_bytes().split(b"\0")
+            for entry in environment:
+                if entry.startswith((b"OMPI_COMM_WORLD_RANK=", b"PMI_RANK=", b"PMIX_RANK=")):
+                    print(entry.decode(errors="replace"), flush=True)
+        except OSError:
+            pass
         try:
             threads = sorted((process / "task").iterdir())
         except OSError:
@@ -67,8 +77,8 @@ def capture(root_pid):
             print(f"TID {thread.name} name={read(thread / 'comm')} "
                   f"wchan={read(thread / 'wchan')}\n{read(thread / 'stack')}", flush=True)
         if debugger is not None and (
-            name.startswith("runner_mpi_test")
-            or executable == "runner_unirunner_experimental_mpi_tests"
+            executable.endswith(("_tests", "_perf"))
+            or executable.startswith(("test_", "python"))
         ):
             # Bound each attach so diagnostics cannot consume the job budget.
             active_debugger = subprocess.Popen(
@@ -91,8 +101,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pid", type=int, required=True)
     parser.add_argument("--delay", type=float, required=True)
+    parser.add_argument("--label", default="test invocation")
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     time.sleep(max(0, args.delay))
-    capture(args.pid)
+    # Open only when the delay expires. Fast tests leave no empty stack files.
+    if args.output is None:
+        capture(args.pid)
+    else:
+        with args.output.open("w") as output, redirect_stdout(output):
+            print(f"Invocation: {args.label}; UTC {datetime.now(timezone.utc).isoformat()}", flush=True)
+            capture(args.pid)

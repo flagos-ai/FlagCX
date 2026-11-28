@@ -2,14 +2,12 @@
 #include "group.h"
 #include <climits>
 #include <map>
-#include <new>
 #include <stdio.h>
 
 flagcxLaunchFunc_t deviceAsyncKernel = NULL;
+flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
 
 FLAGCX_PARAM(SemaphoreBufferPoolCapacity, "SEMAPHORE_BUFFER_POOL_CAPACITY", 32);
-
-flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
 
 flagcxDeviceSemaphoreBufferPool::flagcxDeviceSemaphoreBufferPool()
     : capacity(0), chunks(NULL), pending(NULL) {}
@@ -19,10 +17,14 @@ flagcxDeviceSemaphoreBufferPool::~flagcxDeviceSemaphoreBufferPool() {
 }
 
 flagcxResult_t flagcxDeviceSemaphoreBufferPool::getSlotId(int *id) {
+  if (id == NULL)
+    return flagcxInvalidArgument;
+  flagcxResult_t result = flagcxSuccess;
   *id = -1;
-  std::lock_guard<std::mutex> lock(mutex);
+  PTHREADCHECKGOTO(pthread_mutex_lock(&mutex), "pthread_mutex_lock", result,
+                   exit);
   for (;;) {
-    for (auto *chunk = chunks; chunk != NULL; chunk = chunk->next) {
+    for (Chunk *chunk = chunks; chunk != NULL; chunk = chunk->next) {
       for (int i = 0; i < chunk->capacity; ++i) {
         if (chunk->inUse[i])
           continue;
@@ -30,15 +32,17 @@ flagcxResult_t flagcxDeviceSemaphoreBufferPool::getSlotId(int *id) {
         memset(chunk->signals + (size_t)FLAGCX_SIGNALS_PER_SEMAPHORE * i, 0,
                FLAGCX_SIGNALS_PER_SEMAPHORE * sizeof(int));
         *id = chunk->first + i;
-        return flagcxSuccess;
+        goto unlock;
       }
     }
-    // Completed groups may still have live Comm owners. Grow without moving
-    // their signals or reclaiming any slot before its owner releases it.
-    flagcxResult_t result = grow();
+    FLAGCXCHECKGOTO(grow(), result, unlock);
     if (result != flagcxSuccess)
-      return result;
+      goto unlock;
   }
+unlock:
+  pthread_mutex_unlock(&mutex);
+exit:
+  return result;
 }
 
 flagcxResult_t flagcxDeviceSemaphoreBufferPool::grow() {
@@ -93,64 +97,380 @@ flagcxResult_t flagcxDeviceSemaphoreBufferPool::grow() {
 
 flagcxDeviceSemaphoreBufferPool::Chunk *
 flagcxDeviceSemaphoreBufferPool::findChunk(int id) {
-  for (auto *chunk = chunks; chunk != NULL; chunk = chunk->next)
+  for (Chunk *chunk = chunks; chunk != NULL; chunk = chunk->next)
     if (id >= chunk->first && id - chunk->first < chunk->capacity)
       return chunk;
   assert(false);
   return NULL;
 }
 
-void flagcxDeviceSemaphoreBufferPool::releaseSlot(int id) {
-  std::lock_guard<std::mutex> lock(mutex);
-  auto *chunk = findChunk(id);
-  assert(chunk->inUse[id - chunk->first]);
-  chunk->inUse[id - chunk->first] = 0;
+flagcxResult_t flagcxDeviceSemaphoreBufferPool::releaseSlot(int id) {
+  flagcxResult_t result = flagcxSuccess;
+  PTHREADCHECKGOTO(pthread_mutex_lock(&mutex), "pthread_mutex_lock", result,
+                   exit);
+  {
+    Chunk *chunk = findChunk(id);
+    if (chunk == NULL || !chunk->inUse[id - chunk->first])
+      result = flagcxInvalidUsage;
+    else
+      chunk->inUse[id - chunk->first] = 0;
+  }
+  pthread_mutex_unlock(&mutex);
+exit:
+  return result;
 }
 
 flagcxResult_t flagcxDeviceSemaphoreBufferPool::clear() {
-  std::lock_guard<std::mutex> lock(mutex);
-  for (auto *chunk = chunks; chunk != NULL; chunk = chunk->next)
+  flagcxResult_t result = flagcxSuccess;
+  PTHREADCHECKGOTO(pthread_mutex_lock(&mutex), "pthread_mutex_lock", result,
+                   exit);
+  for (Chunk *chunk = chunks; chunk != NULL; chunk = chunk->next)
     for (int i = 0; i < chunk->capacity; ++i)
-      if (chunk->inUse[i])
-        return flagcxInProgress;
-  // Each successful free removes its owner. A later failure retains only the
-  // remaining chunks, including any partially initialized growth allocation.
-  Chunk **lists[] = {&pending, &chunks};
-  for (auto **list : lists) {
-    while (*list != NULL) {
-      auto *chunk = *list;
-      if (chunk->signals != NULL) {
-        flagcxResult_t result =
-            deviceAdaptor->deviceFree(chunk->signals, flagcxMemHost, NULL);
-        if (result != flagcxSuccess)
-          return result;
+      if (chunk->inUse[i]) {
+        result = flagcxInProgress;
+        goto unlock;
       }
-      *list = chunk->next;
-      free(chunk->inUse);
-      free(chunk);
+  {
+    Chunk **lists[] = {&pending, &chunks};
+    for (unsigned int i = 0; i < 2; ++i) {
+      Chunk **list = lists[i];
+      while (*list != NULL) {
+        Chunk *chunk = *list;
+        if (chunk->signals != NULL) {
+          FLAGCXCHECKGOTO(
+              deviceAdaptor->deviceFree(chunk->signals, flagcxMemHost, NULL),
+              result, unlock);
+          if (result != flagcxSuccess)
+            goto unlock;
+        }
+        *list = chunk->next;
+        free(chunk->inUse);
+        free(chunk);
+      }
     }
   }
   capacity = 0;
-  return flagcxSuccess;
+unlock:
+  pthread_mutex_unlock(&mutex);
+exit:
+  return result;
 }
 
 int *flagcxDeviceSemaphoreBufferPool::getHostPtr(int id) {
-  std::lock_guard<std::mutex> lock(mutex);
-  auto *chunk = findChunk(id);
-  return chunk->signals +
-         (size_t)FLAGCX_SIGNALS_PER_SEMAPHORE * (id - chunk->first);
+  pthread_mutex_lock(&mutex);
+  Chunk *chunk = findChunk(id);
+  int *pointer = chunk->signals +
+                 (size_t)FLAGCX_SIGNALS_PER_SEMAPHORE * (id - chunk->first);
+  pthread_mutex_unlock(&mutex);
+  return pointer;
 }
 void *flagcxDeviceSemaphoreBufferPool::getDevicePtr(int id) {
-  std::lock_guard<std::mutex> lock(mutex);
-  auto *chunk = findChunk(id);
-  return (char *)chunk->dSignals + (size_t)FLAGCX_SIGNALS_PER_SEMAPHORE *
-                                       (id - chunk->first) * sizeof(int);
+  pthread_mutex_lock(&mutex);
+  Chunk *chunk = findChunk(id);
+  void *pointer =
+      (char *)chunk->dSignals +
+      (size_t)FLAGCX_SIGNALS_PER_SEMAPHORE * (id - chunk->first) * sizeof(int);
+  pthread_mutex_unlock(&mutex);
+  return pointer;
 }
 
 void cpuAsyncKernel(void *args) {
-  flagcxHostSemaphore *semaphore = (flagcxHostSemaphore *)args;
-  semaphore->signalStart();
-  semaphore->wait();
+  struct flagcxGroupCallback *context = (struct flagcxGroupCallback *)args;
+  struct flagcxHostSemaphore *semaphore = context->semaphore;
+  semaphore->runCallback();
+  __atomic_store_n(&context->finished, 1, __ATOMIC_RELEASE);
+  // Last object access: proxy owners cannot retire before this reference drops.
+  __atomic_fetch_sub(&semaphore->callbacks, 1, __ATOMIC_RELEASE);
+}
+
+static pthread_mutex_t semaphoreOwnerMutex = PTHREAD_MUTEX_INITIALIZER;
+flagcxResult_t flagcxReleaseSemaphore(std::shared_ptr<flagcxSemaphore> *owner) {
+  flagcxResult_t result = flagcxSuccess;
+  PTHREADCHECKGOTO(pthread_mutex_lock(&semaphoreOwnerMutex),
+                   "pthread_mutex_lock", result, exit);
+  if (*owner && owner->use_count() == 1) {
+    result = (*owner)->release();
+    if (result != flagcxSuccess)
+      goto unlock;
+  }
+  owner->reset();
+unlock:
+  pthread_mutex_unlock(&semaphoreOwnerMutex);
+exit:
+  return result;
+}
+
+flagcxResult_t flagcxSemaphore::releaseDefaultStream() {
+  if (ownedDefaultStream != NULL) {
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceAdaptor->streamFree(ownedDefaultStream));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    ownedDefaultStream = NULL;
+  }
+  return flagcxSuccess;
+}
+
+void flagcxSemaphore::cancelNotifications(flagcxResult_t error) {
+  pthread_mutex_lock(&notificationMutex);
+  if (!isCancelled()) {
+    recordNotificationError(error == flagcxSuccess || error == flagcxInProgress
+                                ? flagcxUnhandledDeviceError
+                                : error);
+    __atomic_store_n(&notificationCancelled, true, __ATOMIC_RELEASE);
+  }
+  pthread_mutex_unlock(&notificationMutex);
+}
+
+flagcxResult_t flagcxSemaphore::drainNotifications() {
+  return isSealed() ? flagcxSuccess : flagcxInProgress;
+}
+
+void flagcxHostSemaphore::runCallback() {
+  int expected = 0;
+  if (__atomic_compare_exchange_n(&callbackStarted, &expected, 1, false,
+                                  __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    if (!isCancelled()) {
+      signalStart();
+      wait();
+    }
+  } else {
+    while (!isCancelled() && __atomic_load_n(&counter, __ATOMIC_ACQUIRE) != 0)
+      sched_yield();
+  }
+}
+
+flagcxResult_t flagcxHostSemaphore::drainNotifications() {
+  {
+    flagcxResult_t cleanupStatus = (flagcxSemaphore::drainNotifications());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  for (struct flagcxGroupCallback *context = callbackContexts; context != NULL;
+       context = context->next) {
+    // A rejected launch accepted no callback. Accepted callbacks alone drop
+    // their own reference at their final access, independently of the stream.
+    if (!context->submitted &&
+        __atomic_exchange_n(&context->finished, 1, __ATOMIC_ACQ_REL) == 0)
+      __atomic_fetch_sub(&callbacks, 1, __ATOMIC_RELEASE);
+  }
+  return __atomic_load_n(&callbacks, __ATOMIC_ACQUIRE) == 0 ? flagcxSuccess
+                                                            : flagcxInProgress;
+}
+
+flagcxResult_t flagcxHostSemaphore::release() {
+  {
+    flagcxResult_t cleanupStatus = (drainNotifications());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  if (__atomic_load_n(&callbacks, __ATOMIC_ACQUIRE) != 0)
+    return flagcxInProgress;
+  for (size_t i = 0; i < events.size(); ++i) {
+    if (events[i] == NULL)
+      continue;
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->eventDestroy(events[i]));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    events[i] = NULL;
+  }
+  {
+    flagcxResult_t cleanupStatus = (releaseDefaultStream());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  while (callbackContexts != NULL) {
+    struct flagcxGroupCallback *context = callbackContexts;
+    callbackContexts = context->next;
+    free(context);
+  }
+  notificationStreams.clear();
+  return flagcxSuccess;
+}
+
+void flagcxDeviceSemaphore::cancelNotifications(flagcxResult_t error) {
+  pthread_mutex_lock(&signalMutex);
+  flagcxSemaphore::cancelNotifications(error);
+  if (signals != NULL)
+    __atomic_store_n(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, 0,
+                     __ATOMIC_RELEASE);
+  pthread_mutex_unlock(&signalMutex);
+}
+flagcxResult_t
+flagcxDeviceSemaphore::captureCancellationCompletion(flagcxStream_t stream) {
+  if (!notificationAttempted || completionArmed)
+    return flagcxSuccess;
+  if (headEvent == NULL || stream == NULL)
+    return flagcxInProgress;
+  {
+    flagcxResult_t cleanupStatus =
+        (deviceAdaptor->eventRecord(headEvent, stream));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  __atomic_store_n(&completionArmed, true, __ATOMIC_RELEASE);
+  return flagcxSuccess;
+}
+flagcxResult_t flagcxDeviceSemaphore::drainNotifications() {
+  {
+    flagcxResult_t cleanupStatus = (flagcxSemaphore::drainNotifications());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  if (!isCancelled() || __atomic_load_n(&completionDrained, __ATOMIC_ACQUIRE))
+    return flagcxSuccess;
+  if (notificationAttempted || completionArmed) {
+    if (!__atomic_load_n(&completionArmed, __ATOMIC_ACQUIRE))
+      return flagcxInProgress;
+    flagcxResult_t result = deviceAdaptor->eventQuery(headEvent);
+    recordNotificationError(result);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  __atomic_store_n(&completionDrained, true, __ATOMIC_RELEASE);
+  return flagcxSuccess;
+}
+flagcxResult_t flagcxDeviceSemaphore::release() {
+  {
+    flagcxResult_t cleanupStatus = (drainNotifications());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  if (!notificationStreams.empty() && !pollEnd())
+    return flagcxInProgress;
+  // Preserve completion proof before event destruction can partly succeed.
+  __atomic_store_n(&completionDrained, true, __ATOMIC_RELEASE);
+  for (size_t i = 0; i < events.size(); ++i) {
+    if (events[i] == NULL)
+      continue;
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->eventDestroy(events[i]));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    events[i] = NULL;
+  }
+  {
+    flagcxResult_t cleanupStatus = (releaseDefaultStream());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  if (slotId >= 0) {
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceSemaphoreBufferPool.releaseSlot(slotId));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    slotId = -1;
+  }
+  notificationStreams.clear();
+  headEvent = NULL;
+  return flagcxSuccess;
+}
+void flagcxStreamValueSemaphore::cancelNotifications(flagcxResult_t error) {
+  flagcxSemaphore::cancelNotifications(error);
+  // Rejected operations cannot decrement their counters. Release an accepted
+  // device wait explicitly, retaining its storage until the event completes.
+  if (signals != NULL)
+    __atomic_store_n(signals + 1, uint64_t(1), __ATOMIC_RELEASE);
+}
+flagcxResult_t flagcxStreamValueSemaphore::captureCancellationCompletion(
+    flagcxStream_t stream) {
+  if (!__atomic_load_n(&completionUnsafe, __ATOMIC_ACQUIRE))
+    return flagcxSuccess;
+  if (completionEvent == NULL || stream == NULL)
+    return flagcxInProgress;
+  {
+    flagcxResult_t cleanupStatus =
+        (deviceAdaptor->eventRecord(completionEvent, stream));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  __atomic_store_n(&completionState, 1, __ATOMIC_RELEASE);
+  __atomic_store_n(&completionUnsafe, false, __ATOMIC_RELEASE);
+  return flagcxSuccess;
+}
+flagcxResult_t flagcxStreamValueSemaphore::drainNotifications() {
+  {
+    flagcxResult_t cleanupStatus = (flagcxSemaphore::drainNotifications());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  if (!isCancelled())
+    return flagcxSuccess;
+  if (__atomic_load_n(&completionUnsafe, __ATOMIC_ACQUIRE))
+    return flagcxInProgress;
+  const int state = __atomic_load_n(&completionState, __ATOMIC_ACQUIRE);
+  if (state == 1) {
+    flagcxResult_t result = deviceAdaptor->eventQuery(completionEvent);
+    recordNotificationError(result);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  markCompletionDrained();
+  return flagcxSuccess;
+}
+flagcxResult_t flagcxStreamValueSemaphore::release() {
+  {
+    flagcxResult_t cleanupStatus = (drainNotifications());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  if (__atomic_load_n(&completionUnsafe, __ATOMIC_ACQUIRE))
+    return flagcxInProgress;
+  if (completionEvent != NULL) {
+    if (!pollEnd())
+      return flagcxInProgress;
+    markCompletionDrained();
+    {
+      flagcxResult_t cleanupStatus =
+          (deviceAdaptor->eventDestroy(completionEvent));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    completionEvent = NULL;
+  }
+  for (size_t i = 0; i < events.size(); ++i) {
+    if (events[i] == NULL)
+      continue;
+    {
+      flagcxResult_t cleanupStatus = (deviceAdaptor->eventDestroy(events[i]));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
+    events[i] = NULL;
+  }
+  {
+    flagcxResult_t cleanupStatus = (releaseDefaultStream());
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  streamValueBufferPool.release(signals);
+  signals = NULL;
+  notificationStreams.clear();
+  return flagcxSuccess;
 }
 
 flagcxStreamValueBufferPool streamValueBufferPool;
@@ -437,22 +757,44 @@ flagcxStreamValueSemaphore::enqueueCompletion(flagcxStream_t launchStream) {
   flagcxResult_t result =
       deviceAdaptor->eventCreate(&completionEvent, flagcxEventDisableTiming);
   traceCall("event-create-return", result);
-  FLAGCXCHECK(result);
+  {
+    flagcxResult_t cleanupStatus = (result);
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
+  __atomic_store_n(&completionUnsafe, true, __ATOMIC_RELEASE);
   traceCall("start-write-enter", -1);
   result = deviceAdaptor->streamWriteValue64(launchStream, dSignals, 1, 0);
   traceCall("start-write-return", result);
-  FLAGCXCHECK(result);
+  {
+    flagcxResult_t cleanupStatus = (result);
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   traceCall("end-wait-enter", -1);
   result = deviceAdaptor->streamWaitValue64(
       launchStream, static_cast<char *>(dSignals) + sizeof(uint64_t), 1, 0);
   traceCall("end-wait-return", result);
-  FLAGCXCHECK(result);
+  {
+    flagcxResult_t cleanupStatus = (result);
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   traceCall("event-record-enter", -1);
   result = deviceAdaptor->eventRecord(completionEvent, launchStream);
   traceCall("event-record-return", result);
-  FLAGCXCHECK(result);
+  {
+    flagcxResult_t cleanupStatus = (result);
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   // Publish the event handle only after it has captured the stream work.
   __atomic_store_n(&completionState, 1, __ATOMIC_RELEASE);
+  __atomic_store_n(&completionUnsafe, false, __ATOMIC_RELEASE);
   traceCall("event-published", flagcxSuccess);
   return flagcxSuccess;
 }
@@ -525,10 +867,18 @@ void flagcxStreamValueSemaphore::traceCompletion(const char *reason,
 }
 
 int flagcxStreamValueSemaphore::pollEnd() {
-  if (isCompletionCancelled())
-    return 1;
+  if (!isSealed())
+    return 0;
   const int remaining = __atomic_load_n(&counter, __ATOMIC_ACQUIRE);
   const int state = __atomic_load_n(&completionState, __ATOMIC_ACQUIRE);
+  // Cancellation can include operations that were never published to a proxy.
+  // Their counters cannot retire, but a successful stream drain proves that
+  // no notification still uses the semaphore.
+  if (isCancelled() && state == 2) {
+    traceCompletion("cancelled_drained", remaining, state, false,
+                    flagcxSuccess);
+    return 1;
+  }
   if (remaining != 0) {
     traceCompletion("counter_pending", remaining, state, false, flagcxSuccess);
     return 0;
@@ -543,6 +893,7 @@ int flagcxStreamValueSemaphore::pollEnd() {
     return 1;
   }
   const flagcxResult_t result = deviceAdaptor->eventQuery(completionEvent);
+  recordNotificationError(result);
   traceCompletion(result == flagcxSuccess      ? "complete"
                   : result == flagcxInProgress ? "event_pending"
                                                : "event_error",

@@ -157,7 +157,40 @@ TEST_F(StreamValueCompletionTest, EachPollUsesOneQueryWithoutReleasingOnError) {
   }
 }
 
-TEST_F(StreamValueCompletionTest, FinalizeKeepsPrivateScratchForLocalCleanup) {
+TEST_F(StreamValueCompletionTest,
+       CancelledUnpublishedStepsNeedSuccessfulDrain) {
+  flagcxStreamValueSemaphore semaphore;
+  ASSERT_EQ(semaphore.initResult, flagcxSuccess);
+  semaphore.addCounter(1);
+  semaphore.addCounter(2); // This operation was rejected before publication.
+  semaphore.subCounter(1);
+  ASSERT_EQ(semaphore.getCounter(), 1);
+  semaphore.prepareNotifications();
+  semaphore.notificationStreams.push_back((flagcxStream_t)0x1000);
+  recordingSemaphore = &semaphore;
+  ASSERT_EQ(semaphore.enqueueCompletion((flagcxStream_t)0x1000), flagcxSuccess);
+  semaphore.sealNotifications();
+  semaphore.cancelNotifications();
+  EXPECT_EQ(semaphore.signals[1], 1u);
+  fakeAdaptor.streamQuery = [](flagcxStream_t) {
+    ADD_FAILURE() << "retirement must not query borrowed stream wrappers";
+    return flagcxRemoteError;
+  };
+  eventQueryResult = flagcxInProgress;
+  EXPECT_EQ(semaphore.drainNotifications(), flagcxInProgress);
+  EXPECT_EQ(semaphore.pollEnd(), 0);
+  eventQueryResult = flagcxRemoteError;
+  EXPECT_EQ(semaphore.drainNotifications(), flagcxRemoteError);
+  EXPECT_EQ(semaphore.pollEnd(), 0);
+  eventQueryResult = flagcxSuccess;
+  EXPECT_EQ(semaphore.drainNotifications(), flagcxSuccess);
+  EXPECT_EQ(semaphore.getCounter(), 1);
+  EXPECT_EQ(semaphore.pollEnd(), 1);
+  EXPECT_EQ(eventQueries, 3);
+}
+
+TEST_F(StreamValueCompletionTest,
+       PrepareKeepsPersistentBackingUntilLocalRelease) {
   flagcxHeteroComm comm = {};
   flagcxProxyState proxy = {};
   comm.proxyState = &proxy;
@@ -165,13 +198,11 @@ TEST_F(StreamValueCompletionTest, FinalizeKeepsPrivateScratchForLocalCleanup) {
   ASSERT_NE(proxy.uniRunnerState.groupedArScratch, nullptr);
   failSetDevice = true;
 
-  EXPECT_EQ(flagcxHeteroCommPrepareDestroy(&comm), flagcxSuccess);
-  EXPECT_EQ(deviceAdaptor->setDevice(0), flagcxUnhandledDeviceError);
-  EXPECT_TRUE(comm.destroyProxyComplete);
+  EXPECT_EQ(flagcxHeteroCommPrepareDestroy(&comm), flagcxUnhandledDeviceError);
+  EXPECT_FALSE(comm.destroyProxyComplete);
   EXPECT_NE(proxy.uniRunnerState.groupedArScratch, nullptr);
   EXPECT_EQ(flagcxHeteroCommPrepareDestroy(&comm), flagcxSuccess);
   EXPECT_NE(proxy.uniRunnerState.groupedArScratch, nullptr);
-  EXPECT_EQ(deviceAdaptor->setDevice(0), flagcxSuccess);
   EXPECT_EQ(cleanupUniRunnerPersistentState(&proxy.uniRunnerState),
             flagcxSuccess);
   EXPECT_EQ(proxy.uniRunnerState.groupedArScratch, nullptr);

@@ -1,0 +1,561 @@
+#include "comm_lifecycle_check.hpp"
+#include "device_api_test_session.hpp"
+#include "ipc_lifecycle_mock.hpp"
+#include "onesided_types.h"
+#include "reg_pool.h"
+#include <chrono>
+#include <cstring>
+#include <thread>
+
+class LifecycleHelperMpi : public ::testing::Test {
+public:
+  inline static LifecycleHelperMpi *active;
+  int rank = 0, nranks = 0, finalizePending = 0, destroyPending = 0;
+  int finalizes = 0, destroys = 0, releases = 0;
+  bool finalized = false;
+  bool requirePeerDestroy = false;
+  int token = 0;
+  flagcxComm_t owner = nullptr;
+  flagcxResult_t finalizeError = flagcxSuccess, destroyError = flagcxSuccess;
+  static flagcxResult_t finalize(flagcxComm_t comm) {
+    auto &test = *active;
+    EXPECT_EQ(comm, test.owner);
+    ++test.finalizes;
+    if (test.finalizeError != flagcxSuccess)
+      return test.finalizeError;
+    if (test.finalizePending-- > 0)
+      return flagcxInProgress;
+    test.finalized = true;
+    return flagcxSuccess;
+  }
+  static flagcxResult_t destroy(flagcxComm_t comm) {
+    auto &test = *active;
+    EXPECT_EQ(comm, test.owner);
+    EXPECT_TRUE(test.finalized);
+    ++test.destroys;
+    if (test.requirePeerDestroy)
+      EXPECT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+    if (test.destroyError != flagcxSuccess)
+      return test.destroyError;
+    if (test.destroyPending-- > 0)
+      return flagcxInProgress;
+    ++test.releases;
+    return flagcxSuccess;
+  }
+  flagcxResult_t close(double seconds = 5.0) {
+    flagcxTestLifecycleCalls calls{finalize, destroy};
+    return flagcxTestFinalizeAndDestroyAcrossRanks(&owner, MPI_COMM_WORLD,
+                                                   calls, seconds);
+  }
+  void SetUp() override {
+    active = this;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &nranks);
+    if (nranks < 2)
+      GTEST_SKIP();
+    owner = (flagcxComm_t)&token;
+  }
+};
+
+TEST_F(LifecycleHelperMpi, AsymmetricProgressFinishesBeforeLocalDestroy) {
+  finalizePending = rank + 1;
+  destroyPending = 2;
+  ASSERT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(finalizes, rank + 2);
+  EXPECT_EQ(destroys, 3);
+  EXPECT_EQ(releases, 1);
+  EXPECT_EQ(owner, nullptr);
+}
+
+TEST_F(LifecycleHelperMpi, ErrorBeatsProgressAndOwnerCanBeRetried) {
+  finalizeError = rank == 0 ? flagcxSystemError : flagcxSuccess;
+  finalizePending = 2;
+  EXPECT_EQ(close(), flagcxSystemError);
+  EXPECT_EQ(owner, (flagcxComm_t)&token);
+  EXPECT_EQ(destroys, 0);
+  finalizeError = flagcxSuccess;
+  EXPECT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(owner, nullptr);
+  EXPECT_EQ(releases, 1);
+}
+
+TEST_F(LifecycleHelperMpi, PartialDestroyFailureRetainsRemainingOwners) {
+  destroyError = rank == 1 ? flagcxRemoteError : flagcxSuccess;
+  EXPECT_EQ(close(), flagcxRemoteError);
+  EXPECT_EQ(owner, rank == 1 ? (flagcxComm_t)&token : nullptr);
+  destroyError = flagcxSuccess;
+  EXPECT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(owner, nullptr);
+  EXPECT_EQ(releases, 1);
+}
+
+TEST_F(LifecycleHelperMpi, PeerDependentDestroyIsEnteredByEveryRank) {
+  requirePeerDestroy = true;
+  ASSERT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(owner, nullptr);
+  EXPECT_EQ(releases, 1);
+}
+
+TEST_F(LifecycleHelperMpi,
+       AsymmetricDestroyProgressDoesNotRepeatReleasedOwner) {
+  destroyPending = rank + 1;
+  ASSERT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(destroys, rank + 2);
+  EXPECT_EQ(releases, 1);
+  EXPECT_EQ(owner, nullptr);
+}
+
+TEST_F(LifecycleHelperMpi, DestroyErrorBeatsPeerProgressAndRetryKeepsOwners) {
+  destroyError = rank == 0 ? flagcxSystemError : flagcxSuccess;
+  destroyPending = rank == 1 ? 2 : 0;
+  EXPECT_EQ(close(), flagcxSystemError);
+  EXPECT_EQ(owner, rank <= 1 ? (flagcxComm_t)&token : nullptr);
+  destroyError = flagcxSuccess;
+  ASSERT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(releases, 1);
+  EXPECT_EQ(owner, nullptr);
+}
+
+TEST_F(LifecycleHelperMpi, FinalizeDeadlineRetainsOwner) {
+  finalizePending = 1;
+  EXPECT_EQ(close(0.0), flagcxSystemError);
+  EXPECT_EQ(owner, (flagcxComm_t)&token);
+  EXPECT_EQ(destroys, 0);
+  EXPECT_EQ(close(), flagcxSuccess);
+}
+
+TEST_F(LifecycleHelperMpi, DestroyDeadlineRetainsOwner) {
+  destroyPending = rank == 0 ? 1 : 0;
+  EXPECT_EQ(close(0.0), flagcxSystemError);
+  EXPECT_EQ(owner, rank == 0 ? (flagcxComm_t)&token : nullptr);
+  EXPECT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(releases, 1);
+}
+
+// Real bootstrap coordination with deterministic local device failures. Ranks
+// without an import/export must still take part in the same close protocol.
+class IpcFinalizeBootstrapTest : public IpcLifecycleMock {
+public:
+  int rank = 0, nranks = 0;
+  volatile uint32_t abortFlag = 0;
+
+  void SetUp() override {
+    IpcLifecycleMock::SetUp();
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &nranks);
+    if (nranks < 2)
+      GTEST_SKIP() << "Requires at least two ranks";
+    ASSERT_EQ(bootstrapNetInit(), flagcxSuccess);
+    flagcxBootstrapHandle handle = {};
+    if (rank == 0)
+      ASSERT_EQ(bootstrapGetUniqueId(&handle), flagcxSuccess);
+    MPI_Bcast(&handle, sizeof(handle), MPI_BYTE, 0, MPI_COMM_WORLD);
+    ASSERT_EQ(bootstrapCollInit(&handle, rank, nranks, handle.magic, &abortFlag,
+                                &comm->bootstrap),
+              flagcxSuccess);
+    comm->rank = rank;
+    comm->nranks = nranks;
+    comm->magic = handle.magic;
+    comm->internalBuffersNeedPeerClose = true;
+    if (rank == 0) {
+      void *buffer = nullptr;
+      ASSERT_EQ(flagcxCommAllocInternalBuffer(comm, &buffer, 64,
+                                              flagcxInternalBufferDevice),
+                flagcxSuccess);
+    } else if (rank == 1) {
+      auto &entry = comm->ipcTable[0];
+      entry.ownership = flagcxBufferInternal;
+      entry.inUse = entry.ownerHeld = true;
+      entry.nPeers = 1;
+      entry.hostPeerBasePtrs = (void **)calloc(1, sizeof(void *));
+      entry.hostPeerBasePtrs[0] = (void *)0x55000;
+    }
+  }
+  void expectCommon(flagcxResult_t result, flagcxResult_t expected) {
+    int local = result, low = 0, high = 0;
+    MPI_Allreduce(&local, &low, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    MPI_Allreduce(&local, &high, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    EXPECT_EQ(low, expected);
+    EXPECT_EQ(high, expected);
+  }
+  void destroyAcrossRanks() {
+    ASSERT_EQ(flagcxTestFinalizeAndDestroyAcrossRanks(&comm), flagcxSuccess);
+    EXPECT_EQ(syncs, 0);
+  }
+};
+
+TEST_F(IpcFinalizeBootstrapTest,
+       EmptyRanksAndDelayedImporterJoinBeforeRelease) {
+  if (rank == 1)
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_TRUE(frees.empty());
+  EXPECT_TRUE(comm->internalImportsConfirmed);
+  if (rank == 1)
+    EXPECT_EQ(closes.size(), 1u);
+  // A cached successful Finalize must also be rank-local.
+  if (rank == 0)
+    EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  MPI_Barrier(MPI_COMM_WORLD);
+  destroyAcrossRanks();
+  if (rank == 0)
+    EXPECT_EQ(frees.size(), 1u);
+}
+
+TEST_F(IpcFinalizeBootstrapTest,
+       FailedImporterKeepsAllExportersUntilCommonRetry) {
+  failImport = rank == 1;
+  expectCommon(flagcxCommFinalize(comm), flagcxRemoteError);
+  EXPECT_FALSE(comm->internalImportsConfirmed);
+  EXPECT_TRUE(frees.empty());
+  if (rank == 0)
+    EXPECT_NE(comm->internalBuffers, nullptr);
+  failImport = false;
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  if (rank == 1)
+    EXPECT_EQ(closes.size(), 2u);
+  destroyAcrossRanks();
+}
+
+TEST_F(IpcFinalizeBootstrapTest, DeviceSelectionFailureIsAgreedBeforeAnyClose) {
+  failDevice = rank == 1;
+  expectCommon(flagcxCommFinalize(comm), flagcxRemoteError);
+  EXPECT_TRUE(closes.empty());
+  EXPECT_EQ(comm->finalizePhase, 0);
+  failDevice = false;
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  destroyAcrossRanks();
+}
+
+TEST_F(IpcFinalizeBootstrapTest,
+       BackingReleaseFailureRetriesWithoutRepeatingReleasedOwners) {
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  failFree = rank == 0;
+  flagcxTestLifecycleCalls calls;
+  expectCommon(flagcxTestDestroyAcrossRanks(&comm, MPI_COMM_WORLD, calls,
+                                            MPI_Wtime() + 5.0),
+               flagcxRemoteError);
+  if (rank == 0) {
+    ASSERT_NE(comm, nullptr);
+    EXPECT_NE(comm->internalBuffers, nullptr);
+  } else {
+    EXPECT_EQ(comm, nullptr);
+  }
+  failFree = false;
+  expectCommon(flagcxTestDestroyAcrossRanks(&comm, MPI_COMM_WORLD, calls,
+                                            MPI_Wtime() + 5.0),
+               flagcxSuccess);
+  EXPECT_EQ(comm, nullptr);
+  EXPECT_EQ(frees.size(), rank == 0 ? 1u : 0u);
+}
+
+TEST_F(IpcFinalizeBootstrapTest,
+       NativePreparationConvergesBeforeEnteringCollectiveDestroy) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  comm->nativeDestroyFinalize = true;
+  comm->nativeCloseNeedsAgreement = true;
+  // This mimics a collective compatibility close. Premature first entry
+  // returns an error instead of hanging the negative regression forever.
+  sdk.commDestroy = [](flagcxInnerComm_t) {
+    ++active->destroyCalls;
+    if (active->pendingPolls == 0)
+      return flagcxRemoteError;
+    return MPI_Barrier(MPI_COMM_WORLD) == MPI_SUCCESS ? flagcxSuccess
+                                                      : flagcxSystemError;
+  };
+  void *data = (void *)0x67890000;
+  ASSERT_EQ(globalRegPool.registerBuffer(nullptr, data, 64), flagcxSuccess);
+  auto *token = globalRegPool.getItem(nullptr, data);
+  std::unique_ptr<flagcxRegItem, void (*)(flagcxRegItem *)> reader(
+      nullptr, [](flagcxRegItem *item) { globalRegPool.releaseItem(item); });
+  if (rank == 0)
+    reader.reset(globalRegPool.acquireItem(nullptr, data));
+  expectCommon(flagcxCommFinalize(comm), flagcxInProgress);
+  EXPECT_EQ(comm->finalizePhase, 6);
+  EXPECT_EQ(destroyCalls, 0);
+  EXPECT_FALSE(comm->internalImportsConfirmed);
+  EXPECT_TRUE(frees.empty());
+  reader.reset();
+  // A rank that already prepared its owners must not repeat rank-local
+  // registration work inside collective native close on the next attempt.
+  if (rank == 1)
+    reader.reset(globalRegPool.acquireItem(nullptr, data));
+  pendingPolls = 1;
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(destroyCalls, 1);
+  EXPECT_EQ(comm->homoComm, nullptr);
+  reader.reset();
+  EXPECT_EQ(globalRegPool.deregisterBuffer(nullptr, token), flagcxSuccess);
+  destroyAcrossRanks();
+}
+
+TEST_F(IpcFinalizeBootstrapTest,
+       PendingEarlierNativeOwnerCompletesBeforeNextCollective) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  comm->homoInterComm = (flagcxInnerComm_t)0xa000;
+  comm->nativeCloseNeedsAgreement = true;
+  pendingPolls = rank == 0 ? 2 : 0;
+  sdk.commFinalize = [](flagcxInnerComm_t) {
+    ++active->finalizeCalls;
+    EXPECT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+    return flagcxInProgress;
+  };
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(finalizeCalls, 2);
+  EXPECT_EQ(asyncPolls, rank == 0 ? 4 : 2);
+  EXPECT_TRUE(frees.empty());
+  destroyAcrossRanks();
+}
+
+TEST_F(IpcFinalizeBootstrapTest,
+       PendingEarlierCompatibilityCloseCompletesBeforeNextCollective) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  comm->homoInterComm = (flagcxInnerComm_t)0xa000;
+  comm->nativeCloseNeedsAgreement = true;
+  comm->nativeDestroyFinalize = true;
+  pendingPolls = rank == 0 ? 2 : 0;
+  sdk.commDestroy = [](flagcxInnerComm_t handle) {
+    ++active->destroyCalls;
+    if (handle == (flagcxInnerComm_t)0x9000 && active->pendingPolls-- > 0)
+      return flagcxInProgress;
+    return MPI_Barrier(MPI_COMM_WORLD) == MPI_SUCCESS ? flagcxSuccess
+                                                      : flagcxSystemError;
+  };
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_EQ(destroyCalls, rank == 0 ? 4 : 2);
+  EXPECT_TRUE(frees.empty());
+  destroyAcrossRanks();
+}
+
+TEST_F(IpcFinalizeBootstrapTest, HostShmGenerationIsIssuedByRootAndRetained) {
+  setenv("FLAGCX_SIGNAL_HOST_ENABLE", "1", 1);
+  comm->commType = flagcxCommunicatorHybrid;
+  comm->localRanks = nranks;
+  comm->localRank = rank;
+  comm->shmGeneration = rank == 0 ? 3 : 100;
+  comm->localRankToRank = (int *)calloc(nranks, sizeof(int));
+  for (int i = 0; i < nranks; ++i)
+    comm->localRankToRank[i] = i;
+  device.hostRegister = [](void *, size_t) { return flagcxSuccess; };
+  device.hostUnregister = [](void *) { return flagcxSuccess; };
+  device.hostGetDevicePointer = [](void **out, void *ptr) {
+    *out = ptr;
+    return flagcxSuccess;
+  };
+  device.deviceMemcpy = [](void *dst, void *src, size_t bytes,
+                           flagcxMemcpyType_t, flagcxStream_t, void *) {
+    memcpy(dst, src, bytes);
+    return flagcxSuccess;
+  };
+  device.deviceMemset = [](void *ptr, int value, size_t bytes, flagcxMemType_t,
+                           flagcxStream_t) {
+    memset(ptr, value, bytes);
+    return flagcxSuccess;
+  };
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.intraBarrierCount = 1;
+  flagcxDevComm_t first = nullptr, second = nullptr;
+  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &first), flagcxSuccess);
+  EXPECT_EQ(first->shmGeneration, 4u);
+  auto *oldStorage = (uint64_t *)first->localBarrierShmPtr;
+  ASSERT_NE(oldStorage, nullptr);
+  *oldStorage = 0x1234 + rank;
+  MPI_Barrier(MPI_COMM_WORLD);
+  ASSERT_EQ(flagcxDevCommDestroy(comm, first), flagcxSuccess);
+  if (rank == 1)
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &second), flagcxSuccess);
+  EXPECT_EQ(second->shmGeneration, 5u);
+  EXPECT_EQ(*oldStorage, 0x1234u + rank);
+  EXPECT_EQ(*(uint64_t *)second->localBarrierShmPtr, 0u);
+  ASSERT_EQ(flagcxDevCommDestroy(comm, second), flagcxSuccess);
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  destroyAcrossRanks();
+}
+
+TEST_F(IpcFinalizeBootstrapTest,
+       CounterOnlyCreationLeavesNextShmGenerationAligned) {
+  setenv("FLAGCX_SIGNAL_HOST_ENABLE", "1", 1);
+  comm->commType = flagcxCommunicatorHybrid;
+  comm->localRanks = nranks;
+  comm->localRank = rank;
+  comm->localRankToRank = (int *)calloc(nranks, sizeof(int));
+  for (int i = 0; i < nranks; ++i)
+    comm->localRankToRank[i] = i;
+  device.hostRegister = [](void *, size_t) { return flagcxSuccess; };
+  device.hostUnregister = [](void *) { return flagcxSuccess; };
+  device.deviceMemcpy = [](void *dst, void *src, size_t bytes,
+                           flagcxMemcpyType_t, flagcxStream_t, void *) {
+    memcpy(dst, src, bytes);
+    return flagcxSuccess;
+  };
+  comm->shmGeneration = rank == 0 ? 8 : 100;
+  device.hostGetDevicePointer = [](void **out, void *ptr) {
+    *out = ptr;
+    return flagcxSuccess;
+  };
+  device.deviceMemset = [](void *ptr, int value, size_t bytes, flagcxMemType_t,
+                           flagcxStream_t) {
+    memset(ptr, value, bytes);
+    return flagcxSuccess;
+  };
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.interCounterCount = 1;
+  flagcxDevComm_t view = nullptr;
+  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &view), flagcxSuccess);
+  EXPECT_EQ(view->shmGeneration, 0u);
+  ASSERT_NE(view->counterBuffer, nullptr);
+  EXPECT_EQ(view->counterBuffer[0], 0u);
+  ASSERT_EQ(flagcxDevCommDestroy(comm, view), flagcxSuccess);
+  // Every rank skips the counter-only reservation. The next creation opens
+  // shared mappings and must receive its own fresh generation, not a stale one.
+  reqs.interCounterCount = 0;
+  reqs.intraBarrierCount = 1;
+  view = nullptr;
+  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &view), flagcxSuccess);
+  EXPECT_EQ(view->shmGeneration, 9u);
+  EXPECT_NE(view->localBarrierShmPtr, nullptr);
+  ASSERT_EQ(flagcxDevCommDestroy(comm, view), flagcxSuccess);
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  destroyAcrossRanks();
+}
+
+TEST_F(IpcFinalizeBootstrapTest,
+       PendingExplicitFlushKeepsEveryExporterUntilRetry) {
+  flagcxNetAdaptor net = {};
+  flagcxOneSideHandleInfo handle = {};
+  if (rank == 0) {
+    addTransport();
+    comm->heteroComm->netAdaptor = &net;
+    handle.localRecvComm = (void *)0x100;
+    handle.localMrHandle = (void *)0x200;
+    net.iflush = [](void *, int, void **, int *, void **, void **request) {
+      *request = (void *)0x300;
+      return flagcxSuccess;
+    };
+    net.test = [](void *, int *done, int *) {
+      ++active->asyncPolls;
+      *done = active->pendingPolls == 0;
+      return active->nativeResult;
+    };
+    pendingPolls = 1;
+    nativeResult = flagcxRemoteError;
+    ASSERT_EQ(flagcxHeteroFlush(comm->heteroComm, (void *)0x400, 8, &handle),
+              flagcxRemoteError);
+    nativeResult = flagcxSuccess;
+  }
+  expectCommon(flagcxCommFinalize(comm), flagcxInProgress);
+  EXPECT_TRUE(frees.empty());
+  EXPECT_TRUE(closes.empty());
+  EXPECT_EQ(transportCloses, 0);
+  pendingPolls = 0;
+  expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  if (rank == 0) {
+    EXPECT_EQ(asyncPolls, 3);
+    EXPECT_EQ(transportCloses, 1);
+  }
+  destroyAcrossRanks();
+}
+
+class DeviceApiSessionMpi : public IpcFinalizeBootstrapTest {};
+
+TEST_F(DeviceApiSessionMpi, RankLocalCreationErrorClosesEveryComm) {
+  addTransport();
+  DeviceApiTestSession resources;
+  resources.comm = comm;
+  resources.initialized = true;
+  flagcxResult_t observed = flagcxSuccess;
+  try {
+    resources.check(rank == 1 ? flagcxNotSupported : flagcxSuccess);
+  } catch (const DeviceApiTestFailure &failure) {
+    observed = failure.status;
+  }
+  EXPECT_EQ(observed, flagcxNotSupported);
+  EXPECT_EQ(resources.comm, comm);
+  EXPECT_EQ(resources.finish(), flagcxSuccess);
+  comm = resources.comm;
+  EXPECT_EQ(comm, nullptr);
+  EXPECT_EQ(transportCloses, 1);
+  EXPECT_EQ(frees.size(), rank == 0 ? 1u : 0u);
+}
+
+TEST_F(DeviceApiSessionMpi, FailedCleanupRetainsOwnerAndCompletedPhases) {
+  DeviceApiTestSession resources;
+  resources.comm = comm;
+  resources.initialized = true;
+  failImport = rank == 1;
+  EXPECT_EQ(resources.finish(), flagcxRemoteError);
+  EXPECT_EQ(resources.phase, 4);
+  EXPECT_EQ(resources.comm, comm);
+  EXPECT_TRUE(frees.empty());
+  failImport = false;
+  EXPECT_EQ(resources.finish(), flagcxSuccess);
+  comm = resources.comm;
+  EXPECT_EQ(comm, nullptr);
+  EXPECT_EQ(resources.finish(), flagcxSuccess);
+  EXPECT_EQ(frees.size(), rank == 0 ? 1u : 0u);
+}
+
+TEST_F(DeviceApiSessionMpi, NativeProgressIsRetriedBeforeBackingRelease) {
+  comm->homoComm = (flagcxInnerComm_t)0x9000;
+  comm->nativeCloseNeedsAgreement = true;
+  nativeResult = flagcxInProgress;
+  pendingPolls = rank + 1;
+  DeviceApiTestSession resources;
+  resources.comm = comm;
+  resources.initialized = true;
+  EXPECT_EQ(resources.finish(), flagcxSuccess);
+  comm = resources.comm;
+  EXPECT_EQ(comm, nullptr);
+  EXPECT_EQ(finalizeCalls, 1);
+  EXPECT_EQ(destroyCalls, 1);
+  EXPECT_GT(asyncPolls, 0);
+}
+
+TEST_F(DeviceApiSessionMpi, ViewCleanupFailureKeepsPrivateStorageOnEveryRank) {
+  DeviceApiTestSession resources;
+  resources.comm = comm;
+  resources.initialized = true;
+  ASSERT_EQ(flagcxDeviceHandleInit(&resources.devHandle), flagcxSuccess);
+  resources.devHandle->deviceFree = device.deviceFree;
+  resources.devResults = (int *)malloc(64);
+  auto *view = (flagcxDevMem_t)calloc(1, sizeof(flagcxDevMemInternal));
+  ASSERT_NE(view, nullptr);
+  view->ipcIndex = -1;
+  pthread_mutex_init(&view->cachedPtrMutex, nullptr);
+  comm->activeDevMems = resources.devMem = view;
+  backend.devMemDestroy = [](flagcxComm_t, flagcxDevMem_t) {
+    return active->failTransportFree ? flagcxRemoteError : flagcxSuccess;
+  };
+  failTransportFree = rank == 1;
+  EXPECT_EQ(resources.close(), flagcxRemoteError);
+  EXPECT_EQ(resources.phase, 1);
+  EXPECT_NE(resources.devResults, nullptr);
+  EXPECT_EQ(resources.devMem, rank == 1 ? view : nullptr);
+  EXPECT_TRUE(frees.empty());
+  failTransportFree = false;
+  EXPECT_EQ(resources.finish(), flagcxSuccess);
+  comm = resources.comm;
+  EXPECT_EQ(comm, nullptr);
+  EXPECT_EQ(resources.devHandle, nullptr);
+  EXPECT_EQ(frees.size(), rank == 0 ? 2u : 1u);
+}
+
+TEST_F(DeviceApiSessionMpi, FailedFreeRetainsPointerWithoutDoubleFreeOnRetry) {
+  DeviceApiTestSession resources;
+  resources.comm = comm;
+  resources.initialized = true;
+  ASSERT_EQ(flagcxDeviceHandleInit(&resources.devHandle), flagcxSuccess);
+  resources.devHandle->deviceFree = device.deviceFree;
+  resources.devResults = (int *)malloc(64);
+  failFree = rank == 1;
+  EXPECT_EQ(resources.close(), flagcxRemoteError);
+  EXPECT_EQ(resources.phase, 2);
+  EXPECT_EQ(resources.devResults == nullptr, rank != 1);
+  EXPECT_EQ(resources.comm, comm);
+  failFree = false;
+  EXPECT_EQ(resources.finish(), flagcxSuccess);
+  comm = resources.comm;
+  EXPECT_EQ(comm, nullptr);
+  EXPECT_EQ(frees.size(), rank == 0 ? 2u : 1u);
+}

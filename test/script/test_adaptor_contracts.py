@@ -1,4 +1,4 @@
-"""Host contract tests for SDK adaptors and the NCCL wrapper.
+"""Host contract tests for SDK adaptors.
 
 SDK stubs deliberately use different enum values from FlagCX. These tests
 check API wiring and error propagation; PPU CI checks the actual SDK ABI and
@@ -489,7 +489,7 @@ assert(kunlunAdaptorSetDevice(4) == flagcxSuccess && nativeSets == 7 && nativeDe
 class SdkCompileTest(unittest.TestCase):
     def test_musa_native_finalize_disables_compatibility_destroy(self):
         policy = production_function(
-            (ROOT / "flagcx/core/comm_lifecycle.cc").read_text(),
+            (ROOT / "flagcx/flagcx.cc").read_text(),
             "builtinCompatFinalize")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -509,64 +509,6 @@ int main() {
                 capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             subprocess.run([str(binary)], check=True)
-
-    def test_nccl_wrapper_abort_retains_owner_until_every_release_succeeds(self):
-        source = r'''
-#include "flagcx.h"
-#include <cassert>
-#include <cstdlib>
-using ncclResult_t = flagcxResult_t;
-constexpr auto ncclSuccess = flagcxSuccess;
-constexpr auto ncclInvalidArgument = flagcxInvalidArgument;
-struct Wrapper { flagcxComm_t comm; flagcxDeviceHandle_t devHandle; };
-using ncclComm_t = Wrapper *;
-static bool inWrapper;
-struct recursionGuard {
-  bool &value;
-  recursionGuard(bool &v) : value(v) { value = true; }
-  ~recursionGuard() { value = false; }
-};
-static int aborts, handles, frees, nativeCalls;
-static flagcxResult_t abortResult, handleResult;
-flagcxResult_t flagcxCommAbort(flagcxComm_t) { ++aborts; return abortResult; }
-flagcxResult_t flagcxDeviceHandleFree(flagcxDeviceHandle_t) { ++handles; return handleResult; }
-static ncclResult_t toNcclResult(flagcxResult_t r) { return r; }
-static ncclResult_t nativeAbort(ncclComm_t) { ++nativeCalls; return ncclSuccess; }
-struct Real { ncclResult_t (*ncclCommAbort)(ncclComm_t); };
-static Real &getRealNccl() { static Real api{nativeAbort}; return api; }
-static void release(void *p) { ++frees; std::free(p); }
-#define free release
-'''
-        source += production_function(
-            (ROOT / 'plugin/nccl/src/nccl_wrapper.cc').read_text(), 'ncclCommAbort')
-        source += r'''
-#undef free
-int main() {
-  auto *p = (Wrapper *)std::calloc(1, sizeof(Wrapper));
-  p->comm = (flagcxComm_t)42; p->devHandle = (flagcxDeviceHandle_t)43;
-  for (auto r : {flagcxRemoteError, flagcxInProgress}) {
-    abortResult = r;
-    assert(ncclCommAbort(p) == r && p->comm == (flagcxComm_t)42);
-    assert(p->devHandle == (flagcxDeviceHandle_t)43 && handles == 0 && frees == 0);
-  }
-  abortResult = flagcxSuccess; handleResult = flagcxRemoteError;
-  assert(ncclCommAbort(p) == flagcxRemoteError && p->comm == nullptr);
-  assert(aborts == 3 && handles == 1 && frees == 0);
-  handleResult = flagcxSuccess;
-  assert(ncclCommAbort(p) == ncclSuccess && aborts == 3 && handles == 2 && frees == 1);
-  inWrapper = true;
-  assert(ncclCommAbort((ncclComm_t)42) == ncclSuccess && nativeCalls == 1);
-}
-'''
-        with tempfile.TemporaryDirectory() as folder:
-            tmp = Path(folder)
-            (tmp / 'wrapper.cc').write_text('#include <initializer_list>\n' + source)
-            result = subprocess.run([CXX, '-std=c++11', f'-I{ROOT / "flagcx/include"}',
-                                     str(tmp / 'wrapper.cc'), '-o', str(tmp / 'test')],
-                                    text=True, capture_output=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            result = subprocess.run([str(tmp / 'test')], text=True, capture_output=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_mpi_predefined_handles_accept_pointer_and_integer_sdks(self):
         production = (INCLUDE / "mpi_adaptor.h").read_text()

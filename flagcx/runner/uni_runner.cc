@@ -101,7 +101,7 @@ finishUniRunnerScratch(flagcxComm_t comm, flagcxFusedInvocationBuffers *buffers,
       result = cleanup;
   }
   if (buffers->workspace != NULL || buffers->runnerCleanupPending) {
-    auto *state = &comm->heteroComm->proxyState->uniRunnerState;
+    flagcxUniRunnerState *state = &comm->heteroComm->proxyState->uniRunnerState;
     buffers->next = state->pendingFusedBuffers;
     state->pendingFusedBuffers = buffers;
   } else {

@@ -86,7 +86,7 @@ run_runner_test 'P2pAG outer group' 8 'FlagCXCollTest.AllGatherInsideGroup'
 run_runner_test 'AllReduce streams and in-place' default \
   'FlagCXCollTest.UniRunnerAllReduceStreamsAndInPlace'
 run_runner_test 'IPC lifecycle' 2 \
-  'FlagCXCollTest.UniRunnerIpcFinalizeThenRankLocalDestroy:FlagCXCollTest.GroupedCommunicatorsFinalizeTheNonLaunchStreamFirst'
+  'FlagCXCollTest.UniRunnerIpcFinalizeThenDestroy:FlagCXCollTest.GroupedCommunicatorsFinalizeTheNonLaunchStreamFirst'
 
 run_perf_test IpcRingAR 2 perf_allreduce -b 64K -e 4M -f 2 -w 2 -n 5
 run_perf_test 'IPC buffer rebinding' 2 perf_ipc_rebind \

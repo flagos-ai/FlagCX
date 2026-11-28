@@ -8,7 +8,7 @@ test_timeout="$FLAGCX_CI_TEST_TIMEOUT"
 test_kill_after="${FLAGCX_CI_TEST_KILL_AFTER:-30s}"
 test_label="${FLAGCX_CI_TEST_LABEL:-test invocation}"
 max_attempts="${FLAGCX_CI_TEST_MAX_ATTEMPTS:-1}"
-diagnostics_after="${FLAGCX_CI_TEST_DIAGNOSTICS_AFTER:-}"
+diagnostics_after="${FLAGCX_CI_TEST_DIAGNOSTICS_AFTER:-auto}"
 log_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}"
 safe_label=$(printf '%s' "$test_label" | tr -c 'A-Za-z0-9_.-' '_')
 
@@ -126,13 +126,17 @@ while ((attempt <= max_attempts)); do
     <&"$input_fd" >&"$log_fd" 2>"$watchdog_log" &
   active_pid=$!
   exec {input_fd}<&-
-  if [[ -n "$diagnostics_after" ]]; then
-    diagnostic_delay=$(awk -v requested="$diagnostics_after" -v limit="${effective_timeout%s}" \
-      'BEGIN { ceiling = limit * 0.75; print requested < ceiling ? requested : ceiling }')
-    python3 "$script_dir/collect_process_stacks.py" \
-      --pid "$active_pid" --delay "$diagnostic_delay" \
-      > "$log_dir/attempt-$attempt-stacks.log" 2>&1 &
-    diagnostic_pid=$!
+  if [[ "$diagnostics_after" != off ]]; then
+    if diagnostic_delay=$(awk -v requested="$diagnostics_after" -v limit="${effective_timeout%s}" \
+      'BEGIN { ceiling = limit * 0.75; print ((requested == "auto" || requested + 0 > ceiling) ? ceiling : requested + 0) }') &&
+       [[ -n "$diagnostic_delay" ]]; then
+      python3 "$script_dir/collect_process_stacks.py" \
+        --pid "$active_pid" --delay "$diagnostic_delay" \
+        --label "$test_label" --output "$log_dir/attempt-$attempt-stacks.log" &
+      diagnostic_pid=$!
+    else
+      echo "$test_label: stack sampler unavailable; retaining workload status" >&2
+    fi
   fi
   status=0
   wait "$active_pid" || status=$?

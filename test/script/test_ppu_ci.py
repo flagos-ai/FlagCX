@@ -87,8 +87,9 @@ label = os.environ.get("FLAGCX_CI_MPI_LABEL", os.environ.get("FLAGCX_CI_TEST_LAB
 assert os.environ["PCCL_ENABLE_EXT_KERNEL"] == "0"
 positive, _, negative = os.environ["GTEST_FILTER"].partition("-")
 assert positive == "*"
-assert set(negative.split(":")) == {"CoverageSupplemental.*", "FlagCXCollTest.FinalizeThenRankLocalDestroy"}
+assert set(negative.split(":")) == {"CoverageSupplemental.*"}
 if args[0] != "make":
+    assert sys.argv[0].endswith("per-case")
     exports = dict(arg.split("=", 1) for i, arg in enumerate(args)
                    if i > 0 and args[i - 1] == "-x")
     assert exports["PCCL_ENABLE_EXT_KERNEL"] == "0"
@@ -103,12 +104,14 @@ if label == os.environ["FAIL_LABEL"]:
     sys.exit(139)
 """)
             fake.chmod(0o755)
+            per_case = root / "per-case"
+            per_case.symlink_to(fake)
             for failure in ("none", "runner unit tests", "runner default",
                             "runner PPU PXN four-rank"):
                 with self.subTest(failure=failure):
                     calls = root / (failure.replace(" ", "-") + ".jsonl")
-                    env = dict(os.environ, TEST_RUNNER=str(fake), MPI_RUNNER=str(fake),
-                               CALL_LOG=str(calls), FAIL_LABEL=failure,
+                    env = dict(os.environ, TEST_RUNNER=str(fake), MPI_RUNNER="/must-not-bypass-per-case",
+                               RUNNER_MPI_RUNNER=str(per_case), CALL_LOG=str(calls), FAIL_LABEL=failure,
                                MPI_HOME=str(root / "mpi-home"), PROJECT_ROOT=str(REPO_ROOT),
                                FLAGCX_CI_ENABLE_PXN="1", PCCL_ENABLE_EXT_KERNEL="1",
                                NCCL_ENABLE_EXT_KERNEL="1", GTEST_FILTER="FlagCXCollTest.AllReduce")

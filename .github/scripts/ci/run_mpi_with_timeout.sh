@@ -10,6 +10,7 @@ mpi_kill_after="${FLAGCX_CI_MPI_KILL_AFTER:-30s}"
 mpi_launcher="${FLAGCX_CI_MPIRUN:-mpirun}"
 mpi_label="${FLAGCX_CI_MPI_LABEL:-MPI invocation}"
 test_runner="$script_dir/run_with_timeout.sh"
+export FLAGCX_CI_LIFECYCLE_CASE="${FLAGCX_CI_LIFECYCLE_CASE:-$mpi_label}"
 
 if ! command -v "$mpi_launcher" >/dev/null 2>&1; then
   echo "MPI launcher not found: $mpi_launcher" >&2
@@ -46,7 +47,7 @@ require_lifecycle=0
 if ((runner_index >= 0)); then
   require_lifecycle=$(python3 - "$filter" <<'PYFILTER'
 import fnmatch, sys
-case = "FlagCXCollTest.FinalizeThenRankLocalDestroy"
+case = "FlagCXCollTest.FinalizeThenDestroy"
 positive, _, negative = sys.argv[1].partition("-")
 print(int(any(fnmatch.fnmatchcase(case, p) for p in (positive or "*").split(":"))
           and not any(fnmatch.fnmatchcase(case, p) for p in negative.split(":"))))
@@ -88,7 +89,7 @@ if ((require_lifecycle)); then
     if ((status == 0)); then status=1; fi
   else
     python3 "$script_dir/check_required_gtests.py" \
-      --case FlagCXCollTest.FinalizeThenRankLocalDestroy "${xml[@]}" || {
+      --case FlagCXCollTest.FinalizeThenDestroy "${xml[@]}" || {
         if ((status == 0)); then status=1; fi
       }
   fi

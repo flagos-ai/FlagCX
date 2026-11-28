@@ -27,7 +27,7 @@
 // Internal exporter allocations outlive their device views and local imports.
 flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
                                              size_t size,
-                                             flagcxInternalBufferKind_t kind) {
+                                             flagcxInternalBufferKind kind) {
   if (comm == nullptr || pointer == nullptr || size == 0)
     return flagcxInvalidArgument;
   *pointer = nullptr;
@@ -62,47 +62,59 @@ flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
 }
 
 flagcxResult_t flagcxCommReleaseBuffer(flagcxComm_t comm, void *pointer,
-                                       flagcxInternalBufferKind_t kind) {
-  // Outside Finalize, free through the original allocator. During Finalize,
-  // transfer the allocation to Comm for local Destroy after import agreement.
-  // Only strict success allows the caller to clear its owner field.
-  if (pointer == NULL)
+                                       flagcxInternalBufferKind kind) {
+  if (pointer == nullptr)
     return flagcxSuccess;
-  if (comm != NULL && comm->finalizeState.lifecycle == flagcxCommFinalizing) {
-    // Publishing the node transfers ownership. An allocation failure leaves
-    // the caller's pointer and owner untouched; aliases are retired only once.
-    for (struct flagcxInternalBuffer *node = comm->internalBuffers;
-         node != NULL; node = node->next) {
+  if (comm != nullptr) {
+    for (auto *node = comm->internalBuffers; node; node = node->next)
       if (node->pointer == pointer)
         return node->kind == kind ? flagcxSuccess : flagcxInvalidUsage;
-    }
-    struct flagcxInternalBuffer *node =
-        (struct flagcxInternalBuffer *)malloc(sizeof(*node));
-    if (node == NULL)
+  }
+  if (comm != nullptr && comm->ipcClosingImports) {
+    auto *node = (flagcxInternalBuffer *)malloc(sizeof(flagcxInternalBuffer));
+    if (!node)
       return flagcxSystemError;
-    node->pointer = pointer;
-    node->kind = kind;
-    node->next = comm->internalBuffers;
+    *node = {pointer, kind, comm->internalBuffers};
     comm->internalBuffers = node;
     return flagcxSuccess;
   }
+  if (kind == flagcxInternalBufferShm)
+    return flagcxShmClose((flagcxShmHandle_t)pointer);
   if (kind == flagcxInternalBufferCcl)
     return cclAdaptors[flagcxCCLAdaptorDevice]->memFree(pointer);
   if (kind == flagcxInternalBufferGdr)
-    return deviceAdaptor->gdrMemFree(pointer, NULL);
+    return deviceAdaptor->gdrMemFree(pointer, nullptr);
   return deviceAdaptor->deviceFree(
       pointer,
-      kind == flagcxInternalBufferHost ? flagcxMemHost : flagcxMemDevice, NULL);
+      kind == flagcxInternalBufferHost ? flagcxMemHost : flagcxMemDevice,
+      nullptr);
+}
+
+// Dropping a view transfers internal imports to Comm. External Windows close
+// immediately through releaseIpcTableSlot, independently of allocation free.
+flagcxResult_t flagcxCommRetireIpcSlot(flagcxComm_t comm, int slot) {
+  if (!comm || slot < 0 || slot >= comm->ipcTableCapacity)
+    return flagcxInvalidArgument;
+  auto &entry = comm->ipcTable[slot];
+  if (entry.ownership == flagcxBufferInternal && !comm->ipcClosingImports) {
+    if (entry.refCount != 0)
+      return flagcxInvalidUsage;
+    entry.ownerHeld = true;
+    entry.inUse = false;
+    return flagcxSuccess;
+  }
+  return releaseIpcTableSlot(comm, slot);
 }
 
 flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm) {
-  if (comm == nullptr ||
-      comm->finalizeState.commonPhase != flagcxFinalizeComplete)
+  if (comm == nullptr || !comm->internalImportsConfirmed)
     return flagcxInvalidUsage;
   while (comm->internalBuffers != nullptr) {
     auto *record = comm->internalBuffers;
     flagcxResult_t result;
-    if (record->kind == flagcxInternalBufferCcl)
+    if (record->kind == flagcxInternalBufferShm)
+      result = flagcxShmClose((flagcxShmHandle_t)record->pointer);
+    else if (record->kind == flagcxInternalBufferCcl)
       result = cclAdaptors[flagcxCCLAdaptorDevice]->memFree(record->pointer);
     else if (record->kind == flagcxInternalBufferGdr)
       result = deviceAdaptor->gdrMemFree(record->pointer, nullptr);
@@ -142,19 +154,16 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
       reqsSize < FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE)
     return flagcxInvalidArgument;
   *devComm = nullptr;
-  FLAGCXCHECK(flagcxCommRequireActive(comm));
+  FLAGCXCHECK(flagcxCommCheckSubmission(comm));
   if (devApiBackend->kind == flagcxDevApiDefault &&
       comm->commType == flagcxCommunicatorHomo && !useHeteroComm())
     return flagcxNotSupported;
   // Select this before rank-local allocation can fail. Pure vendor backends
   // keep their own resource lifetime; mixed communicators must agree even on
   // ranks that do not themselves allocate default-backend exporter storage.
-  flagcxResult_t declaration = flagcxCommRequireIpcClose(
-      comm, comm->commType != flagcxCommunicatorHomo ||
-                comm->heteroComm != nullptr ||
-                strcmp(devApiBackend->name, "default") == 0);
-  if (declaration != flagcxSuccess)
-    return declaration;
+  if (comm->commType != flagcxCommunicatorHomo || comm->heteroComm != nullptr ||
+      strcmp(devApiBackend->name, "default") == 0)
+    comm->internalBuffersNeedPeerClose = true;
   flagcxResult_t pendingCleanup = flagcxDevCommRetryPendingCleanup(comm);
   if (comm->internalBuffersNeedPeerClose && comm->bootstrap != nullptr) {
     flagcxResult_t commonCleanup = flagcxSuccess;
@@ -162,7 +171,12 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
         flagcxConvergeBootstrapStatus(comm, pendingCleanup, &commonCleanup));
     pendingCleanup = commonCleanup;
   }
-  FLAGCXCHECK(pendingCleanup);
+  {
+    flagcxResult_t cleanupStatus = (pendingCleanup);
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (comm->devCommCount == INT_MAX)
     return flagcxInvalidUsage;
 
@@ -263,16 +277,58 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
       (devComm->cachedNetContextsPtr || devComm->cachedDevicePtr ||
        devComm->cachedGridBarrierPtr))
     return flagcxInvalidArgument;
-  if (devComm->devCommId != 0 &&
+  if (!devComm->retired && devComm->devCommId != 0 &&
       (comm == nullptr || devComm->devCommId != comm->devCommCount ||
        comm->activeDevComms != devComm))
     return flagcxInvalidUsage;
   devComm->cleanupStarted = true;
-  if (comm != NULL) {
-    flagcxResult_t result =
-        flagcxCommDrainSnapshot(comm, &devComm->cleanupWork);
-    if (result != flagcxSuccess)
-      return result;
+  const bool internalOwner =
+      comm != nullptr &&
+      (comm->internalBuffers != nullptr || devComm->myShmHandle != nullptr ||
+       devComm->mySignalShmHandle != nullptr);
+  if (devApiBackend->kind == flagcxDevApiDefault && internalOwner &&
+      !comm->ipcClosingImports) {
+    if (devComm->retired)
+      return flagcxInvalidUsage;
+    for (int slot : {devComm->barrierIpcIndex, devComm->signalIpcSlot})
+      if (slot >= 0) {
+        flagcxResult_t cleanupStatus = (flagcxCommRetireIpcSlot(comm, slot));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
+    // Release active registrations so a later DevComm can create a new epoch.
+    // Its internal IPC slots remain Comm-owned until Finalize.
+    if (comm->heteroComm != nullptr) {
+      if (devComm->ownedStagingRegistration != nullptr &&
+          comm->heteroComm->stagingHandle ==
+              devComm->ownedStagingRegistration) {
+        flagcxResult_t cleanupStatus = (flagcxOneSideStagingDeregister(comm));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
+      devComm->ownedStagingRegistration = nullptr;
+      if (devComm->ownedSignalBuffer != nullptr &&
+          comm->heteroComm->rmaSignalBase == devComm->ownedSignalBuffer) {
+        flagcxResult_t cleanupStatus = (flagcxOneSideSignalDeregister(comm));
+        FLAGCXCHECK(cleanupStatus);
+        if (cleanupStatus == flagcxInProgress)
+          return cleanupStatus;
+      }
+      devComm->ownedSignalBuffer = nullptr;
+      devComm->ownedSignalRegistration = nullptr;
+      if (comm->heteroComm->devCommHandle == devComm)
+        comm->heteroComm->devCommHandle = devComm->previousActive;
+    }
+    if (devComm->devCommId != 0)
+      --comm->devCommCount;
+    if (comm->activeDevComms == devComm)
+      comm->activeDevComms = devComm->previousActive;
+    devComm->retired = true;
+    devComm->retiredNext = comm->retiredDevComms;
+    comm->retiredDevComms = devComm;
+    return flagcxSuccess;
   }
 
   // Stop the proxy from acquiring a new reference while the backend tears
@@ -294,33 +350,56 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   }
 
   if (devComm->cachedNetContextsPtr != nullptr) {
-    flagcxResult_t cleanupResult = flagcxCommReleaseBuffer(
-        comm, devComm->cachedNetContextsPtr, flagcxInternalBufferDevice);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
+    {
+      flagcxResult_t cleanupStatus = (flagcxCommReleaseBuffer(
+          comm, devComm->cachedNetContextsPtr, flagcxInternalBufferDevice));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     devComm->cachedNetContextsPtr = nullptr;
   }
   if (devComm->cachedDevicePtr != nullptr) {
-    flagcxResult_t cleanupResult = flagcxCommReleaseBuffer(
-        comm, devComm->cachedDevicePtr, flagcxInternalBufferDevice);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
+    {
+      flagcxResult_t cleanupStatus = (flagcxCommReleaseBuffer(
+          comm, devComm->cachedDevicePtr, flagcxInternalBufferDevice));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     devComm->cachedDevicePtr = nullptr;
   }
   if (devComm->cachedGridBarrierPtr != nullptr) {
-    flagcxResult_t cleanupResult = flagcxCommReleaseBuffer(
-        comm, devComm->cachedGridBarrierPtr, flagcxInternalBufferDevice);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
+    {
+      flagcxResult_t cleanupStatus = (flagcxCommReleaseBuffer(
+          comm, devComm->cachedGridBarrierPtr, flagcxInternalBufferDevice));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     devComm->cachedGridBarrierPtr = nullptr;
   }
   pthread_mutex_destroy(&devComm->cachedPtrMutex);
-  if (devComm->devCommId != 0)
+  if (!devComm->retired && devComm->devCommId != 0)
     --comm->devCommCount;
   if (comm != nullptr && comm->activeDevComms == devComm)
     comm->activeDevComms = devComm->previousActive;
-  flagcxWorkSnapshotRelease(&devComm->cleanupWork);
+  if (devComm->retired)
+    comm->retiredDevComms = devComm->retiredNext;
   free(devComm);
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxCommCloseRetiredDevComms(flagcxComm_t comm) {
+  if (!comm || !comm->ipcClosingImports)
+    return flagcxInvalidUsage;
+  while (comm->retiredDevComms) {
+    flagcxResult_t cleanupStatus =
+        (flagcxDevCommDestroy(comm, comm->retiredDevComms));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   return flagcxSuccess;
 }
 
@@ -340,11 +419,13 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
   if (devMem == nullptr)
     return flagcxInvalidArgument;
   *devMem = nullptr;
-  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (comm == nullptr)
     return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxCommCheckSubmission(comm));
   flagcxResult_t localPrepare =
       buff == nullptr || size == 0 ? flagcxInvalidArgument : flagcxSuccess;
+  if (win != nullptr && win->cleanupStarted)
+    localPrepare = flagcxInvalidUsage;
   flagcxDevMem_t handle = nullptr;
   if (localPrepare == flagcxSuccess) {
     handle = (flagcxDevMem_t)malloc(sizeof(struct flagcxDevMemInternal));
@@ -359,8 +440,6 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
       }
     }
   }
-  if (localPrepare == flagcxSuccess && win != NULL && win->cleanupStarted)
-    localPrepare = flagcxInvalidUsage;
   if (localPrepare == flagcxSuccess) {
     handle->rawPtr = buff;
     handle->ipcIndex = -1;
@@ -496,19 +575,14 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
     return flagcxInvalidArgument;
 
   devMem->cleanupStarted = true;
-  // Runner-owned views are released only after its invocation fences have
-  // completed; during state construction no work uses the previous views.
-  if (!devMem->runnerOwned) {
-    flagcxResult_t drain = flagcxCommDrainSnapshot(comm, &devMem->cleanupWork);
-    if (drain != flagcxSuccess)
-      return drain;
-  }
   if (!devMem->backendDestroyed) {
-    do {
-      flagcxResult_t cleanupResult = devApiBackend->devMemDestroy(comm, devMem);
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-    } while (0);
+    {
+      flagcxResult_t cleanupStatus =
+          (devApiBackend->devMemDestroy(comm, devMem));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     devMem->backendDestroyed = true;
   }
 
@@ -520,7 +594,7 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
       return flagcxInvalidUsage;
     if (ipcEntry->refCount == 1 && !ipcEntry->ownerHeld) {
       ipcEntry->refCount = 0;
-      flagcxResult_t release = releaseIpcTableSlot(comm, devMem->ipcIndex);
+      flagcxResult_t release = flagcxCommRetireIpcSlot(comm, devMem->ipcIndex);
       if (release != flagcxSuccess) {
         ipcEntry->refCount = 1;
         return release;
@@ -531,17 +605,23 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
   }
   devMem->ipcIndex = -1;
   if (devMem->cachedDevicePtr != nullptr) {
-    flagcxResult_t cleanupResult = flagcxCommReleaseBuffer(
-        comm, devMem->cachedDevicePtr, flagcxInternalBufferDevice);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
+    {
+      flagcxResult_t cleanupStatus = (flagcxCommReleaseBuffer(
+          comm, devMem->cachedDevicePtr, flagcxInternalBufferDevice));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     devMem->cachedDevicePtr = nullptr;
   }
   if (devMem->segmentedPeerLayouts != nullptr) {
-    flagcxResult_t cleanupResult = flagcxCommReleaseBuffer(
-        comm, devMem->segmentedPeerLayouts, flagcxInternalBufferDevice);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
+    {
+      flagcxResult_t cleanupStatus = (flagcxCommReleaseBuffer(
+          comm, devMem->segmentedPeerLayouts, flagcxInternalBufferDevice));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     devMem->segmentedPeerLayouts = nullptr;
   }
   if (devMem->boundWindow != nullptr) {
@@ -554,7 +634,6 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
   if (*link == devMem)
     *link = devMem->activeNext;
   pthread_mutex_destroy(&devMem->cachedPtrMutex);
-  flagcxWorkSnapshotRelease(&devMem->cleanupWork);
   free(devMem);
   return flagcxSuccess;
 }
@@ -565,7 +644,7 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
 
 extern "C" flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
                                                     void **devPtr) {
-  if (devComm != NULL && devComm->cleanupStarted)
+  if (devComm == nullptr || devComm->cleanupStarted)
     return flagcxInvalidUsage;
   return devApiBackend->devCommGetDevicePtr(devComm, devPtr);
 }
@@ -576,7 +655,7 @@ extern "C" flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm) {
 
 extern "C" flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem,
                                                    void **devPtr) {
-  if (devMem != NULL && devMem->cleanupStarted)
+  if (devMem == nullptr || devMem->cleanupStarted)
     return flagcxInvalidUsage;
   return devApiBackend->devMemGetDevicePtr(devMem, devPtr);
 }
@@ -598,10 +677,20 @@ flagcxResult_t flagcxCommQuiesce(flagcxComm_t comm) {
     return flagcxSuccess;
   // Backend producers (notably device FIFOs) feed the common RMA proxy. Drain
   // them first so already-accepted device work can still be enqueued.
-  if (devApiBackend->commQuiesce != nullptr)
-    FLAGCXCHECK(devApiBackend->commQuiesce(comm));
+  if (devApiBackend->commQuiesce != nullptr) {
+    flagcxResult_t cleanupStatus = (devApiBackend->commQuiesce(comm));
+    FLAGCXCHECK(cleanupStatus);
+    if (cleanupStatus == flagcxInProgress)
+      return cleanupStatus;
+  }
   if (comm->heteroComm != nullptr) {
-    FLAGCXCHECK(flagcxHeteroRmaProxyQuiesce(comm->heteroComm));
+    {
+      flagcxResult_t cleanupStatus =
+          (flagcxHeteroRmaProxyQuiesce(comm->heteroComm));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
     comm->heteroComm->oneSideQuiesced = true;
   }
   return flagcxSuccess;
@@ -619,11 +708,12 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
     struct flagcxIpcTableEntry *e = &comm->ipcTable[k];
     if (e->refCount != 0)
       return flagcxInvalidUsage;
-    do {
-      flagcxResult_t cleanupResult = releaseIpcTableSlot(comm, k);
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-    } while (0);
+    {
+      flagcxResult_t cleanupStatus = (releaseIpcTableSlot(comm, k));
+      FLAGCXCHECK(cleanupStatus);
+      if (cleanupStatus == flagcxInProgress)
+        return cleanupStatus;
+    }
   }
   return flagcxSuccess;
 }
@@ -646,12 +736,10 @@ flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e,
   if (e->hostPeerBasePtrs != nullptr) {
     for (int i = 0; i < e->nPeers; i++) {
       if (e->hostPeerBasePtrs[i] != nullptr) {
-        do {
-          flagcxResult_t cleanupResult =
-              deviceAdaptor->ipcMemHandleClose(e->hostPeerBasePtrs[i]);
-          if (cleanupResult != flagcxSuccess)
-            return cleanupResult;
-        } while (0);
+        flagcxResult_t result =
+            deviceAdaptor->ipcMemHandleClose(e->hostPeerBasePtrs[i]);
+        if (result != flagcxSuccess)
+          return result;
         e->hostPeerBasePtrs[i] = nullptr;
       }
     }
@@ -659,10 +747,14 @@ flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e,
     e->hostPeerBasePtrs = nullptr;
   }
   if (e->devPeerPtrs != nullptr) {
-    flagcxResult_t cleanupResult = flagcxCommReleaseBuffer(
-        comm, e->devPeerPtrs, flagcxInternalBufferDevice);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
+    flagcxResult_t result =
+        e->ownership == flagcxBufferInternal
+            ? flagcxCommReleaseBuffer(comm, e->devPeerPtrs,
+                                      flagcxInternalBufferDevice)
+            : deviceAdaptor->deviceFree(e->devPeerPtrs, flagcxMemDevice,
+                                        nullptr);
+    if (result != flagcxSuccess)
+      return result;
     e->devPeerPtrs = nullptr;
   }
   free(e->hostPeerPtrs);
@@ -673,6 +765,7 @@ flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e,
   e->refCount = 0;
   e->inUse = false;
   e->ownerHeld = false;
+  e->ownership = flagcxBufferExternal;
   return flagcxSuccess;
 }
 
@@ -1073,6 +1166,12 @@ flagcxIpcBuildResult flagcxCommWindowRegisterIpcInternal(flagcxComm_t comm,
             agreement != flagcxSuccess ? agreement : flagcxSuccess, -1};
 
   auto result = buildIpcPeerPointers(comm, buff, size);
+  if (result.slot >= 0)
+    for (auto *node = comm->internalBuffers; node; node = node->next)
+      if (node->pointer == buff) {
+        comm->ipcTable[result.slot].ownership = flagcxBufferInternal;
+        break;
+      }
   agreement = flagcxConvergeBootstrapStatus(comm, result.buildStatus, &common);
   if (agreement != flagcxSuccess || common != flagcxSuccess) {
     // Successful ranks roll back too. A builder that already failed cleanup

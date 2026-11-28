@@ -26,6 +26,7 @@
 
 #include "check.h"
 #include "device_api_report.h"
+#include "device_api_test_session.hpp"
 #include "device_ir.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
@@ -45,10 +46,10 @@ constexpr int kUnifiedIrInterTeamResolutionComboCount = 9;
 // Main test driver
 // ===========================================================================
 
-int main(int argc, char *argv[]) {
-  flagcxDeviceHandle_t devHandle;
-  FLAGCXCHECK(flagcxDeviceHandleInit(&devHandle));
-  flagcxComm_t comm;
+static int runDeviceApiTest(int argc, char *argv[],
+                            DeviceApiTestSession &resources) {
+  auto &devHandle = resources.devHandle;
+  auto &comm = resources.comm;
   flagcxUniqueId uniqueId;
 
   int worldSize = 1, worldRank = 0;
@@ -59,11 +60,12 @@ int main(int argc, char *argv[]) {
     printf(__VA_ARGS__);                                                       \
     fflush(stdout);                                                            \
   } while (0)
-  MPI_Comm splitComm;
+  auto &splitComm = resources.group;
   uint64_t splitMask = 0;
   int color = 0;
   initMpiEnv(argc, argv, worldRank, worldSize, proc, totalProcs, color,
              splitComm, splitMask);
+  resources.check(flagcxDeviceHandleInit(&devHandle));
 
   parser args(argc, argv);
   size_t minBytes = args.getMinBytes();
@@ -73,23 +75,24 @@ int main(int argc, char *argv[]) {
   if (stepFactor <= 1) {
     if (proc == 0)
       printf("Error: stepFactor must be > 1, got %d\n", stepFactor);
-    MPI_Finalize();
     return 1;
   }
 
   int nGpu;
-  FLAGCXCHECK(devHandle->getDeviceCount(&nGpu));
-  FLAGCXCHECK(devHandle->setDevice(worldRank % nGpu));
+  resources.check(devHandle->getDeviceCount(&nGpu));
+  resources.check(devHandle->setDevice(worldRank % nGpu));
 
+  flagcxResult_t uniqueStatus = flagcxSuccess;
   if (proc == 0)
-    FLAGCXCHECK(flagcxGetUniqueId(&uniqueId));
+    uniqueStatus = flagcxGetUniqueId(&uniqueId);
+  resources.check(uniqueStatus);
   MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
+  resources.checkInit(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
 
-  flagcxStream_t stream;
-  FLAGCXCHECK(devHandle->streamCreate(&stream));
+  auto &stream = resources.stream;
+  resources.check(devHandle->streamCreate(&stream));
 
   // Create DevComm with signal/counter/barrier slots
   // Signal variants use 12 slots; S23 uses 18 signal/counter slots.
@@ -100,47 +103,58 @@ int main(int argc, char *argv[]) {
   reqs.interSignalCount = kUnifiedIrS23ComboCount;
   reqs.interCounterCount = kUnifiedIrS23ComboCount;
 
-  flagcxDevComm_t devComm = nullptr;
-  FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
+  auto &devComm = resources.devComm;
+  resources.check(flagcxDevCommCreate(comm, &reqs, &devComm));
 
   // Allocate send/recv buffers for S23, the largest combination matrix.
   size_t bufSize = maxBytes * kUnifiedIrS23ComboCount;
-  void *sendBuff = nullptr, *recvBuff = nullptr;
+  auto &sendBuff = resources.sendBuff;
+  auto &recvBuff = resources.recvBuff;
 #ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
-  flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
+  resources.memAllocator = flagcxMemSHMEM;
+  const auto &memAllocator = resources.memAllocator;
 #else
-  flagcxMemAllocator_t memAllocator = flagcxMemCCL;
+  resources.memAllocator = flagcxMemCCL;
+  const auto &memAllocator = resources.memAllocator;
 #endif
-  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, bufSize, memAllocator));
-  FLAGCXCHECK(flagcxMemAlloc(&recvBuff, bufSize, memAllocator));
+  resources.check(flagcxMemAlloc(&sendBuff, bufSize, memAllocator));
+  resources.check(flagcxMemAlloc(&recvBuff, bufSize, memAllocator));
 
   // Register symmetric windows
-  flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
-  FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, bufSize, &sendWin,
-                                       flagcxTestWindowFlags(), memAllocator));
-  FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, bufSize, &recvWin,
-                                       flagcxTestWindowFlags(), memAllocator));
+  auto &sendWin = resources.sendWin;
+  auto &recvWin = resources.recvWin;
+  resources.check(flagcxCommWindowRegister(comm, sendBuff, bufSize, &sendWin,
+                                           flagcxTestWindowFlags(),
+                                           memAllocator));
+  resources.check(flagcxCommWindowRegister(comm, recvBuff, bufSize, &recvWin,
+                                           flagcxTestWindowFlags(),
+                                           memAllocator));
 
   // Create DevMem handles
-  flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
-  FLAGCXCHECK(flagcxDevMemCreate(comm, sendBuff, bufSize, sendWin, &sendMem));
-  FLAGCXCHECK(flagcxDevMemCreate(comm, recvBuff, bufSize, recvWin, &recvMem));
+  auto &sendMem = resources.sendMem;
+  auto &recvMem = resources.recvMem;
+  resources.check(
+      flagcxDevMemCreate(comm, sendBuff, bufSize, sendWin, &sendMem));
+  resources.check(
+      flagcxDevMemCreate(comm, recvBuff, bufSize, recvWin, &recvMem));
 
   // Get device pointers for IR functions
   void *devCommPtr = nullptr;
-  FLAGCXCHECK(flagcxDevCommGetDevicePtr(devComm, &devCommPtr));
+  resources.check(flagcxDevCommGetDevicePtr(devComm, &devCommPtr));
   void *sendMemPtr = nullptr, *recvMemPtr = nullptr;
-  FLAGCXCHECK(flagcxDevMemGetDevicePtr(sendMem, &sendMemPtr));
-  FLAGCXCHECK(flagcxDevMemGetDevicePtr(recvMem, &recvMemPtr));
+  resources.check(flagcxDevMemGetDevicePtr(sendMem, &sendMemPtr));
+  resources.check(flagcxDevMemGetDevicePtr(recvMem, &recvMemPtr));
 
   // Allocate results buffer
-  int *devResults = nullptr;
-  FLAGCXCHECK(devHandle->deviceMalloc((void **)&devResults, 256 * sizeof(int),
-                                      flagcxMemDevice, NULL));
+  auto &devResults = resources.devResults;
+  resources.check(devHandle->deviceMalloc(
+      (void **)&devResults, 256 * sizeof(int), flagcxMemDevice, NULL));
 
   // Host scratch mirrors the already combination-scaled device buffers.
-  float *hostSend = new float[bufSize / sizeof(float)];
-  float *hostRecv = new float[bufSize / sizeof(float)];
+  auto &hostSend = resources.hostSend;
+  hostSend = new float[bufSize / sizeof(float)];
+  auto &hostRecv = resources.hostRecv;
+  hostRecv = new float[bufSize / sizeof(float)];
 
   // Team geometry
   int intraSize = comm->localRanks;
@@ -171,7 +185,6 @@ int main(int argc, char *argv[]) {
       printf("ERROR: Inter suite requires multi-node setup (nNodes >= 2)\n");
       printf("Current configuration: nNodes = %d\n", nNodes);
     }
-    MPI_Finalize();
     return 1;
   }
 
@@ -207,14 +220,14 @@ int main(int argc, char *argv[]) {
       bool s16Pass = true;
 
       // Sub-block A: BarrierSync
-      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0,
-                                          FLAGCX_DEVICE_CTA_COUNT * sizeof(int),
-                                          flagcxMemDevice, stream));
+      resources.check(devHandle->deviceMemset(
+          devResults, 0, FLAGCX_DEVICE_CTA_COUNT * sizeof(int), flagcxMemDevice,
+          stream));
       launchKernelDevBarrierInterWorldS(devCommPtr, devResults, stream);
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostResults, devResults,
-                                          4 * sizeof(int),
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->streamSynchronize(stream));
+      resources.check(
+          devHandle->deviceMemcpy(hostResults, devResults, 4 * sizeof(int),
+                                  flagcxMemcpyDeviceToHost, stream));
       for (int i = 0; i < 4; i++) {
         if (hostResults[i] != 1) {
           s16Pass = false;
@@ -224,15 +237,15 @@ int main(int argc, char *argv[]) {
       MPI_Barrier(MPI_COMM_WORLD);
 
       // Sub-block B: BarrierArrive + BarrierWait (split)
-      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0,
-                                          FLAGCX_DEVICE_CTA_COUNT * sizeof(int),
-                                          flagcxMemDevice, stream));
+      resources.check(devHandle->deviceMemset(
+          devResults, 0, FLAGCX_DEVICE_CTA_COUNT * sizeof(int), flagcxMemDevice,
+          stream));
       launchKernelDevBarrierArriveWaitInterWorldS(devCommPtr, devResults,
                                                   stream);
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostResults, devResults,
-                                          4 * sizeof(int),
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->streamSynchronize(stream));
+      resources.check(
+          devHandle->deviceMemcpy(hostResults, devResults, 4 * sizeof(int),
+                                  flagcxMemcpyDeviceToHost, stream));
       for (int i = 0; i < 4; i++) {
         if (hostResults[i] != 1) {
           s16Pass = false;
@@ -258,28 +271,28 @@ int main(int argc, char *argv[]) {
 
       // Keep rank 0 distinguishable from the zero-initialized receive buffer.
       float myTag = (float)(proc + 1);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, &myTag, sizeof(float),
-                                          flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, s17Size, flagcxMemDevice,
-                                          stream));
-      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                          flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->deviceMemcpy(
+          sendBuff, &myTag, sizeof(float), flagcxMemcpyHostToDevice, stream));
+      resources.check(devHandle->deviceMemset(recvBuff, 0, s17Size,
+                                              flagcxMemDevice, stream));
+      resources.check(devHandle->deviceMemset(devResults, 0, sizeof(int),
+                                              flagcxMemDevice, stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       launchKernelDevTeamResolutionInterWorldS(devCommPtr, recvMemPtr,
                                                sendMemPtr, devResults, stream);
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       int hostRes = 0;
-      FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          &hostRes, devResults, sizeof(int), flagcxMemcpyDeviceToHost, stream));
 
       float *s17Recv =
           new float[kUnifiedIrInterTeamResolutionComboCount * maxRanks];
-      FLAGCXCHECK(devHandle->deviceMemcpy(s17Recv, recvBuff, s17Size,
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          s17Recv, recvBuff, s17Size, flagcxMemcpyDeviceToHost, stream));
 
       bool s17Pass = (hostRes == 1);
       int prevNode = (nodeIdx + nNodes - 1) % nNodes;
@@ -330,25 +343,25 @@ int main(int argc, char *argv[]) {
       // --- Sub-block A: DevPut ---
       for (size_t i = 0; i < 6 * count; i++)
         hostSend[i] = (float)(proc * 1000 + i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 6 * bytes,
-                                          flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * bytes,
-                                          flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                          flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->deviceMemcpy(
+          sendBuff, hostSend, 6 * bytes, flagcxMemcpyHostToDevice, stream));
+      resources.check(devHandle->deviceMemset(recvBuff, 0, 6 * bytes,
+                                              flagcxMemDevice, stream));
+      resources.check(devHandle->deviceMemset(devResults, 0, sizeof(int),
+                                              flagcxMemDevice, stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       launchKernelDevPutInterWorldS(devCommPtr, recvMemPtr, sendMemPtr,
                                     devResults, bytes, stream);
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       int hostRes = 0;
-      FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
-                                          flagcxMemcpyDeviceToHost, stream));
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 6 * bytes,
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          &hostRes, devResults, sizeof(int), flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          hostRecv, recvBuff, 6 * bytes, flagcxMemcpyDeviceToHost, stream));
 
       bool s18Pass = (hostRes == 1);
       int prevNode = (nodeIdx + nNodes - 1) % nNodes;
@@ -380,24 +393,24 @@ int main(int argc, char *argv[]) {
       constexpr size_t kPutValueStrideWords =
           kPutValueStrideBytes / sizeof(uint64_t);
       // 0xAA sentinel: an untouched slot must not look like a landed zero.
-      FLAGCXCHECK(devHandle->deviceMemset(
+      resources.check(devHandle->deviceMemset(
           recvBuff, 0xAA, 6 * kPutValueStrideBytes, flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                          flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->deviceMemset(devResults, 0, sizeof(int),
+                                              flagcxMemDevice, stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       launchKernelDevPutValueInterWorldS(devCommPtr, recvMemPtr, devResults,
                                          bytes, stream);
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          &hostRes, devResults, sizeof(int), flagcxMemcpyDeviceToHost, stream));
       uint64_t hostRecvV[6 * kPutValueStrideWords];
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecvV, recvBuff,
-                                          6 * kPutValueStrideBytes,
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(
+          devHandle->deviceMemcpy(hostRecvV, recvBuff, 6 * kPutValueStrideBytes,
+                                  flagcxMemcpyDeviceToHost, stream));
       if (hostRes != 1)
         s18Pass = false;
       for (int combo = 0; combo < 6 && s18Pass; combo++) {
@@ -426,26 +439,26 @@ int main(int argc, char *argv[]) {
     {
       for (size_t i = 0; i < 6 * count; i++)
         hostSend[i] = (float)(proc * 2000 + i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 6 * bytes,
-                                          flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * bytes,
-                                          flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                          flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->deviceMemcpy(
+          sendBuff, hostSend, 6 * bytes, flagcxMemcpyHostToDevice, stream));
+      resources.check(devHandle->deviceMemset(recvBuff, 0, 6 * bytes,
+                                              flagcxMemDevice, stream));
+      resources.check(devHandle->deviceMemset(devResults, 0, sizeof(int),
+                                              flagcxMemDevice, stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       launchKernelDevGetInterWorldS(devCommPtr, sendMemPtr, recvMemPtr,
                                     devResults, bytes, stream);
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       int hostRes = 0;
-      FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          &hostRes, devResults, sizeof(int), flagcxMemcpyDeviceToHost, stream));
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 6 * bytes,
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          hostRecv, recvBuff, 6 * bytes, flagcxMemcpyDeviceToHost, stream));
 
       bool s19Pass = (hostRes == 1);
       int nextNode = (nodeIdx + 1) % nNodes;
@@ -477,19 +490,20 @@ int main(int argc, char *argv[]) {
     //      — INTER + WORLD
     // =======================================================================
     {
-      FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
-                                          flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(
+          devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
+                                  flagcxMemcpyHostToDevice, stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       launchKernelDevSignalStandaloneInterWorldS(devCommPtr, devResults,
                                                  stream);
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       int hostRes = 0;
-      FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          &hostRes, devResults, sizeof(int), flagcxMemcpyDeviceToHost, stream));
 
       bool s20Pass = (hostRes == 1);
       RPRINTF("S20 DevSignalStandalone(INTER+WORLD): %s\n",
@@ -506,29 +520,30 @@ int main(int argc, char *argv[]) {
     {
       for (size_t i = 0; i < kUnifiedIrSignalComboCount * count; i++)
         hostSend[i] = (float)(proc * 3000 + i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend,
-                                          kUnifiedIrSignalComboCount * bytes,
-                                          flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0,
-                                          kUnifiedIrSignalComboCount * bytes,
-                                          flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
-                                          flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->deviceMemcpy(
+          sendBuff, hostSend, kUnifiedIrSignalComboCount * bytes,
+          flagcxMemcpyHostToDevice, stream));
+      resources.check(devHandle->deviceMemset(
+          recvBuff, 0, kUnifiedIrSignalComboCount * bytes, flagcxMemDevice,
+          stream));
+      resources.check(
+          devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
+                                  flagcxMemcpyHostToDevice, stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       launchKernelDevPutSignalWaitInterWorldS(
           devCommPtr, recvMemPtr, sendMemPtr, devResults, bytes, stream);
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       int hostRes = 0;
-      FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          &hostRes, devResults, sizeof(int), flagcxMemcpyDeviceToHost, stream));
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff,
-                                          kUnifiedIrSignalComboCount * bytes,
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          hostRecv, recvBuff, kUnifiedIrSignalComboCount * bytes,
+          flagcxMemcpyDeviceToHost, stream));
 
       bool s21Pass = (hostRes == 1);
       int prevNode = (nodeIdx + nNodes - 1) % nNodes;
@@ -566,29 +581,30 @@ int main(int argc, char *argv[]) {
     {
       for (size_t i = 0; i < kUnifiedIrSignalComboCount * count; i++)
         hostSend[i] = (float)(proc * 4000 + i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend,
-                                          kUnifiedIrSignalComboCount * bytes,
-                                          flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0,
-                                          kUnifiedIrSignalComboCount * bytes,
-                                          flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
-                                          flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->deviceMemcpy(
+          sendBuff, hostSend, kUnifiedIrSignalComboCount * bytes,
+          flagcxMemcpyHostToDevice, stream));
+      resources.check(devHandle->deviceMemset(
+          recvBuff, 0, kUnifiedIrSignalComboCount * bytes, flagcxMemDevice,
+          stream));
+      resources.check(
+          devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
+                                  flagcxMemcpyHostToDevice, stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       launchKernelDevPutRSigInterWorldS(devCommPtr, recvMemPtr, sendMemPtr,
                                         devResults, bytes, stream);
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       int hostRes = 0;
-      FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          &hostRes, devResults, sizeof(int), flagcxMemcpyDeviceToHost, stream));
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff,
-                                          kUnifiedIrSignalComboCount * bytes,
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          hostRecv, recvBuff, kUnifiedIrSignalComboCount * bytes,
+          flagcxMemcpyDeviceToHost, stream));
 
       bool s22Pass = (hostRes == 1);
       int prevNode = (nodeIdx + nNodes - 1) % nNodes;
@@ -627,29 +643,30 @@ int main(int argc, char *argv[]) {
     {
       for (size_t i = 0; i < kUnifiedIrS23ComboCount * count; i++)
         hostSend[i] = (float)(proc * 5000 + i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend,
-                                          kUnifiedIrS23ComboCount * bytes,
-                                          flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0,
-                                          kUnifiedIrS23ComboCount * bytes,
-                                          flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
-                                          flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->deviceMemcpy(
+          sendBuff, hostSend, kUnifiedIrS23ComboCount * bytes,
+          flagcxMemcpyHostToDevice, stream));
+      resources.check(devHandle->deviceMemset(recvBuff, 0,
+                                              kUnifiedIrS23ComboCount * bytes,
+                                              flagcxMemDevice, stream));
+      resources.check(
+          devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
+                                  flagcxMemcpyHostToDevice, stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       launchKernelDevPutCounterInterWorldS(devCommPtr, recvMemPtr, sendMemPtr,
                                            devResults, bytes, stream);
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       int hostRes = 0;
-      FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          &hostRes, devResults, sizeof(int), flagcxMemcpyDeviceToHost, stream));
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff,
-                                          kUnifiedIrS23ComboCount * bytes,
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          hostRecv, recvBuff, kUnifiedIrS23ComboCount * bytes,
+          flagcxMemcpyDeviceToHost, stream));
 
       bool s23Pass = (hostRes == 1);
       int prevNode = (nodeIdx + nNodes - 1) % nNodes;
@@ -685,25 +702,26 @@ int main(int argc, char *argv[]) {
     // Each combo writes 1 uint64_t scalar value.
     // =======================================================================
     {
-      FLAGCXCHECK(devHandle->deviceMemset(
+      resources.check(devHandle->deviceMemset(
           recvBuff, 0, kUnifiedIrSignalComboCount * sizeof(uint64_t),
           flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
-                                          flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(
+          devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
+                                  flagcxMemcpyHostToDevice, stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       launchKernelDevPutValueRSigInterWorldS(devCommPtr, recvMemPtr, devResults,
                                              bytes, stream);
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       int hostRes = 0;
-      FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          &hostRes, devResults, sizeof(int), flagcxMemcpyDeviceToHost, stream));
 
       uint64_t hostRecvV[kUnifiedIrSignalComboCount];
-      FLAGCXCHECK(devHandle->deviceMemcpy(
+      resources.check(devHandle->deviceMemcpy(
           hostRecvV, recvBuff, kUnifiedIrSignalComboCount * sizeof(uint64_t),
           flagcxMemcpyDeviceToHost, stream));
 
@@ -736,19 +754,20 @@ int main(int argc, char *argv[]) {
     // SignalInc × 5 → WaitSignalMeetShadow → assert ReadSignal==5 → Flush
     // =======================================================================
     {
-      FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
-                                          flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(
+          devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
+                                  flagcxMemcpyHostToDevice, stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       launchKernelDevSignalShadowFlushInterWorldS(devCommPtr, devResults,
                                                   stream);
-      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      resources.check(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       int hostRes = 0;
-      FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
-                                          flagcxMemcpyDeviceToHost, stream));
+      resources.check(devHandle->deviceMemcpy(
+          &hostRes, devResults, sizeof(int), flagcxMemcpyDeviceToHost, stream));
 
       bool s25Pass = (hostRes == 1);
       RPRINTF("S25 DevSignalShadowFlush(INTER+WORLD): %s\n",
@@ -766,27 +785,16 @@ int main(int argc, char *argv[]) {
   int globalPass = 0;
   MPI_Allreduce(&localPass, &globalPass, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
 
-  // Cleanup
-  delete[] hostSend;
-  delete[] hostRecv;
-  FLAGCXCHECK(devHandle->deviceFree(devResults, flagcxMemDevice, NULL));
-  FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
-  FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
-  FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
-  FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
-  FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
-  FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
-  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
-  FLAGCXCHECK(devHandle->streamDestroy(stream));
-  FLAGCXCHECK(flagcxCommFinalize(comm));
-  FLAGCXCHECK(flagcxCommFinalize(comm));
-  FLAGCXCHECK(flagcxCommDestroy(comm));
-
+  // One checked cleanup path serves successful and failed runs.
+  resources.check(resources.finish());
   if (proc == 0) {
     printf("=== Final Result: %s ===\n",
            globalPass ? "ALL PASS" : "SOME FAILED");
   }
 
-  MPI_Finalize();
   return globalPass ? 0 : 1;
+}
+
+int main(int argc, char *argv[]) {
+  return deviceApiTestMain(argc, argv, runDeviceApiTest);
 }

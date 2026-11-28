@@ -1,6 +1,7 @@
 """Check fixed SymMem CI selection and MPI exit status handling."""
 
 import os
+import re
 import json
 import shutil
 import subprocess
@@ -22,25 +23,27 @@ from pathlib import Path
 for i, arg in enumerate(sys.argv):
     if arg.endswith('run_gtest_rank_xml.sh'):
         root = Path(sys.argv[i + 1])
-        names = ('DelayedImportAndEmptyRanksConfirmBeforeLocalDestroy',
-                 'FailedImportRetainsExporterUntilCollectiveRetry',
-                 'DeviceSelectionFailureConvergesBeforeImportClosure',
-                 'SparseNodeClosureDoesNotWaitForAnotherNode',
-                 'InitializationDeclaresIpcAndNativeScopeOnEmptyRanks',
-                 'CollectiveCreationDeclaresClosureBeforePublication',
-                 'OuterFinalizeRetriesClosureThenEveryRankDestroysLocally',
-                 'CrossNodeRelayDrainFailureConvergesBeforeCleanup',
-                 'CrossNodeRelayDeviceFailureConvergesBeforeCleanup')
+        names = ('EmptyRanksAndDelayedImporterJoinBeforeRelease', 'FailedImporterKeepsAllExportersUntilCommonRetry', 'DeviceSelectionFailureIsAgreedBeforeAnyClose', 'BackingReleaseFailureRetriesWithoutRepeatingReleasedOwners', 'NativePreparationConvergesBeforeEnteringCollectiveDestroy', 'PendingEarlierNativeOwnerCompletesBeforeNextCollective', 'PendingEarlierCompatibilityCloseCompletesBeforeNextCollective', 'HostShmGenerationIsIssuedByRootAndRetained', 'CounterOnlyCreationLeavesNextShmGenerationAligned', 'PendingExplicitFlushKeepsEveryExporterUntilRetry')
         body = ''.join('<testcase name="%s" status="run" result="completed"/>' % name for name in names)
         for rank in range(4):
             report = root / ('rank-%s.xml' % rank)
-            report.write_text('<testsuites><testsuite name="HeteroFinalizeMpi">' + body + '</testsuite></testsuites>')
+            report.write_text('<testsuites><testsuite name="IpcFinalizeBootstrapTest">' + body + '</testsuite></testsuites>')
             report.chmod(0o600)
         break
 """)
 
 
 class SymmemCiTest(unittest.TestCase):
+    def test_required_lifecycle_cases_exist_in_real_mpi_source(self):
+        source = (REPO_ROOT / 'test/unittest/symmem/coll_ipc_finalize.cpp').read_text()
+        actual = set(re.findall(
+            r'TEST_F\(IpcFinalizeBootstrapTest,\s*(\w+)\)', source))
+        script = (REPO_ROOT / 'test/script/symmem_test.sh').read_text()
+        required = set(re.findall(r'--case IpcFinalizeBootstrapTest\.(\w+)', script))
+        self.assertGreaterEqual(len(actual), 10)
+        self.assertEqual(required, actual)
+        self.assertNotIn('HeteroFinalizeMpi', script)
+
     def test_lifecycle_artifacts_survive_strict_umask_and_failed_mpi(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -227,7 +230,7 @@ run_suite
                     )
                     if adaptor == "musa":
                         self.assertTrue(any("symmem_unit_tests" in line for line in calls))
-                        self.assertTrue(any("HeteroFinalizeMpi.*" in line for line in calls))
+                        self.assertTrue(any("IpcFinalizeBootstrapTest.*" in line for line in calls))
                         self.assertTrue(any("FLAGCX_VMM_ENABLE=0" in line for line in calls))
                         self.assertFalse(any("FLAGCX_VMM_ENABLE=1" in line for line in calls))
                         self.assertIn("Skipping symmem VMM-local tests", result.stdout)

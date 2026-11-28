@@ -133,12 +133,12 @@ flagcx_ci_run_suite_override() {
     # the runner's inherited environment explicitly enables the plugin.
     export PCCL_ENABLE_EXT_KERNEL=0
     local inherited_filter=${GTEST_FILTER:-*}
-    export GTEST_FILTER='*-CoverageSupplemental.*:FlagCXCollTest.FinalizeThenRankLocalDestroy'
+    export GTEST_FILTER='*-CoverageSupplemental.*'
     if [[ "$inherited_filter" == *-* ]]; then
       GTEST_FILTER+=":${inherited_filter#*-}"
     fi
-    echo "Skipping FlagCXCollTest.FinalizeThenRankLocalDestroy: PCCL native Destroy may wait for peers after Finalize"
     local runner_status=0
+    local runner_mpi_runner="${RUNNER_MPI_RUNNER:-$MPI_RUNNER}"
     FLAGCX_CI_TEST_LABEL="runner unit tests" \
       "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || runner_status=1
     cd "$suite_dir"
@@ -146,13 +146,13 @@ flagcx_ci_run_suite_override() {
       env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
       -u FLAGCX_CLUSTER_SPLIT_LIST -u FLAGCX_MEM_ENABLE \
       -u FLAGCX_P2P_TRANSPORT -u FLAGCX_P2P_DISABLE \
-      "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+      "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
       -x PCCL_ENABLE_EXT_KERNEL=0 \
       -x FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO \
       ./build/bin/runner_mpi_tests || runner_status=1
     FLAGCX_CI_MPI_LABEL="runner BAREX heterogeneous" \
       env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
-      "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+      "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
       -x PCCL_ENABLE_EXT_KERNEL=0 \
       -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
       -x FLAGCX_MEM_ENABLE=1 \
@@ -164,7 +164,7 @@ flagcx_ci_run_suite_override() {
       ./build/bin/runner_mpi_tests || runner_status=1
     FLAGCX_CI_MPI_LABEL="runner BAREX forced NET" \
       env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
-      "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+      "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
       -x PCCL_ENABLE_EXT_KERNEL=0 \
       -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
       -x FLAGCX_MEM_ENABLE=1 \
@@ -182,7 +182,7 @@ flagcx_ci_run_suite_override() {
       FLAGCX_CI_MPI_LABEL="runner PPU PXN four-rank" \
         env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
         CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES" \
-        "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+        "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x PCCL_ENABLE_EXT_KERNEL=0 \
         -x CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES" \
         -x FLAGCX_CLUSTER_SPLIT_LIST=2 \

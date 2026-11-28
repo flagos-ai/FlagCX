@@ -211,9 +211,7 @@ exit:
 
 flagcxResult_t homoRunnerGroupEnd() {
   flagcxResult_t res = flagcxSuccess;
-  FLAGCXCHECKGOTO(flagcxWorkNativeGroupResult(
-                      cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd()),
-                  res, exit);
+  FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(), res, exit);
 exit:
   return res;
 }

@@ -2,12 +2,11 @@
 #define FLAGCX_GLOBAL_COMM_H_
 
 #include "bootstrap.h"
-#include "comm_lifecycle.h"
+#include "buffer_owner.h"
 #include "dev_comm_state.h"
 #include "flagcx.h"
 #include "flagcx_tuner.h"
 #include "utils.h"
-#include "work.h"
 
 #include <map>
 #include <vector>
@@ -20,6 +19,7 @@ typedef struct flagcxInnerComm *flagcxInnerComm_t;
 #define FLAGCX_MAX_IPC_ENTRIES 16
 
 struct flagcxIpcTableEntry {
+  flagcxBufferOwnership ownership;
   void **hostPeerPtrs;     // host array: peer user-buffer pointers
   void **hostPeerBasePtrs; // raw mappings returned by ipcMemHandleOpen
   void **devPeerPtrs;      // device array: peer buffer ptrs (for cudaFree)
@@ -44,41 +44,73 @@ typedef enum {
 // Whether the user selected the hetero execution path, even on homo hardware.
 bool useHeteroComm();
 
-typedef enum flagcxInternalBufferKind {
+enum flagcxInternalBufferKind {
   flagcxInternalBufferDevice,
   flagcxInternalBufferHost,
   flagcxInternalBufferGdr,
-  flagcxInternalBufferCcl
-} flagcxInternalBufferKind_t;
+  flagcxInternalBufferCcl,
+  flagcxInternalBufferShm
+};
 
 // One record per allocation, including buffers whose creation rolled back.
 // Device views borrow these pointers; only CommDestroy frees the allocation.
 struct flagcxInternalBuffer {
   void *pointer;
-  flagcxInternalBufferKind_t kind;
+  flagcxInternalBufferKind kind;
   flagcxInternalBuffer *next;
 };
 
 flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
                                              size_t size,
-                                             flagcxInternalBufferKind_t kind);
-flagcxResult_t flagcxCommReleaseBuffer(flagcxComm_t comm, void *pointer,
-                                       flagcxInternalBufferKind_t kind);
+                                             flagcxInternalBufferKind kind);
 flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm);
 
+flagcxResult_t flagcxCommReleaseBuffer(flagcxComm_t comm, void *pointer,
+                                       flagcxInternalBufferKind kind);
+flagcxResult_t flagcxCommRetireIpcSlot(flagcxComm_t comm, int slot);
+flagcxResult_t flagcxCommCloseRetiredDevComms(flagcxComm_t comm);
+
+struct flagcxC2cResources {
+  struct flagcxC2cResources *next;
+  void *scratch;
+  flagcxStream_t userStream, privateStream;
+  bool needDrain, userDrained, privateDrained, nativePending;
+};
+
+struct flagcxCommNativeOwner {
+  flagcxInnerComm_t handle;
+  bool host, accepted, pending, aborted, registrationsReleased;
+};
+
+// Private Barrier scratch retained only while execution or cleanup is pending.
+struct flagcxBarrierResources {
+  struct flagcxBarrierResources *next;
+  void *buffer;
+  flagcxStream_t stream;
+  bool streamDrained, collectivePending;
+};
+
+flagcxResult_t flagcxCommCheckSubmission(flagcxComm_t comm);
+
 struct flagcxComm {
-  struct flagcxCommFinalizeState finalizeState;
-  enum flagcxNativeFinalizeScope nativeFinalizeScope;
-  bool allowNativeDestroyFinalize, ipcClosePolicyConfirmed;
-  bool initRollbackPending, initRollbackNeedsAgreement, deviceOrdinalValid;
-  int deviceOrdinal;
-  struct flagcxWorkTracker submittedWork;
-  struct flagcxC2cPendingResources *pendingC2cResources;
-  bool devicePluginHeld;
-  bool cclPluginHeld;
-  bool netPluginHeld;
-  bool pluginRollbackOnly;
-  // 0: local SDK cleanup, 1: only plugin references remain.
+  bool closing, finalized, finalizeLocalDone, deviceOrdinalValid;
+  int finalizePhase, lifecycleRunning, deviceOrdinal;
+  unsigned int pluginDoneMask;
+  bool devicePluginHeld, cclPluginHeld, netPluginHeld;
+  bool pluginRollbackOnly, initRollbackPending, initRollbackNeedsAgreement;
+  bool nativeDestroyFinalize, nativeCloseNeedsAgreement, abortStarted;
+  unsigned int abortIndex;
+  flagcxResult_t lastResult;
+  struct flagcxCommNativeOwner *nativeOwners;
+  unsigned int nativeOwnerCount, nativeFinalizeIndex;
+  bool nativeCatalogReady;
+  struct flagcxC2cResources *pendingC2cResources;
+  struct flagcxBarrierResources *pendingBarrierResources;
+
+  bool ipcClosingImports, internalImportsConfirmed;
+  flagcxDevComm_t retiredDevComms;
+
+  // 0: local SDK/resource cleanup, 1: only plugin references remain.
   int destroyPhase;
   int rank;
   int nranks;
@@ -137,6 +169,8 @@ struct flagcxComm {
   flagcxWindow_t publicWindows; // includes empty reusable public handles
   flagcxDevMem_t activeDevMems;
   int devCommCount; // active device communicators, also the newest ID
+  uint64_t
+      shmGeneration; // root-issued creation sequence, never reused on retire
   flagcxDevComm_t activeDevComms;
 
   // Custom op state (NULL = not enabled)
