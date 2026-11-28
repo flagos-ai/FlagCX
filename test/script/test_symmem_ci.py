@@ -23,7 +23,7 @@ from pathlib import Path
 for i, arg in enumerate(sys.argv):
     if arg.endswith('run_gtest_rank_xml.sh'):
         root = Path(sys.argv[i + 1])
-        names = ('EmptyRanksAndDelayedImporterJoinBeforeRelease', 'FailedImporterKeepsAllExportersUntilCommonRetry', 'DeviceSelectionFailureIsAgreedBeforeAnyClose', 'BackingReleaseFailureRetriesWhilePeersStayOutsideFlagcx', 'NativePreparationConvergesBeforeEnteringCollectiveDestroy', 'PendingEarlierNativeOwnerCompletesBeforeNextCollective', 'PendingEarlierCompatibilityCloseCompletesBeforeNextCollective', 'HostShmGenerationIsIssuedByRootAndRetained', 'CounterOnlyCreationLeavesNextShmGenerationAligned', 'PendingExplicitFlushKeepsEveryExporterUntilRetry')
+        names = ('EmptyRanksAndDelayedImporterJoinBeforeRelease', 'FailedImporterKeepsAllExportersUntilCommonRetry', 'DeviceSelectionFailureIsAgreedBeforeAnyClose', 'BackingReleaseFailureRetriesWithoutRepeatingReleasedOwners', 'NativePreparationConvergesBeforeEnteringCollectiveDestroy', 'PendingEarlierNativeOwnerCompletesBeforeNextCollective', 'PendingEarlierCompatibilityCloseCompletesBeforeNextCollective', 'HostShmGenerationIsIssuedByRootAndRetained', 'CounterOnlyCreationLeavesNextShmGenerationAligned', 'PendingExplicitFlushKeepsEveryExporterUntilRetry')
         body = ''.join('<testcase name="%s" status="run" result="completed"/>' % name for name in names)
         for rank in range(4):
             report = root / ('rank-%s.xml' % rank)

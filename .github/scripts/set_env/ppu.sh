@@ -133,11 +133,10 @@ flagcx_ci_run_suite_override() {
     # the runner's inherited environment explicitly enables the plugin.
     export PCCL_ENABLE_EXT_KERNEL=0
     local inherited_filter=${GTEST_FILTER:-*}
-    export GTEST_FILTER='*-CoverageSupplemental.*:FlagCXCollTest.FinalizeThenRankLocalDestroy'
+    export GTEST_FILTER='*-CoverageSupplemental.*'
     if [[ "$inherited_filter" == *-* ]]; then
       GTEST_FILTER+=":${inherited_filter#*-}"
     fi
-    echo "Skipping FlagCXCollTest.FinalizeThenRankLocalDestroy: PCCL native Destroy may wait for peers after Finalize"
     local runner_status=0
     FLAGCX_CI_TEST_LABEL="runner unit tests" \
       "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || runner_status=1

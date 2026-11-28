@@ -46,7 +46,7 @@ require_lifecycle=0
 if ((runner_index >= 0)); then
   require_lifecycle=$(python3 - "$filter" <<'PYFILTER'
 import fnmatch, sys
-case = "FlagCXCollTest.FinalizeThenRankLocalDestroy"
+case = "FlagCXCollTest.FinalizeThenDestroy"
 positive, _, negative = sys.argv[1].partition("-")
 print(int(any(fnmatch.fnmatchcase(case, p) for p in (positive or "*").split(":"))
           and not any(fnmatch.fnmatchcase(case, p) for p in negative.split(":"))))
@@ -88,7 +88,7 @@ if ((require_lifecycle)); then
     if ((status == 0)); then status=1; fi
   else
     python3 "$script_dir/check_required_gtests.py" \
-      --case FlagCXCollTest.FinalizeThenRankLocalDestroy "${xml[@]}" || {
+      --case FlagCXCollTest.FinalizeThenDestroy "${xml[@]}" || {
         if ((status == 0)); then status=1; fi
       }
   fi

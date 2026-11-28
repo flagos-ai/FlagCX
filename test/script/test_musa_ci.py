@@ -467,7 +467,7 @@ source "$GITHUB_WORKSPACE/.github/scripts/ci/run_mthreads_perf_experimental.sh"
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(len(calls), 61)  # 6 GTests, 55 perf runs.
             lifecycle = next(call for call in calls if call["label"] == "MUSA experimental IPC lifecycle")
-            self.assertIn("--gtest_filter=FlagCXCollTest.UniRunnerIpcFinalizeThenRankLocalDestroy:FlagCXCollTest.GroupedCommunicatorsFinalizeTheNonLaunchStreamFirst", lifecycle["args"])
+            self.assertIn("--gtest_filter=FlagCXCollTest.UniRunnerIpcFinalizeThenDestroy:FlagCXCollTest.GroupedCommunicatorsFinalizeTheNonLaunchStreamFirst", lifecycle["args"])
             for call in calls:
                 args = call["args"]
                 self.assertEqual(args[:3], ["-np", "4", "--allow-run-as-root"])

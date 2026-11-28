@@ -64,26 +64,35 @@ flagcxTestDestroyLocally(flagcxComm_t *comm,
   return flagcxSuccess;
 }
 
-// Other ranks wait outside FlagCX while each selected rank destroys its Comm.
-// All ranks must have completed communicator initialization before entering.
-// A null Comm denotes an owner already destroyed successfully on an earlier
-// try.
-static inline flagcxResult_t flagcxTestFinalizeAndDestroyRankLocally(
-    flagcxComm_t *comm, int rank, int nranks, MPI_Comm group = MPI_COMM_WORLD,
+// Native Destroy can require peers even after successful Finalize. Every rank
+// enters each retry round; completed owners stay null and are never consumed
+// twice. A blocking SDK call still requires the outer process watchdog.
+static inline flagcxResult_t
+flagcxTestDestroyAcrossRanks(flagcxComm_t *comm, MPI_Comm group,
+                             const flagcxTestLifecycleCalls &calls,
+                             double deadline) {
+  while (true) {
+    flagcxResult_t local = *comm ? calls.destroy(*comm) : flagcxSuccess;
+    if (local == flagcxSuccess)
+      *comm = nullptr;
+    if (local == flagcxInProgress && MPI_Wtime() >= deadline) {
+      std::fprintf(stderr, "Destroy retry deadline expired; retaining Comm\n");
+      local = flagcxSystemError;
+    }
+    flagcxResult_t common = flagcxTestAgreeLifecycleStatus(local, group);
+    if (common != flagcxInProgress)
+      return common;
+    std::this_thread::yield();
+  }
+}
+
+static inline flagcxResult_t flagcxTestFinalizeAndDestroyAcrossRanks(
+    flagcxComm_t *comm, MPI_Comm group = MPI_COMM_WORLD,
     const flagcxTestLifecycleCalls &calls = {}, double maxWaitSeconds = 30.0) {
   double deadline = MPI_Wtime() + maxWaitSeconds;
   flagcxResult_t result =
       flagcxTestFinalizeAcrossRanks(*comm, group, calls, deadline);
   if (result != flagcxSuccess)
     return result;
-  for (int selected = 0; selected < nranks; ++selected) {
-    int local = (int)flagcxSuccess;
-    if (rank == selected)
-      local = (int)flagcxTestDestroyLocally(comm, calls, deadline);
-    if (MPI_Bcast(&local, 1, MPI_INT, selected, group) != MPI_SUCCESS)
-      return flagcxSystemError;
-    if (local != (int)flagcxSuccess)
-      return (flagcxResult_t)local;
-  }
-  return flagcxSuccess;
+  return flagcxTestDestroyAcrossRanks(comm, group, calls, deadline);
 }

@@ -164,7 +164,7 @@ fi
                             for a in calls[1]['args']))
 
     def test_public_lifecycle_stays_enabled_with_compat_finalize(self):
-        case = 'FlagCXCollTest.FinalizeThenRankLocalDestroy'
+        case = 'FlagCXCollTest.FinalizeThenDestroy'
         for platform in ('ascend', 'mthreads', 'enflame', 'kunlunxin'):
             with self.subTest(platform=platform):
                 result = subprocess.run(
@@ -200,7 +200,7 @@ print('FILTER ' + ' '.join(sys.argv[1:]), flush=True)
 report = os.getenv('GTEST_OUTPUT', '')
 if report:
     skipped = os.getenv('TEST_XML_MODE') == 'skip' and os.getenv('OMPI_COMM_WORLD_RANK') == '1'
-    case = '<testcase name="FinalizeThenRankLocalDestroy" status="run" result="%s"/>' % ('skipped' if skipped else 'completed')
+    case = '<testcase name="FinalizeThenDestroy" status="run" result="%s"/>' % ('skipped' if skipped else 'completed')
     Path(report.removeprefix('xml:')).write_text('<testsuites><testsuite name="FlagCXCollTest">' + case + '</testsuite></testsuites>')
     Path(report.removeprefix('xml:')).chmod(0o600)
 if os.getenv('TEST_XML_MODE') == 'fail':
@@ -235,7 +235,7 @@ if os.getenv('TEST_XML_MODE') == 'fail':
                 self.assertNotEqual(self.run_wrapper(mode).returncode, 0)
 
     def test_platform_exclusion_survives_an_explicit_pxn_filter(self):
-        case = "FlagCXCollTest.FinalizeThenRankLocalDestroy"
+        case = "FlagCXCollTest.FinalizeThenDestroy"
         result = self.run_wrapper("missing", "*-" + case, case)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--gtest_filter=" + case + "-" + case, result.stdout)

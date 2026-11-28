@@ -13,6 +13,7 @@ public:
   int rank = 0, nranks = 0, finalizePending = 0, destroyPending = 0;
   int finalizes = 0, destroys = 0, releases = 0;
   bool finalized = false;
+  bool requirePeerDestroy = false;
   int token = 0;
   flagcxComm_t owner = nullptr;
   flagcxResult_t finalizeError = flagcxSuccess, destroyError = flagcxSuccess;
@@ -32,6 +33,8 @@ public:
     EXPECT_EQ(comm, test.owner);
     EXPECT_TRUE(test.finalized);
     ++test.destroys;
+    if (test.requirePeerDestroy)
+      EXPECT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
     if (test.destroyError != flagcxSuccess)
       return test.destroyError;
     if (test.destroyPending-- > 0)
@@ -41,8 +44,8 @@ public:
   }
   flagcxResult_t close(double seconds = 5.0) {
     flagcxTestLifecycleCalls calls{finalize, destroy};
-    return flagcxTestFinalizeAndDestroyRankLocally(
-        &owner, rank, nranks, MPI_COMM_WORLD, calls, seconds);
+    return flagcxTestFinalizeAndDestroyAcrossRanks(&owner, MPI_COMM_WORLD,
+                                                   calls, seconds);
   }
   void SetUp() override {
     active = this;
@@ -79,11 +82,38 @@ TEST_F(LifecycleHelperMpi, ErrorBeatsProgressAndOwnerCanBeRetried) {
 TEST_F(LifecycleHelperMpi, PartialDestroyFailureRetainsRemainingOwners) {
   destroyError = rank == 1 ? flagcxRemoteError : flagcxSuccess;
   EXPECT_EQ(close(), flagcxRemoteError);
-  EXPECT_EQ(owner, rank == 0 ? nullptr : (flagcxComm_t)&token);
+  EXPECT_EQ(owner, rank == 1 ? (flagcxComm_t)&token : nullptr);
   destroyError = flagcxSuccess;
   EXPECT_EQ(close(), flagcxSuccess);
   EXPECT_EQ(owner, nullptr);
   EXPECT_EQ(releases, 1);
+}
+
+TEST_F(LifecycleHelperMpi, PeerDependentDestroyIsEnteredByEveryRank) {
+  requirePeerDestroy = true;
+  ASSERT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(owner, nullptr);
+  EXPECT_EQ(releases, 1);
+}
+
+TEST_F(LifecycleHelperMpi,
+       AsymmetricDestroyProgressDoesNotRepeatReleasedOwner) {
+  destroyPending = rank + 1;
+  ASSERT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(destroys, rank + 2);
+  EXPECT_EQ(releases, 1);
+  EXPECT_EQ(owner, nullptr);
+}
+
+TEST_F(LifecycleHelperMpi, DestroyErrorBeatsPeerProgressAndRetryKeepsOwners) {
+  destroyError = rank == 0 ? flagcxSystemError : flagcxSuccess;
+  destroyPending = rank == 1 ? 2 : 0;
+  EXPECT_EQ(close(), flagcxSystemError);
+  EXPECT_EQ(owner, rank <= 1 ? (flagcxComm_t)&token : nullptr);
+  destroyError = flagcxSuccess;
+  ASSERT_EQ(close(), flagcxSuccess);
+  EXPECT_EQ(releases, 1);
+  EXPECT_EQ(owner, nullptr);
 }
 
 TEST_F(LifecycleHelperMpi, FinalizeDeadlineRetainsOwner) {
@@ -97,7 +127,7 @@ TEST_F(LifecycleHelperMpi, FinalizeDeadlineRetainsOwner) {
 TEST_F(LifecycleHelperMpi, DestroyDeadlineRetainsOwner) {
   destroyPending = rank == 0 ? 1 : 0;
   EXPECT_EQ(close(0.0), flagcxSystemError);
-  EXPECT_EQ(owner, (flagcxComm_t)&token);
+  EXPECT_EQ(owner, rank == 0 ? (flagcxComm_t)&token : nullptr);
   EXPECT_EQ(close(), flagcxSuccess);
   EXPECT_EQ(releases, 1);
 }
@@ -148,9 +178,8 @@ public:
     EXPECT_EQ(low, expected);
     EXPECT_EQ(high, expected);
   }
-  void destroyOneRankAtATime() {
-    ASSERT_EQ(flagcxTestFinalizeAndDestroyRankLocally(&comm, rank, nranks),
-              flagcxSuccess);
+  void destroyAcrossRanks() {
+    ASSERT_EQ(flagcxTestFinalizeAndDestroyAcrossRanks(&comm), flagcxSuccess);
     EXPECT_EQ(syncs, 0);
   }
 };
@@ -168,7 +197,7 @@ TEST_F(IpcFinalizeBootstrapTest,
   if (rank == 0)
     EXPECT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
   MPI_Barrier(MPI_COMM_WORLD);
-  destroyOneRankAtATime();
+  destroyAcrossRanks();
   if (rank == 0)
     EXPECT_EQ(frees.size(), 1u);
 }
@@ -185,7 +214,7 @@ TEST_F(IpcFinalizeBootstrapTest,
   expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
   if (rank == 1)
     EXPECT_EQ(closes.size(), 2u);
-  destroyOneRankAtATime();
+  destroyAcrossRanks();
 }
 
 TEST_F(IpcFinalizeBootstrapTest, DeviceSelectionFailureIsAgreedBeforeAnyClose) {
@@ -195,26 +224,29 @@ TEST_F(IpcFinalizeBootstrapTest, DeviceSelectionFailureIsAgreedBeforeAnyClose) {
   EXPECT_EQ(comm->finalizePhase, 0);
   failDevice = false;
   expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
-  destroyOneRankAtATime();
+  destroyAcrossRanks();
 }
 
 TEST_F(IpcFinalizeBootstrapTest,
-       BackingReleaseFailureRetriesWhilePeersStayOutsideFlagcx) {
+       BackingReleaseFailureRetriesWithoutRepeatingReleasedOwners) {
   expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
+  failFree = rank == 0;
+  flagcxTestLifecycleCalls calls;
+  expectCommon(flagcxTestDestroyAcrossRanks(&comm, MPI_COMM_WORLD, calls,
+                                            MPI_Wtime() + 5.0),
+               flagcxRemoteError);
   if (rank == 0) {
-    failFree = true;
-    EXPECT_EQ(flagcxCommDestroy(comm), flagcxRemoteError);
+    ASSERT_NE(comm, nullptr);
     EXPECT_NE(comm->internalBuffers, nullptr);
-    failFree = false;
-    destroySuccessfully();
-    EXPECT_EQ(frees.size(), 1u);
+  } else {
+    EXPECT_EQ(comm, nullptr);
   }
-  MPI_Barrier(MPI_COMM_WORLD);
-  for (int selected = 1; selected < nranks; ++selected) {
-    if (rank == selected)
-      destroySuccessfully();
-    MPI_Barrier(MPI_COMM_WORLD);
-  }
+  failFree = false;
+  expectCommon(flagcxTestDestroyAcrossRanks(&comm, MPI_COMM_WORLD, calls,
+                                            MPI_Wtime() + 5.0),
+               flagcxSuccess);
+  EXPECT_EQ(comm, nullptr);
+  EXPECT_EQ(frees.size(), rank == 0 ? 1u : 0u);
 }
 
 TEST_F(IpcFinalizeBootstrapTest,
@@ -254,7 +286,7 @@ TEST_F(IpcFinalizeBootstrapTest,
   EXPECT_EQ(comm->homoComm, nullptr);
   reader.reset();
   EXPECT_EQ(globalRegPool.deregisterBuffer(nullptr, token), flagcxSuccess);
-  destroyOneRankAtATime();
+  destroyAcrossRanks();
 }
 
 TEST_F(IpcFinalizeBootstrapTest,
@@ -272,7 +304,7 @@ TEST_F(IpcFinalizeBootstrapTest,
   EXPECT_EQ(finalizeCalls, 2);
   EXPECT_EQ(asyncPolls, rank == 0 ? 4 : 2);
   EXPECT_TRUE(frees.empty());
-  destroyOneRankAtATime();
+  destroyAcrossRanks();
 }
 
 TEST_F(IpcFinalizeBootstrapTest,
@@ -292,7 +324,7 @@ TEST_F(IpcFinalizeBootstrapTest,
   expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
   EXPECT_EQ(destroyCalls, rank == 0 ? 4 : 2);
   EXPECT_TRUE(frees.empty());
-  destroyOneRankAtATime();
+  destroyAcrossRanks();
 }
 
 TEST_F(IpcFinalizeBootstrapTest, HostShmGenerationIsIssuedByRootAndRetained) {
@@ -338,7 +370,7 @@ TEST_F(IpcFinalizeBootstrapTest, HostShmGenerationIsIssuedByRootAndRetained) {
   EXPECT_EQ(*(uint64_t *)second->localBarrierShmPtr, 0u);
   ASSERT_EQ(flagcxDevCommDestroy(comm, second), flagcxSuccess);
   expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
-  destroyOneRankAtATime();
+  destroyAcrossRanks();
 }
 
 TEST_F(IpcFinalizeBootstrapTest,
@@ -385,7 +417,7 @@ TEST_F(IpcFinalizeBootstrapTest,
   EXPECT_NE(view->localBarrierShmPtr, nullptr);
   ASSERT_EQ(flagcxDevCommDestroy(comm, view), flagcxSuccess);
   expectCommon(flagcxCommFinalize(comm), flagcxSuccess);
-  destroyOneRankAtATime();
+  destroyAcrossRanks();
 }
 
 TEST_F(IpcFinalizeBootstrapTest,
@@ -422,7 +454,7 @@ TEST_F(IpcFinalizeBootstrapTest,
     EXPECT_EQ(asyncPolls, 3);
     EXPECT_EQ(transportCloses, 1);
   }
-  destroyOneRankAtATime();
+  destroyAcrossRanks();
 }
 
 class DeviceApiSessionMpi : public IpcFinalizeBootstrapTest {};

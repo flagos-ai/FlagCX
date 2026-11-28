@@ -94,7 +94,7 @@ else
     --case IpcFinalizeBootstrapTest.EmptyRanksAndDelayedImporterJoinBeforeRelease \
     --case IpcFinalizeBootstrapTest.FailedImporterKeepsAllExportersUntilCommonRetry \
     --case IpcFinalizeBootstrapTest.DeviceSelectionFailureIsAgreedBeforeAnyClose \
-    --case IpcFinalizeBootstrapTest.BackingReleaseFailureRetriesWhilePeersStayOutsideFlagcx \
+    --case IpcFinalizeBootstrapTest.BackingReleaseFailureRetriesWithoutRepeatingReleasedOwners \
     --case IpcFinalizeBootstrapTest.NativePreparationConvergesBeforeEnteringCollectiveDestroy \
     --case IpcFinalizeBootstrapTest.PendingEarlierNativeOwnerCompletesBeforeNextCollective \
     --case IpcFinalizeBootstrapTest.PendingEarlierCompatibilityCloseCompletesBeforeNextCollective \

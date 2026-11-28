@@ -2288,7 +2288,7 @@ TEST_F(SymMemTest, CommDestroyReleasesLiveWindow) {
   EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
 }
 
-TEST_F(SymMemTest, FinalizeConfirmsImportsBeforeLocalExporterRelease) {
+TEST_F(SymMemTest, FinalizeConfirmsImportsBeforeBackingRelease) {
   flagcxComm_t testComm = nullptr;
   ASSERT_TRUE(allRanksSucceeded(createTestComm(&testComm)));
   ASSERT_NE(testComm, nullptr);
@@ -2313,9 +2313,8 @@ TEST_F(SymMemTest, FinalizeConfirmsImportsBeforeLocalExporterRelease) {
        owner = owner->next)
     backingRetained |= owner->pointer == buffer;
   EXPECT_TRUE(backingRetained);
-  // Every other rank waits outside FlagCX while this rank releases backing.
-  ASSERT_EQ(flagcxTestFinalizeAndDestroyRankLocally(&testComm, rank, nranks),
-            flagcxSuccess);
+  // Every rank enters Destroy so peer-dependent native SDKs can also retire.
+  ASSERT_EQ(flagcxTestFinalizeAndDestroyAcrossRanks(&testComm), flagcxSuccess);
 }
 
 TEST_F(SymMemTest, SegmentedVmmRegistrationUsesBoundedFds) {

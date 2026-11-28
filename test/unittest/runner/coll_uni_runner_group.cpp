@@ -167,7 +167,7 @@ TEST_F(FlagCXCollTest, AllGatherInsideGroup) {
   }
 }
 
-TEST_F(FlagCXCollTest, UniRunnerIpcFinalizeThenRankLocalDestroy) {
+TEST_F(FlagCXCollTest, UniRunnerIpcFinalizeThenDestroy) {
   ASSERT_TRUE(usingUniRunner());
   ASSERT_GT(nranks, 1);
   ScopedUniRunnerAlgorithm selectedAlgorithm;
@@ -195,8 +195,7 @@ TEST_F(FlagCXCollTest, UniRunnerIpcFinalizeThenRankLocalDestroy) {
   ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
   EXPECT_EQ(comm->heteroComm->proxyState->uniRunnerState.ipcOwner, nullptr);
   EXPECT_NE(comm->internalBuffers, nullptr);
-  ASSERT_EQ(flagcxTestFinalizeAndDestroyRankLocally(&comm, rank, nranks),
-            flagcxSuccess);
+  ASSERT_EQ(flagcxTestFinalizeAndDestroyAcrossRanks(&comm), flagcxSuccess);
 }
 
 TEST_F(FlagCXCollTest, GroupedCommunicatorsFinalizeTheNonLaunchStreamFirst) {
@@ -248,10 +247,8 @@ TEST_F(FlagCXCollTest, GroupedCommunicatorsFinalizeTheNonLaunchStreamFirst) {
             flagcxSuccess);
   ASSERT_EQ(synchronizeAndCheckAsyncError(other, otherStream), flagcxSuccess);
   EXPECT_FLOAT_EQ(((float *)hostrecvbuff)[0], previous + 1);
-  ASSERT_EQ(flagcxTestFinalizeAndDestroyRankLocally(&comm, rank, nranks),
-            flagcxSuccess);
-  ASSERT_EQ(flagcxTestFinalizeAndDestroyRankLocally(&other, rank, nranks),
-            flagcxSuccess);
+  ASSERT_EQ(flagcxTestFinalizeAndDestroyAcrossRanks(&comm), flagcxSuccess);
+  ASSERT_EQ(flagcxTestFinalizeAndDestroyAcrossRanks(&other), flagcxSuccess);
   EXPECT_EQ(devHandle->deviceFree(otherSend, flagcxMemDevice, nullptr),
             flagcxSuccess);
   EXPECT_EQ(devHandle->deviceFree(otherRecv, flagcxMemDevice, nullptr),

@@ -274,7 +274,7 @@ contract; it does not claim additional runtime graph-replay support.
 
 Host tests inject import-close, backing-free, native asynchronous-progress,
 transport and device-selection failures. Real bootstrap tests exercise two and
-four ranks, empty ranks, collective retry and sequential rank-local Destroy.
+four ranks, empty ranks, collective retry and concurrent rank entry to Destroy.
 These use mocked local device operations and do not certify accelerator IPC.
 Hardware runner AllGather, Window/Device API IPC, independent-Comm isolation,
 and SDK teardown remain required on the corresponding platform. Iluvatar's

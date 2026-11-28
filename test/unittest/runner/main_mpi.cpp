@@ -244,8 +244,7 @@ void FlagCXCollTest::TearDown() {
   if (completed != flagcxSuccess)
     return; // Retain buffers and their Comm until stream completion is known.
 
-  flagcxResult_t destroyed =
-      flagcxTestFinalizeAndDestroyRankLocally(&comm, rank, nranks);
+  flagcxResult_t destroyed = flagcxTestFinalizeAndDestroyAcrossRanks(&comm);
   EXPECT_EQ(destroyed, flagcxSuccess);
   if (destroyed != flagcxSuccess)
     return;
