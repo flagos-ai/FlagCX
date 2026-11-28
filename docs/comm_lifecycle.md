@@ -263,6 +263,24 @@ or terminal cleanup failure aborts the MPI test rather than allowing SDK process
 shutdown to invalidate storage still used by retained workers. This is test
 process error handling, not a production work tracker or reclamation thread.
 
+The shared test helpers log each rank's entry and result for stream completion,
+Finalize, Destroy and their MPI status agreements. They log status changes
+instead of every InProgress poll. Runner CI labels these records with the
+current case and executes each selected case separately on every platform,
+including the PPU override. A case timeout does not hide an earlier failure or
+silently skip the remaining cases: the existing cumulative budget remains in
+force and reports cases that could not run.
+
+Runtime timeout wrappers collect descendant process/thread states at 75% of
+the effective timeout, including shortened cumulative deadlines. Existing gdb
+installations also provide user stacks for test, benchmark and Python workers;
+otherwise the collector reports `/proc` data. Diagnostics are best effort and
+keep the workload's failure, watchdog or cancellation status. The existing
+attempt-log artifacts contain these snapshots. Build/preparation phases do not
+start this sampler; Torch coverage does because it executes tests.
+`FLAGCX_CI_TEST_DIAGNOSTICS_AFTER` can select an earlier delay in seconds, or
+`off` for a local debugging invocation. No timeout budget is increased.
+
 ## Graph terminology
 
 No complete public graph capture/instantiate/launch API or end-to-end replay

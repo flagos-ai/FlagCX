@@ -72,7 +72,8 @@ struct DeviceApiTestSession {
   flagcxResult_t closePhase() {
     switch (phase) {
       case 0:
-        return stream ? devHandle->streamSynchronize(stream) : flagcxSuccess;
+        return stream ? flagcxTestSynchronizeStream(devHandle, stream)
+                      : flagcxSuccess;
       case 1: {
         for (auto *view : {&sendMem, &recvMem, &devMem, &tailMem}) {
           if (*view == nullptr)

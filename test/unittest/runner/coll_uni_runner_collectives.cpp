@@ -1,3 +1,4 @@
+#include "comm_lifecycle_check.hpp"
 #include "global_comm.h"
 #include "runner_fixtures.hpp"
 #include "uni_runner_algorithm.h"
@@ -86,7 +87,7 @@ TEST_F(FlagCXCollTest, UniRunnerAllReduceStreamsAndInPlace) {
                                         elements * sizeof(float),
                                         flagcxMemcpyDeviceToHost, active),
                 flagcxSuccess);
-      EXPECT_EQ(devHandle->streamSynchronize(active), flagcxSuccess);
+      EXPECT_EQ(flagcxTestSynchronizeStream(devHandle, active), flagcxSuccess);
       ASSERT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
       for (size_t i = 0; i < elements; ++i)
         EXPECT_EQ(static_cast<float *>(hostrecvbuff)[i],
